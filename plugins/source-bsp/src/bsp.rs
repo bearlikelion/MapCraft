@@ -135,7 +135,21 @@ impl<'a> Bsp<'a> {
 fn material_name(raw: &str) -> String {
     let name = raw.to_ascii_lowercase().replace('\\', "/");
     let name = name.trim_start_matches('/');
-    name.strip_prefix("materials/").unwrap_or(name).to_string()
+    unpatch(name.strip_prefix("materials/").unwrap_or(name)).to_string()
+}
+
+/// The material a VBSP patch copies: `maps/<map>/<material>_<x>_<y>_<z>` for cubemaps, `..._wvt_patch` for blends.
+fn unpatch(name: &str) -> &str {
+    let Some((_, inner)) = name.strip_prefix("maps/").and_then(|rest| rest.split_once('/')) else { return name };
+    if let Some(base) = inner.strip_suffix("_wvt_patch") {
+        return base;
+    }
+    let mut parts = inner.rsplitn(4, '_');
+    let numbers = parts.by_ref().take(3).filter(|p| p.parse::<i32>().is_ok()).count();
+    match parts.next() {
+        Some(base) if numbers == 3 => base,
+        _ => name,
+    }
 }
 
 /// The keyvalues of each entity in the entity lump, in file order; quotes never occur inside values.
@@ -436,51 +450,172 @@ pub fn import(file: &[u8]) -> Result<Import, String> {
 }
 
 #[cfg(test)]
-mod explore {
+mod tests {
+    use std::time::Instant;
+
     use super::*;
+
+    const SURF: &str = "/mnt/Storage/Gamedev/SurfsUp/SurfMaps/BSPs/surf_utopia_njv.bsp";
+    const LZMA: &str = "/mnt/Storage/Gamedev/SurfsUp/SurfMaps/BSPs/surf_fiellu_ksf.bsp";
+    const LARGEST: &str = "/mnt/Storage/Gamedev/SurfsUp/BhopMaps/BSPs/kz_bhop_badg3s.bsp";
+
+    fn read(path: &str) -> Option<Vec<u8>> {
+        std::fs::read(path).map_err(|_| eprintln!("skipped: {path} is missing")).ok()
+    }
 
     fn dv(v: &Vec3) -> DVec3 {
         DVec3::new(v.x, v.y, v.z)
     }
 
-    fn planes_of(b: &Brush) -> Vec<(DVec3, f64)> {
-        let Brush::Faces(faces) = b else { panic!() };
-        faces.iter().map(|f| { let (p0, p1, p2) = (dv(&f.points.0), dv(&f.points.1), dv(&f.points.2)); let n = (p0 - p1).cross(p2 - p1).normalize(); (n, n.dot(p1)) }).collect()
+    fn planes_of(brush: &Brush) -> Vec<(DVec3, f64)> {
+        let Brush::Faces(faces) = brush else { panic!("hull brush") };
+        faces
+            .iter()
+            .map(|f| {
+                let (p0, p1, p2) = (dv(&f.points.0), dv(&f.points.1), dv(&f.points.2));
+                let n = (p0 - p1).cross(p2 - p1).normalize();
+                (n, n.dot(p1))
+            })
+            .collect()
     }
 
-    fn bounds(b: &Brush) -> (DVec3, DVec3) {
-        let pts: Vec<DVec3> = windings(&planes_of(b)).into_iter().flatten().collect();
-        (pts.iter().fold(DVec3::MAX, |a, &p| a.min(p)), pts.iter().fold(DVec3::MIN, |a, &p| a.max(p)))
+    /// Every face survives clipping by the others, the faces close up, and every normal points away from the middle.
+    fn assert_closed(brush: &Brush) {
+        let planes = planes_of(brush);
+        let ws = windings(&planes);
+        assert!(ws.iter().all(|w| w.len() >= 3), "a face clips away");
+        let area: DVec3 = ws.iter().flat_map(|w| w.iter().zip(w.iter().cycle().skip(1)).map(|(a, b)| a.cross(*b))).sum();
+        let total: f64 = ws.iter().map(|w| width(w) * w.iter().zip(w.iter().cycle().skip(1)).map(|(a, b)| a.distance(*b)).sum::<f64>()).sum();
+        assert!(area.length() <= total * 1e-6, "open brush: {area} over {total}");
+        let points: Vec<DVec3> = ws.into_iter().flatten().collect();
+        let middle = points.iter().sum::<DVec3>() / points.len() as f64;
+        assert!(planes.iter().all(|(n, d)| n.dot(middle) < *d), "a face points inward");
     }
 
     #[test]
-    fn explore() {
-        let path = std::env::var("BSP").unwrap();
-        let data = std::fs::read(&path).unwrap();
-        let bsp = Bsp::open(&data).unwrap();
-        let planes: Vec<(DVec3, f64)> = bsp.lump(PLANES).unwrap().chunks_exact(20).map(|r| (vec_at(r, 0), f32_at(r, 12))).collect();
-        let brushes: Vec<(usize, usize, u32)> = bsp.lump(BRUSHES).unwrap().chunks_exact(12).map(|r| (index(i32_at(r, 0)), index(i32_at(r, 4)), u32_at(r, 8))).collect();
-        let sides: Vec<(usize, i16, bool)> = bsp.lump(BRUSHSIDES).unwrap().chunks_exact(8).map(|r| (usize::from(u16_at(r, 0)), i16_at(r, 2), r[6] != 0)).collect();
-        let mats = materials(&bsp).unwrap();
-        let (owner, _) = owners(&bsp, brushes.len()).unwrap();
-        let map = Map { planes: planes.clone(), materials: mats.clone(), brushes: brushes.iter().map(|b| (b.0, b.1)).collect(), sides: sides.clone() };
-        for bi in 0..brushes.len() { if owner[bi].is_some() && map.brush(bi, DMat3::IDENTITY, DVec3::ZERO).is_none() { eprintln!("NONE {bi} owner {:?} sides {}", owner[bi], brushes[bi].1); } }
-        let mut shown = 0;
-        for (bi, b) in brushes.iter().enumerate() {
-            let mut seen = Vec::new();
-            let ps: Vec<(DVec3, f64)> = sides[b.0..b.0 + b.1].iter().filter(|s| !s.2).filter(|s| if seen.contains(&s.0) { false } else { seen.push(s.0); true }).map(|s| planes[s.0]).collect();
-            let ws = windings(&ps);
-            let n = ws.iter().filter(|w| !w.is_empty()).count();
-            if n < 4 && owner[bi].is_some() && shown < 6 {
-                shown += 1;
-                eprintln!("brush {bi} owner {:?} contents {:#x} sides {} nonbevel {} faces {n}", owner[bi], b.2, b.1, ps.len());
-                for (k, s) in sides[b.0..b.0 + b.1].iter().enumerate() {
-                    let p = planes[s.0];
-                    let mut w = base_winding(p.0, p.1);
-                    for (j, q) in ps.iter().enumerate() { if *q != p { w = chop(&w, q.0, q.1); } let _ = j; }
-                    eprintln!("   side {k} plane {} n {:?} d {} bevel {} mat {:?} pts {} width {:.5}", s.0, p.0, p.1, s.2, mats.get(s.1 as usize), w.len(), if w.len() >= 3 { width(&w) } else { 0.0 });
+    fn cube_drops_a_plane_touching_an_edge() {
+        let mut planes: Vec<(DVec3, f64)> = [DVec3::X, DVec3::NEG_X, DVec3::Y, DVec3::NEG_Y, DVec3::Z, DVec3::NEG_Z].map(|n| (n, 64.0)).to_vec();
+        planes.push((DVec3::new(1.0, 1.0, 0.0).normalize(), 128.0 / 2f64.sqrt()));
+        let ws = windings(&planes);
+        assert_eq!(ws.iter().filter(|w| !w.is_empty()).count(), 6);
+        assert!(ws[6].is_empty());
+        let map = Map { planes, materials: vec!["dev/a".into()], brushes: vec![(0, 7)], sides: (0..7).map(|p| (p, 0, false)).collect() };
+        let brush = map.brush(0, rotation(DVec3::new(0.0, 90.0, 0.0)), DVec3::new(100.0, 0.0, 0.0)).unwrap();
+        assert_closed(&brush);
+        let Brush::Faces(faces) = &brush else { panic!() };
+        assert_eq!(faces.len(), 6);
+        assert!(faces.iter().all(|f| f.material == "dev/a" && (dv(&f.points.1) - DVec3::new(100.0, 0.0, 0.0)).abs().max_element() <= 64.0 + 1e-9));
+    }
+
+    #[test]
+    fn rotation_matches_source_angles() {
+        let forward = |p, y| rotation(DVec3::new(p, y, 0.0)) * DVec3::X;
+        assert!(forward(0.0, 90.0).abs_diff_eq(DVec3::Y, 1e-12));
+        assert!(forward(90.0, 0.0).abs_diff_eq(DVec3::NEG_Z, 1e-12));
+        assert!((rotation(DVec3::new(0.0, 0.0, 90.0)) * DVec3::Y).abs_diff_eq(DVec3::Z, 1e-12));
+    }
+
+    #[test]
+    fn parses_entity_text() {
+        let text = "{\n\"classname\" \"worldspawn\"\n}\n{\n\"classname\" \"logic_relay\"\n\"OnTrigger\" \"a,Kill,,0,-1\"\n\"OnTrigger\" \"b,Use,}{,0,-1\"\n}\n{ \"classname\" \"x\" \"dangling\" }\n{ \"classname\" \"cut";
+        let ents = parse_entities(text);
+        assert_eq!(ents.len(), 4);
+        assert_eq!(ents[1].len(), 3);
+        assert_eq!(ents[1][2], ("OnTrigger".to_string(), "b,Use,}{,0,-1".to_string()));
+        assert_eq!(key(&ents[2], "CLASSNAME"), Some("x"));
+        assert_eq!(key(&ents[3], "classname"), Some("cut"));
+    }
+
+    #[test]
+    fn unpatches_material_names() {
+        assert_eq!(material_name("MATERIALS\\Maps\\surf_x\\Glass\\GlassWindow001a_-14096_0_-6152"), "glass/glasswindow001a");
+        assert_eq!(material_name("maps/surf_x/nature/blendrockdirt001a_wvt_patch"), "nature/blendrockdirt001a");
+        assert_eq!(material_name("maps/surf_x/custom/ramp_1_2"), "maps/surf_x/custom/ramp_1_2");
+        assert_eq!(material_name("TOOLS/TOOLSPLAYERCLIP"), "tools/toolsplayerclip");
+    }
+
+    #[test]
+    fn rejects_bad_files_without_panicking() {
+        assert!(import(b"").is_err());
+        assert!(import(b"IBSP\x26\0\0\0").is_err());
+        let mut file = vec![0u8; HEADER];
+        file[..4].copy_from_slice(b"VBSP");
+        file[4] = 25;
+        assert!(import(&file).err().unwrap_or_default().contains("version 25"));
+        file[4] = 20;
+        file[8..12].copy_from_slice(&5000i32.to_le_bytes());
+        file[12..16].copy_from_slice(&10i32.to_le_bytes());
+        assert!(import(&file).err().unwrap_or_default().contains("outside"));
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for round in 0..300 {
+            let mut file: Vec<u8> = (0..HEADER + 4096)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect();
+            file[..8].copy_from_slice(b"VBSP\x14\0\0\0");
+            for lump in 0..64 {
+                let at = 8 + lump * 16;
+                let offset = (HEADER + (lump * 61 + round) % 4096) as i32;
+                file[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+                file[at + 4..at + 8].copy_from_slice(&((lump as i32 * 37 + round as i32) % 600).to_le_bytes());
+                if round % 3 == 0 && lump % 5 == 0 {
+                    let o = offset as usize;
+                    file[o..o + 4].copy_from_slice(b"LZMA");
+                    file[at + 12..at + 16].copy_from_slice(&1000i32.to_le_bytes());
                 }
             }
+            let _ = import(&file);
         }
+    }
+
+    #[test]
+    fn imports_a_surf_map() {
+        let Some(data) = read(SURF) else { return };
+        let map = import(&data).unwrap();
+        let out = &map.output;
+        assert!(out.brushes.len() > 3000, "{} world brushes", out.brushes.len());
+        assert_eq!((out.entities.len(), map.brush_entities, map.dropped_brushes), (153, 99, 0));
+        out.brushes.iter().for_each(assert_closed);
+        assert_eq!(out.entities.iter().filter(|e| e.classname == "info_player_counterterrorist").count(), 24);
+        let teleports: Vec<&Entity> = out.entities.iter().filter(|e| e.classname == "trigger_teleport").collect();
+        assert_eq!(teleports.len(), 76);
+        assert!(teleports.iter().all(|e| !e.brushes.is_empty() && key(&e.properties, "target").is_some() && key(&e.properties, "model").is_none()));
+        teleports.iter().flat_map(|e| &e.brushes).for_each(assert_closed);
+        let faces = || out.brushes.iter().flat_map(|b| match b {
+            Brush::Faces(f) => f.as_slice(),
+            Brush::Hull(_) => &[],
+        });
+        assert!(faces().any(|f| f.material == "tools/toolsplayerclip"));
+        assert!(faces().all(|f| !f.material.starts_with("maps/")));
+        let illusionary = out.entities.iter().find(|e| e.classname == "func_illusionary").unwrap();
+        let origin = vector(key(&illusionary.properties, "origin"));
+        let points: Vec<DVec3> = illusionary.brushes.iter().flat_map(|b| windings(&planes_of(b))).flatten().collect();
+        let middle = points.iter().fold(DVec3::MAX, |a, p| a.min(*p)).midpoint(points.iter().fold(DVec3::MIN, |a, p| a.max(*p)));
+        assert!(middle.distance(origin) < 1.0, "brush entity at {middle}, origin {origin}");
+    }
+
+    #[test]
+    fn imports_lzma_lumps_and_static_props() {
+        let Some(data) = read(LZMA) else { return };
+        let map = import(&data).unwrap();
+        assert!(map.warnings.is_empty(), "{:?}", map.warnings);
+        assert!(!map.output.brushes.is_empty() && map.static_props > 0);
+        map.output.brushes.iter().for_each(assert_closed);
+        let prop = map.output.entities.iter().find(|e| e.classname == "prop_static").unwrap();
+        assert!(key(&prop.properties, "model").is_some_and(|m| m.starts_with("models/") && m.ends_with(".mdl")));
+        eprintln!("{LZMA}: {} world brushes, {} entities, {} static props", map.output.brushes.len(), map.output.entities.len(), map.static_props);
+    }
+
+    #[test]
+    fn times_the_largest_map() {
+        let Some(data) = read(LARGEST) else { return };
+        let start = Instant::now();
+        let map = import(&data).unwrap();
+        eprintln!("{LARGEST}: {} MB in {:?}, {} world brushes, {} entities", data.len() / 1_000_000, start.elapsed(), map.output.brushes.len(), map.output.entities.len());
+        map.output.brushes.iter().for_each(assert_closed);
     }
 }
