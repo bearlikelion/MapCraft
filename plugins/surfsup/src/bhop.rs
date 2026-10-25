@@ -33,6 +33,8 @@ pub struct Bhop {
     pub angle_step: f64,
     pub rise_per_turn: f64,
     pub clockwise: bool,
+    /// Each platform moves sideways by up to this much.
+    pub jitter: f64,
 }
 
 impl Default for Bhop {
@@ -57,6 +59,7 @@ impl Default for Bhop {
             angle_step: 45.0,
             rise_per_turn: 384.0,
             clockwise: true,
+            jitter: 0.0,
         }
     }
 }
@@ -120,7 +123,8 @@ pub fn platforms(b: &Bhop) -> Vec<(DVec3, DVec3)> {
         .into_iter()
         .map(|c| {
             let scale = if b.variation > 0.0 { 1.0 + (rng.unit() * 2.0 - 1.0) * b.variation } else { 1.0 };
-            (c, (b.size * scale).max(DVec3::ONE))
+            let shift = if b.jitter > 0.0 { DVec3::new(rng.unit() * 2.0 - 1.0, rng.unit() * 2.0 - 1.0, 0.0) * b.jitter } else { DVec3::ZERO };
+            (c + shift, (b.size * scale).max(DVec3::ONE))
         })
         .collect()
 }

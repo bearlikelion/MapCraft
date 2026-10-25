@@ -6,6 +6,7 @@ mod brush;
 pub mod disp;
 mod entity;
 mod map;
+pub mod mirror;
 mod node;
 
 use std::collections::BTreeMap;
@@ -16,6 +17,7 @@ pub use brush::{Brush, BrushError, Face, Justify, TexAxis, TexDefaults};
 pub use disp::Displacement;
 pub use entity::{Connection, Entity};
 pub use map::{Changes, Edit, EditError, Map, ROOT};
+pub use mirror::{Axis, Mirror};
 pub use node::{Cordon, Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};
 
 /// Data a plugin needs to round-trip but the core does not model.

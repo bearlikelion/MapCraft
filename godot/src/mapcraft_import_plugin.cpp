@@ -61,6 +61,7 @@ TypedArray<Dictionary> MapCraftImportPlugin::_get_import_options(const String &p
 	out.push_back(option("material_root", "res://Assets/Textures", PROPERTY_HINT_DIR));
 	out.push_back(option("entity_map", "", PROPERTY_HINT_FILE, "*.tres,*.res"));
 	out.push_back(option("collision", true));
+	out.push_back(option("trimesh_collision", false));
 	return out;
 }
 
@@ -89,6 +90,7 @@ Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p
 	options.units_per_meter = p_options.get("units_per_meter", 39.37);
 	options.material_root = p_options.get("material_root", "res://Assets/Textures");
 	options.collision = p_options.get("collision", true);
+	options.trimesh_collision = p_options.get("trimesh_collision", false);
 	options.source_path = p_source_file;
 	String map_path = p_options.get("entity_map", "");
 	if (map_path.is_empty()) {

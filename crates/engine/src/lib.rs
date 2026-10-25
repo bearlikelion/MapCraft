@@ -5,6 +5,7 @@
 mod commands;
 mod generate;
 mod issues;
+mod mirror;
 mod ops;
 mod organize;
 mod prefab;
@@ -16,7 +17,7 @@ pub use generate::generator_transform;
 pub use issues::{Fix, Issue, Severity, validate};
 pub use ops::{ClipKeep, ExtrudeMode, Shape};
 pub use organize::find_entities;
-pub use prefab::{expand_instance, flatten_prefabs, prefab_transform};
+pub use prefab::{expand_instance, flatten, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
 pub use terrain::{Sculpt, SculptMode};
 

@@ -108,7 +108,14 @@ fn locate(res: &str, files: &BTreeSet<String>) -> Option<String> {
 
 impl Guest for Godot {
     fn manifest() -> Manifest {
-        Manifest { id: "godot".into(), name: "Godot".into(), version: env!("CARGO_PKG_VERSION").into(), commands: Vec::new(), materials: true, importers: Vec::new() }
+        Manifest {
+            id: "godot".into(),
+            name: "Godot".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            commands: Vec::new(),
+            materials: true,
+            importers: Vec::new(),
+        }
     }
 
     fn run_command(id: String, _params: Vec<Param>, _context: Context) -> Result<Output, String> {

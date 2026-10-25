@@ -6,3 +6,4 @@ target/
 /godot/build/
 # Built by `cargo xtask plugins`.
 /sdks/*/plugins/
+/dist/

@@ -53,6 +53,11 @@
 - [x] Clicking an axis on the 3D axis widget looks down that axis; clicking it again looks from the other side.
 - [x] Tool output in the Output panel has terminal color codes stripped.
 - [x] Faces picked with the Face tool keep their true color with a cyan outline; entering the Face tool picks the selected brushes' faces.
+- [x] Plugin generators are Block tool shapes: parameters in the inspector, a live ghost under the pointer, click to place.
+- [x] Clip tool: drag a line or click points in any view (on faces in 3D), with a preview of what stays and what goes.
+- [x] Mirror groups: build one half and the other follows live; the file holds both halves so importers need nothing new.
+- [x] Displacements on four-cornered faces, a Sculpt tool (raise, lower, smooth, flatten, noise) that keeps neighbors joined, and heightmap images.
+- [x] Snap Selection to Grid, F to focus the selection, see-through zones that never fight the floor they sit on.
 - [ ] Later: dockable and rearrangeable panels, a lit 3D preview, a model browser.
 
 ## M3 Plugins and the SurfsUp SDK
@@ -61,6 +66,8 @@
 - [x] Plugin commands with generated parameter UI, generator groups that rerun when edited.
 - [x] `godot` asset plugin (`.tres` materials with texture or color previews), `surfsup` plugin with SURGE ramp and bhop generators.
 - [x] Example plugin written in Python, user plugins folder.
+- [x] Importers: plugins list file formats under File > Import and read the picked file's bytes.
+- [x] Surf Ramp gains drop, ridge, inside troughs, gaps, sloped ends and pyramids, and lead in and out, with warnings for walkable faces and coarse curves; bhop platforms gain shapes, path facing and jitter; new Surf Window and Surf Stage generators. See [`docs/surf-mapping.md`](docs/surf-mapping.md).
 - [ ] Later: compiled plugin cache for faster startup, SurfsUp map validators, prefab scenes as bhop platforms.
 
 ## M4 Godot extension
@@ -68,13 +75,15 @@
 - [x] C++ GDExtension: `.mcmap` importer, `MapCraftMap`, `MapCraftEntityMap`, headless import test.
 - [x] SurfsUp entity map (spawn point, `sdk_zone` areas, typed settings), map pack tool, Run menu profiles to import, pack and play.
 - [x] Sample course `sdks/surfsup/samples/surf_mapcraft.mcmap` built with the ramp generator; imports in Godot with spawn, start, splits, finish and kill zones.
+- [x] Displacements import as meshes with triangle collision; a Trimesh collision option makes the world one triangle mesh so ramp seams cannot catch players.
 - [ ] Play a MapCraft map end to end in SurfsUp v3 with `+map`.
 - [ ] Later: prefab instance overrides, `tools/` materials (nodraw, clip), Windows and macOS builds in CI, C# example.
 
 ## M5 Counter-Strike: Source SDK
 
-- [ ] `source` plugin: VMF, VPK, VTF, VMT.
-- [ ] Displacements, overlays, Valve compilers.
+- [ ] `source` plugin: VMF, VPK, VTF, VMT; BSP import for zoning existing maps is in progress.
+- [x] Displacements as a host feature.
+- [ ] Overlays, Valve compilers.
 
 ## M6 Quake SDK
 

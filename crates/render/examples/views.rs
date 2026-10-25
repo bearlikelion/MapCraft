@@ -12,6 +12,7 @@ fn main() {
         std::process::exit(2);
     };
     let file = mapcraft_format::load(std::path::Path::new(input)).unwrap();
+    let (map, _) = mapcraft_map::mirror::expand(&file.map);
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
@@ -19,8 +20,8 @@ fn main() {
     let checker: Vec<u8> =
         (0..64 * 64).flat_map(|i: u32| if ((i % 64) / 8 + (i / 64) / 8).is_multiple_of(2) { [230, 120, 30, 255] } else { [120, 60, 15, 255] }).collect();
     renderer.upload_material("ramps-orange1", 64, 64, &checker);
-    let selection: BTreeSet<_> = file.map.nodes().filter(|(_, n)| n.kind.entity().is_some_and(|e| e.classname != "worldspawn")).map(|(id, _)| id).collect();
-    let scene = build_scene(&file.map, &selection, &BTreeSet::new(), &|m| renderer.material_size(m), &NoStyle, true);
+    let selection: BTreeSet<_> = map.nodes().filter(|(_, n)| n.kind.entity().is_some_and(|e| e.classname != "worldspawn")).map(|(id, _)| id).collect();
+    let scene = build_scene(&map, &selection, &BTreeSet::new(), &|m| renderer.material_size(m), &NoStyle, true);
     renderer.set_scene(&scene);
 
     let (w, h) = (480u32, 360u32);

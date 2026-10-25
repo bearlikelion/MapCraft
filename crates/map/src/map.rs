@@ -7,7 +7,7 @@ use crate::{Cordon, Entity, Extra, FaceId, Node, NodeId, NodeKind, Tag, TagId};
 pub const ROOT: NodeId = NodeId(1);
 
 /// Deeper trees than this are refused; it bounds every recursive walk.
-const MAX_DEPTH: usize = 256;
+pub(crate) const MAX_DEPTH: usize = 256;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Map {

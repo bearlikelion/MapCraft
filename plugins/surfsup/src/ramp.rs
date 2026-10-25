@@ -8,6 +8,8 @@ const EPSILON: f64 = 1e-6;
 const BANK_EASE_FRACTION: f64 = 0.2;
 pub const SURF_MIN_ANGLE: f64 = 45.573;
 const CURVED_SEGMENTS_MIN: usize = 3;
+/// Degrees of turn per curve segment above which seams start to catch players.
+pub const MAX_SEGMENT_DEGREES: f64 = 5.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
@@ -20,6 +22,8 @@ pub enum Surf {
     Left,
     Right,
     Both,
+    /// A trough: two half ramps facing each other across a floor `ridge` wide.
+    Inside,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +68,17 @@ pub struct Ramp {
     pub height: f64,
     pub tip: f64,
     pub thickness: f64,
+    /// Height lost over the ramp's length.
+    pub drop: f64,
+    /// Width of a flat top on the peak, or of the floor of an inside ramp.
+    pub ridge: f64,
+    /// Space left between consecutive pieces.
+    pub gap: f64,
+    /// How far a straight ramp's base reaches past its top at each end; negative undercuts.
+    pub end_slope: f64,
+    /// Straight runs before and after a curve.
+    pub lead_in: f64,
+    pub lead_out: f64,
 }
 
 impl Default for Ramp {
@@ -82,6 +97,12 @@ impl Default for Ramp {
             height: 544.0,
             tip: 64.0,
             thickness: 64.0,
+            drop: 0.0,
+            ridge: 0.0,
+            gap: 0.0,
+            end_slope: 0.0,
+            lead_in: 0.0,
+            lead_out: 0.0,
         }
     }
 }
@@ -92,12 +113,17 @@ pub struct Piece {
     pub faces: Vec<(DVec3, Slot)>,
 }
 
-pub fn slope_line(surf: Surf, width: f64, height: f64, tip: f64) -> Vec<DVec2> {
-    match surf {
-        Surf::Both => vec![DVec2::new(-width, tip), DVec2::new(0.0, height), DVec2::new(width, tip)],
-        Surf::Left => vec![DVec2::new(width * 0.5, tip), DVec2::new(-width * 0.5, height)],
-        Surf::Right => vec![DVec2::new(-width * 0.5, tip), DVec2::new(width * 0.5, height)],
-    }
+/// The surfable line across the cross-section, including any flat ridge or trough floor.
+pub fn slope_line(surf: Surf, width: f64, height: f64, tip: f64, ridge: f64) -> Vec<DVec2> {
+    let (half, g) = (width * 0.5, ridge.max(0.0) * 0.5);
+    let mut line = match surf {
+        Surf::Both => vec![DVec2::new(-width - g, tip), DVec2::new(-g, height), DVec2::new(g, height), DVec2::new(width + g, tip)],
+        Surf::Left => vec![DVec2::new(half, tip), DVec2::new(-half, height), DVec2::new(-half - 2.0 * g, height)],
+        Surf::Right => vec![DVec2::new(-half, tip), DVec2::new(half, height), DVec2::new(half + 2.0 * g, height)],
+        Surf::Inside => vec![DVec2::new(-width - g, height), DVec2::new(-g, tip), DVec2::new(g, tip), DVec2::new(width + g, height)],
+    };
+    line.dedup_by(|a, b| same(*a, *b));
+    line
 }
 
 pub fn slope_angle(width: f64, height: f64, tip: f64) -> f64 {
@@ -159,21 +185,24 @@ pub fn profile_parts(r: &Ramp) -> Vec<Vec<DVec2>> {
         return Vec::new();
     }
     let tip = if r.style == Style::Thin { 0.0 } else { r.tip.clamp(0.0, r.height - EPSILON) };
+    let line = slope_line(r.surf, r.width, r.height, tip, r.ridge);
     if r.style == Style::Thin {
         if r.thickness <= EPSILON {
             return Vec::new();
         }
-        let line = slope_line(r.surf, r.width, r.height, tip);
         let offset = offset_polyline(&line, r.thickness);
         // A thin ramp bends at the peak, so each slope gets its own brush.
         return (0..line.len() - 1).map(|i| close(vec![line[i], line[i + 1], offset[i + 1], offset[i]])).collect();
     }
-    let half = if r.surf == Surf::Both { r.width } else { r.width * 0.5 };
-    let pts = match r.surf {
-        Surf::Both => vec![DVec2::new(-half, 0.0), DVec2::new(half, 0.0), DVec2::new(half, tip), DVec2::new(0.0, r.height), DVec2::new(-half, tip)],
-        Surf::Left => vec![DVec2::new(-half, 0.0), DVec2::new(half, 0.0), DVec2::new(half, tip), DVec2::new(-half, r.height)],
-        Surf::Right => vec![DVec2::new(-half, 0.0), DVec2::new(half, 0.0), DVec2::new(half, r.height), DVec2::new(-half, tip)],
-    };
+    // A wedge is the area under the slope line down to the ground, split where it stops being convex.
+    let down = |p: DVec2| DVec2::new(p.x, 0.0);
+    if r.surf == Surf::Inside {
+        return line.windows(2).map(|w| close(vec![down(w[0]), down(w[1]), w[1], w[0]])).collect();
+    }
+    let (Some(first), Some(last)) = (line.first(), line.last()) else { return Vec::new() };
+    let mut pts = vec![down(*first)];
+    pts.extend(line.iter().copied());
+    pts.push(down(*last));
     vec![close(pts)]
 }
 
@@ -236,26 +265,39 @@ fn turn_sign_at(shape: Shape, t: f64, turn: Turn) -> f64 {
     }
 }
 
+/// Length of the ramp's center line, over which `drop` and `gap` are spread.
+pub fn path_length(r: &Ramp) -> f64 {
+    let a = r.angle.to_radians();
+    match r.shape {
+        Shape::Straight => r.size,
+        Shape::Up | Shape::Dip => (r.size + r.height) * a,
+        _ => r.size * a,
+    }
+    .abs()
+}
+
 fn frame(r: &Ramp, t: f64) -> DAffine3 {
     let theta = r.angle.to_radians() * t;
-    match r.shape {
-        Shape::Straight => translation(-r.size * t, 0.0, 0.0),
-        Shape::Left => turn_about(theta, r.size, -1.0),
-        Shape::Right => turn_about(theta, r.size, 1.0),
-        Shape::Spiral => translation(0.0, 0.0, r.rise * t) * turn_about(theta, r.size, turn_sign(r.turn)),
-        Shape::SCurve => {
-            let sign = turn_sign(r.turn);
-            let half = r.angle.to_radians() * 0.5;
-            if theta <= half { turn_about(theta, r.size, sign) } else { turn_about(half, r.size, sign) * turn_about(theta - half, r.size, -sign) }
+    translation(0.0, 0.0, -r.drop * t)
+        * match r.shape {
+            Shape::Straight => translation(-r.size * t, 0.0, 0.0),
+            Shape::Left => turn_about(theta, r.size, -1.0),
+            Shape::Right => turn_about(theta, r.size, 1.0),
+            Shape::Spiral => translation(0.0, 0.0, r.rise * t) * turn_about(theta, r.size, turn_sign(r.turn)),
+            Shape::SCurve => {
+                let sign = turn_sign(r.turn);
+                let half = r.angle.to_radians() * 0.5;
+                if theta <= half { turn_about(theta, r.size, sign) } else { turn_about(half, r.size, sign) * turn_about(theta - half, r.size, -sign) }
+            }
+            Shape::Up | Shape::Dip => pitch(theta, r.size + r.height, 1.0),
+            Shape::Down | Shape::Arc => pitch(theta, r.size, -1.0),
         }
-        Shape::Up | Shape::Dip => pitch(theta, r.size + r.height, 1.0),
-        Shape::Down | Shape::Arc => pitch(theta, r.size, -1.0),
-    }
 }
 
 pub fn frames(r: &Ramp) -> Vec<DAffine3> {
     let closed = is_closed(r.shape, r.angle, r.rise);
-    let segments = if r.shape == Shape::Straight { 1 } else { r.smoothness.clamp(CURVED_SEGMENTS_MIN, 256) };
+    // A straight ramp needs pieces only when gaps break it up.
+    let segments = if r.shape == Shape::Straight && r.gap <= EPSILON { 1 } else { r.smoothness.clamp(CURVED_SEGMENTS_MIN, 256) };
     let count = if closed { segments } else { segments + 1 };
     let mut out: Vec<DAffine3> = (0..count)
         .map(|i| {
@@ -271,6 +313,19 @@ pub fn frames(r: &Ramp) -> Vec<DAffine3> {
     if matches!(r.shape, Shape::Arc | Shape::Dip) {
         let middle = frame(r, 0.5).inverse();
         out.iter_mut().for_each(|f| *f = middle * *f);
+    }
+    if !closed {
+        let slope = if path_length(r) > EPSILON { r.drop / path_length(r) } else { 0.0 };
+        if r.lead_in > EPSILON
+            && let Some(first) = out.first().copied()
+        {
+            out.insert(0, translation(0.0, 0.0, slope * r.lead_in) * first * translation(r.lead_in, 0.0, 0.0));
+        }
+        if r.lead_out > EPSILON
+            && let Some(last) = out.last().copied()
+        {
+            out.push(translation(0.0, 0.0, -slope * r.lead_out) * last * translation(-r.lead_out, 0.0, 0.0));
+        }
     }
     out
 }
@@ -289,18 +344,38 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
         return Err("A curved ramp needs an angle above zero.".into());
     }
     let tip = if r.style == Style::Thin { 0.0 } else { r.tip };
-    let line = slope_line(r.surf, r.width, r.height, tip);
+    let line = slope_line(r.surf, r.width, r.height, tip, r.ridge);
     let frames = frames(r);
     let closed = is_closed(r.shape, r.angle, r.rise);
     let steps = if closed { frames.len() } else { frames.len().saturating_sub(1) };
     let mut out = Vec::new();
     for s in 0..steps {
         let (a, b) = (frames[s], frames[(s + 1) % frames.len()]);
+        // Each piece gives up half the gap at every end it shares with another piece.
+        let half_gap = if r.gap > EPSILON { r.gap * 0.5 / a.translation.distance(b.translation).max(EPSILON) } else { 0.0 };
+        let u0 = if closed || s > 0 { half_gap } else { 0.0 };
+        let u1 = if closed || s + 1 < steps { 1.0 - half_gap } else { 1.0 };
+        if u0 >= u1 {
+            return Err("The gap is longer than a piece of the ramp; use fewer segments or a smaller gap.".into());
+        }
         for part in &parts {
-            let points = part.iter().flat_map(|p| [a.transform_point3(local(*p)), b.transform_point3(local(*p))]).collect();
+            let end = |u: f64| -> Vec<DVec3> { part.iter().map(|p| a.transform_point3(local(*p)).lerp(b.transform_point3(local(*p)), u)).collect() };
+            let (mut pa, mut pb) = (end(u0), end(u1));
+            // Sloped ends lean each point along the path by how far below the peak it sits.
+            if r.shape == Shape::Straight && r.end_slope.abs() > EPSILON {
+                let reach = |p: &DVec2| r.end_slope * (1.0 - p.y / r.height.max(EPSILON));
+                if s == 0 {
+                    pa.iter_mut().zip(part).for_each(|(q, p)| q.x += reach(p));
+                }
+                if s + 1 == steps {
+                    pb.iter_mut().zip(part).for_each(|(q, p)| q.x -= reach(p));
+                }
+            }
+            let points = pa.iter().zip(&pb).flat_map(|(x, y)| [*x, *y]).collect();
             let mut faces = Vec::new();
             for j in 0..part.len() {
-                let (p, q) = (part[j], part[(j + 1) % part.len()]);
+                let k = (j + 1) % part.len();
+                let (p, q) = (part[j], part[k]);
                 let slot = edge_slot(p, q, &line);
                 if slot == Slot::Side {
                     continue;
@@ -309,8 +384,8 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
                 let d = q - p;
                 let out = local(DVec2::new(d.y, -d.x));
                 let out = a.transform_vector3(out) + b.transform_vector3(out);
-                let [p0, p1] = [p, q].map(|v| a.transform_point3(local(v)));
-                let [q0, q1] = [p, q].map(|v| b.transform_point3(local(v)));
+                let [p0, p1] = [pa[j], pa[k]];
+                let [q0, q1] = [pb[j], pb[k]];
                 // A twisted face becomes two triangles in the brush; either diagonal may be used.
                 for (x, y, z) in [(p0, p1, q1), (p0, q1, q0), (p0, p1, q0), (p1, q1, q0)] {
                     let n = (y - x).cross(z - x).normalize_or_zero();
@@ -338,7 +413,8 @@ mod tests {
         let (n, slot) = pieces[0].faces.iter().find(|(_, s)| *s == Slot::Surf).copied().unwrap();
         assert_eq!(slot, Slot::Surf);
         assert!(n.z > 0.0 && n.y > 0.0, "a left surf faces up and to +Y: {n:?}");
-        assert!(slope_angle(r.width * 0.5, r.height, r.tip) > SURF_MIN_ANGLE);
+        let angle = slope_angle(r.width, r.height, r.tip);
+        assert!((angle - 51.34).abs() < 0.01, "the default face is the 5:4 slope: {angle}");
         assert!(pieces[0].points.iter().any(|p| (p.x + r.size).abs() < 1e-9));
     }
 
@@ -356,5 +432,55 @@ mod tests {
         let f = frames(&arc);
         assert!(f[4].translation.length() < 1e-9, "an arc is centered on its middle frame");
         assert!(build(&Ramp { width: 0.0, ..Ramp::default() }).is_err());
+    }
+
+    fn zs(pieces: &[Piece]) -> (f64, f64) {
+        pieces.iter().flat_map(|p| p.points.iter().map(|q| q.z)).fold((f64::MAX, f64::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)))
+    }
+
+    #[test]
+    fn drop_and_leads_extend_the_path() {
+        let r = Ramp { drop: 256.0, ..Ramp::default() };
+        let piece = &build(&r).unwrap()[0];
+        let far: Vec<f64> = piece.points.iter().filter(|p| (p.x + r.size).abs() < 1e-9).map(|p| p.z).collect();
+        assert!(far.iter().all(|z| *z <= r.height - 256.0 + 1e-9), "the far end sits lower: {far:?}");
+        let curve = Ramp { shape: Shape::Right, smoothness: 18, lead_in: 512.0, lead_out: 256.0, ..Ramp::default() };
+        let f = frames(&curve);
+        assert_eq!(f.len(), 21, "a lead adds a frame at each end");
+        assert!((f[0].translation.x - 512.0).abs() < 1e-9, "the lead in starts behind the curve");
+        assert_eq!(build(&curve).unwrap().len(), 20);
+    }
+
+    #[test]
+    fn ridges_troughs_and_gaps() {
+        let ridge = Ramp { surf: Surf::Both, ridge: 64.0, ..Ramp::default() };
+        let top: Vec<f64> = profile_parts(&ridge)[0].iter().filter(|p| (p.y - ridge.height).abs() < 1e-9).map(|p| p.x).collect();
+        assert_eq!(top.len(), 2, "a ridge flattens the peak");
+        assert!((top[0] - top[1]).abs() - 64.0 < 1e-9);
+
+        let trough = Ramp { surf: Surf::Inside, ridge: 128.0, ..Ramp::default() };
+        let pieces = build(&trough).unwrap();
+        assert_eq!(pieces.len(), 3, "two walls and the floor between them");
+        let surf: Vec<DVec3> = pieces.iter().flat_map(|p| p.faces.iter().filter(|(_, s)| *s == Slot::Surf).map(|(n, _)| *n)).collect();
+        assert!(surf.iter().any(|n| n.y > 0.1) && surf.iter().any(|n| n.y < -0.1), "the walls face each other");
+
+        let broken = Ramp { gap: 64.0, smoothness: 4, ..Ramp::default() };
+        let pieces = build(&broken).unwrap();
+        assert_eq!(pieces.len(), 4);
+        let ends: Vec<(f64, f64)> = pieces.iter().map(|p| p.points.iter().map(|q| q.x).fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(x), b.max(x)))).collect();
+        assert!((ends[0].0 - ends[1].1 - 64.0).abs() < 1e-9, "pieces stand a gap apart: {ends:?}");
+        assert!(build(&Ramp { gap: 4096.0, smoothness: 4, ..Ramp::default() }).is_err());
+    }
+
+    #[test]
+    fn sloped_ends_and_pyramids() {
+        let hip = Ramp { surf: Surf::Both, end_slope: 256.0, ..Ramp::default() };
+        let p = &build(&hip).unwrap()[0];
+        let at = |z: f64| p.points.iter().filter(|q| (q.z - z).abs() < 1e-9).map(|q| q.x).fold(f64::MIN, f64::max);
+        assert!((at(0.0) - 256.0).abs() < 1e-9, "the base reaches past the start");
+        assert!(at(hip.height).abs() < 1e-9, "the peak stays put");
+        let pyramid = Ramp { surf: Surf::Both, size: 0.0, end_slope: 512.0, ..Ramp::default() };
+        let (lo, hi) = zs(&build(&pyramid).unwrap());
+        assert_eq!((lo, hi), (0.0, pyramid.height));
     }
 }

@@ -42,9 +42,16 @@ Faces carry stable ids because Source overlays reference them.
 ## Prefabs
 
 A `Prefab` node names another `.mcmap` file, relative to the map that holds it, plus an origin, angles and key/value overrides.
-`engine::flatten_prefabs` makes a copy of the map with every instance expanded into a group of its contents, moved into place; the editor draws and picks that copy and maps hits back to the instance.
+`engine::flatten` makes a copy of the map with every instance expanded into a group of its contents, moved into place; the editor draws and picks that copy and maps hits back to the instance.
 Nested prefabs expand up to 16 levels and a prefab that contains itself is refused.
 Make Local runs the same expansion on the real map.
+
+## Mirror groups
+
+A group can carry a `Mirror` (an axis and the plane's position along it); its children are the edited half and the other half is derived from them (`map::mirror`).
+`map::mirror::expand` adds the derived nodes to a copy of the map and records which original each one copies; `engine::flatten` runs it before expanding prefabs, so the editor draws the mirrored half and a click on it reaches the original or its group.
+The `.mcmap` writer saves the derived half as children flagged `derived`, so importers need nothing new, and the reader drops them; validators check the expanded map.
+Moving a mirror group moves its plane; Make Mirror Real inserts the derived half into the map as ordinary nodes in one undo step.
 
 ## Plugins
 

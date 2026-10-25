@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use mapcraft_engine::pick_target;
 use mapcraft_geom::{Aabb, DMat4, DVec2, DVec3, snap};
-use mapcraft_map::{FaceId, NodeId, NodeKind};
+use mapcraft_map::{FaceId, Group, Mirror, NodeId, NodeKind};
 use mapcraft_render::{LineVertex, SELECTED_EDGE, box_lines};
 
 use crate::app::MapCraftApp;
@@ -405,6 +405,7 @@ impl MapCraftApp {
             out.extend(self.ghost_lines(at).into_iter().flat_map(|[a, b]| [LineVertex::new(a, PREVIEW), LineVertex::new(b, PREVIEW)]));
         }
         self.link_lines(&mut out);
+        self.mirror_lines(&mut out);
         for c in self.session.map.cordons.iter().filter(|c| c.active) {
             box_lines(&mut out, c.bounds.min, c.bounds.max, [0.3, 0.6, 1.0, 1.0]);
         }
@@ -420,6 +421,34 @@ impl MapCraftApp {
             box_lines(&mut out, b.min, b.max, [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], 0.35]);
         }
         out
+    }
+
+    /// The plane of each mirror group that is selected or holds the selection, outlined across the group.
+    fn mirror_lines(&self, out: &mut Vec<LineVertex>) {
+        let map = &self.session.map;
+        let mut mirrors: BTreeMap<NodeId, Mirror> = BTreeMap::new();
+        for id in &self.session.selection {
+            for a in std::iter::once(*id).chain(map.ancestors(*id)) {
+                if let Some(NodeKind::Group(Group { mirror: Some(m), .. })) = map.get(a).map(|n| &n.kind) {
+                    mirrors.insert(a, *m);
+                }
+            }
+        }
+        let color = egui::Rgba::from(crate::chrome::MIRROR).to_array();
+        for (g, m) in mirrors {
+            let Some(b) = self.node_bounds(g).map(|b| b.expanded(32.0)) else { continue };
+            let (i, j, k) = (m.axis.index(), (m.axis.index() + 1) % 3, (m.axis.index() + 2) % 3);
+            let corner = |u: f64, v: f64| {
+                let mut p = DVec3::ZERO;
+                (p[i], p[j], p[k]) = (m.offset, u, v);
+                p
+            };
+            let c = [corner(b.min[j], b.min[k]), corner(b.max[j], b.min[k]), corner(b.max[j], b.max[k]), corner(b.min[j], b.max[k])];
+            for (a, b) in c.iter().zip(c.iter().cycle().skip(1)) {
+                out.push(LineVertex::new(*a, color));
+                out.push(LineVertex::new(*b, color));
+            }
+        }
     }
 
     /// Lines from selected entities to the entities their keys and outputs name.

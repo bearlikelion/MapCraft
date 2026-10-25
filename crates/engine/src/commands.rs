@@ -125,6 +125,17 @@ const COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec {
+        id: "tools.zone_from_selection",
+        label: "Zone from Selection",
+        menu: "Tools/Zone from Selection",
+        shortcut: None,
+        enabled: has_selection,
+        run: |s| {
+            let class = s.default_solid_entity.clone();
+            s.zone_from_selection(&class, 256.0).map(|_| ())
+        },
+    },
+    CommandSpec {
         id: "tools.snap_to_grid",
         label: "Snap Selection to Grid",
         menu: "Tools/Snap Selection to Grid",
@@ -147,6 +158,22 @@ const COMMANDS: &[CommandSpec] = &[
         shortcut: Some("Ctrl+U"),
         enabled: has_selection,
         run: Session::ungroup_selection,
+    },
+    CommandSpec {
+        id: "tools.mirror",
+        label: "Make Mirror Group",
+        menu: "Tools/Make Mirror Group",
+        shortcut: Some("Ctrl+Shift+M"),
+        enabled: has_selection,
+        run: |s| s.make_mirror_group().map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.mirror_make_real",
+        label: "Make Mirror Real",
+        menu: "Tools/Make Mirror Real",
+        shortcut: None,
+        enabled: |s| s.selection.iter().any(|id| mapcraft_map::mirror::is_mirror_group(&s.map, *id)),
+        run: Session::make_mirror_real,
     },
     CommandSpec {
         id: "tools.tie_to_entity",

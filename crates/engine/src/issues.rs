@@ -34,8 +34,10 @@ pub enum Fix {
 /// Keys that name another entity when no FGD says otherwise.
 const LINK_KEYS: &[&str] = &["target", "parentname", "filtername", "landmark"];
 
-/// Problems that make a map fail to compile or play; FGD checks run when `game` is given.
+/// Problems that make a map fail to compile or play, mirror halves included; FGD checks run when `game` is given.
 pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
+    let (map, derived) = mapcraft_map::mirror::expand(map);
+    let map = &map;
     let mut out = Vec::new();
     let mut push = |node, face, severity, message: String, fix| out.push(Issue { node, face, severity, message, fix });
     let names: BTreeSet<&str> = map.nodes().filter_map(|(_, n)| n.kind.entity()?.get("targetname")).filter(|s| !s.is_empty()).collect();
@@ -105,6 +107,8 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
             _ => {}
         }
     }
+    // A derived node's problems are its original's, already reported.
+    out.retain(|i| !derived.contains_key(&i.node));
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.node.cmp(&b.node)));
     out
 }

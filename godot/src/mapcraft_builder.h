@@ -14,6 +14,8 @@ struct MapCraftBuildOptions {
 	String material_root = "res://Assets/Textures";
 	Ref<MapCraftEntityMap> entity_map;
 	bool collision = true;
+	// World brushes collide as one triangle mesh, so seams between ramp pieces cannot catch players.
+	bool trimesh_collision = false;
 	bool own_nodes = true;
 	String source_path;
 	std::function<void(Node *, const String &, const Dictionary &)> on_entity;

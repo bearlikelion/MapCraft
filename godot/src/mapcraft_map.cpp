@@ -18,6 +18,8 @@ void MapCraftMap::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_material_root"), &MapCraftMap::get_material_root);
 	ClassDB::bind_method(D_METHOD("set_collision", "enabled"), &MapCraftMap::set_collision);
 	ClassDB::bind_method(D_METHOD("get_collision"), &MapCraftMap::get_collision);
+	ClassDB::bind_method(D_METHOD("set_trimesh_collision", "enabled"), &MapCraftMap::set_trimesh_collision);
+	ClassDB::bind_method(D_METHOD("get_trimesh_collision"), &MapCraftMap::get_trimesh_collision);
 	ClassDB::bind_method(D_METHOD("set_build_on_ready", "enabled"), &MapCraftMap::set_build_on_ready);
 	ClassDB::bind_method(D_METHOD("get_build_on_ready"), &MapCraftMap::get_build_on_ready);
 	ClassDB::bind_method(D_METHOD("build"), &MapCraftMap::build);
@@ -28,6 +30,7 @@ void MapCraftMap::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "units_per_meter", PROPERTY_HINT_RANGE, "1,1000,0.01"), "set_units_per_meter", "get_units_per_meter");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "material_root", PROPERTY_HINT_DIR), "set_material_root", "get_material_root");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision"), "set_collision", "get_collision");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "trimesh_collision"), "set_trimesh_collision", "get_trimesh_collision");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "build_on_ready"), "set_build_on_ready", "get_build_on_ready");
 
 	ADD_SIGNAL(MethodInfo("entity_built", PropertyInfo(Variant::OBJECT, "node", PROPERTY_HINT_RESOURCE_TYPE, "Node"),
@@ -80,6 +83,14 @@ bool MapCraftMap::get_collision() const {
 	return collision;
 }
 
+void MapCraftMap::set_trimesh_collision(bool p_enabled) {
+	trimesh_collision = p_enabled;
+}
+
+bool MapCraftMap::get_trimesh_collision() const {
+	return trimesh_collision;
+}
+
 void MapCraftMap::set_build_on_ready(bool p_enabled) {
 	build_on_ready = p_enabled;
 }
@@ -103,6 +114,7 @@ Error MapCraftMap::build() {
 	options.material_root = material_root;
 	options.entity_map = entity_map;
 	options.collision = collision;
+	options.trimesh_collision = trimesh_collision;
 	options.own_nodes = false;
 	options.on_entity = [this](Node *p_node, const String &p_classname, const Dictionary &p_properties) {
 		emit_signal("entity_built", p_node, p_classname, p_properties);

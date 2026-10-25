@@ -311,3 +311,43 @@ fn displacements_sculpt_in_the_3d_view() {
     let b = s.map.get(id).unwrap().kind.brush().unwrap().clone();
     assert!(b.displaced(&b.solid().unwrap()).into_iter().flat_map(|(_, v)| v).all(|p| p.z.abs() < 1e-9), "one undo takes back the stroke");
 }
+
+fn click(h: &mut Harness<MapCraftApp>, at: Pos2) {
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+}
+
+#[test]
+fn mirror_groups_show_and_pick_their_copies() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let original = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(-128.0, 0.0, 0.0), DVec3::new(0.0, 64.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tools.mirror");
+    h.run_steps(2);
+    let group = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    assert_ne!(group, original);
+
+    let top = 1;
+    h.state_mut().run_command_for_test("edit.select_none");
+    let copy = h.state().screen_for_test(top, DVec3::new(64.0, 32.0, 0.0));
+    click(&mut h, copy);
+    assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([group]), "clicking the copy selects its mirror group");
+    h.get_by_label("Make real");
+
+    h.state_mut().run_command_for_test("edit.select_solids");
+    click(&mut h, copy);
+    assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([original]), "with Solids it selects the brush it copies");
+
+    h.state_mut().session_for_test().selection = std::collections::BTreeSet::from([group]);
+    h.run_steps(2);
+    h.get_by_label("Make real").click();
+    h.run_steps(2);
+    assert_eq!(h.state().node_count_for_test(), 4, "making it real adds the copy to the map");
+    let s = h.state_mut().session_for_test();
+    let xs: Vec<f64> = s.map.nodes().filter_map(|(_, n)| n.kind.brush()?.bounds().ok()).map(|b| b.min.x).collect();
+    assert!(xs.contains(&0.0), "the copy lands across the plane at x = 0: {xs:?}");
+}

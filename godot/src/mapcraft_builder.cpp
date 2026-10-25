@@ -134,6 +134,7 @@ class Builder {
 	HashMap<String, Vector2> sizes;
 	Surfaces world_surfaces;
 	Vector<Shape> world_hulls;
+	PackedVector3Array world_triangles;
 	int brush_count = 0;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
@@ -153,7 +154,7 @@ class Builder {
 	}
 
 	Ref<Material> material(const String &p_name, Vector2 &r_size);
-	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls);
+	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
 	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
 	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_name);
 	void walk(const Dictionary &p_node, int p_depth);
@@ -275,7 +276,8 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 	}
 }
 
-bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls) {
+bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world) {
+	const bool trimesh = p_world && options.trimesh_collision;
 	Array faces = p_brush.get("faces", Array());
 	bool displaced = false;
 	for (int i = 0; i < faces.size(); i++) {
@@ -321,6 +323,11 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			points.push_back(to_godot(p));
 		}
 		hull.append_array(points);
+		for (int k = 1; trimesh && k + 1 < points.size(); k++) {
+			triangles.push_back(points[0]);
+			triangles.push_back(points[k + 1]);
+			triangles.push_back(points[k]);
+		}
 		String name = face.get("material", "");
 		// Hammer's tools/ materials (nodraw, clip, trigger) collide but are never drawn.
 		if (p_surfaces == nullptr || name.to_lower().begins_with("tools/")) {
@@ -355,6 +362,10 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			vertex(k + 1);
 			vertex(k);
 		}
+	}
+	if (trimesh) {
+		world_triangles.append_array(triangles);
+		return true;
 	}
 	if (p_hulls != nullptr && hull.size() >= 4) {
 		p_hulls->push_back(Shape{ hull, false });
@@ -416,7 +427,7 @@ void Builder::walk(const Dictionary &p_node, int p_depth) {
 	}
 	String type = p_node.get("type", "");
 	if (type == "brush") {
-		add_brush(p_node, &world_surfaces, &world_hulls);
+		add_brush(p_node, &world_surfaces, &world_hulls, true);
 		return;
 	}
 	if (type == "entity") {
@@ -460,7 +471,7 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	}
 	if (kind == "world") {
 		for (int i = 0; i < brushes.size(); i++) {
-			add_brush(brushes[i], &world_surfaces, &world_hulls);
+			add_brush(brushes[i], &world_surfaces, &world_hulls, true);
 		}
 		return;
 	}
@@ -599,6 +610,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		MeshInstance3D *mesh = make_mesh(world_surfaces, Vector3());
 		mesh->set_name("WorldMesh");
 		add(root, mesh, false);
+	}
+	if (!world_triangles.is_empty()) {
+		world_hulls.push_back(Shape{ world_triangles, true });
 	}
 	if (options.collision && !world_hulls.is_empty()) {
 		StaticBody3D *body = memnew(StaticBody3D);

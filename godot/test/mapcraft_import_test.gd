@@ -110,6 +110,18 @@ func _check_runtime_build() -> void:
 	_expect(_entities_built == 7, "entity_built fires once per entity")
 	map.free()
 
+	var solid: MapCraftMap = MapCraftMap.new()
+	solid.map_file = MAP
+	solid.trimesh_collision = true
+	_expect(solid.build() == OK, "MapCraftMap builds with trimesh collision")
+	var body: StaticBody3D = solid.get_node_or_null("WorldCollision") as StaticBody3D
+	var holder: CollisionShape3D = null
+	if body != null and body.get_child_count() == 1:
+		holder = body.get_child(0) as CollisionShape3D
+	var trimesh: bool = holder != null and holder.shape is ConcavePolygonShape3D
+	_expect(trimesh, "trimesh collision makes the world one triangle mesh")
+	solid.free()
+
 
 func _check_pack(args: PackedStringArray) -> void:
 	if args.is_empty():

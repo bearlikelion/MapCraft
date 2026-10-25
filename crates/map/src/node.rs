@@ -86,6 +86,9 @@ pub struct Group {
     /// When set, the children are produced by a plugin command and rebuilt when the params change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<Generator>,
+    /// When set, the children are copied across this plane; see [`crate::mirror`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<crate::Mirror>,
 }
 
 /// A plugin command whose output fills a group, placed by `origin` and `angles` (pitch, yaw,

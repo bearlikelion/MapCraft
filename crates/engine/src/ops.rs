@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3};
-use mapcraft_map::{Brush, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT};
+use mapcraft_map::{Brush, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
 
 use crate::{EngineError, Session};
 
@@ -64,10 +64,20 @@ pub(crate) fn moved_placement(m: &DMat4, origin: DVec3, mut angles: DVec3) -> (D
     (m.transform_point3(origin), angles)
 }
 
-/// A brush, point entity or prefab moved by `m`; `None` for kinds placed by their children.
+/// A group's generator placement and mirror plane moved by `m`, so they stay with its children.
+fn moved_group(mut g: Group, m: &DMat4) -> Group {
+    if let Some(generator) = &mut g.generator {
+        (generator.origin, generator.angles) = moved_placement(m, generator.origin, generator.angles);
+    }
+    g.mirror = g.mirror.map(|mirror| mirror.transformed(m));
+    g
+}
+
+/// A brush, point entity, prefab or group placement moved by `m`; `None` for kinds placed by their children.
 pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool) -> Result<Option<NodeKind>, EngineError> {
     Ok(Some(match kind {
         NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, lock)?),
+        NodeKind::Group(g) => NodeKind::Group(moved_group(g, m)),
         NodeKind::Entity(mut ent) if point => {
             let origin = ent.origin().unwrap_or_default();
             ent.set("origin", fmt_vec(m.transform_point3(origin)));
@@ -176,10 +186,15 @@ impl Session {
         Ok(ids)
     }
 
-    /// Bounds of the selection, with point entities counted as their origin.
+    /// Center of the selection's bounds, with point entities counted as their origin.
     pub fn selection_center(&self) -> Option<DVec3> {
+        self.bounds_of(self.selection.iter().copied()).map(|b| b.center())
+    }
+
+    /// Bounds of `roots` and everything inside them, with point entities counted as their origin.
+    pub(crate) fn bounds_of(&self, roots: impl IntoIterator<Item = NodeId>) -> Option<Aabb> {
         let mut pts = Vec::new();
-        for id in self.selected_leaves() {
+        for id in self.leaves_of(roots) {
             match self.map.get(id).map(|n| &n.kind) {
                 Some(NodeKind::Brush(b)) => {
                     if let Ok(bb) = b.bounds() {
@@ -191,7 +206,7 @@ impl Session {
                 _ => {}
             }
         }
-        Aabb::from_points(pts).map(|b| b.center())
+        Aabb::from_points(pts)
     }
 
     /// Rotates the selection about an axis through its center.
@@ -411,13 +426,12 @@ impl Session {
                 e.set_kind(id, new)?;
             }
         }
-        // Generator groups keep their placement in step so running them again lands here.
         let groups: BTreeSet<NodeId> = roots.iter().flat_map(|id| self.map.subtree(*id)).collect();
         for id in groups {
-            let Some(NodeKind::Group(mut g)) = e.node(id).map(|n| n.kind.clone()) else { continue };
-            if let Some(generator) = &mut g.generator {
-                (generator.origin, generator.angles) = moved_placement(m, generator.origin, generator.angles);
-                e.set_kind(id, NodeKind::Group(g))?;
+            let Some(NodeKind::Group(g)) = e.node(id).map(|n| n.kind.clone()) else { continue };
+            let moved = moved_group(g.clone(), m);
+            if moved != g {
+                e.set_kind(id, NodeKind::Group(moved))?;
             }
         }
         Ok(())
@@ -477,6 +491,7 @@ impl Session {
                         p.origin += delta;
                         NodeKind::Prefab(p)
                     }
+                    NodeKind::Group(g) => NodeKind::Group(moved_group(g, &DMat4::from_translation(delta))),
                     other => other,
                 };
                 let id = e.insert(dst_parent, kind)?;
@@ -573,15 +588,20 @@ impl Session {
     }
 
     pub fn group_selection(&mut self) -> Result<NodeId, EngineError> {
+        self.wrap_selection(Group { name: "Group".into(), ..Group::default() }, "Group")
+    }
+
+    /// Moves the selection into a new group and selects it.
+    pub(crate) fn wrap_selection(&mut self, group: Group, label: &str) -> Result<NodeId, EngineError> {
         let ids = self.require_selection()?;
         let parent = ids.first().and_then(|id| self.map.get(*id)?.parent).ok_or(EngineError::NothingSelected)?;
         let mut e = self.map.edit();
-        let group = e.insert(parent, NodeKind::Group(Group { name: "Group".into(), generator: None }))?;
+        let group = e.insert(parent, NodeKind::Group(group))?;
         for id in ids {
             e.reparent(id, group, None)?;
         }
         let c = e.finish();
-        self.apply("Group", c);
+        self.apply(label, c);
         self.selection = BTreeSet::from([group]);
         Ok(group)
     }
@@ -621,6 +641,29 @@ impl Session {
         }
         let c = e.finish();
         self.apply("Tie to entity", c);
+        self.selection = BTreeSet::from([ent]);
+        Ok(ent)
+    }
+
+    /// A `tools/trigger` brush entity of `classname` standing on the selected brushes, `height`
+    /// tall: a zone fitted to a platform.
+    pub fn zone_from_selection(&mut self, classname: &str, height: f64) -> Result<NodeId, EngineError> {
+        if classname == "func_detail" {
+            return Err(EngineError::Refused("pick a trigger class such as zone_start in the Entities tab first"));
+        }
+        let b = self
+            .selected_brushes()
+            .iter()
+            .filter_map(|id| self.map.get(*id)?.kind.brush()?.bounds().ok())
+            .reduce(|a, b| a.union(&b))
+            .ok_or(EngineError::NothingSelected)?;
+        let zone = Aabb::new(DVec3::new(b.min.x, b.min.y, b.max.z), DVec3::new(b.max.x, b.max.y, b.max.z + height));
+        let tex = TexDefaults { material: "tools/trigger".into(), scale: self.tex.scale };
+        let mut e = self.map.edit();
+        let ent = e.insert(self.active_parent, NodeKind::Entity(Entity::new(classname)))?;
+        e.insert(ent, NodeKind::Brush(Brush::cuboid(zone, &tex)))?;
+        let c = e.finish();
+        self.apply(&format!("Zone {classname}"), c);
         self.selection = BTreeSet::from([ent]);
         Ok(ent)
     }
@@ -768,6 +811,20 @@ mod tests {
         s.apply_material().unwrap();
         let mats: Vec<String> = s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| f.material.clone()).collect();
         assert_eq!(mats.iter().filter(|m| *m == "ramps/orange").count(), 1, "only the picked face changes: {mats:?}");
+    }
+
+    #[test]
+    fn zones_stand_on_the_selected_platform() {
+        let mut s = session();
+        let platform = s.create_brush(Aabb::new(DVec3::new(0.0, 0.0, -32.0), DVec3::new(512.0, 256.0, 0.0))).unwrap();
+        s.selection = BTreeSet::from([platform]);
+        assert!(s.zone_from_selection("func_detail", 256.0).is_err(), "the default class is not a zone");
+        let zone = s.zone_from_selection("zone_start", 256.0).unwrap();
+        let node = s.map.get(zone).unwrap();
+        assert_eq!(node.kind.entity().unwrap().classname, "zone_start");
+        let b = s.map.get(node.children[0]).unwrap().kind.brush().unwrap();
+        assert_eq!(b.bounds().unwrap(), Aabb::new(DVec3::ZERO, DVec3::new(512.0, 256.0, 256.0)));
+        assert!(b.faces.iter().all(|f| f.material == "tools/trigger"));
     }
 
     #[test]

@@ -38,7 +38,7 @@ impl Session {
     pub fn create_generator(&mut self, name: &str, generator: Generator, frags: Vec<Fragment>) -> Result<NodeId, EngineError> {
         let m = generator_transform(&generator);
         let mut e = self.map.edit();
-        let group = e.insert(self.active_parent, NodeKind::Group(Group { name: name.into(), generator: Some(generator) }))?;
+        let group = e.insert(self.active_parent, NodeKind::Group(Group { name: name.into(), generator: Some(generator), mirror: None }))?;
         insert_fragments(&mut e, group, frags, &m, true)?;
         let c = e.finish();
         self.apply(&format!("Create {name}"), c);

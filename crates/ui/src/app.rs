@@ -104,7 +104,7 @@ pub struct MapCraftApp {
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
     pub(crate) clip_view_axis: Option<DVec3>,
     pub(crate) cursor_world: Option<DVec3>,
-    /// The map with prefab instances expanded, and which instance each expanded node belongs to.
+    /// The map with prefab instances and mirror halves expanded, and the real node each added node belongs to.
     pub(crate) display: Option<(Map, BTreeMap<NodeId, NodeId>)>,
     pub(crate) prefab_cache: HashMap<String, Option<Map>>,
     pub(crate) dialogs: Dialogs,
@@ -415,19 +415,20 @@ impl MapCraftApp {
     }
 
     fn update_display(&mut self) {
-        if !self.session.map.nodes().any(|(_, n)| matches!(n.kind, NodeKind::Prefab(_))) {
+        let derived = |n: &mapcraft_map::Node| matches!(&n.kind, NodeKind::Prefab(_) | NodeKind::Group(mapcraft_map::Group { mirror: Some(_), .. }));
+        if !self.session.map.nodes().any(|(_, n)| derived(n)) {
             self.display = None;
             return;
         }
         let doc = self.session.path.clone();
-        let (flat, owner, problems) = mapcraft_engine::flatten_prefabs(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc));
+        let (flat, owner, problems) = mapcraft_engine::flatten(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc));
         if let Some(p) = problems.first() {
             self.status = p.clone();
         }
         self.display = Some((flat, owner));
     }
 
-    /// The map as drawn and picked: prefab instances expanded.
+    /// The map as drawn and picked: prefab instances and mirror halves expanded.
     pub(crate) fn view_map(&self) -> &Map {
         self.display.as_ref().map_or(&self.session.map, |(m, _)| m)
     }

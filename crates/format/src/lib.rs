@@ -2,11 +2,11 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Cordon, Extra, Map, Node, NodeId, NodeKind, ROOT, Tag, TagId};
+use mapcraft_map::{Cordon, Extra, FaceId, Map, Node, NodeId, NodeKind, ROOT, Tag, TagId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -59,6 +59,9 @@ struct FileNode {
     locked: bool,
     #[serde(default, skip_serializing_if = "Extra::is_empty")]
     extra: Extra,
+    /// A mirror group's copy, written for importers and rebuilt by MapCraft instead of read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    derived: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     children: Vec<FileNode>,
 }
@@ -93,9 +96,33 @@ fn tidy(v: DVec3) -> [f64; 3] {
     })
 }
 
-fn node_value(map: &Map, id: NodeId) -> Result<Value, FormatError> {
+/// Nodes written as `derived`, with ids numbered after the map's own so saves are stable.
+#[derive(Default)]
+struct Derived {
+    nodes: BTreeSet<NodeId>,
+    next_node: u64,
+    next_face: u64,
+}
+
+fn node_value(map: &Map, id: NodeId, derived: &mut Derived) -> Result<Value, FormatError> {
     let node = map.get(id).ok_or(mapcraft_map::EditError::Missing(id))?;
-    let mut v = serde_json::to_value(FileNodeRef { id, kind: &node.kind, tags: &node.tags, hidden: node.hidden, locked: node.locked, extra: &node.extra })?;
+    let is_derived = derived.nodes.contains(&id);
+    let mut kind = std::borrow::Cow::Borrowed(&node.kind);
+    let mut file_id = id;
+    if is_derived {
+        file_id = NodeId(derived.next_node);
+        derived.next_node = derived.next_node.saturating_add(1);
+        if let NodeKind::Brush(b) = kind.to_mut() {
+            for f in &mut b.faces {
+                f.id = FaceId(derived.next_face);
+                derived.next_face = derived.next_face.saturating_add(1);
+            }
+        }
+    }
+    let mut v = serde_json::to_value(FileNodeRef { id: file_id, kind: &kind, tags: &node.tags, hidden: node.hidden, locked: node.locked, extra: &node.extra })?;
+    if let (true, Some(obj)) = (is_derived, v.as_object_mut()) {
+        obj.insert("derived".into(), Value::Bool(true));
+    }
     if let (NodeKind::Brush(b), Some(faces)) = (&node.kind, v.get_mut("faces").and_then(Value::as_array_mut)) {
         // Engine importers read these polygons so they need no brush kernel; invalid brushes get none.
         if let Ok(solid) = b.solid() {
@@ -110,7 +137,7 @@ fn node_value(map: &Map, id: NodeId) -> Result<Value, FormatError> {
             }
         }
     }
-    let children = node.children.iter().map(|c| node_value(map, *c)).collect::<Result<Vec<_>, _>>()?;
+    let children = node.children.iter().map(|c| node_value(map, *c, derived)).collect::<Result<Vec<_>, _>>()?;
     if let (false, Some(obj)) = (children.is_empty(), v.as_object_mut()) {
         obj.insert("children".into(), Value::Array(children));
     }
@@ -133,7 +160,13 @@ struct FileNodeRef<'a> {
 }
 
 pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, FormatError> {
-    let mut doc_map = json!({ "root": node_value(map, ROOT)? });
+    let (full, owner) = mapcraft_map::mirror::expand(map);
+    let mut derived = Derived {
+        nodes: owner.into_keys().collect(),
+        next_node: map.nodes().map(|(id, _)| id.0).max().unwrap_or(0).saturating_add(1),
+        next_face: map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).map(|f| f.id.0).max().unwrap_or(0).saturating_add(1),
+    };
+    let mut doc_map = json!({ "root": node_value(&full, ROOT, &mut derived)? });
     if let Some(obj) = doc_map.as_object_mut() {
         if !map.tags.is_empty() {
             obj.insert("tags".into(), serde_json::to_value(&map.tags)?);
@@ -252,12 +285,13 @@ pub fn from_str(text: &str) -> Result<MapFile, FormatError> {
     let mut stack = vec![(env.map.root, None)];
     while let Some((f, parent)) = stack.pop() {
         let id = f.id;
-        let children: Vec<NodeId> = f.children.iter().map(|c| c.id).collect();
+        let kept: Vec<FileNode> = f.children.into_iter().filter(|c| !c.derived).collect();
+        let children: Vec<NodeId> = kept.iter().map(|c| c.id).collect();
         let node = Node { parent, children, kind: f.kind, tags: f.tags, hidden: f.hidden, locked: f.locked, extra: f.extra };
         if nodes.insert(id, node).is_some() {
             return Err(FormatError::DuplicateId(id.0));
         }
-        stack.extend(f.children.into_iter().map(|c| (c, Some(id))));
+        stack.extend(kept.into_iter().map(|c| (c, Some(id))));
     }
     let mut map = Map::from_nodes(nodes, env.map.tags, env.map.extra)?;
     map.cordons = env.map.cordons;
@@ -275,7 +309,7 @@ pub struct Fragment {
 
 /// The subtrees under `roots` as clipboard text.
 pub fn fragment_to_string(map: &Map, roots: &[NodeId]) -> Result<String, FormatError> {
-    let nodes = roots.iter().map(|id| node_value(map, *id)).collect::<Result<Vec<_>, _>>()?;
+    let nodes = roots.iter().map(|id| node_value(map, *id, &mut Derived::default())).collect::<Result<Vec<_>, _>>()?;
     let mut out = String::new();
     write_value(&json!({ "format": CLIPBOARD_FORMAT, "nodes": nodes }), 0, &mut out);
     Ok(out)
@@ -288,7 +322,7 @@ pub fn fragment_from_str(text: &str) -> Result<Vec<Fragment>, FormatError> {
         nodes: Vec<FileNode>,
     }
     fn convert(f: FileNode) -> Fragment {
-        Fragment { kind: f.kind, children: f.children.into_iter().map(convert).collect() }
+        Fragment { kind: f.kind, children: f.children.into_iter().filter(|c| !c.derived).map(convert).collect() }
     }
     let clip: Clip = serde_json::from_str(text)?;
     if clip.format != CLIPBOARD_FORMAT {
@@ -332,7 +366,7 @@ mod tests {
         });
         let z = e.insert(ROOT, NodeKind::Entity(zone)).unwrap();
         e.insert(z, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::splat(100.0), DVec3::splat(164.0)), &tex))).unwrap();
-        e.insert(ROOT, NodeKind::Group(Group { name: "Pillars".into(), generator: None })).unwrap();
+        e.insert(ROOT, NodeKind::Group(Group { name: "Pillars".into(), ..Group::default() })).unwrap();
         e.insert(ROOT, NodeKind::Prefab(Prefab { path: "prefabs/start.mcmap".into(), origin: DVec3::new(0.0, 0.0, 128.0), ..Prefab::default() })).unwrap();
         map.apply(e.finish());
         map.cordons.push(Cordon { name: "Start".into(), bounds: Aabb::new(DVec3::ZERO, DVec3::splat(512.0)), active: true });
@@ -385,6 +419,32 @@ mod tests {
         assert_eq!(frags[0].children.len(), 1);
         assert!(fragment_from_str("{\"format\":\"other\",\"nodes\":[]}").is_err());
         assert!(fragment_from_str("garbage").is_err());
+    }
+
+    #[test]
+    fn mirror_halves_are_written_but_not_read() {
+        let mut file = sample();
+        let mut e = file.map.edit();
+        let mirror = mapcraft_map::Mirror { axis: mapcraft_map::Axis::X, offset: 0.0, texture_lock: true };
+        let g = e.insert(ROOT, NodeKind::Group(Group { name: "Half".into(), mirror: Some(mirror), ..Group::default() })).unwrap();
+        e.insert(g, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-64.0, 0.0, 0.0), DVec3::new(0.0, 64.0, 64.0)), &TexDefaults::default()))).unwrap();
+        file.map.apply(e.finish());
+        let text = file.to_string().unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let half = v["map"]["root"]["children"].as_array().unwrap().last().unwrap();
+        let kids = half["children"].as_array().unwrap();
+        assert_eq!(kids.len(), 2);
+        assert_eq!(kids[1]["derived"], true);
+        let xs: Vec<f64> =
+            kids[1]["faces"].as_array().unwrap().iter().flat_map(|f| f["polygon"].as_array().unwrap().iter().map(|p| p[0].as_f64().unwrap())).collect();
+        assert_eq!(
+            (xs.iter().copied().fold(f64::MAX, f64::min), xs.iter().copied().fold(f64::MIN, f64::max)),
+            (0.0, 64.0),
+            "importers get the mirrored polygons"
+        );
+        let back = from_str(&text).unwrap();
+        assert_eq!(back, file, "the copy is dropped on read");
+        assert_eq!(back.to_string().unwrap(), text);
     }
 
     #[test]

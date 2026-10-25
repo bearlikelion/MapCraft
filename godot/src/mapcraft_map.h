@@ -15,6 +15,7 @@ class MapCraftMap : public Node3D {
 	double units_per_meter = 39.37;
 	String material_root = "res://Assets/Textures";
 	bool collision = true;
+	bool trimesh_collision = false;
 	bool build_on_ready = true;
 
 protected:
@@ -32,6 +33,8 @@ public:
 	String get_material_root() const;
 	void set_collision(bool p_enabled);
 	bool get_collision() const;
+	void set_trimesh_collision(bool p_enabled);
+	bool get_trimesh_collision() const;
 	void set_build_on_ready(bool p_enabled);
 	bool get_build_on_ready() const;
 

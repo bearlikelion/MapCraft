@@ -1,5 +1,4 @@
-//! Reads Valve BSP files (versions 19 to 21) into MapCraft brushes and entities.
-//! Brushes are rebuilt from their planes, since a BSP keeps no editable geometry.
+//! Reads Valve BSP files (versions 19 to 21) into entities and brushes rebuilt from their planes.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -32,6 +31,8 @@ const MAX_SIDES: usize = 2048;
 /// Faces thinner than this come from planes that only touch the brush at an edge or corner.
 const MIN_WIDTH: f64 = 0.01;
 const CLIP_EPSILON: f64 = 1e-6;
+/// Source coordinates stay within 16384, so a face reaching this far belongs to an open brush.
+const OPEN: f64 = 32768.0;
 
 /// What an import produced, with counts for the log.
 pub struct Import {
@@ -128,6 +129,11 @@ impl<'a> Bsp<'a> {
 
     fn lump_version(&self, id: usize) -> i32 {
         self.lumps.get(id).map_or(0, |l| l[2])
+    }
+
+    /// The lump's size once uncompressed, read from the header alone.
+    fn lump_size(&self, id: usize) -> usize {
+        self.lumps.get(id).and_then(|l| usize::try_from(if l[3] > 0 { l[3] } else { l[1] }).ok()).unwrap_or(0)
     }
 }
 
@@ -270,23 +276,30 @@ struct Map {
 }
 
 impl Map {
-    /// The brush in map space; `None` when it has fewer than four faces left.
+    /// The brush in map space; `None` when it has fewer than four faces left or is open.
     fn brush(&self, index: usize, rotation: DMat3, origin: DVec3) -> Option<Brush> {
         let &(first, count) = self.brushes.get(index)?;
         if count > MAX_SIDES {
             return None;
         }
-        let mut planes = Vec::with_capacity(count);
-        let mut sides: Vec<(usize, i16)> = Vec::with_capacity(count);
-        for &(plane, texinfo, bevel) in self.sides.get(first..first.checked_add(count)?)? {
-            if bevel || sides.iter().any(|s| s.0 == plane) {
-                continue;
-            }
-            let Some(&p) = self.planes.get(plane) else { continue };
-            planes.push(p);
-            sides.push((plane, texinfo));
-        }
-        let faces: Vec<Face> = windings(&planes)
+        let all = self.sides.get(first..first.checked_add(count)?)?;
+        // A bevel now and then stands in for a real face, so bevels come back when the brush is open without them.
+        let (planes, sides, polygons) = [false, true]
+            .into_iter()
+            .map(|bevels| {
+                let mut planes = Vec::with_capacity(count);
+                let mut sides: Vec<(usize, i16)> = Vec::with_capacity(count);
+                for &(plane, texinfo, bevel) in all {
+                    if let Some(&p) = self.planes.get(plane).filter(|_| (bevels || !bevel) && !sides.iter().any(|s| s.0 == plane)) {
+                        planes.push(p);
+                        sides.push((plane, texinfo));
+                    }
+                }
+                let w = windings(&planes);
+                (planes, sides, w)
+            })
+            .find(|(_, _, w)| w.iter().flatten().all(|p| p.abs().max_element() < OPEN))?;
+        let faces: Vec<Face> = polygons
             .iter()
             .zip(&planes)
             .zip(&sides)
@@ -307,11 +320,11 @@ impl Map {
 
 /// The model each brush belongs to, found by walking every model's node tree down to its leaves.
 fn owners(bsp: &Bsp, brushes: usize) -> Result<(Vec<Option<usize>>, usize), String> {
-    let nodes: Vec<[i32; 2]> = bsp.lump(NODES)?.chunks_exact(32).map(|r| [i32_at(r, 4), i32_at(r, 8)]).collect();
+    let nodes: Vec<[i32; 2]> = bsp.lump(NODES)?.as_chunks::<32>().0.iter().map(|r| [i32_at(r, 4), i32_at(r, 8)]).collect();
     let stride = if bsp.lump_version(LEAFS) == 0 { 56 } else { 32 };
     let leafs: Vec<(usize, usize)> = bsp.lump(LEAFS)?.chunks_exact(stride).map(|r| (usize::from(u16_at(r, 24)), usize::from(u16_at(r, 26)))).collect();
-    let leafbrushes: Vec<usize> = bsp.lump(LEAFBRUSHES)?.chunks_exact(2).map(|r| usize::from(u16_at(r, 0))).collect();
-    let heads: Vec<i32> = bsp.lump(MODELS)?.chunks_exact(48).map(|r| i32_at(r, 36)).collect();
+    let leafbrushes: Vec<usize> = bsp.lump(LEAFBRUSHES)?.as_chunks::<2>().0.iter().map(|r| usize::from(u16_at(r, 0))).collect();
+    let heads: Vec<i32> = bsp.lump(MODELS)?.as_chunks::<48>().0.iter().map(|r| i32_at(r, 36)).collect();
     let mut owner = vec![None; brushes];
     let mut visited = vec![usize::MAX; nodes.len()];
     let mut stack = Vec::new();
@@ -337,20 +350,22 @@ fn owners(bsp: &Bsp, brushes: usize) -> Result<(Vec<Option<usize>>, usize), Stri
 
 fn materials(bsp: &Bsp) -> Result<Vec<String>, String> {
     let data = bsp.lump(TEXDATA_STRING_DATA)?;
-    let table: Vec<usize> = bsp.lump(TEXDATA_STRING_TABLE)?.chunks_exact(4).map(|r| index(i32_at(r, 0))).collect();
+    let table: Vec<usize> = bsp.lump(TEXDATA_STRING_TABLE)?.as_chunks::<4>().0.iter().map(|r| index(i32_at(r, 0))).collect();
     let names: Vec<String> = bsp
         .lump(TEXDATA)?
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .map(|r| table.get(index(i32_at(r, 12))).and_then(|&at| data.get(at..)).map_or_else(|| NODRAW.to_string(), |s| material_name(&c_str(s))))
         .collect();
-    Ok(bsp.lump(TEXINFO)?.chunks_exact(72).map(|r| names.get(index(i32_at(r, 68))).map_or_else(|| NODRAW.to_string(), Clone::clone)).collect())
+    Ok(bsp.lump(TEXINFO)?.as_chunks::<72>().0.iter().map(|r| names.get(index(i32_at(r, 68))).map_or_else(|| NODRAW.to_string(), Clone::clone)).collect())
 }
 
 /// `prop_static` entities from the `sprp` game lump; every version keeps the fields read here at the same offsets.
 fn static_props(bsp: &Bsp) -> Result<Vec<Entity>, String> {
     let dir = bsp.lump(GAME_LUMP)?;
     let count = index(i32_at(&dir, 0));
-    let Some(entry) = dir.get(4..).unwrap_or_default().chunks_exact(16).take(count).find(|e| u32_at(e, 0) == STATIC_PROPS) else {
+    let Some(entry) = dir.get(4..).unwrap_or_default().as_chunks::<16>().0.iter().take(count).find(|e| u32_at(*e, 0) == STATIC_PROPS) else {
         return Ok(Vec::new());
     };
     let (flags, offset, length) = (u16_at(entry, 4), index(i32_at(entry, 8)), index(i32_at(entry, 12)));
@@ -361,7 +376,8 @@ fn static_props(bsp: &Bsp) -> Result<Vec<Entity>, String> {
         Cow::Borrowed(raw.get(..length).ok_or("the static prop lump lies outside the file")?)
     };
     let names = index(i32_at(&body, 0));
-    let dict: Vec<String> = body.get(4..).unwrap_or_default().chunks_exact(128).take(names).map(|n| c_str(n).to_ascii_lowercase().replace('\\', "/")).collect();
+    let dict: Vec<String> =
+        body.get(4..).unwrap_or_default().as_chunks::<128>().0.iter().take(names).map(|n| c_str(n).to_ascii_lowercase().replace('\\', "/")).collect();
     let mut at = 4 + dict.len() * 128;
     at = at.saturating_add(4).saturating_add(index(i32_at(&body, at)).saturating_mul(2));
     let props = index(i32_at(&body, at));
@@ -393,10 +409,10 @@ fn static_props(bsp: &Bsp) -> Result<Vec<Entity>, String> {
 pub fn import(file: &[u8]) -> Result<Import, String> {
     let bsp = Bsp::open(file)?;
     let map = Map {
-        planes: bsp.lump(PLANES)?.chunks_exact(20).map(|r| (vec_at(r, 0), f32_at(r, 12))).collect(),
+        planes: bsp.lump(PLANES)?.as_chunks::<20>().0.iter().map(|r| (vec_at(r, 0), f32_at(r, 12))).collect(),
         materials: materials(&bsp)?,
-        brushes: bsp.lump(BRUSHES)?.chunks_exact(12).map(|r| (index(i32_at(r, 0)), index(i32_at(r, 4)))).collect(),
-        sides: bsp.lump(BRUSHSIDES)?.chunks_exact(8).map(|r| (usize::from(u16_at(r, 0)), i16_at(r, 2), r.get(6).is_some_and(|&b| b != 0))).collect(),
+        brushes: bsp.lump(BRUSHES)?.as_chunks::<12>().0.iter().map(|r| (index(i32_at(r, 0)), index(i32_at(r, 4)))).collect(),
+        sides: bsp.lump(BRUSHSIDES)?.as_chunks::<8>().0.iter().map(|r| (usize::from(u16_at(r, 0)), i16_at(r, 2), r.get(6).is_some_and(|&b| b != 0))).collect(),
     };
     let (owner, models) = owners(&bsp, map.brushes.len())?;
     let mut model_brushes = vec![Vec::new(); models];
@@ -443,7 +459,7 @@ pub fn import(file: &[u8]) -> Result<Import, String> {
         output: Output { brushes, entities },
         brush_entities,
         static_props,
-        displacements: bsp.lump(DISPINFO)?.len() / 176,
+        displacements: bsp.lump_size(DISPINFO) / 176,
         dropped_brushes: dropped,
         warnings,
     })
@@ -479,11 +495,11 @@ mod tests {
             .collect()
     }
 
-    /// Every face survives clipping by the others, the faces close up, and every normal points away from the middle.
+    /// At least four faces survive clipping by the others, they close up, and every normal points away from the middle.
     fn assert_closed(brush: &Brush) {
         let planes = planes_of(brush);
-        let ws = windings(&planes);
-        assert!(ws.iter().all(|w| w.len() >= 3), "a face clips away");
+        let ws: Vec<Vec<DVec3>> = windings(&planes).into_iter().filter(|w| !w.is_empty()).collect();
+        assert!(ws.len() >= 4 && ws.iter().flatten().all(|p| p.abs().max_element() < OPEN), "open brush");
         let area: DVec3 = ws.iter().flat_map(|w| w.iter().zip(w.iter().cycle().skip(1)).map(|(a, b)| a.cross(*b))).sum();
         let total: f64 = ws.iter().map(|w| width(w) * w.iter().zip(w.iter().cycle().skip(1)).map(|(a, b)| a.distance(*b)).sum::<f64>()).sum();
         assert!(area.length() <= total * 1e-6, "open brush: {area} over {total}");
@@ -505,6 +521,16 @@ mod tests {
         let Brush::Faces(faces) = &brush else { panic!() };
         assert_eq!(faces.len(), 6);
         assert!(faces.iter().all(|f| f.material == "dev/a" && (dv(&f.points.1) - DVec3::new(100.0, 0.0, 0.0)).abs().max_element() <= 64.0 + 1e-9));
+    }
+
+    #[test]
+    fn bevel_closes_an_open_brush() {
+        let planes = [DVec3::X, DVec3::NEG_X, DVec3::NEG_Y, DVec3::Z, DVec3::NEG_Z, DVec3::Y].map(|n| (n, 64.0)).to_vec();
+        let map = Map { planes, materials: Vec::new(), brushes: vec![(0, 6)], sides: (0..6).map(|p| (p, -1, p == 5)).collect() };
+        let brush = map.brush(0, DMat3::IDENTITY, DVec3::ZERO).unwrap();
+        assert_closed(&brush);
+        let Brush::Faces(faces) = &brush else { panic!() };
+        assert!(faces.len() == 6 && faces.iter().all(|f| f.material == NODRAW));
     }
 
     #[test]
@@ -585,10 +611,12 @@ mod tests {
         assert_eq!(teleports.len(), 76);
         assert!(teleports.iter().all(|e| !e.brushes.is_empty() && key(&e.properties, "target").is_some() && key(&e.properties, "model").is_none()));
         teleports.iter().flat_map(|e| &e.brushes).for_each(assert_closed);
-        let faces = || out.brushes.iter().flat_map(|b| match b {
-            Brush::Faces(f) => f.as_slice(),
-            Brush::Hull(_) => &[],
-        });
+        let faces = || {
+            out.brushes.iter().flat_map(|b| match b {
+                Brush::Faces(f) => f.as_slice(),
+                Brush::Hull(_) => &[],
+            })
+        };
         assert!(faces().any(|f| f.material == "tools/toolsplayerclip"));
         assert!(faces().all(|f| !f.material.starts_with("maps/")));
         let illusionary = out.entities.iter().find(|e| e.classname == "func_illusionary").unwrap();
@@ -615,7 +643,13 @@ mod tests {
         let Some(data) = read(LARGEST) else { return };
         let start = Instant::now();
         let map = import(&data).unwrap();
-        eprintln!("{LARGEST}: {} MB in {:?}, {} world brushes, {} entities", data.len() / 1_000_000, start.elapsed(), map.output.brushes.len(), map.output.entities.len());
+        eprintln!(
+            "{LARGEST}: {} MB in {:?}, {} world brushes, {} entities",
+            data.len() / 1_000_000,
+            start.elapsed(),
+            map.output.brushes.len(),
+            map.output.entities.len()
+        );
         map.output.brushes.iter().for_each(assert_closed);
     }
 }

@@ -1,0 +1,220 @@
+<!doctype html>
+<!-- REPO: the GitHub repository URL below feeds every GitHub, docs and download link on this page. -->
+<html lang="en" data-repo="https://github.com/OWNER/MapCraft">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapCraft level editor</title>
+<meta name="description" content="MapCraft is an open-source level editor written in pure Rust that combines Valve Hammer and TrenchBroom with a Godot-style scene tree. Games plug in as SDKs and WebAssembly plugins.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#121316" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+<link rel="icon" href="assets/mapcraft.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+	<div class="wrap top-inner">
+		<a class="brand" href="#top"><img src="assets/mapcraft.svg" width="28" height="28" alt="">MapCraft</a>
+		<nav aria-label="Site">
+			<a href="#features">Features</a>
+			<a href="#start">Get started</a>
+			<a href="#docs">Docs</a>
+			<a data-repo-path="">GitHub</a>
+		</nav>
+	</div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+	<div class="wrap hero-copy">
+		<img class="hero-icon" src="assets/mapcraft.svg" width="96" height="96" alt="MapCraft icon">
+		<h1>MapCraft</h1>
+		<p class="pitch">The open-source level editor that combines Hammer and TrenchBroom with a Godot-style scene tree.</p>
+		<p class="sub">Written in pure Rust with egui and wgpu. Games plug in as SDKs and WebAssembly plugins, starting with the surf game SurfsUp.</p>
+		<div class="actions">
+			<a class="btn primary" data-repo-path="/releases/latest">Download</a>
+			<a class="btn" data-repo-path="">View on GitHub</a>
+		</div>
+		<p class="meta">Linux AppImage and Windows zip. MIT licensed. Early development.</p>
+	</div>
+	<div class="wrap">
+		<figure class="shot hero-shot">
+			<img src="assets/hero.webp" width="1600" height="1000" fetchpriority="high" alt="The MapCraft editor: scene tree on the left, top, front, side and 3D views of a surf course in the middle, and the parameters of a curved surf ramp in the inspector on the right.">
+		</figure>
+	</div>
+</section>
+
+<section id="features" class="features" aria-label="Features">
+	<div class="wrap">
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Views</p>
+				<h2>Four views, one scene tree</h2>
+				<p>Top, front, side and a textured 3D view, the way Hammer lays them out. <kbd>Space</kbd> maximizes the view under the pointer.</p>
+				<p>Layers, groups, entities and brushes live in a scene tree you can drag to reorder. The inspector edits whatever you select, with fields and help text from the game's FGD.</p>
+			</div>
+			<figure class="shot">
+				<a href="assets/views.webp"><img src="assets/views.webp" width="1600" height="1000" loading="lazy" alt="Four views of the sample surf map with the finish zone selected and its keys shown in the inspector."></a>
+			</figure>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Generators</p>
+				<h2>Surf ramps and bhop from the Block tool</h2>
+				<p>The SurfsUp plugin adds <b>Surf Ramp</b> and <b>Bhop Platforms</b> next to Box, Wedge and Cylinder. Pick one and a ghost shows where it will land, with its parameters in the inspector.</p>
+				<p>Placed generators stay live: change a radius or a platform count and the group rebuilds in one undo step.</p>
+			</div>
+			<div class="shots">
+				<figure class="shot">
+					<a href="assets/generator-ramp.webp"><img src="assets/generator-ramp.webp" width="1300" height="492" loading="lazy" alt="Ghost preview of a curved surf ramp in the 3D and top views, with its shape, radius, rise and materials in the inspector."></a>
+				</figure>
+				<figure class="shot">
+					<a href="assets/generator-bhop.webp"><img src="assets/generator-bhop.webp" width="1300" height="492" loading="lazy" alt="Ghost preview of a climbing line of bhop platforms above the start platform, with the pattern settings in the inspector."></a>
+				</figure>
+			</div>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Terrain</p>
+				<h2>Displacements and the Sculpt tool</h2>
+				<p>Turn any four-cornered face into a displacement grid, then raise, lower, smooth, flatten or roughen it with the Sculpt tool in the 3D view.</p>
+				<p>Neighboring displacements stay sewn together, and a grayscale heightmap can shape a whole terrain at once.</p>
+			</div>
+			<figure class="shot">
+				<a href="assets/sculpt.webp"><img src="assets/sculpt.webp" width="908" height="752" loading="lazy" alt="Rock hills sculpted on a displacement above a lava floor, with the sculpt brush ring in the 3D and top views and the hill profiles in the front and side views."></a>
+			</figure>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Clip</p>
+				<h2>Clip with a live preview</h2>
+				<p>Draw a line across the selection in a 2D view, or on a face in 3D, and see both halves before you commit. Keep the front, the back or both.</p>
+				<p>Carve, hollow, merge, extrude, vertex editing and texture lock are all there too.</p>
+			</div>
+			<figure class="shot">
+				<a href="assets/clip.webp"><img src="assets/clip.webp" width="953" height="492" loading="lazy" alt="The Clip tool cutting a surf ramp diagonally, with the clip line in the top view and the cut previewed in 3D."></a>
+			</figure>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Keyboard</p>
+				<h2>Every action has a shortcut</h2>
+				<p>Every menu item, panel, tool and toggle can be rebound, and no two clash. Press <kbd>F1</kbd> to see them all.</p>
+				<p>Coming from another editor? Switch the keymap to the <b>Hammer</b> or <b>TrenchBroom</b> preset in Preferences.</p>
+			</div>
+			<figure class="shot">
+				<a href="assets/shortcuts.webp"><img src="assets/shortcuts.webp" width="1115" height="460" loading="lazy" alt="The Keyboard Shortcuts window beside Preferences, with the shortcut presets MapCraft, Hammer and TrenchBroom."></a>
+			</figure>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">SDKs and plugins</p>
+				<h2>Games are data, code is WebAssembly</h2>
+				<p>MapCraft knows no game by itself. An SDK is a folder with an <code>sdk.toml</code>: entity definitions, material folders, compile profiles and the plugins it needs.</p>
+				<p>Plugins are sandboxed WebAssembly components, so you can write one in Rust, C, C++, C#, Go, Python, JavaScript or Zig. They add commands, generators, material lists and importers. A plugin that traps or runs away is stopped and reported; the editor keeps going.</p>
+			</div>
+			<div class="shots">
+				<figure class="shot narrow">
+					<a href="assets/plugins.webp"><img src="assets/plugins.webp" width="760" height="420" loading="lazy" alt="The Plugins menu listing the Surf Ramp and Bhop Platforms commands and the Godot and SurfsUp plugins."></a>
+				</figure>
+<pre class="code" aria-label="An SDK manifest"><code>id = "surfsup"
+name = "SurfsUp"
+plugins = ["godot", "surfsup"]
+fgd = ["fgd/surfsup.fgd"]
+
+[textures]
+roots = ["${project}/Assets/Textures"]</code></pre>
+			</div>
+		</article>
+
+		<article class="feature">
+			<div class="copy">
+				<p class="kicker">Godot</p>
+				<h2>Straight into Godot</h2>
+				<p>The MapCraft GDExtension imports <code>.mcmap</code> files as Godot scenes: merged world meshes, convex collision, <code>Area3D</code> triggers and markers for entities. The scenes use only built-in nodes, so a game ships without the extension.</p>
+				<p>The SurfsUp SDK's Run menu imports, packs and plays a map in one step. Godot 4.4 and newer.</p>
+			</div>
+			<figure class="shot narrow">
+				<a href="assets/godot-run.webp"><img src="assets/godot-run.webp" width="760" height="420" loading="lazy" alt="The Run menu with Import into Godot, Build map pack and Build and play."></a>
+			</figure>
+		</article>
+
+		<article class="feature soon">
+			<div class="copy">
+				<p class="kicker">Source BSP <span class="badge">Coming soon</span></p>
+				<h2>Bring compiled Source maps back in</h2>
+				<p>A Source BSP importer plugin is on the way. It reads Valve BSP files, versions 19 to 21, and brings their brushes and entities into MapCraft from File &gt; Import.</p>
+			</div>
+		</article>
+
+	</div>
+</section>
+
+<section id="start" class="start">
+	<div class="wrap">
+		<h2>Get started</h2>
+		<ol class="steps">
+			<li>
+				<h3>Download</h3>
+				<p><a data-repo-path="/releases/latest/download/MapCraft-x86_64.AppImage">Linux AppImage</a>: make it executable and run it.</p>
+				<p><a data-repo-path="/releases/latest/download/MapCraft-windows-x86_64.zip">Windows zip</a>: unzip anywhere and run <code>MapCraft.exe</code>. Keep the <code>sdks</code> folder beside it.</p>
+			</li>
+			<li>
+				<h3>Make a map</h3>
+				<p>Choose <b>File &gt; New Map</b> and pick an SDK. Press <kbd>B</kbd> for the Block tool and drag in a 2D view, or pick Surf Ramp from its shapes.</p>
+			</li>
+			<li>
+				<h3>Point it at your game</h3>
+				<p>SDK Settings opens by itself when a folder is missing. For SurfsUp, pick the SurfsUp Godot project folder so materials load.</p>
+			</li>
+			<li>
+				<h3>Add the Godot addon</h3>
+				<p>Unzip the <a data-repo-path="/releases/latest/download/MapCraft-godot-addon.zip">Godot addon</a> into your project's root folder and open the project in Godot once.</p>
+			</li>
+		</ol>
+		<h3 class="build-title">Build from source</h3>
+		<p>Needs Rust 1.95 or newer.</p>
+<pre class="code"><code>rustup target add wasm32-wasip2
+cargo xtask plugins
+cargo run --release -p mapcraft</code></pre>
+	</div>
+</section>
+
+<section id="docs" class="docs">
+	<div class="wrap">
+		<h2>Docs</h2>
+		<ul class="doc-list">
+			<li><a data-repo-path="/blob/main/ROADMAP.md"><b>Roadmap</b><span>What works today and what comes next.</span></a></li>
+			<li><a data-repo-path="/blob/main/docs/architecture.md"><b>Architecture</b><span>Layers, brushes, the document model, undo and coordinates.</span></a></li>
+			<li><a data-repo-path="/blob/main/docs/plugin-api.md"><b>Plugin API</b><span>Write a WebAssembly plugin in any language.</span></a></li>
+			<li><a data-repo-path="/blob/main/docs/sdk-format.md"><b>SDK manifests</b><span>Teach MapCraft a new game with an sdk.toml.</span></a></li>
+			<li><a data-repo-path="/blob/main/docs/mcmap-format.md"><b>The .mcmap format</b><span>Reference for importers and game tools.</span></a></li>
+			<li><a data-repo-path="/blob/main/godot/README.md"><b>Godot extension</b><span>Import plugin, runtime loading and entity maps.</span></a></li>
+		</ul>
+	</div>
+</section>
+
+</main>
+
+<footer class="foot">
+	<div class="wrap foot-inner">
+		<p>MapCraft is free software under the <a data-repo-path="/blob/main/LICENSE">MIT license</a>.</p>
+		<p>Screenshots show the sample surf map with textures from SurfsUp.</p>
+	</div>
+</footer>
+
+<script>
+	const repo = document.documentElement.dataset.repo;
+	for (const a of document.querySelectorAll("a[data-repo-path]")) a.href = repo + a.dataset.repoPath;
+</script>
+</body>
+</html>

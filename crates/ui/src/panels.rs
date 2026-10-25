@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use egui::{Color32, Rect, RichText};
 use mapcraft_engine::Severity;
 use mapcraft_geom::DVec2;
-use mapcraft_map::{Brush, Connection, Cordon, Face, Justify, NodeId, NodeKind, Prefab, PropertyOverride, ROOT};
+use mapcraft_map::{Axis, Brush, Connection, Cordon, Face, Group, Justify, Mirror, NodeId, NodeKind, Prefab, PropertyOverride, ROOT};
 
 use crate::app::{BottomTab, LeftTab, MapCraftApp};
 use crate::viewport::Tool;
@@ -474,7 +474,7 @@ impl MapCraftApp {
                     }
                     self.mark_changed();
                 } else {
-                    self.status = format!("Select brushes, then click {name} to tie them to it");
+                    self.status = format!("Select brushes and click {name} to tie them to it, or select a platform and use Tools > Zone from Selection");
                 }
                 self.session.default_solid_entity = name;
             } else {
@@ -647,6 +647,10 @@ impl MapCraftApp {
                                 ui.separator();
                                 self.generator_inspector(ui, *id, generator);
                             }
+                            if let Some(m) = g.mirror {
+                                ui.separator();
+                                self.mirror_inspector(ui, *id, g.clone(), m);
+                            }
                             self.active_button(ui, *id);
                             ui.separator();
                             self.brush_editor(ui);
@@ -661,6 +665,31 @@ impl MapCraftApp {
                 }
             }
         });
+    }
+
+    fn mirror_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, g: Group, m: Mirror) {
+        ui.label(RichText::new("Mirror").strong());
+        ui.label(RichText::new("The children are copied across the plane and kept in step.").weak().small());
+        let mut edited = m;
+        ui.horizontal(|ui| {
+            ui.label("Axis");
+            let axes = [(Axis::X, "X", "Mirror left and right"), (Axis::Y, "Y", "Mirror front and back"), (Axis::Z, "Z", "Mirror up and down")];
+            if Self::segmented(ui, &mut edited.axis, &axes) {
+                let children = self.session.map.get(id).map(|n| n.children.clone()).unwrap_or_default();
+                edited.offset = self.session.mirror_offset(&children, edited.axis).unwrap_or(edited.offset);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Plane at");
+            ui.add(egui::DragValue::new(&mut edited.offset).speed(1.0));
+        });
+        ui.checkbox(&mut edited.texture_lock, "Texture lock").on_hover_text("Copies carry their textures across the plane");
+        if edited != m {
+            self.set_kind(id, NodeKind::Group(Group { mirror: Some(edited), ..g }), "Edit mirror");
+        }
+        if ui.button("Make real").on_hover_text("Turn the mirrored half into ordinary objects and stop mirroring").clicked() {
+            self.run_action("tools.mirror_make_real");
+        }
     }
 
     fn prefab_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, p: Prefab) {

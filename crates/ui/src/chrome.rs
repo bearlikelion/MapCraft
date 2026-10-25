@@ -23,6 +23,7 @@ pub const TEXT: Color32 = Color32::from_rgb(214, 218, 224);
 pub const TEXT_WEAK: Color32 = Color32::from_rgb(132, 139, 150);
 pub const ACCENT: Color32 = Color32::from_rgb(242, 140, 40);
 pub const ACCENT_DIM: Color32 = Color32::from_rgb(110, 66, 24);
+pub const MIRROR: Color32 = Color32::from_rgb(90, 220, 200);
 pub const AXIS: [Color32; 3] = [Color32::from_rgb(232, 76, 76), Color32::from_rgb(110, 200, 80), Color32::from_rgb(80, 140, 240)];
 
 const ROTATE_HINT: &str = "it snaps to 15 degree steps while Snap is on";
@@ -256,6 +257,9 @@ pub mod icons {
                 let c = if g.generator.is_some() { ACCENT } else { Color32::from_rgb(200, 180, 120) };
                 p.rect_stroke(Rect::from_center_size(m + vec2(0.0, 1.0), vec2(10.0, 7.0)), 1.0, stroke(c), egui::StrokeKind::Middle);
                 p.line_segment([m + vec2(-5.0, -3.5), m + vec2(-1.0, -3.5)], stroke(c));
+                if g.mirror.is_some() {
+                    p.line_segment([m + vec2(0.0, -4.5), m + vec2(0.0, 6.5)], stroke(MIRROR));
+                }
             }
             K::Entity(_) => {
                 let c = entity_color.unwrap_or(Color32::from_rgb(110, 210, 110));
@@ -371,7 +375,7 @@ impl MapCraftApp {
         });
     }
 
-    fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str, &str)]) -> bool {
+    pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str, &str)]) -> bool {
         let mut changed = false;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;

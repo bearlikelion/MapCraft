@@ -45,6 +45,9 @@ pub struct Manifest {
     pub fgd: Vec<String>,
     #[serde(default)]
     pub textures: Textures,
+    /// More folders plugins may read, such as a game install; ones whose paths are unset are skipped.
+    #[serde(default)]
+    pub files: Files,
     /// Folders and programs the user points the SDK at, available as `${name}`.
     #[serde(default)]
     pub paths: BTreeMap<String, PathSetting>,
@@ -58,6 +61,13 @@ fn default_units_per_meter() -> f64 {
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct Files {
+    #[serde(default)]
+    pub roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Textures {
     #[serde(default)]
     pub roots: Vec<String>,
@@ -141,6 +151,13 @@ impl Sdk {
     pub fn vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
         let roots = self.manifest.textures.roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?;
         Ok(Vfs::new(roots))
+    }
+
+    /// What plugins may read: the texture folders, then the extra file folders that are set.
+    pub fn plugin_vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
+        let textures = self.manifest.textures.roots.iter();
+        let roots = textures.chain(&self.manifest.files.roots).filter_map(|r| self.resolve(r, vars).ok()).filter(|p| p.is_dir()).collect();
+        Vfs::new(roots)
     }
 }
 
