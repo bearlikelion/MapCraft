@@ -12,4 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 wit-bindgen = { workspace = true }
 glam = { workspace = true }
-lzma-rs = "0.3"
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std", "encoder"] }

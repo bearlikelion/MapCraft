@@ -3,10 +3,9 @@
 use std::borrow::Cow;
 use std::io::Read;
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use glam::{DMat3, DVec3};
-use lzma_rs::decompress::{Options, UnpackedSize};
 
 use crate::mapcraft::plugin::types::{Brush, Entity, Face, Group, Image, MaterialInfo, Output, TexAxis, Vec3};
 use crate::materials::{Files, Library, Origin};
@@ -101,20 +100,23 @@ fn c_str(b: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(b.split(|&c| c == 0).next().unwrap_or_default())
 }
 
-/// A raw LZMA stream of `size` bytes once decompressed, with its 5 property bytes.
-pub(crate) fn lzma(props: &[u8], stream: &[u8], size: usize) -> Result<Vec<u8>, String> {
-    if size > MAX_LUMP {
+/// The first `limit` bytes of a raw LZMA stream that unpacks to `size` bytes, given its 5 property bytes.
+pub(crate) fn lzma(props: &[u8], stream: &[u8], size: usize, limit: usize) -> Result<Vec<u8>, String> {
+    let len = size.min(limit);
+    if len > MAX_LUMP {
         return Err(format!("{size} bytes uncompressed is more than MapCraft reads"));
     }
-    let options = Options { unpacked_size: UnpackedSize::UseProvided(Some(size as u64)), memlimit: Some(MAX_LUMP), allow_incomplete: false };
-    let mut out = Vec::with_capacity(size);
-    lzma_rs::lzma_decompress_with_options(&mut props.chain(stream), &mut out, &options).map_err(|e| format!("LZMA: {e}"))?;
+    let (&lc_lp_pb, dict) = props.split_first().ok_or("truncated LZMA header")?;
+    let dict = u32::from_le_bytes(dict.try_into().map_err(|_| "truncated LZMA header")?);
+    let mut reader = lzma_rust2::LzmaReader::new_with_props(stream, size as u64, lc_lp_pb, dict, None).map_err(|e| format!("LZMA: {e}"))?;
+    let mut out = vec![0; len];
+    reader.read_exact(&mut out).map_err(|e| format!("LZMA: {e}"))?;
     Ok(out)
 }
 
 /// Valve's LZMA block: `LZMA`, uncompressed size, compressed size, 5 property bytes, then the stream.
 fn unlzma(raw: &[u8]) -> Result<Vec<u8>, String> {
-    lzma(raw.get(12..17).ok_or("truncated LZMA header")?, raw.get(17..).unwrap_or_default(), u32_at(raw, 4) as usize)
+    lzma(raw.get(12..17).ok_or("truncated LZMA header")?, raw.get(17..).unwrap_or_default(), u32_at(raw, 4) as usize, usize::MAX)
 }
 
 struct Bsp<'a> {
@@ -396,11 +398,13 @@ fn owners(bsp: &Bsp, brushes: usize) -> Result<(Vec<Option<usize>>, usize), Stri
     Ok((owner, heads.len()))
 }
 
-/// Every texinfo, and each texdata's material, the name the map stores it under and its reflectivity (linear color).
-fn texinfos(bsp: &Bsp) -> Result<(Vec<Texinfo>, Vec<(String, String, DVec3)>), String> {
+/// A texdata's material, the name the map stores it under, and its reflectivity (linear color).
+type Texdata = (String, String, DVec3);
+
+fn texinfos(bsp: &Bsp) -> Result<(Vec<Texinfo>, Vec<Texdata>), String> {
     let data = bsp.lump(TEXDATA_STRING_DATA)?;
     let table: Vec<usize> = bsp.lump(TEXDATA_STRING_TABLE)?.as_chunks::<4>().0.iter().map(|r| index(i32_at(r, 0))).collect();
-    let texdata: Vec<(String, String, DVec3)> = bsp
+    let texdata: Vec<Texdata> = bsp
         .lump(TEXDATA)?
         .as_chunks::<32>()
         .0
@@ -538,7 +542,7 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
     let static_props = props.len();
     entities.extend(props);
 
-    let used: BTreeMap<&str, ()> = world
+    let used: BTreeSet<&str> = world
         .iter()
         .map(|(b, _)| b)
         .chain(entities.iter().flat_map(|e| &e.brushes))
@@ -546,17 +550,17 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
             Brush::Faces(faces) => faces.as_slice(),
             Brush::Hull(_) => &[],
         })
-        .map(|f| (f.material.as_str(), ()))
+        .map(|f| f.material.as_str())
         .collect();
     let pak = bsp.lump(PAKFILE).unwrap_or_else(|e| {
         warnings.push(format!("embedded files: {e}"));
         Cow::Borrowed(&[])
     });
     let library = Library::new(&pak, files);
-    let side = [1024, 512, 256, 128].into_iter().find(|s| used.len() * s * s * 4 <= PICTURE_BUDGET).unwrap_or(64);
+    let side = [1024, 512, 256, 128].into_iter().find(|s| used.len().saturating_mul(s * s * 4) <= PICTURE_BUDGET).unwrap_or(64);
     let mut textures = (0, 0, 0);
     let materials = used
-        .into_keys()
+        .into_iter()
         .map(|name| {
             // A map may embed only VBSP's patched copy of a material, so the copies are the fallback.
             let copies = texdata.iter().filter(|t| t.0 == name && t.1 != name);
@@ -739,6 +743,20 @@ mod tests {
     }
 
     #[test]
+    fn lzma_prefix_matches_the_whole() {
+        use std::io::Write;
+        let data: Vec<u8> = (0..200_000u32).map(|i| ((i % 251) ^ ((i / 997) % 7)) as u8).collect();
+        let mut writer = lzma_rust2::LzmaWriter::new_use_header(Vec::new(), &lzma_rust2::LzmaOptions::default(), Some(data.len() as u64)).unwrap();
+        writer.write_all(&data).unwrap();
+        let packed = writer.finish().unwrap();
+        let (props, stream) = (&packed[..5], &packed[13..]);
+        for limit in [1, 4095, 4096, 77_777, 199_999, 200_000, usize::MAX] {
+            assert_eq!(lzma(props, stream, data.len(), limit).unwrap(), data[..limit.min(data.len())], "{limit}");
+        }
+        assert!(lzma(props, &stream[..stream.len() / 2], data.len(), usize::MAX).is_err());
+    }
+
+    #[test]
     fn rotation_matches_source_angles() {
         let forward = |p, y| rotation(DVec3::new(p, y, 0.0)) * DVec3::X;
         assert!(forward(0.0, 90.0).abs_diff_eq(DVec3::Y, 1e-12));
@@ -877,62 +895,5 @@ mod tests {
         let map = import(&data, &NO_FILES).unwrap();
         eprintln!("{LARGEST}: {} MB in {:?}, {} world brushes, {} entities", data.len() / 1_000_000, start.elapsed(), map.world_brushes, map.entities);
         world(&map).into_iter().for_each(assert_closed);
-    }
-}
-
-#[cfg(test)]
-mod survey {
-    use super::*;
-
-    struct Disk(Vec<std::path::PathBuf>);
-    impl Files for Disk {
-        fn read(&self, path: &str) -> Option<Vec<u8>> {
-            self.0.iter().find_map(|root| std::fs::read(root.join(path)).ok())
-        }
-        fn read_range(&self, path: &str, offset: u64, length: u64) -> Option<Vec<u8>> {
-            use std::io::{Read, Seek, SeekFrom};
-            self.0.iter().find_map(|root| {
-                let mut file = std::fs::File::open(root.join(path)).ok()?;
-                file.seek(SeekFrom::Start(offset)).ok()?;
-                let mut out = vec![0; length as usize];
-                file.read_exact(&mut out).ok()?;
-                Some(out)
-            })
-        }
-    }
-
-    #[test]
-    fn survey() {
-        let Ok(list) = std::fs::read_to_string(std::env::var("BSPS").unwrap_or_default()) else { return };
-        let css = std::path::PathBuf::from("/mnt/Storage/Gamedev/SurfsUp/CSS-Windows");
-        let game = Disk(vec![css.join("cstrike"), css.join("hl2")]);
-        let none = Disk(Vec::new());
-        let (mut a, mut g) = ((0, 0, 0), (0, 0, 0));
-        let mut missing = std::collections::BTreeMap::new();
-        let (mut maps, mut pixels, mut worst, mut slowest) = (0, 0usize, (0usize, String::new()), (std::time::Duration::ZERO, String::new()));
-        let (mut ramps, mut world) = (0, 0);
-        for path in list.lines() {
-            let Ok(data) = std::fs::read(path) else { continue };
-            let Ok(alone) = import(&data, &none) else { continue };
-            let t = std::time::Instant::now();
-            let Ok(full) = import(&data, &game) else { continue };
-            let el = t.elapsed();
-            if el > slowest.0 { slowest = (el, path.to_string()); }
-            maps += 1;
-            ramps += full.ramps; world += full.world_brushes;
-            a = (a.0 + alone.textures.0, a.1 + alone.textures.1, a.2 + alone.textures.2);
-            g = (g.0 + full.textures.0, g.1 + full.textures.1, g.2 + full.textures.2);
-            let px: usize = full.output.materials.iter().filter_map(|m| m.pixels.as_ref()).map(|p| p.rgba.len()).sum();
-            pixels += px;
-            if px > worst.0 { worst = (px, path.to_string()); }
-            for m in full.output.materials.iter().filter(|m| m.pixels.is_none()) {
-                let k = m.name.split('/').next().unwrap_or("").to_string();
-                *missing.entry(k).or_insert(0) += 1;
-            }
-        }
-        eprintln!("maps {maps}: alone {a:?} with game {g:?}; ramps {ramps} of {world} world brushes; avg pixel bytes {} MB, worst {:.1} MB {}; slowest {:?}", pixels / maps.max(1) / 1_000_000, worst.0 as f64 / 1e6, worst.1, slowest);
-        let mut v: Vec<_> = missing.into_iter().collect();
-        v.sort_by_key(|e| std::cmp::Reverse(e.1));
-        eprintln!("missing by folder: {:?}", &v[..v.len().min(25)]);
     }
 }

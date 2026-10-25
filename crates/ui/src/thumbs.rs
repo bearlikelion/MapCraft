@@ -10,12 +10,21 @@ pub const SIZE: u32 = 64;
 pub struct Thumbs {
     textures: HashMap<String, Option<TextureHandle>>,
     pending: HashSet<String>,
-    requests: mpsc::Sender<(String, PathBuf)>,
+    requests: mpsc::Sender<(String, Source)>,
     results: mpsc::Receiver<(String, Option<ColorImage>)>,
 }
 
-fn decode(path: &PathBuf) -> Option<ColorImage> {
-    let img = std::panic::catch_unwind(|| image::open(path)).ok()?.ok()?;
+/// Where a preview comes from: an image file, or a picture a plugin already decoded.
+enum Source {
+    File(PathBuf),
+    Pixels(std::sync::Arc<mapcraft_plugin_host::Picture>),
+}
+
+fn decode(source: &Source) -> Option<ColorImage> {
+    let img = match source {
+        Source::File(path) => std::panic::catch_unwind(|| image::open(path)).ok()?.ok()?,
+        Source::Pixels(p) => image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(p.width, p.height, p.rgba.clone())?),
+    };
     let rgba = img.thumbnail(SIZE, SIZE).to_rgba8();
     Some(ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw()))
 }
@@ -28,12 +37,12 @@ impl Default for Thumbs {
 
 impl Thumbs {
     pub fn new() -> Self {
-        let (requests, rx) = mpsc::channel::<(String, PathBuf)>();
+        let (requests, rx) = mpsc::channel::<(String, Source)>();
         let (tx, results) = mpsc::channel();
         // Ends when the sender is dropped with the app.
         std::thread::spawn(move || {
-            for (name, path) in rx {
-                if tx.send((name, decode(&path))).is_err() {
+            for (name, source) in rx {
+                if tx.send((name, decode(&source))).is_err() {
                     break;
                 }
             }
@@ -44,11 +53,13 @@ impl Thumbs {
     /// The preview for a material, queued for loading the first time it is asked for.
     pub fn get(&mut self, ctx: &egui::Context, m: &crate::project::Material) -> Option<&TextureHandle> {
         if !self.textures.contains_key(&m.name) && !self.pending.contains(&m.name) {
-            match (&m.image, m.color) {
-                (Some(p), _) if self.requests.send((m.name.clone(), p.clone())).is_ok() => {
+            let source = m.pixels.clone().map(Source::Pixels).or_else(|| m.image.clone().map(Source::File));
+            let queued = source.is_some_and(|s| self.requests.send((m.name.clone(), s)).is_ok());
+            match (queued, m.color) {
+                (true, _) => {
                     self.pending.insert(m.name.clone());
                 }
-                (None, Some(c)) => {
+                (false, Some(c)) => {
                     let img = ColorImage::new([SIZE as usize; 2], vec![egui::Color32::from_rgb(c[0], c[1], c[2]); (SIZE * SIZE) as usize]);
                     self.textures.insert(m.name.clone(), Some(ctx.load_texture(format!("thumb:{}", m.name), img, TextureOptions::LINEAR)));
                 }

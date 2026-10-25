@@ -23,6 +23,16 @@ pub struct MaterialInfo {
     pub name: String,
     pub image: Option<String>,
     pub color: Option<[u8; 3]>,
+    /// The picture itself, for materials from files outside the SDK's asset folders.
+    pub pixels: Option<std::sync::Arc<Picture>>,
+}
+
+/// An RGBA8 picture, rows top to bottom.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
 }
 
 mod bindings {
@@ -38,6 +48,8 @@ const MEMORY: usize = 512 << 20;
 /// An import may use this much more memory than the file it reads.
 const IMPORT_HEADROOM: usize = 256 << 20;
 const MAX_RANGE: u64 = 256 << 20;
+/// Fuel for one import; decompressing and decoding a big compiled map takes far more than a command.
+const IMPORT_FUEL: u64 = 60_000_000_000;
 
 /// What an importer read: nodes in map space, and pictures for materials the SDK lacks.
 #[derive(Debug, Default)]
@@ -212,6 +224,7 @@ impl Plugin {
         let cap = data.len().saturating_add(IMPORT_HEADROOM).clamp(MEMORY, 4 << 30);
         self.store.data_mut().limits = StoreLimitsBuilder::new().memory_size(cap).instances(16).build();
         self.begin()?;
+        self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
         match self.bindings.call_import_file(&mut self.store, importer, name, data, &wit_ctx) {
             Ok(Ok(mut out)) => {
                 let materials = convert::images(std::mem::take(&mut out.materials));
@@ -222,11 +235,35 @@ impl Plugin {
         }
     }
 
+    /// Writes `map` in one of the plugin's export formats; resolve prefabs and mirrors first.
+    pub fn export(&mut self, exporter: &str, map: &mapcraft_map::Map, name: &str, ctx: &Context) -> Result<Vec<u8>, PluginError> {
+        if !self.manifest.exporters.iter().any(|i| i.id == exporter) {
+            return Err(PluginError::UnknownCommand(self.manifest.id.clone(), exporter.into()));
+        }
+        let data = convert::map_data(map, name);
+        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        self.begin()?;
+        self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
+        match self.bindings.call_export_file(&mut self.store, exporter, &data, &wit_ctx) {
+            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Err(message)) => Err(self.failed(message)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
     /// The materials the plugin lists.
     pub fn materials(&mut self) -> Result<Vec<MaterialInfo>, PluginError> {
         self.begin()?;
         match self.bindings.call_list_materials(&mut self.store) {
-            Ok(Ok(list)) => Ok(list.into_iter().map(|m| MaterialInfo { name: m.name, image: m.image, color: m.color.map(|(r, g, b)| [r, g, b]) }).collect()),
+            Ok(Ok(list)) => Ok(list
+                .into_iter()
+                .map(|m| MaterialInfo {
+                    pixels: m.pixels.and_then(convert::picture).map(std::sync::Arc::new),
+                    name: m.name,
+                    image: m.image,
+                    color: m.color.map(|(r, g, b)| [r, g, b]),
+                })
+                .collect()),
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),
         }

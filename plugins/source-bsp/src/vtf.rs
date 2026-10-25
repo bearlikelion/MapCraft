@@ -59,11 +59,7 @@ fn color_block(block: &[u8], alpha_mode: bool) -> [[u8; 4]; 16] {
         let [r, g, bl] = [0, 1, 2].map(|i| ((a[i] * wa + b[i] * wb) / (wa + wb)) as u8);
         [r, g, bl, 255]
     };
-    let palette = if c0 > c1 || !alpha_mode {
-        [mix(1, 0), mix(0, 1), mix(2, 1), mix(1, 2)]
-    } else {
-        [mix(1, 0), mix(0, 1), mix(1, 1), [0, 0, 0, 0]]
-    };
+    let palette = if c0 > c1 || !alpha_mode { [mix(1, 0), mix(0, 1), mix(2, 1), mix(1, 2)] } else { [mix(1, 0), mix(0, 1), mix(1, 1), [0, 0, 0, 0]] };
     let bits = u32_at(block, 4);
     std::array::from_fn(|i| palette[((bits >> (2 * i)) & 3) as usize])
 }
@@ -112,8 +108,10 @@ fn decode_dxt(data: &[u8], format: u32, w: usize, h: usize) -> Vec<u8> {
     out
 }
 
+type Swizzle = fn(&[u8]) -> [u8; 4];
+
 fn decode_plain(data: &[u8], format: u32, w: usize, h: usize) -> Option<Vec<u8>> {
-    let (bytes, order): (usize, fn(&[u8]) -> [u8; 4]) = match format {
+    let (bytes, order): (usize, Swizzle) = match format {
         RGBA8888 => (4, |p| [p[0], p[1], p[2], p[3]]),
         ABGR8888 => (4, |p| [p[3], p[2], p[1], p[0]]),
         ARGB8888 => (4, |p| [p[1], p[2], p[3], p[0]]),
@@ -128,8 +126,31 @@ fn decode_plain(data: &[u8], format: u32, w: usize, h: usize) -> Option<Vec<u8>>
     Some(data.chunks_exact(bytes).take(w * h).flat_map(order).collect())
 }
 
-/// Frame 0, face 0 of the largest mip no wider or taller than `max`.
-pub fn decode(vtf: &[u8], max: usize) -> Result<Picture, String> {
+/// Every `step`th pixel of every `step`th row.
+fn shrink((w, h, rgba): Picture, step: usize) -> Picture {
+    let (w, h) = (w as usize, h as usize);
+    let (nw, nh) = ((w / step).max(1), (h / step).max(1));
+    let mut out = Vec::with_capacity(nw * nh * 4);
+    for y in 0..nh {
+        for x in 0..nw {
+            let at = (y * step * w + x * step) * 4;
+            out.extend_from_slice(rgba.get(at..at + 4).unwrap_or(&[0; 4]));
+        }
+    }
+    (nw as u32, nh as u32, out)
+}
+
+/// Where the picture's bytes are and what they hold.
+struct Layout {
+    at: usize,
+    len: usize,
+    w: usize,
+    h: usize,
+    format: u32,
+}
+
+/// Frame 0, face 0 of the largest mip no wider or taller than `max`, else of the smallest mip.
+fn layout(vtf: &[u8], max: usize) -> Result<Layout, String> {
     if !vtf.starts_with(b"VTF\0") {
         return Err("not a VTF file".into());
     }
@@ -154,20 +175,31 @@ pub fn decode(vtf: &[u8], max: usize) -> Result<Picture, String> {
     .ok_or("the VTF has no image data")?;
     let mip = (0..mips).find(|&m| (width >> m).max(1) <= max && (height >> m).max(1) <= max).unwrap_or(mips - 1);
     let (w, h) = ((width >> mip).max(1), (height >> mip).max(1));
-    if w > max || h > max {
-        return Err(format!("the VTF has no mip of at most {max} pixels"));
+    if w.saturating_mul(h) > 4096 * 4096 {
+        return Err(format!("{w}x{h} is too large"));
     }
     let size = |m: usize| image_size(format, (width >> m).max(1), (height >> m).max(1));
-    let size_here = size(mip).ok_or_else(|| format!("VTF image format {format} is not supported"))?;
+    let len = size(mip).ok_or_else(|| format!("VTF image format {format} is not supported"))?;
     let copies = frames.checked_mul(faces * depth).ok_or("bad VTF frame count")?;
     let skip = (mip + 1..mips).try_fold(0usize, |sum, m| size(m)?.checked_mul(copies)?.checked_add(sum)).ok_or("bad VTF mip sizes")?;
     let at = start.checked_add(skip).ok_or("bad VTF offset")?;
-    let data = vtf.get(at..at.saturating_add(size_here)).ok_or("the VTF is truncated")?;
+    Ok(Layout { at, len, w, h, format })
+}
+
+/// How many leading bytes of the file `decode` reads, worked out from its header.
+pub fn needed(header: &[u8], max: usize) -> Option<usize> {
+    layout(header, max).ok().map(|l| l.at.saturating_add(l.len))
+}
+
+/// Frame 0, face 0 of the largest mip no wider or taller than `max`, shrunk to fit when every mip is larger.
+pub fn decode(vtf: &[u8], max: usize) -> Result<Picture, String> {
+    let Layout { at, len, w, h, format } = layout(vtf, max)?;
+    let data = vtf.get(at..at.saturating_add(len)).ok_or("the VTF is truncated")?;
     let rgba = match format {
         DXT1 | DXT1_ONEBITALPHA | DXT3 | DXT5 => decode_dxt(data, format, w, h),
         _ => decode_plain(data, format, w, h).ok_or_else(|| format!("VTF image format {format} is not supported"))?,
     };
-    Ok((w as u32, h as u32, rgba))
+    Ok(shrink((w as u32, h as u32, rgba), w.max(h).div_ceil(max.max(1)).next_power_of_two()))
 }
 
 #[cfg(test)]
@@ -200,6 +232,8 @@ mod tests {
         assert_eq!(decode(&file, 2).unwrap(), (2, 1, vec![3, 2, 1, 4, 7, 6, 5, 8]));
         let (w, h, rgba) = decode(&file, 1024).unwrap();
         assert_eq!((w, h, &rgba[..4]), (4, 2, &[2, 1, 0, 3][..]));
+        assert_eq!(decode(&file, 1).unwrap(), (1, 1, vec![3, 2, 1, 4]));
+        assert_eq!((needed(&file[..80], 2), needed(&file[..80], 1024)), (Some(88), Some(120)));
         assert!(decode(&file[..90], 1024).is_err());
         assert!(decode(&vtf(2, 4, 4, 1, 4242, &[]), 1024).is_err());
     }

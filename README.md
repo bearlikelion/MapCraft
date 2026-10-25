@@ -22,6 +22,7 @@ See [ROADMAP.md](ROADMAP.md) for what works today and what comes next.
 Requires Rust 1.95 or newer and the `wasm32-wasip2` target for the first-party plugins.
 
 ```sh
+git submodule update --init
 rustup target add wasm32-wasip2
 cargo xtask plugins
 cargo build --release

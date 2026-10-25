@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, MAPCRAFT_VERSION, io_err};
 
-/// The official registry. OWNER is a placeholder until the MapCraftSDKs repository is published.
-pub const DEFAULT_REGISTRY: &str = "https://raw.githubusercontent.com/OWNER/MapCraftSDKs/main/index.json";
+/// The official registry.
+pub const DEFAULT_REGISTRY: &str = "https://raw.githubusercontent.com/bearlikelion/MapCraftSDKs/main/index.json";
 
 /// The `format` tag every registry carries.
 pub const FORMAT: &str = "mapcraft.sdk-registry";

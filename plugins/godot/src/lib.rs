@@ -115,6 +115,7 @@ impl Guest for Godot {
             commands: Vec::new(),
             materials: true,
             importers: Vec::new(),
+            exporters: Vec::new(),
         }
     }
 
@@ -124,6 +125,10 @@ impl Guest for Godot {
 
     fn import_file(_importer: String, _name: String, _data: Vec<u8>, _context: Context) -> Result<Output, String> {
         Err("this plugin imports no files".into())
+    }
+
+    fn export_file(_exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
+        Err("this plugin exports no files".into())
     }
 
     fn list_materials() -> Result<Vec<MaterialInfo>, String> {

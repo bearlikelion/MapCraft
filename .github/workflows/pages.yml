@@ -3,7 +3,16 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: [site/**, .github/workflows/pages.yml]
+    paths:
+      - site/**
+      - docs/**
+      - ROADMAP.md
+      - godot/README.md
+      # The shortcut tables are generated from these.
+      - crates/ui/src/shortcuts.rs
+      - crates/ui/src/dialogs.rs
+      - crates/engine/src/commands.rs
+      - .github/workflows/pages.yml
   workflow_dispatch:
 
 permissions:
@@ -23,11 +32,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Point links at this repository
-        run: sed -i "s#https://github.com/OWNER/MapCraft#$GITHUB_SERVER_URL/$GITHUB_REPOSITORY#" site/index.html
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: site/gen
+      - name: Build the site
+        run: cargo run --manifest-path site/gen/Cargo.toml --release
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: target/site
       - id: deployment
         uses: actions/deploy-pages@v4

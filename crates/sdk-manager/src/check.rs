@@ -251,7 +251,9 @@ steps = [{ run = "/no/such/compiler" }, { run = "${game}/tool" }]
         let vars = BTreeMap::from([("game".to_string(), "/no/such/game".to_string())]);
         let items = check(p, &vars, host.as_ref());
         let fails: Vec<&str> = items.iter().filter(|i| i.level == Level::Fail).map(|i| i.what.as_str()).collect();
-        for what in ["fgd fgd/bad.fgd", "fgd fgd/missing.fgd", "plugin ghost", "plugin junk", "path game", "textures textures", "compile Build", "sample bad.mcmap"] {
+        for what in
+            ["fgd fgd/bad.fgd", "fgd fgd/missing.fgd", "plugin ghost", "plugin junk", "path game", "textures textures", "compile Build", "sample bad.mcmap"]
+        {
             assert!(fails.contains(&what), "{what} should fail: {items:#?}");
         }
         assert_eq!(worst(&items), Level::Fail);

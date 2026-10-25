@@ -16,7 +16,7 @@ use mapcraft_sdk::Sdk;
 
 use crate::dialogs::Dialogs;
 use crate::prefs::Prefs;
-use crate::project::{Project, sdk_search_dirs};
+use crate::project::Project;
 use crate::viewport::{Drag, Tool};
 
 #[derive(Clone, Debug, Default)]
@@ -72,7 +72,7 @@ pub(crate) struct CompileJob {
 pub struct MapCraftApp {
     pub(crate) session: Session,
     pub(crate) prefs: SettingsStore<Prefs>,
-    pub(crate) sdks: Vec<(PathBuf, Result<Sdk, String>)>,
+    pub(crate) sdks: Vec<mapcraft_sdk_manager::Installed>,
     pub(crate) project: Project,
     pub(crate) gpu: Option<Gpu>,
     pub(crate) panes: [Pane; 4],
@@ -108,8 +108,8 @@ pub struct MapCraftApp {
     pub(crate) display: Option<(Map, BTreeMap<NodeId, NodeId>)>,
     pub(crate) prefab_cache: HashMap<String, Option<Map>>,
     pub(crate) dialogs: Dialogs,
-    /// Where autosaves and the crash marker live.
-    data_dir: Option<PathBuf>,
+    /// Where autosaves, the crash marker and user-installed SDKs live.
+    pub(crate) data_dir: Option<PathBuf>,
     /// The view and spot of the last click, so clicking it again drills to the next object.
     pub(crate) last_click: Option<(usize, Pos2)>,
     /// Face whose material and alignment Alt+Shift+right click applies.
@@ -155,7 +155,10 @@ pub struct MapCraftApp {
     pub(crate) smart_edit: bool,
     pub(crate) show_new_dialog: bool,
     pub(crate) new_sdk: Option<String>,
-    show_sdk_dialog: bool,
+    pub(crate) show_sdk_dialog: bool,
+    /// The SDK the SDK Settings window edits, when not the map's own.
+    pub(crate) sdk_settings_for: Option<Sdk>,
+    pub(crate) sdk_manager: crate::sdk_manager::SdkManager,
     pending: Option<Pending>,
     confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
@@ -249,6 +252,8 @@ impl MapCraftApp {
             show_new_dialog: false,
             new_sdk: None,
             show_sdk_dialog: false,
+            sdk_settings_for: None,
+            sdk_manager: crate::sdk_manager::SdkManager::default(),
             pending: None,
             confirm_tools: None,
             compile: None,
@@ -272,12 +277,24 @@ impl MapCraftApp {
     }
 
     pub(crate) fn rescan_sdks(&mut self) {
-        let dirs = sdk_search_dirs(&self.prefs.get().sdk_dirs);
-        self.sdks = mapcraft_sdk::discover(&dirs).into_iter().map(|(p, r)| (p, r.map_err(|e| e.to_string()))).collect();
+        let dirs = mapcraft_sdk_manager::search_dirs(self.data_dir.as_deref(), &self.prefs.get().sdk_dirs);
+        self.sdks = mapcraft_sdk_manager::installed(&dirs);
     }
 
     fn sdk_by_id(&self, id: &str) -> Option<Sdk> {
-        self.sdks.iter().find_map(|(_, r)| r.as_ref().ok().filter(|s| s.manifest.id == id).cloned())
+        self.sdks.iter().find_map(|i| i.sdk.as_ref().ok().filter(|s| s.manifest.id == id).cloned())
+    }
+
+    /// Path settings for SDK `id`: the saved ones, then command line overrides, then the manifest's defaults.
+    pub(crate) fn sdk_vars(&self, id: &str, sdk: Option<&Sdk>) -> BTreeMap<String, String> {
+        let mut vars = self.prefs.get().sdk_paths.get(id).cloned().unwrap_or_default();
+        vars.extend(self.sdk_var_overrides.iter().cloned());
+        for (k, setting) in sdk.iter().flat_map(|s| &s.manifest.paths) {
+            if let (None, Some(d)) = (vars.get(k), &setting.default) {
+                vars.insert(k.clone(), d.clone());
+            }
+        }
+        vars
     }
 
     pub(crate) fn load_project(&mut self, sdk_id: Option<String>) {
@@ -285,14 +302,8 @@ impl MapCraftApp {
         if let (Some(id), None) = (&sdk_id, &sdk) {
             self.status = format!("SDK `{id}` is not installed; entities and materials are unavailable");
         }
-        let mut vars = sdk_id.as_ref().and_then(|id| self.prefs.get().sdk_paths.get(id).cloned()).unwrap_or_default();
-        vars.extend(self.sdk_var_overrides.iter().cloned());
+        let vars = sdk_id.as_deref().map(|id| self.sdk_vars(id, sdk.as_ref())).unwrap_or_default();
         if let Some(s) = &sdk {
-            for (k, setting) in &s.manifest.paths {
-                if let (None, Some(d)) = (vars.get(k), &setting.default) {
-                    vars.insert(k.clone(), d.clone());
-                }
-            }
             self.session.tex.scale = s.manifest.textures.scale;
             if let Some(d) = &s.manifest.textures.default {
                 self.session.tex.material = d.clone();
@@ -475,6 +486,22 @@ impl MapCraftApp {
         self.show_sdk_dialog
     }
 
+    /// Results of the SDK Manager's last check of SDK `id`, for tests.
+    pub fn sdk_check_for_test(&self, id: &str) -> Option<Vec<mapcraft_sdk_manager::Item>> {
+        let dir = &self.sdks.iter().find(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == id))?.dir;
+        self.sdk_manager.check_results(dir).cloned()
+    }
+
+    /// Ids of the SDKs found, in search order, for tests.
+    pub fn sdk_ids_for_test(&self) -> Vec<String> {
+        self.sdks.iter().filter_map(|i| Some(i.sdk.as_ref().ok()?.manifest.id.clone())).collect()
+    }
+
+    /// Replaces the registries the SDK Manager lists, for tests and snapshots.
+    pub fn set_registries_for_test(&mut self, registries: Vec<String>) {
+        self.prefs.update(|p| p.registries = registries);
+    }
+
     /// Where a world point shows in view `index`, for tests that drag things.
     pub fn screen_for_test(&self, index: usize, p: DVec3) -> Pos2 {
         let Some(pane) = self.panes.get(index) else { return Pos2::ZERO };
@@ -544,7 +571,7 @@ impl MapCraftApp {
                 .collect();
             self.session.face_selection = faces;
             self.session.selection.clear();
-        } else if t != Tool::Face {
+        } else if !matches!(t, Tool::Face | Tool::Sculpt) {
             self.session.face_selection.clear();
         }
         self.tool = t;
@@ -569,6 +596,22 @@ impl MapCraftApp {
         };
         if let Some(t) = tool {
             self.set_tool(t);
+            return;
+        }
+        use mapcraft_engine::SculptMode as M;
+        let mode = match id {
+            "sculpt.raise" => Some(M::Raise),
+            "sculpt.lower" => Some(M::Lower),
+            "sculpt.smooth" => Some(M::Smooth),
+            "sculpt.flatten" => Some(M::Flatten),
+            "sculpt.noise" => Some(M::Noise),
+            _ => None,
+        };
+        if let Some(m) = mode {
+            self.sculpt.0 = m;
+            if self.tool != Tool::Sculpt {
+                self.set_tool(Tool::Sculpt);
+            }
             return;
         }
         match id {
@@ -602,7 +645,11 @@ impl MapCraftApp {
             "prefab.save" => self.save_prefab(),
             "prefab.insert" => self.insert_prefab(),
             "prefab.reload" => self.reload_prefabs(),
-            "file.sdk_settings" => self.show_sdk_dialog = true,
+            "file.sdk_settings" => {
+                self.sdk_settings_for = None;
+                self.show_sdk_dialog = true;
+            }
+            "file.sdk_manager" => self.sdk_manager.open = true,
             "file.quit" => self.quit_requested = true,
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
             "tools.check_problems" => self.check_problems(),
@@ -777,8 +824,10 @@ impl MapCraftApp {
                 self.action_button(ui, "file.save_as", "Save As…", true);
                 ui.separator();
                 self.import_menu(ui);
+                self.export_menu(ui);
                 ui.separator();
                 self.action_button(ui, "file.sdk_settings", "SDK Settings…", true);
+                self.action_button(ui, "file.sdk_manager", "SDK Manager…", true);
                 ui.separator();
                 self.action_button(ui, "file.quit", "Quit", true);
             });
@@ -875,7 +924,7 @@ impl MapCraftApp {
             egui::Window::new("New Map").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
                 ui.label("SDK");
                 let ids: Vec<(String, String)> =
-                    self.sdks.iter().filter_map(|(_, r)| r.as_ref().ok()).map(|s| (s.manifest.id.clone(), s.manifest.name.clone())).collect();
+                    self.sdks.iter().filter_map(|i| i.sdk.as_ref().ok()).map(|s| (s.manifest.id.clone(), s.manifest.name.clone())).collect();
                 let current = self.new_sdk.clone();
                 egui::ComboBox::from_id_salt("new-sdk")
                     .selected_text(ids.iter().find(|(i, _)| Some(i) == current.as_ref()).map_or("None", |(_, n)| n))
@@ -952,40 +1001,46 @@ impl MapCraftApp {
 
     fn sdk_dialog(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        let Some(sdk) = self.project.sdk.clone() else {
+        let Some(sdk) = self.sdk_settings_for.clone().or_else(|| self.project.sdk.clone()) else {
             egui::Window::new("SDK Settings").open(&mut open).show(ctx, |ui| {
                 ui.label("This map has no SDK. Pick one with File > New Map.");
                 ui.label("SDK folders searched:");
-                for d in sdk_search_dirs(&self.prefs.get().sdk_dirs) {
+                for (d, _) in mapcraft_sdk_manager::search_dirs(self.data_dir.as_deref(), &self.prefs.get().sdk_dirs) {
                     ui.monospace(d.display().to_string());
                 }
             });
             self.show_sdk_dialog &= open;
             return;
         };
+        // Settings for an SDK the map does not use are saved as typed and apply when it loads.
+        let current = self.project.id() == Some(sdk.manifest.id.as_str());
+        let mut vars = if current { self.project.vars.clone() } else { self.sdk_vars(&sdk.manifest.id, Some(&sdk)) };
         let mut changed = false;
         let mut apply = false;
-        let editing = self.project.missing_for_editing();
+        let editing = if current { self.project.missing_for_editing() } else { Vec::new() };
         // Paths that materials and entities need come first; the rest only matter for Run.
         let mut paths: Vec<_> = sdk.manifest.paths.iter().collect();
         let needed = |k: &String| sdk.manifest.textures.roots.iter().chain(&sdk.manifest.fgd).any(|s| s.contains(&format!("${{{k}}}")));
         paths.sort_by_key(|(k, _)| !needed(k));
         egui::Window::new(format!("{} SDK Settings", sdk.manifest.name)).open(&mut open).min_width(680.0).show(ctx, |ui| {
+            if paths.is_empty() {
+                ui.label("This SDK has no folders or programs to set.");
+            }
             egui::Grid::new("sdk-paths").num_columns(3).min_col_width(80.0).show(ui, |ui| {
                 for (key, setting) in paths {
                     let label = ui.label(&setting.prompt);
-                    let mut value = self.project.vars.get(key).cloned().unwrap_or_default();
+                    let mut value = vars.get(key).cloned().unwrap_or_default();
                     let bad = !value.is_empty() && !std::path::Path::new(&value).exists();
                     let edit = egui::TextEdit::singleline(&mut value).min_size(egui::vec2(300.0, 0.0)).desired_width(300.0);
                     let edit = if bad { edit.text_color(egui::Color32::LIGHT_RED) } else { edit };
                     if ui.add(edit).on_hover_text(if bad { "This path does not exist" } else { "" }).changed() {
-                        self.project.vars.insert(key.clone(), value.clone());
+                        vars.insert(key.clone(), value.clone());
                         changed = true;
                     }
                     if ui.button("Browse…").clicked() {
                         let picked = if setting.kind == "file" { rfd::FileDialog::new().pick_file() } else { rfd::FileDialog::new().pick_folder() };
                         if let Some(p) = picked {
-                            self.project.vars.insert(key.clone(), p.to_string_lossy().into_owned());
+                            vars.insert(key.clone(), p.to_string_lossy().into_owned());
                             changed = true;
                         }
                     }
@@ -998,20 +1053,30 @@ impl MapCraftApp {
             if !editing.is_empty() {
                 ui.colored_label(crate::chrome::ACCENT, format!("Materials load once {} is set.", editing.join(", ")));
             }
-            ui.horizontal(|ui| {
-                apply = ui.add_enabled(self.sdk_paths_changed || changed, egui::Button::new("Apply")).clicked();
-                ui.label(egui::RichText::new("Closing the window applies changes too.").color(crate::chrome::TEXT_WEAK));
-            });
+            if current {
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(self.sdk_paths_changed || changed, egui::Button::new("Apply")).clicked();
+                    ui.label(egui::RichText::new("Closing the window applies changes too.").color(crate::chrome::TEXT_WEAK));
+                });
+            } else {
+                ui.label(egui::RichText::new("Saved as you type; used whenever a map with this SDK opens.").color(crate::chrome::TEXT_WEAK));
+            }
         });
         if changed {
-            self.sdk_paths_changed = true;
-            let (id, vars) = (sdk.manifest.id.clone(), self.project.vars.clone());
+            let id = sdk.manifest.id.clone();
+            if current {
+                self.sdk_paths_changed = true;
+                self.project.vars = vars.clone();
+            }
             self.prefs.update(|p| {
                 p.sdk_paths.insert(id, vars);
             });
         }
         self.show_sdk_dialog &= open;
-        if (apply || !self.show_sdk_dialog) && self.sdk_paths_changed {
+        if !self.show_sdk_dialog {
+            self.sdk_settings_for = None;
+        }
+        if current && (apply || !self.show_sdk_dialog) && self.sdk_paths_changed {
             self.sdk_paths_changed = false;
             self.load_project(Some(sdk.manifest.id.clone()));
             self.show_sdk_dialog = !open || apply;
@@ -1033,11 +1098,43 @@ impl MapCraftApp {
         let Some(path) = self.session.path.clone() else { return };
         let mut vars = self.project.vars.clone();
         vars.extend(mapcraft_sdk::builtin_vars(&path, &sdk.dir));
+        // Games load one file, so prefabs are baked in first; the copy keeps the map's name.
+        let has_prefabs = self.session.map.nodes().any(|(_, n)| matches!(n.kind, NodeKind::Prefab(_)));
+        if has_prefabs
+            && let (Some((flat, _)), Some(dir)) = (&self.display, self.data_dir.as_ref().map(|d| d.join("compile")))
+            && let Some(file) = path.file_name()
+        {
+            let copy = dir.join(file);
+            let written = std::fs::create_dir_all(&dir)
+                .map_err(|e| e.to_string())
+                .and_then(|()| mapcraft_format::save(&copy, flat, self.session.sdk.as_deref(), &serde_json::Value::Null).map_err(|e| e.to_string()));
+            match written {
+                Ok(()) => {
+                    vars.insert("map".into(), copy.to_string_lossy().into_owned());
+                }
+                Err(e) => {
+                    self.status = format!("cannot bake prefabs for the compile: {e}");
+                    return;
+                }
+            }
+        }
+        self.output.push(format!("== {} ==", profile.name));
+        // Exporters are plugins, which live on this thread, so export steps run before the tools do.
+        for step in &profile.steps {
+            let mapcraft_sdk::Step::Export { export, to } = step else { continue };
+            let written = mapcraft_sdk::expand(to, &vars).map_err(|e| e.to_string()).and_then(|to| self.export_to(export, Path::new(&to)));
+            if let Err(e) = written {
+                self.output.push(format!("== failed: {e} =="));
+                self.status = e;
+                self.show_bottom = true;
+                self.bottom_tab = BottomTab::Output;
+                return;
+            }
+        }
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let (c, d) = (cancel.clone(), done.clone());
-        self.output.push(format!("== {} ==", profile.name));
         std::thread::spawn(move || {
             let result = mapcraft_sdk::run_profile(
                 &profile,
@@ -1232,6 +1329,7 @@ impl eframe::App for MapCraftApp {
         egui::CentralPanel::no_frame().show(ui, |ui| self.central(ui));
         self.dialogs(&ctx);
         self.extra_dialogs(&ctx);
+        self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
         self.thumbs.poll(&ctx);
         if self.frame_pending && self.panes.iter().all(|p| p.rect.is_positive()) {

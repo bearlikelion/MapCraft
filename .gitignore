@@ -4,6 +4,4 @@ target/
 .DS_Store
 .claude/worktrees/
 /godot/build/
-# Built by `cargo xtask plugins`.
-/sdks/*/plugins/
 /dist/

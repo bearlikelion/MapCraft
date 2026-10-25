@@ -1,6 +1,6 @@
 // Entity definitions for {{name}}.
 // Point classes sit at one spot; solid classes are built from brushes.
-// docs/sdk-format.md in the MapCraft repository lists the FGD features MapCraft reads.
+// `mapcraft-cli fgd entities.fgd` lists the classes and reports any syntax problems.
 
 @SolidClass = worldspawn : "The world: every brush that belongs to no other entity." []
 

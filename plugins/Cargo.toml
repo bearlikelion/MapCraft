@@ -1,7 +1,7 @@
 # First-party plugins, built for wasm32-wasip2 by `cargo xtask plugins` into each SDK that lists them.
 [workspace]
 resolver = "3"
-members = ["godot", "source-bsp", "surfsup"]
+members = ["godot", "quake", "source-bsp", "surfsup"]
 
 [workspace.package]
 version = "0.1.0"

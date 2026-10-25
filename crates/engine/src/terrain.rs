@@ -50,7 +50,14 @@ fn noise(p: DVec3) -> f64 {
 impl Session {
     /// The displaced faces sculpting and heightmaps change: the picked ones, else every visible one.
     fn displacement_targets(&self) -> Vec<Target> {
-        let picked: BTreeSet<_> = self.face_selection.iter().copied().collect();
+        let mut picked: BTreeSet<_> = self.face_selection.iter().copied().collect();
+        // Picks with no displacement among them would leave nothing to sculpt, so they limit nothing.
+        let displaced = |(id, face): &(NodeId, mapcraft_map::FaceId)| {
+            self.map.get(*id).and_then(|n| n.kind.brush()).is_some_and(|b| b.faces.iter().any(|f| f.id == *face && f.disp.is_some()))
+        };
+        if !picked.iter().any(displaced) {
+            picked.clear();
+        }
         let visible = self.map.visible_nodes();
         let mut out = Vec::new();
         for (id, node) in self.map.nodes() {
@@ -100,7 +107,7 @@ impl Session {
             return Err(EngineError::NothingSelected);
         }
         let mut e = self.map.edit();
-        let mut changed = 0;
+        let (mut changed, mut same) = (0, 0);
         let brushes: BTreeSet<NodeId> = self.face_selection.iter().map(|(id, _)| *id).collect();
         for id in brushes {
             let Some(mut b) = self.map.get(id).and_then(|n| n.kind.brush()).cloned() else { continue };
@@ -108,13 +115,19 @@ impl Session {
             for (f, w) in b.faces.iter_mut().zip(&solid.faces) {
                 let Some(w) = w.as_ref().filter(|w| w.0.len() == 4 && self.face_selection.contains(&(id, f.id))) else { continue };
                 f.disp = Some(match &f.disp {
-                    Some(d) if d.power == power => continue,
+                    Some(d) if d.power == power => {
+                        same += 1;
+                        continue;
+                    }
                     Some(d) => d.resampled(power),
                     None => Displacement::new(power, w.0[0]),
                 });
                 changed += 1;
             }
             e.set_kind(id, NodeKind::Brush(b))?;
+        }
+        if changed == 0 && same > 0 {
+            return Err(EngineError::Refused("the picked faces already have that power"));
         }
         if changed == 0 {
             return Err(EngineError::Refused("only faces with four corners can be displaced"));
@@ -278,6 +291,18 @@ mod tests {
         assert!(ga.iter().any(|p| p.z > 1.0), "the brush raised the surface");
         s.undo();
         assert!(grid(&s, a).iter().all(|p| p.z.abs() < 1e-9), "one undo takes back the whole stroke");
+    }
+
+    #[test]
+    fn plain_picks_do_not_block_sculpting() {
+        let mut s = Session::default();
+        let a = floor(&mut s, 0.0);
+        s.face_selection = BTreeSet::from([(a, top(&s, a))]);
+        s.displace_faces(2).unwrap();
+        let side = s.map.get(a).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.disp.is_none()).unwrap().id;
+        s.face_selection = BTreeSet::from([(a, side)]);
+        let dab = Sculpt { mode: SculptMode::Raise, center: DVec3::new(32.0, 32.0, 0.0), radius: 64.0, amount: 8.0, level: DVec3::ZERO };
+        assert!(s.sculpt(&dab, None).unwrap(), "a pick with no displacement in it limits nothing");
     }
 
     #[test]

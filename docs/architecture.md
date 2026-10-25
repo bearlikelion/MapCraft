@@ -12,10 +12,11 @@ Dependencies only point down.
 | L2 | `format`, `sdk` | `.mcmap` files, SDK manifests and assets |
 | L3 | `plugin-host`, `render` | WebAssembly plugins, wgpu renderer |
 | L4 | `engine` | Session, commands, undo, selection |
-| L5 | `ui` | egui shell |
-| L6 | `mapcraft`, `cli` | Binaries |
+| L5 | `sdk-manager` | SDK registries, installs, packaging and checks |
+| L6 | `ui` | egui shell |
+| L7 | `mapcraft`, `cli` | Binaries |
 
-Nothing below L5 may depend on egui, eframe, egui-wgpu, winit, rfd, muda or craft-ui.
+Nothing below L6 may depend on egui, eframe, egui-wgpu, winit, rfd, muda or craft-ui.
 
 ## Brushes
 

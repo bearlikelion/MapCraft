@@ -13,6 +13,35 @@ pub struct Material {
     pub name: String,
     pub image: Option<PathBuf>,
     pub color: Option<[u8; 3]>,
+    /// A picture a plugin decoded itself, such as a texture from a WAD.
+    pub pixels: Option<std::sync::Arc<mapcraft_plugin_host::Picture>>,
+}
+
+/// Characters some file systems refuse in names, written as `%XX` in the material cache.
+const UNSAFE: &[char] = &['%', '*', '?', ':', '"', '<', '>', '|', '\\'];
+
+fn escape_name(part: &str) -> String {
+    part.chars().map(|c| if UNSAFE.contains(&c) || c.is_control() { format!("%{:02X}", c as u32) } else { c.to_string() }).collect()
+}
+
+fn unescape_name(part: &str) -> String {
+    let mut out = String::new();
+    let mut rest = part;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let code = rest.get(i + 1..i + 3).and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
+        match code {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[i + 3..];
+            }
+            None => {
+                out.push('%');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out + rest
 }
 
 /// Size of the texture made for a color-only material.
@@ -63,8 +92,11 @@ impl Project {
         }
         match sdk.vfs(&p.vars) {
             Ok(vfs) => {
-                p.materials =
-                    vfs.list(&sdk.manifest.textures.extensions).into_iter().map(|(name, path)| Material { name, image: Some(path), color: None }).collect();
+                p.materials = vfs
+                    .list(&sdk.manifest.textures.extensions)
+                    .into_iter()
+                    .map(|(name, path)| Material { name, image: Some(path), color: None, pixels: None })
+                    .collect();
                 p.vfs = vfs;
             }
             Err(e) => p.problems.push(e.to_string()),
@@ -100,8 +132,9 @@ impl Project {
         for plugin in self.plugins.iter_mut().filter(|p| p.manifest.materials) {
             match plugin.materials() {
                 Ok(list) => {
-                    let found = list.into_iter().map(|m| Material { image: m.image.and_then(|i| self.vfs.find(&i)), name: m.name, color: m.color });
-                    listed.extend(found.filter(|m| m.image.is_some() || m.color.is_some()));
+                    let found =
+                        list.into_iter().map(|m| Material { image: m.image.and_then(|i| self.vfs.find(&i)), name: m.name, color: m.color, pixels: m.pixels });
+                    listed.extend(found.filter(|m| m.image.is_some() || m.color.is_some() || m.pixels.is_some()));
                 }
                 Err(e) => self.problems.push(e.to_string()),
             }
@@ -118,7 +151,8 @@ impl Project {
     pub fn add_cached_materials(&mut self, dir: &Path) {
         let have: std::collections::BTreeSet<String> = self.materials.iter().map(|m| m.name.clone()).collect();
         let cached = Vfs::new(vec![dir.to_path_buf()]).list(&["png".to_string()]);
-        self.materials.extend(cached.into_iter().filter(|(n, _)| !have.contains(n)).map(|(name, path)| Material { name, image: Some(path), color: None }));
+        let named = cached.into_iter().map(|(file, path)| (file.split('/').map(unescape_name).collect::<Vec<_>>().join("/"), path));
+        self.materials.extend(named.filter(|(n, _)| !have.contains(n)).map(|(name, path)| Material { name, image: Some(path), color: None, pixels: None }));
         self.materials.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
@@ -126,7 +160,7 @@ impl Project {
     pub fn cache_materials(&mut self, dir: &Path, materials: &[mapcraft_plugin_host::ImportedMaterial]) -> usize {
         let mut saved = 0;
         for m in materials {
-            let parts: Vec<&str> = m.name.split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").collect();
+            let parts: Vec<String> = m.name.split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").map(escape_name).collect();
             let Some((last, folders)) = parts.split_last() else { continue };
             let folder = folders.iter().fold(dir.to_path_buf(), |p, c| p.join(c));
             let path = folder.join(format!("{last}.png"));
@@ -174,8 +208,12 @@ impl Project {
             }
             // Images a material uses are not listed, but faces may still name them.
             let loose = self.sdk.as_ref().and_then(|sdk| self.vfs.find_material(name, &sdk.manifest.textures.extensions));
-            let fallback = loose.map(|p| Material { name: name.to_string(), image: Some(p), color: None });
+            let fallback = loose.map(|p| Material { name: name.to_string(), image: Some(p), color: None, pixels: None });
             let Some(m) = self.material(name).or(fallback.as_ref()) else { continue };
+            if let Some(p) = &m.pixels {
+                failed += usize::from(!renderer.upload_material(name, p.width, p.height, &p.rgba));
+                continue;
+            }
             let Some(path) = &m.image else {
                 if let Some(c) = m.color
                     && !renderer.upload_material(name, SWATCH, SWATCH, &swatch(c))

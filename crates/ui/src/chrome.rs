@@ -336,7 +336,7 @@ impl MapCraftApp {
             }
             Tool::Clip => "Drag a line, or click two points, in any view; in the 3D view the cut runs straight into the face".into(),
             Tool::Vertex => "Drag yellow corners, blue edge midpoints or green face centers in a 2D view".into(),
-            Tool::Sculpt => "Drag on a displacement in the 3D view; Ctrl swaps raise and lower; faces picked with the Face tool limit it".into(),
+            Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
             Tool::Face => "Click faces in the 3D view; Alt+click picks a material, Alt+right click applies it, with Shift it wraps the alignment".into(),
         }
     }
@@ -536,12 +536,20 @@ impl MapCraftApp {
         if self.tool == Tool::Sculpt {
             ui.separator();
             use mapcraft_engine::SculptMode as M;
+            let tip = |what: &str, id: &str| format!("{what}  ({})", self.chord(id));
+            let tips = [
+                tip("Pull the surface up", "sculpt.raise"),
+                tip("Push the surface down", "sculpt.lower"),
+                tip("Even out bumps", "sculpt.smooth"),
+                tip("Level toward where the stroke began", "sculpt.flatten"),
+                tip("Roughen the surface", "sculpt.noise"),
+            ];
             let modes = [
-                (M::Raise, "Raise", "Pull the surface up"),
-                (M::Lower, "Lower", "Push the surface down"),
-                (M::Smooth, "Smooth", "Even out bumps"),
-                (M::Flatten, "Flatten", "Level toward where the stroke began"),
-                (M::Noise, "Noise", "Roughen the surface"),
+                (M::Raise, "Raise", tips[0].as_str()),
+                (M::Lower, "Lower", tips[1].as_str()),
+                (M::Smooth, "Smooth", tips[2].as_str()),
+                (M::Flatten, "Flatten", tips[3].as_str()),
+                (M::Noise, "Noise", tips[4].as_str()),
             ];
             Self::segmented(ui, &mut self.sculpt.0, &modes);
             ui.add(egui::DragValue::new(&mut self.sculpt.1).range(8.0..=4096.0).speed(4.0).prefix("radius "));

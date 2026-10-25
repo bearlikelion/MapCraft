@@ -2,10 +2,11 @@
 
 mod bhop;
 mod ramp;
+mod zon;
 
 use glam::DVec3;
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{Brush, CommandSpec, Entity, Hull, IntegerRange, NumberRange, ParamKind, ParamSpec, Surface, Value, Vec3};
+use mapcraft::plugin::types::{Brush, CommandSpec, Entity, ExporterSpec, Hull, IntegerRange, NumberRange, ParamKind, ParamSpec, Surface, Value, Vec3};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -402,6 +403,7 @@ impl Guest for SurfsUp {
             commands: vec![ramp_command(), bhop_command(), window_command(), stage_command()],
             materials: false,
             importers: Vec::new(),
+            exporters: vec![ExporterSpec { id: "zon".into(), label: "SurfsUp zones (.zon)".into(), extensions: vec!["zon".into()] }],
         }
     }
 
@@ -422,6 +424,17 @@ impl Guest for SurfsUp {
 
     fn list_materials() -> Result<Vec<MaterialInfo>, String> {
         Ok(Vec::new())
+    }
+
+    fn export_file(exporter: String, map: MapData, _context: Context) -> Result<Vec<u8>, String> {
+        if exporter != "zon" {
+            return Err(format!("unknown exporter {exporter}"));
+        }
+        let written = zon::write(&map)?;
+        for line in &written.log {
+            host::log(&format!("{}.zon: {line}", map.name));
+        }
+        Ok(written.text.into_bytes())
     }
 }
 

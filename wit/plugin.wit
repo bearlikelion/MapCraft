@@ -67,6 +67,14 @@ interface types {
         extensions: list<string>,
     }
 
+    /// A file format `export-file` writes, offered under File > Export and in compile profiles.
+    record exporter-spec {
+        id: string,
+        label: string,
+        /// Extensions without the dot, such as `map`; the first is the default.
+        extensions: list<string>,
+    }
+
     record manifest {
         id: string,
         name: string,
@@ -75,6 +83,7 @@ interface types {
         /// Whether `list-materials` lists the SDK's materials.
         materials: bool,
         importers: list<importer-spec>,
+        exporters: list<exporter-spec>,
     }
 
     /// Editor state a command may use: the grid size and the material picked in the browser.
@@ -139,6 +148,40 @@ interface types {
         materials: list<material-info>,
     }
 
+    /// A brush being exported: every face with its texture axes, and the brush's corners.
+    record solid {
+        faces: list<face>,
+        vertices: list<vec3>,
+    }
+
+    record map-entity {
+        classname: string,
+        properties: list<tuple<string, string>>,
+    }
+
+    variant map-node-kind {
+        layer(string),
+        group(string),
+        entity(map-entity),
+        brush(solid),
+    }
+
+    record map-node {
+        /// Index of the parent in `map-data.nodes`, which always comes earlier; none at the top.
+        parent: option<u32>,
+        kind: map-node-kind,
+    }
+
+    /// The map an exporter writes. Prefabs and mirror copies are already resolved, and layers left
+    /// out of exports and everything outside an active cordon are already removed.
+    record map-data {
+        /// The map's file name without its extension.
+        name: string,
+        /// Worldspawn's key values in order.
+        %world: list<tuple<string, string>>,
+        nodes: list<map-node>,
+    }
+
     /// An RGBA8 picture, rows top to bottom.
     record image {
         width: u32,
@@ -173,7 +216,7 @@ interface host {
 }
 
 world plugin {
-    use types.{manifest, param, context, output, material-info};
+    use types.{manifest, param, context, output, material-info, map-data};
 
     import host;
 
@@ -186,4 +229,7 @@ world plugin {
     /// Reads a file the user picked for one of the manifest's importers; `name` is its file name.
     /// The output is placed as is, in map space.
     export import-file: func(importer: string, name: string, data: list<u8>, context: context) -> result<output, string>;
+
+    /// Writes the map in one of the manifest's export formats; the editor saves the bytes.
+    export export-file: func(exporter: string, %map: map-data, context: context) -> result<list<u8>, string>;
 }

@@ -310,6 +310,13 @@ fn displacements_sculpt_in_the_3d_view() {
     s.undo();
     let b = s.map.get(id).unwrap().kind.brush().unwrap().clone();
     assert!(b.displaced(&b.solid().unwrap()).into_iter().flat_map(|(_, v)| v).all(|p| p.z.abs() < 1e-9), "one undo takes back the stroke");
+
+    let top_view = 1;
+    let (from, to) = (h.state().screen_for_test(top_view, DVec3::new(-64.0, 0.0, 0.0)), h.state().screen_for_test(top_view, DVec3::new(64.0, 0.0, 0.0)));
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    let b = h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().clone();
+    let peak = b.displaced(&b.solid().unwrap()).into_iter().flat_map(|(_, v)| v).map(|p| p.z).fold(f64::MIN, f64::max);
+    assert!(peak > 1.0, "sculpting works in the 2D views too: {peak}");
 }
 
 fn click(h: &mut Harness<MapCraftApp>, at: Pos2) {
@@ -350,4 +357,43 @@ fn mirror_groups_show_and_pick_their_copies() {
     let s = h.state_mut().session_for_test();
     let xs: Vec<f64> = s.map.nodes().filter_map(|(_, n)| n.kind.brush()?.bounds().ok()).map(|b| b.min.x).collect();
     assert!(xs.contains(&0.0), "the copy lands across the plane at x = 0: {xs:?}");
+}
+
+#[test]
+fn sdk_manager_checks_and_creates_sdks() {
+    use mapcraft_sdk_manager::Level;
+    let (mut h, settings) = editor();
+    h.state_mut().run_command_for_test("file.sdk_manager");
+    h.run_steps(2);
+    assert!(h.state().sdk_ids_for_test().iter().any(|id| id == "surfsup"));
+    // The top bar's map Check comes first; the SDK card's is drawn after it.
+    h.get_all_by_label("Check").last().unwrap().click();
+    let mut items = None;
+    for _ in 0..400 {
+        h.run_steps(1);
+        items = h.state().sdk_check_for_test("surfsup");
+        if items.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let items = items.expect("the check finishes on its worker thread");
+    assert_eq!((items[0].level, items[0].what.as_str()), (Level::Pass, "manifest"));
+    assert!(items.iter().any(|i| i.what.starts_with("sample") && i.level != Level::Fail), "{items:#?}");
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("passed,").is_some(), "the results show inline");
+
+    h.get_by_label("Create").click();
+    h.run_steps(2);
+    for (field, text) in [("Id", "my-game"), ("Name", "My Game")] {
+        h.get_by_label(field).focus();
+        h.run_steps(1);
+        h.get_by_label(field).type_text(text);
+        h.run_steps(1);
+    }
+    h.get_by_label("Create SDK").click();
+    h.run_steps(3);
+    assert!(settings.path().join("data/sdks/my-game/sdk.toml").is_file());
+    assert_eq!(h.state().sdk_ids_for_test().first().map(String::as_str), Some("my-game"), "user SDKs list first");
+    assert!(h.query_by_label("Remove…").is_some(), "a user SDK can be removed");
 }

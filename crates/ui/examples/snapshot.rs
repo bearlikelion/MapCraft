@@ -2,7 +2,8 @@
 //! `cargo run -p mapcraft-ui --example snapshot -- out.png [map.mcmap] [steps]`.
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
-//! `--drag x,y x,y`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path.
+//! `--drag x,y x,y`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path
+//! and `--registry <url|path>` replaces the SDK Manager's registries.
 
 use std::path::PathBuf;
 
@@ -29,6 +30,7 @@ fn main() {
     let settings = std::env::temp_dir().join(format!("mapcraft-snapshot-{}", std::process::id()));
     let mut options = Options { settings_dir: Some(settings.clone()), ..Options::default() };
     let mut steps: Vec<(String, Vec<String>)> = Vec::new();
+    let mut registries = Vec::new();
     let mut it = args.iter().skip(1).peekable();
     while let Some(a) = it.next() {
         let take =
@@ -39,6 +41,7 @@ fn main() {
                     options.sdk_vars.push((k.to_string(), v.to_string()));
                 }
             }
+            "--registry" => registries.extend(it.next().cloned()),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
             "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" | "--wait" => steps.push((a.clone(), take(1, &mut it))),
             "--drag" => steps.push((a.clone(), take(2, &mut it))),
@@ -46,6 +49,9 @@ fn main() {
         }
     }
     let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    if !registries.is_empty() {
+        h.state_mut().set_registries_for_test(registries);
+    }
     h.run_steps(4);
     for (step, args) in &steps {
         let arg = args.first().map(String::as_str).unwrap_or_default();

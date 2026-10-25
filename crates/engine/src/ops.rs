@@ -525,11 +525,12 @@ impl Session {
             return Err(EngineError::NothingSelected);
         }
         let cutter_ids: BTreeSet<NodeId> = self.selected_brushes().into_iter().collect();
+        let visible = self.map.visible_nodes();
         let mut e = self.map.edit();
         let targets: Vec<(NodeId, Brush)> = self
             .map
             .nodes()
-            .filter(|(id, n)| !cutter_ids.contains(id) && !n.hidden && !n.locked)
+            .filter(|(id, n)| !cutter_ids.contains(id) && visible.contains(id) && !n.locked)
             .filter_map(|(id, n)| Some((id, n.kind.brush()?.clone())))
             .collect();
         for (id, brush) in targets {
@@ -735,6 +736,28 @@ impl Session {
         Ok(())
     }
 
+    /// Locks or unlocks nodes; locked ones cannot be picked in the views or changed by tools.
+    pub fn set_locked(&mut self, ids: &[NodeId], locked: bool) -> Result<(), EngineError> {
+        let mut e = self.map.edit();
+        for id in ids {
+            e.update(*id, |_, l, _, _| *l = locked)?;
+        }
+        let c = e.finish();
+        self.apply(if locked { "Lock" } else { "Unlock" }, c);
+        if locked {
+            self.selection.retain(|id| !ids.contains(id));
+        }
+        Ok(())
+    }
+
+    pub fn unlock_all(&mut self) -> Result<(), EngineError> {
+        let ids: Vec<NodeId> = self.map.nodes().filter(|(_, n)| n.locked).map(|(id, _)| id).collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        self.set_locked(&ids, false)
+    }
+
     /// Hides every brush, entity and prefab outside the selection (Hammer's isolate).
     pub fn isolate_selection(&mut self) -> Result<(), EngineError> {
         self.require_selection()?;
@@ -811,6 +834,27 @@ mod tests {
         s.apply_material().unwrap();
         let mats: Vec<String> = s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| f.material.clone()).collect();
         assert_eq!(mats.iter().filter(|m| *m == "ramps/orange").count(), 1, "only the picked face changes: {mats:?}");
+    }
+
+    #[test]
+    fn carve_spares_what_is_hidden_and_locks_hold() {
+        let mut s = session();
+        let wall = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(256.0, 32.0, 128.0))).unwrap();
+        let layer = s.create_layer("Hidden").unwrap();
+        let hidden = s.create_brush(Aabb::new(DVec3::new(0.0, 64.0, 0.0), DVec3::new(256.0, 96.0, 128.0))).unwrap();
+        s.set_hidden(&[layer], true).unwrap();
+        s.active_parent = ROOT;
+        let cutter = s.create_brush(Aabb::new(DVec3::new(96.0, -32.0, 0.0), DVec3::new(160.0, 128.0, 64.0))).unwrap();
+        s.selection = BTreeSet::from([cutter]);
+        s.carve().unwrap();
+        assert!(s.map.get(wall).is_none(), "the visible wall is cut");
+        assert!(s.map.get(hidden).is_some(), "a brush in a hidden layer is left alone");
+
+        s.selection = BTreeSet::from([cutter]);
+        s.set_locked(&[cutter], true).unwrap();
+        assert!(s.selection.is_empty() && s.map.get(cutter).unwrap().locked);
+        s.unlock_all().unwrap();
+        assert!(!s.map.get(cutter).unwrap().locked);
     }
 
     #[test]

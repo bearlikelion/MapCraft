@@ -256,14 +256,22 @@ impl MapCraftApp {
     /// The displaced surface under the pointer in the 3D view, and its face's normal.
     fn sculpt_hit(&self, index: usize, rect: Rect, pos: Pos2) -> Option<(DVec3, DVec3)> {
         let cam = self.panes.get(index)?.camera;
-        if cam.is_2d() {
-            return None;
-        }
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let (id, face, t) = self.pick_face(origin, dir)?;
         let b = self.session.map.get(id)?.kind.brush()?;
         let normal = b.faces.iter().find(|f| f.id == face && f.disp.is_some())?.plane()?.normal;
         Some((origin + dir * t, normal))
+    }
+
+    /// Why a sculpt click found nothing to change.
+    fn nothing_to_sculpt(&self) -> String {
+        let any = self.session.map.nodes().any(|(_, n)| n.kind.brush().is_some_and(|b| b.has_displacement()));
+        let face = self.chord("tool.face");
+        if any {
+            "Point at a displacement to sculpt it".into()
+        } else {
+            format!("Nothing to sculpt yet: pick a floor's top face with the Face tool ({face}) and click Make under Displacement in the inspector")
+        }
     }
 
     /// Continues a sculpt stroke under the pointer.
@@ -891,13 +899,14 @@ impl MapCraftApp {
                 self.session.click(hits.get(i).copied(), additive);
                 self.mark_changed();
             }
-            Tool::Sculpt => {
-                if let Some((p, _)) = self.sculpt_hit(index, rect, pos) {
+            Tool::Sculpt => match self.sculpt_hit(index, rect, pos) {
+                Some((p, _)) => {
                     self.session.end_coalesce();
                     self.dab(p, p, 0.05, additive);
                     self.session.end_coalesce();
                 }
-            }
+                None => self.status = self.nothing_to_sculpt(),
+            },
             Tool::Face => {
                 let hit = self.pick_face(origin, dir).map(|(id, f, _)| (id, f));
                 if !additive {
@@ -917,7 +926,8 @@ impl MapCraftApp {
                     p + depth * self.last_box.min.dot(depth)
                 } else {
                     match self.pick(origin, dir) {
-                        Some((_, t)) => snap(origin + dir * t, self.session.grid),
+                        Some((_, t)) if self.prefs.get().view.snap_grid => snap(origin + dir * t, self.session.grid),
+                        Some((_, t)) => origin + dir * t,
                         None => return,
                     }
                 };
@@ -968,20 +978,23 @@ impl MapCraftApp {
             }
             return;
         }
+        if self.tool == Tool::Sculpt {
+            match self.sculpt_hit(index, rect, pos) {
+                Some((p, _)) => {
+                    self.session.end_coalesce();
+                    self.drag = Drag::Sculpt { view: index, level: p, last: std::time::Instant::now() };
+                    self.dab(p, p, 1.0 / 60.0, mods.command);
+                }
+                None => self.status = self.nothing_to_sculpt(),
+            }
+            return;
+        }
         if !cam.is_2d() {
             if self.tool == Tool::Scale && self.begin_scale(index, rect, pos) {
                 return;
             }
             if self.tool == Tool::Block {
                 self.begin_block_3d(index, rect, pos);
-                return;
-            }
-            if self.tool == Tool::Sculpt {
-                if let Some((p, _)) = self.sculpt_hit(index, rect, pos) {
-                    self.session.end_coalesce();
-                    self.drag = Drag::Sculpt { view: index, level: p, last: std::time::Instant::now() };
-                    self.dab(p, p, 1.0 / 60.0, mods.command);
-                }
                 return;
             }
             let arrow = self.gizmo(index, rect).into_iter().find(|(_, a, b, _)| segment_distance(pos, *a, *b) < 6.0);

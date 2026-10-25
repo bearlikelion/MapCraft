@@ -56,7 +56,6 @@ impl Preset {
                 ("tool.clip", "Shift+X"),
                 ("tool.vertex", "Shift+V"),
                 ("tool.face", "Shift+A"),
-                ("tools.move_to_world", "Ctrl+Shift+W"),
             ],
             Preset::TrenchBroom => &[
                 ("tool.entity", ""),
@@ -127,6 +126,11 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("tool.vertex", "Vertex Tool", "V"),
     ("tool.face", "Face Tool", "Shift+F"),
     ("tool.sculpt", "Sculpt Tool", "D"),
+    ("sculpt.raise", "Sculpt: Raise", "1"),
+    ("sculpt.lower", "Sculpt: Lower", "2"),
+    ("sculpt.smooth", "Sculpt: Smooth", "3"),
+    ("sculpt.flatten", "Sculpt: Flatten", "4"),
+    ("sculpt.noise", "Sculpt: Noise", "5"),
 ];
 
 /// The chord bound to `id`: the user's own, else the preset's, else the default.

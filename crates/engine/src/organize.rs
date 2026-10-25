@@ -25,6 +25,20 @@ pub fn find_entities(map: &Map, query: &str) -> Vec<NodeId> {
         .collect()
 }
 
+/// `text` with every match of `find` replaced, ignoring ASCII case as the find box does; `None`
+/// when nothing matches.
+fn replace_ignoring_case(text: &str, find: &str, replace: &str) -> Option<String> {
+    let (hay, needle) = (text.to_ascii_lowercase(), find.to_ascii_lowercase());
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (i, _) in hay.match_indices(&needle) {
+        out.push_str(&text[last..i]);
+        out.push_str(replace);
+        last = i + find.len();
+    }
+    (last > 0).then(|| out + &text[last..])
+}
+
 impl Session {
     /// Moves `ids` under `parent` in front of its child at `index`, keeping their order.
     pub fn move_nodes(&mut self, ids: &[NodeId], parent: NodeId, index: usize) -> Result<(), EngineError> {
@@ -166,9 +180,11 @@ impl Session {
             let values = ent.properties.iter_mut().map(|(_, v)| v);
             let conns = ent.connections.iter_mut().flat_map(|c| [&mut c.target, &mut c.param]);
             let mut changed = 0;
-            for v in values.chain(conns).filter(|v| v.contains(find)) {
-                *v = v.replace(find, replace);
-                changed += 1;
+            for v in values.chain(conns) {
+                if let Some(new) = replace_ignoring_case(v, find, replace) {
+                    *v = new;
+                    changed += 1;
+                }
             }
             if changed > 0 {
                 e.set_kind(id, NodeKind::Entity(ent))?;
@@ -217,6 +233,12 @@ mod tests {
         assert!(s.move_nodes(&[group], ids[1], 0).is_err(), "a brush holds nothing");
         s.undo();
         assert_eq!(s.map.get(ids[0]).unwrap().parent, Some(parent));
+    }
+
+    #[test]
+    fn replace_ignores_case_like_find() {
+        assert_eq!(replace_ignoring_case("Stage1_Start", "stage1", "stage2").as_deref(), Some("stage2_Start"));
+        assert_eq!(replace_ignoring_case("abc", "x", "y"), None);
     }
 
     #[test]

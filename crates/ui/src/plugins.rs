@@ -182,6 +182,72 @@ impl MapCraftApp {
         .on_disabled_hover_text("This SDK's plugins import no file formats");
     }
 
+    /// File > Export: one entry per exporter of the loaded plugins.
+    pub(crate) fn export_menu(&mut self, ui: &mut egui::Ui) {
+        let exporters: Vec<mapcraft_plugin_host::ImporterSpec> = self.project.plugins.iter().flat_map(|p| p.manifest.exporters.clone()).collect();
+        ui.add_enabled_ui(!exporters.is_empty(), |ui| {
+            ui.menu_button("Export", |ui| {
+                for exporter in exporters {
+                    if ui.button(format!("{}…", exporter.label)).clicked() {
+                        self.export_dialog(&exporter);
+                    }
+                }
+            })
+        })
+        .response
+        .on_disabled_hover_text("This SDK's plugins export no file formats");
+    }
+
+    fn export_dialog(&mut self, exporter: &mapcraft_plugin_host::ImporterSpec) {
+        let stem = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
+        let ext = exporter.extensions.first().cloned().unwrap_or_default();
+        let mut dialog = rfd::FileDialog::new().add_filter(&exporter.label, &exporter.extensions).set_file_name(format!("{stem}.{ext}"));
+        if let Some(dir) = self.session.path.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else { return };
+        match self.export_to(&exporter.id, &path) {
+            Ok(()) => self.status = format!("Exported {}", path.display()),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Writes the map, with prefabs and mirrors resolved, through the exporter `id` into `path`.
+    pub(crate) fn export_to(&mut self, id: &str, path: &std::path::Path) -> Result<(), String> {
+        let ctx = self.plugin_context();
+        let name = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
+        let map = self.view_map().clone();
+        let displaced = map.nodes().filter_map(|(_, n)| n.kind.brush()).filter(|b| b.has_displacement()).count();
+        let connections: usize = map.nodes().filter_map(|(_, n)| n.kind.entity()).map(|e| e.connections.len()).sum();
+        if displaced + connections > 0 {
+            self.output.push(format!("Exporters do not get displacements or entity outputs yet: {displaced} displaced brushes are written flat and {connections} outputs are left out"));
+        }
+        let plugin = self
+            .project
+            .plugins
+            .iter_mut()
+            .find(|p| p.manifest.exporters.iter().any(|e| e.id == id))
+            .ok_or_else(|| format!("no loaded plugin exports `{id}`"))?;
+        let result = plugin.export(id, &map, &name, &ctx).map_err(|e| e.to_string());
+        self.output.extend(plugin.take_log());
+        let bytes = result?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        }
+        // Exports can land on files made by other tools, such as a game's curated zone files.
+        if let Ok(old) = std::fs::read(path)
+            && old != bytes
+        {
+            let mut backup = path.as_os_str().to_owned();
+            backup.push(".bak");
+            std::fs::write(&backup, old).map_err(|e| format!("cannot keep a backup of {}: {e}", path.display()))?;
+            self.output.push(format!("Kept the previous {} as {}", path.display(), std::path::Path::new(&backup).display()));
+        }
+        std::fs::write(path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        self.output.push(format!("Exported {}", path.display()));
+        Ok(())
+    }
+
     /// Picks a file for `importer` and puts what it reads in a new layer.
     fn import_file(&mut self, plugin: &str, importer: &mapcraft_plugin_host::ImporterSpec) {
         let Some(path) = rfd::FileDialog::new().add_filter(&importer.label, &importer.extensions).pick_file() else { return };

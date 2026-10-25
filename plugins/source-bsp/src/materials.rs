@@ -1,6 +1,7 @@
 //! Finds the pictures of a map's materials in its embedded pakfile and in the game's VPK packages.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::bsp::{lzma, u16_at, u32_at};
@@ -15,6 +16,8 @@ pub trait Files {
 /// The packages CS:S looks in after the map's own pakfile, in order.
 const PACKAGES: &[&str] = &["cstrike_pak_dir.vpk", "hl2_textures_dir.vpk", "hl2_misc_dir.vpk"];
 const MAX_INCLUDES: usize = 8;
+/// Enough of a VTF for its header and resource list.
+const HEADER: usize = 4096;
 
 /// Where a file was found.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,7 +51,8 @@ fn zip_entries(zip: &[u8]) -> HashMap<String, (u16, usize, usize, usize)> {
     out
 }
 
-fn zip_read<'a>(zip: &'a [u8], &(method, local, packed, size): &(u16, usize, usize, usize)) -> Option<Cow<'a, [u8]>> {
+/// The entry's bytes; an LZMA-compressed entry stops after `limit` bytes.
+fn zip_read<'a>(zip: &'a [u8], &(method, local, packed, size): &(u16, usize, usize, usize), limit: usize) -> Option<Cow<'a, [u8]>> {
     if zip.get(local..local.checked_add(4)?) != Some(b"PK\x03\x04") {
         return None;
     }
@@ -57,7 +61,7 @@ fn zip_read<'a>(zip: &'a [u8], &(method, local, packed, size): &(u16, usize, usi
     match method {
         0 => Some(Cow::Borrowed(data)),
         // Zip's LZMA: a 2-byte version, a 2-byte property size, the properties, then the stream.
-        14 => lzma(data.get(4..9)?, data.get(9..)?, size).ok().map(Cow::Owned),
+        14 => lzma(data.get(4..9)?, data.get(9..)?, size, limit).ok().map(Cow::Owned),
         _ => None,
     }
 }
@@ -137,20 +141,23 @@ pub struct Library<'a> {
     pak_entries: HashMap<String, (u16, usize, usize, usize)>,
     vpks: Vec<Vpk>,
     files: &'a dyn Files,
+    /// Decoded textures by path, since VBSP's patched copies of a material share one.
+    decoded: RefCell<HashMap<String, Option<(vtf::Picture, Origin)>>>,
 }
 
 impl<'a> Library<'a> {
     pub fn new(pak: &'a [u8], files: &'a dyn Files) -> Self {
         let vpks = PACKAGES.iter().filter_map(|name| Vpk::open(name, files.read(name)?)).collect();
-        Library { pak, pak_entries: zip_entries(pak), vpks, files }
+        Library { pak, pak_entries: zip_entries(pak), vpks, files, decoded: RefCell::default() }
     }
 
     pub fn has_game_files(&self) -> bool {
         !self.vpks.is_empty()
     }
 
-    fn find(&self, path: &str) -> Option<(Cow<'a, [u8]>, Origin)> {
-        if let Some(data) = self.pak_entries.get(path).and_then(|e| zip_read(self.pak, e)) {
+    /// The file's bytes, at least its first `limit` of them, and where it was found.
+    fn find(&self, path: &str, limit: usize) -> Option<(Cow<'a, [u8]>, Origin)> {
+        if let Some(data) = self.pak_entries.get(path).and_then(|e| zip_read(self.pak, e, limit)) {
             return Some((data, Origin::Map));
         }
         let packed = self.vpks.iter().find_map(|v| v.read(path, self.files));
@@ -161,7 +168,7 @@ impl<'a> Library<'a> {
     fn textures(&self, material: &str) -> Vec<String> {
         let mut name = material.to_string();
         for _ in 0..MAX_INCLUDES {
-            let Some((vmt, _)) = self.find(&format!("materials/{name}.vmt")) else { break };
+            let Some((vmt, _)) = self.find(&format!("materials/{name}.vmt"), usize::MAX) else { break };
             let text = String::from_utf8_lossy(&vmt);
             let tokens = tokens(&text);
             let found: Vec<String> = ["%tooltexture", "$basetexture"]
@@ -180,8 +187,18 @@ impl<'a> Library<'a> {
     /// The material's picture, no wider or taller than `max`, and where its texture was found.
     pub fn picture(&self, material: &str, max: usize) -> Option<(vtf::Picture, Origin)> {
         self.textures(material).iter().find_map(|texture| {
-            let (data, origin) = self.find(&format!("materials/{texture}.vtf"))?;
-            vtf::decode(&data, max).ok().map(|p| (p, origin))
+            let path = format!("materials/{texture}.vtf");
+            if let Some(known) = self.decoded.borrow().get(&path) {
+                return known.clone();
+            }
+            // Mips run smallest first, so a compressed texture is only unpacked up to the one wanted.
+            let picture = self.find(&path, HEADER).and_then(|(head, origin)| {
+                let need = vtf::needed(&head, max)?;
+                let data = if need <= head.len() { head } else { self.find(&path, need)?.0 };
+                vtf::decode(&data, max).ok().map(|p| (p, origin))
+            });
+            self.decoded.borrow_mut().insert(path, picture.clone());
+            picture
         })
     }
 }
@@ -271,7 +288,7 @@ mod tests {
         zip.extend([0, 0]);
         let entries = zip_entries(&zip);
         let entry = entries.get("materials/a.vmt").unwrap();
-        assert_eq!(zip_read(&zip, entry).as_deref(), Some(&body[..]));
+        assert_eq!(zip_read(&zip, entry, usize::MAX).as_deref(), Some(&body[..]));
         assert!(zip_entries(&zip[..zip.len() - 3]).is_empty());
     }
 }

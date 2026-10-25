@@ -18,9 +18,10 @@ pub struct Manifest {
     pub commands: Vec<CommandSpec>,
     pub materials: bool,
     pub importers: Vec<ImporterSpec>,
+    pub exporters: Vec<ImporterSpec>,
 }
 
-/// A file format the plugin imports.
+/// A file format the plugin imports or exports.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImporterSpec {
     pub id: String,
@@ -121,7 +122,8 @@ pub(crate) fn manifest(m: t::Manifest) -> Manifest {
         })
         .collect();
     let importers = m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
-    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers }
+    let exporters = m.exporters.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
+    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters }
 }
 
 /// Stored parameter values as the plugin expects them; missing or wrong values fall back to the
@@ -189,18 +191,75 @@ fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
     }
 }
 
+fn wit_vec3(p: DVec3) -> t::Vec3 {
+    t::Vec3 { x: p.x, y: p.y, z: p.z }
+}
+
+fn solid(b: &Brush) -> t::Solid {
+    let axis = |a: &TexAxis| t::TexAxis { axis: wit_vec3(a.axis), offset: a.offset, scale: a.scale };
+    let faces = b
+        .faces
+        .iter()
+        .map(|f| t::Face {
+            points: (wit_vec3(f.points[0]), wit_vec3(f.points[1]), wit_vec3(f.points[2])),
+            material: f.material.clone(),
+            uv: Some((axis(&f.u), axis(&f.v))),
+        })
+        .collect();
+    t::Solid { faces, vertices: b.vertices().unwrap_or_default().into_iter().map(wit_vec3).collect() }
+}
+
+/// The map as an exporter sees it, parents first: layers left out of exports, and anything outside
+/// every active cordon, are dropped. `map` should already have prefabs and mirrors resolved.
+pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> t::MapData {
+    use mapcraft_geom::Aabb;
+    let world = map.get(mapcraft_map::ROOT).and_then(|n| n.kind.entity()).map(|e| e.properties.clone()).unwrap_or_default();
+    let cordons: Vec<Aabb> = map.cordons.iter().filter(|c| c.active).map(|c| c.bounds).collect();
+    let inside = |b: &Aabb| cordons.is_empty() || cordons.iter().any(|c| c.intersects(b));
+    let brush_inside = |id: &mapcraft_map::NodeId| map.get(*id).and_then(|n| n.kind.brush()).and_then(|b| b.bounds().ok()).is_some_and(|b| inside(&b));
+    let roots = map.get(mapcraft_map::ROOT).map(|n| n.children.clone()).unwrap_or_default();
+    let mut stack: Vec<(mapcraft_map::NodeId, Option<u32>)> = roots.into_iter().rev().map(|c| (c, None)).collect();
+    let mut nodes = Vec::new();
+    while let Some((id, parent)) = stack.pop() {
+        let Some(n) = map.get(id) else { continue };
+        let kind = match &n.kind {
+            NodeKind::Layer(l) if l.omit_from_export => continue,
+            NodeKind::Layer(l) => t::MapNodeKind::Layer(l.name.clone()),
+            NodeKind::Group(g) => t::MapNodeKind::Group(g.name.clone()),
+            NodeKind::Entity(e) => {
+                let kept = if n.children.is_empty() { e.origin().is_none_or(|o| inside(&Aabb::new(o, o))) } else { n.children.iter().any(brush_inside) };
+                if !kept {
+                    continue;
+                }
+                t::MapNodeKind::Entity(t::MapEntity { classname: e.classname.clone(), properties: e.properties.clone() })
+            }
+            NodeKind::Brush(b) if brush_inside(&id) => t::MapNodeKind::Brush(solid(b)),
+            _ => continue,
+        };
+        let index = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
+        nodes.push(t::MapNode { parent, kind });
+        stack.extend(n.children.iter().rev().map(|c| (*c, Some(index))));
+    }
+    t::MapData { name: name.to_string(), world, nodes }
+}
+
 /// A texture axis, or `None` when it would divide by zero or is not a number.
 fn tex_axis(a: &t::TexAxis) -> Option<TexAxis> {
     let axis = vec3(&a.axis);
-    (axis.is_finite() && axis.length_squared() > 1e-12 && a.scale.is_finite() && a.scale.abs() > 1e-9 && a.offset.is_finite())
-        .then_some(TexAxis { axis, offset: a.offset, scale: a.scale })
+    (axis.is_finite() && axis.length_squared() > 1e-12 && a.scale.is_finite() && a.scale.abs() > 1e-9 && a.offset.is_finite()).then_some(TexAxis {
+        axis,
+        offset: a.offset,
+        scale: a.scale,
+    })
 }
 
 fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize) -> Vec<Fragment> {
     let leaf = |kind| Fragment { kind, children: Vec::new() };
-    let take = |n: &mut usize| *n > 0 && {
-        *n -= 1;
-        true
+    let take = |n: &mut usize| {
+        *n > 0 && {
+            *n -= 1;
+            true
+        }
     };
     let mut frags: Vec<Fragment> = Vec::new();
     for b in brushes {
@@ -233,14 +292,66 @@ pub(crate) fn output(out: t::Output, ctx: &Context) -> Vec<Fragment> {
     frags
 }
 
-/// The pictures among `materials` whose size and pixel count agree, up to 8192 on a side.
+/// A picture whose size and pixel count agree, up to 8192 on a side.
+pub(crate) fn picture(p: t::Image) -> Option<crate::Picture> {
+    let ok = (1..=8192).contains(&p.width) && (1..=8192).contains(&p.height) && p.rgba.len() == p.width as usize * p.height as usize * 4;
+    ok.then_some(crate::Picture { width: p.width, height: p.height, rgba: p.rgba })
+}
+
+/// The pictures among `materials` whose size and pixel count agree, up to 8192 on a side, and
+/// flat swatches for those that only give a color.
 pub(crate) fn images(materials: Vec<t::MaterialInfo>) -> Vec<crate::ImportedMaterial> {
     materials
         .into_iter()
         .filter_map(|m| {
-            let p = m.pixels?;
-            let ok = (1..=8192).contains(&p.width) && (1..=8192).contains(&p.height) && p.rgba.len() == p.width as usize * p.height as usize * 4;
-            ok.then_some(crate::ImportedMaterial { name: m.name, width: p.width, height: p.height, rgba: p.rgba })
+            let Some(p) = m.pixels else {
+                let (r, g, b) = m.color?;
+                return Some(crate::ImportedMaterial { name: m.name, width: 16, height: 16, rgba: [r, g, b, 255].repeat(16 * 16) });
+            };
+            let p = picture(p)?;
+            Some(crate::ImportedMaterial { name: m.name, width: p.width, height: p.height, rgba: p.rgba })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::{Cordon, Entity, Layer, Map, ROOT};
+
+    use super::*;
+
+    #[test]
+    fn exported_maps_drop_omitted_layers_and_what_cordons_leave_out() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: "wall".into(), scale: 1.0 };
+        let kept = e.insert(ROOT, NodeKind::Layer(Layer { name: "Course".into(), ..Default::default() })).unwrap();
+        let skipped = e.insert(ROOT, NodeKind::Layer(Layer { name: "Reference".into(), omit_from_export: true, ..Default::default() })).unwrap();
+        e.insert(kept, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &tex))).unwrap();
+        e.insert(kept, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::splat(4096.0), DVec3::splat(4160.0)), &tex))).unwrap();
+        e.insert(skipped, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &tex))).unwrap();
+        let zone = e.insert(kept, NodeKind::Entity(Entity::new("zone_start"))).unwrap();
+        e.insert(zone, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(32.0)), &tex))).unwrap();
+        map.apply(e.finish());
+        map.cordons = vec![Cordon { name: "start".into(), bounds: Aabb::new(DVec3::splat(-128.0), DVec3::splat(128.0)), active: true }];
+
+        let data = map_data(&map, "surf_test");
+        let kinds: Vec<&str> = data
+            .nodes
+            .iter()
+            .map(|n| match &n.kind {
+                t::MapNodeKind::Layer(_) => "layer",
+                t::MapNodeKind::Group(_) => "group",
+                t::MapNodeKind::Entity(_) => "entity",
+                t::MapNodeKind::Brush(_) => "brush",
+            })
+            .collect();
+        assert_eq!(kinds, ["layer", "brush", "entity", "brush"], "the far brush and the omitted layer are gone");
+        assert!(data.nodes.iter().enumerate().all(|(i, n)| n.parent.is_none_or(|p| (p as usize) < i)), "parents come first");
+        assert_eq!(data.nodes[3].parent, Some(2), "the zone's brush belongs to the zone");
+        let t::MapNodeKind::Brush(b) = &data.nodes[1].kind else { panic!("a brush") };
+        assert_eq!((b.faces.len(), b.vertices.len()), (6, 8));
+        assert!(b.faces.iter().all(|f| f.uv.is_some()));
+    }
 }

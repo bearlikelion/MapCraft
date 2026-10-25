@@ -40,7 +40,7 @@
 - [x] Space maximizes the viewport under the pointer and restores the four views.
 - [x] Linked 2D zoom (on by default, chain toggle in each 2D header).
 - [x] TrenchBroom's extrude: drag a face (Extrude tool, or Shift+drag with Select), Ctrl splits off a new brush or splits inward, Ctrl+Alt stamps; coplanar faces of several brushes move together.
-- [x] Godot-style keys: Q select, W move, E extrude, R rotate (2D drag or 3D rings, 15 degree steps), T scale (3D handles); B block, N entity, C clip, V vertex, F face.
+- [x] Godot-style keys: Q select, W move, E extrude, R rotate (2D drag or 3D rings, 15 degree steps), T scale (3D handles); B block, N entity, C clip, V vertex, Shift+F face, D sculpt; F focuses the selection.
 - [x] SDK Settings opens by itself when a path materials need is unset, lists those paths first, flags paths that do not exist and applies on close.
 - [x] Release builds find the SDKs in the source tree; `MAPCRAFT_SDK_PATH` adds more folders.
 - [x] Scene tree rows with flat disclosure arrows, node kind icons and the visibility eye at the far right.
@@ -81,14 +81,17 @@
 
 ## M5 Counter-Strike: Source SDK
 
-- [ ] `source` plugin: VMF, VPK, VTF, VMT; BSP import for zoning existing maps is in progress.
+- [x] `source-bsp` plugin: File > Import reads BSP maps (versions 19 to 21) with texture alignment, grouped into ramps, world, triggers, spawns, lights and props, and textures from the map and the game's VPKs.
+- [ ] `source` plugin: VMF, VPK and VTF materials in the browser, MDL previews.
 - [x] Displacements as a host feature.
 - [ ] Overlays, Valve compilers.
 
 ## M6 Quake SDK
 
-- [ ] `quake` plugin: Standard and Valve220 `.map`, WAD2, PAK.
+- [x] `quake` plugin: Standard and Valve220 `.map` import with texture alignment and TrenchBroom layers and groups, WAD2 and WAD3 textures in the browser, the palette from the user's PAK; `sdks/quake` with an FGD written from scratch.
+- [ ] `.map` export (needs an exporter hook in the plugin API) so the ericw-tools compile profiles can run.
 
 ## M7 Platform
 
+- [x] SDK Manager (File > SDK Manager…): installed SDKs with Configure, Check, Test, Open Folder and Remove; install and update from registries with checksums and safe unpacking; new SDKs from a template; `mapcraft-cli sdk` and the MapCraftSDKs registry format. See [`docs/sdk-registry.md`](docs/sdk-registry.md).
 - [ ] macOS, packaging, control channel and MCP, Unity importer.

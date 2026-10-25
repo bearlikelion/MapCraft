@@ -34,6 +34,7 @@ impl Guest for SourceBsp {
             commands: Vec::new(),
             materials: false,
             importers: vec![ImporterSpec { id: "bsp".into(), label: "Source BSP".into(), extensions: vec!["bsp".into()] }],
+            exporters: Vec::new(),
         }
     }
 
@@ -63,6 +64,10 @@ impl Guest for SourceBsp {
 
     fn list_materials() -> Result<Vec<MaterialInfo>, String> {
         Ok(Vec::new())
+    }
+
+    fn export_file(exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
+        Err(format!("unknown exporter {exporter}"))
     }
 }
 

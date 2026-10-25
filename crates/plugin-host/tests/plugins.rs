@@ -90,7 +90,7 @@ fn godot_materials() {
     let host = Host::new().unwrap();
     let Some(mut p) = load(&host, "godot", Vfs::new(vec![dir.path().into()])) else { return };
     assert!(p.manifest.materials);
-    let info = |name: &str, image: Option<&str>, color| MaterialInfo { name: name.into(), image: image.map(String::from), color };
+    let info = |name: &str, image: Option<&str>, color| MaterialInfo { name: name.into(), image: image.map(String::from), color, pixels: None };
     let mut got = p.materials().unwrap();
     got.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
@@ -120,4 +120,49 @@ fn python_example() {
     let out = p.run("stairs", &params, &ctx()).unwrap();
     assert_eq!(out.len(), 8);
     assert_eq!(p.take_log(), vec!["stairs: 8 steps, 64 units high".to_string()]);
+}
+
+/// Mark's surf_emerald, when it is on this machine: groups, aligned faces and embedded textures.
+#[test]
+fn bsp_import_groups_and_textures() {
+    let map = PathBuf::from("/mnt/Storage/Gamedev/SurfsUp/SurfMaps/BSPs/surf_emerald.bsp");
+    let host = Host::new().unwrap();
+    let (Some(mut p), Ok(data)) = (load(&host, "source-bsp", Vfs::default()), std::fs::read(&map)) else { return };
+    let imported = p.import("bsp", "surf_emerald.bsp", &data, &ctx()).unwrap();
+    let groups: Vec<String> = imported
+        .nodes
+        .iter()
+        .filter_map(|f| match &f.kind {
+            NodeKind::Group(g) => Some(g.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(groups.iter().any(|g| g == "Ramps") && groups.iter().any(|g| g == "World"), "{groups:?}");
+    assert!(imported.materials.len() >= 19, "every embedded texture comes back: {}", imported.materials.len());
+    assert!(imported.materials.iter().all(|m| m.rgba.len() == (m.width * m.height * 4) as usize));
+    let ramp = imported.nodes.iter().find(|f| matches!(&f.kind, NodeKind::Group(g) if g.name == "Ramps")).unwrap();
+    let NodeKind::Brush(b) = &ramp.children[0].kind else { panic!("ramps hold brushes") };
+    assert!(b.faces.iter().any(|f| f.u.axis != mapcraft_geom::DVec3::X && f.u.axis != mapcraft_geom::DVec3::Y), "faces keep the map's texture axes");
+}
+
+/// A start and a finish zone export as the two blocks SurfsUp v3 needs.
+#[test]
+fn zones_export_as_zon() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::{Brush, Entity, Map, ROOT, TexDefaults};
+    let host = Host::new().unwrap();
+    let Some(mut p) = load(&host, "surfsup", Vfs::default()) else { return };
+    let mut map = Map::new();
+    let mut e = map.edit();
+    let tex = TexDefaults { material: "tools/trigger".into(), scale: 1.0 };
+    for (class, x) in [("zone_start", 0.0), ("zone_finish", 2048.0)] {
+        let zone = e.insert(ROOT, NodeKind::Entity(Entity::new(class))).unwrap();
+        e.insert(zone, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(x, 0.0, 0.0), DVec3::new(x + 256.0, 256.0, 256.0)), &tex))).unwrap();
+    }
+    map.apply(e.finish());
+    let text = String::from_utf8(p.export("zon", &map, "surf_test", &ctx()).unwrap()).unwrap();
+    assert!(text.starts_with("\"zones\""), "{text}");
+    assert!(text.contains("\"main0_start\"") && text.contains("\"main0_end\""));
+    assert!(text.contains("\"2048.000000 0.000000 0.000000\""), "the finish keeps its corner");
+    assert!(p.export("zon", &Map::new(), "empty", &ctx()).is_err(), "no start or finish is an error");
 }

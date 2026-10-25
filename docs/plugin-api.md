@@ -6,22 +6,24 @@ The core editor knows no game; plugins teach it how to work with one.
 
 ## What a plugin can do
 
-A plugin exports four functions:
+A plugin exports five functions:
 
 | Export | Purpose |
 |---|---|
-| `manifest` | Its id, name, version, commands, importers, and whether it lists materials |
+| `manifest` | Its id, name, version, commands, importers, exporters, and whether it lists materials |
 | `run-command` | Runs one of its commands with parameter values and returns brushes and entities |
 | `list-materials` | Lists the SDK's materials for the browser, with a preview image or color each |
 | `import-file` | Reads a file the user picked for one of its importers and returns brushes and entities |
+| `export-file` | Writes the map in one of its export formats and returns the file's bytes |
 
-It can call three host functions:
+It can call four host functions:
 
 | Import | Purpose |
 |---|---|
 | `log` | Writes a line to the Output panel |
 | `list-files` | Lists files in the SDK's asset folders by extension |
 | `read-file` | Reads a file from the SDK's asset folders |
+| `read-range` | Reads part of a file from them, for archives too big to read whole |
 
 Plugins get nothing else: no other files, no network, no processes, no environment.
 Each call has a fuel budget of a few seconds of work and each plugin a memory cap, so a plugin that loops or runs away is stopped and reported instead of freezing the editor.
@@ -57,6 +59,15 @@ The editor reads the picked file and passes its bytes and file name to `import-f
 The output is placed as it is, in map space, in a new layer named after the file.
 A plugin with no importers returns an empty list and an error from `import-file`.
 
+## Exporters
+
+A manifest's `exporters` list file formats the plugin writes, each with an id, a label and its extensions.
+They appear under File > Export, and compile profiles run them with an `export` step (see [`sdk-format.md`](sdk-format.md)).
+`export-file` gets the map as `map-data`: worldspawn's key values, then a flat list of nodes (layers, groups, entities and brushes) where each node names its parent by index and parents always come first.
+Every brush comes with its faces (three points, material and texture axes) and its corners.
+The editor has already resolved prefabs and mirror copies and removed layers left out of exports and everything outside an active cordon, so an exporter writes what it gets.
+It returns the file's bytes, and the editor saves them.
+
 ## Materials
 
 A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
@@ -89,6 +100,10 @@ impl Guest for Mine {
 
     fn import_file(_importer: String, _name: String, _data: Vec<u8>, _context: Context) -> Result<Output, String> {
         Err("this plugin imports no files".into())
+    }
+
+    fn export_file(_exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
+        Err("this plugin exports no files".into())
     }
 }
 

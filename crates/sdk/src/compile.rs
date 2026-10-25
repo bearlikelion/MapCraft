@@ -48,6 +48,11 @@ pub enum Step {
         copy: String,
         to: String,
     },
+    /// Writes the map with a plugin's exporter; the editor does this before the other steps run.
+    Export {
+        export: String,
+        to: String,
+    },
 }
 
 /// Replaces every `${name}` with its value; an unknown name is an error rather than an empty string.
@@ -123,6 +128,7 @@ pub fn run_profile(
             return Err(CompileError::Cancelled);
         }
         match step {
+            Step::Export { export, to } => on_output(&format!("> export {export} {}", expand(to, vars)?)),
             Step::Copy { copy, to } => {
                 let (from, to) = (expand(copy, vars)?, expand(to, vars)?);
                 on_output(&format!("> copy {from} {to}"));
@@ -183,6 +189,22 @@ mod tests {
     fn strips_terminal_colors() {
         let line = "[  16% ] \u{1b}[90m\u{1b}[1mloading_editor_layout\u{1b}[22m | Loading docks...\u{1b}[39m\u{1b}[0m";
         assert_eq!(strip_ansi(line), "[  16% ] loading_editor_layout | Loading docks...");
+    }
+
+    #[test]
+    fn export_steps_parse_and_log() {
+        let profile: CompileProfile = toml::from_str(
+            r#"
+name = "zones"
+steps = [{ export = "zon", to = "${dir}/x.zon" }]
+"#,
+        )
+        .unwrap();
+        assert_eq!(profile.steps, vec![Step::Export { export: "zon".into(), to: "${dir}/x.zon".into() }]);
+        let vars = BTreeMap::from([("dir".to_string(), "/tmp".to_string())]);
+        let mut lines = Vec::new();
+        run_profile(&profile, &vars, &mut |l| lines.push(l.to_string()), &AtomicBool::new(false)).unwrap();
+        assert_eq!(lines, vec!["> export zon /tmp/x.zon".to_string()], "the editor writes exports; the runner only reports them");
     }
 
     #[test]

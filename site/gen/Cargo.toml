@@ -1,0 +1,13 @@
+[package]
+name = "mapcraft-site"
+description = "Builds the MapCraft website from site/ and the Markdown docs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+# Kept out of the main workspace, like plugins/.
+[workspace]

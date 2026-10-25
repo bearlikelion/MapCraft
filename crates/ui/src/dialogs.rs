@@ -34,6 +34,8 @@ pub(crate) struct Dialogs {
     pub preferences: bool,
     pub shortcuts: bool,
     pub shortcut_filter: String,
+    /// A registry URL or path being typed in Preferences.
+    pub new_registry: String,
     pub transform: TransformDialog,
     pub replace: ReplaceDialog,
     /// Autosaves left behind by a session that did not close cleanly.
@@ -105,7 +107,7 @@ impl MapCraftApp {
                 ("Cut", "Ctrl+X"),
                 ("Paste", "Ctrl+V"),
                 ("Cancel the current drag or tool step", "Escape"),
-                ("Confirm the clip or block", "Enter"),
+                ("Apply the clip", "Enter"),
                 ("Extrude a face", "Shift+Drag"),
                 ("Extrude into a new brush", "Ctrl+Shift+Drag"),
                 ("Stamp a copy along a face", "Ctrl+Alt+Shift+Drag"),
@@ -256,6 +258,32 @@ impl MapCraftApp {
                 rescan = true;
             }
             ui.separator();
+            ui.label("SDK registries");
+            let mut remove = None;
+            for (i, r) in prefs.registries.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.monospace(r);
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                prefs.registries.remove(i);
+            }
+            ui.horizontal(|ui| {
+                let typed = &mut self.dialogs.new_registry;
+                ui.add(egui::TextEdit::singleline(typed).hint_text("https://… or a path to an index.json").desired_width(300.0));
+                if ui.add_enabled(!typed.trim().is_empty(), egui::Button::new("Add")).clicked() {
+                    prefs.registries.push(typed.trim().to_string());
+                    typed.clear();
+                }
+                let default = mapcraft_sdk_manager::DEFAULT_REGISTRY;
+                if !prefs.registries.iter().any(|r| r == default) && ui.button("Add the default").clicked() {
+                    prefs.registries.insert(0, default.to_string());
+                }
+            });
+            ui.separator();
             egui::CollapsingHeader::new("Key bindings").show(ui, |ui| {
                 ui.label("Type a chord such as Ctrl+Shift+K; clear it to unbind.");
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
@@ -280,6 +308,9 @@ impl MapCraftApp {
         });
         self.dialogs.preferences = open;
         if &prefs != self.prefs.get() {
+            if prefs.registries != self.prefs.get().registries {
+                self.sdk_manager.registries_changed();
+            }
             self.session.grid = prefs.view.grid;
             self.prefs.update(|p| *p = prefs);
         }

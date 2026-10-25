@@ -45,8 +45,7 @@ In Godot, turn on Trimesh collision in the MapCraft import options or on a `MapC
 
 ## Zones
 
-- To zone a platform, first click the zone class (such as `zone_start`) in the Entities tab with nothing selected.
-- Then select the platform and use Tools > Zone from Selection: the zone covers the platform's top and stands 256 units tall.
+- To zone a platform, click the zone class (such as `zone_start`) in the Entities tab, select the platform, and use Tools > Zone from Selection: the zone covers the platform's top and stands 256 units tall.
 - Make zones at least 256 units tall so players cannot jump over them.
 - Make start zones big enough to strafe in before leaving.
 - Space checkpoints so each stage takes about ten seconds or more.

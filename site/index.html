@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- REPO: the GitHub repository URL below feeds every GitHub, docs and download link on this page. -->
-<html lang="en" data-repo="https://github.com/OWNER/MapCraft">
+<html lang="en" data-repo="https://github.com/bearlikelion/MapCraft">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,9 +18,10 @@
 	<div class="wrap top-inner">
 		<a class="brand" href="#top"><img src="assets/mapcraft.svg" width="28" height="28" alt="">MapCraft</a>
 		<nav aria-label="Site">
-			<a href="#features">Features</a>
-			<a href="#start">Get started</a>
-			<a href="#docs">Docs</a>
+			<a class="opt" href="#features">Features</a>
+			<a class="opt" href="#start">Get started</a>
+			<a href="guide/index.html">Docs</a>
+			<a class="opt" href="roadmap.html">Roadmap</a>
 			<a data-repo-path="">GitHub</a>
 		</nav>
 	</div>
@@ -178,8 +179,10 @@ roots = ["${project}/Assets/Textures"]</code></pre>
 			</li>
 		</ol>
 		<h3>Build from source</h3>
-		<p>Needs Rust 1.95 or newer.</p>
-<pre class="code"><code>rustup target add wasm32-wasip2
+		<p>Needs Rust 1.95 or newer. The <a href="guide/installing.html">installing guide</a> has the details.</p>
+<pre class="code"><code>git clone --recursive https://github.com/bearlikelion/MapCraft.git
+cd MapCraft
+rustup target add wasm32-wasip2
 cargo xtask plugins
 cargo run --release -p mapcraft</code></pre>
 	</div>
@@ -189,12 +192,15 @@ cargo run --release -p mapcraft</code></pre>
 	<div class="wrap">
 		<h2>Docs</h2>
 		<ul class="doc-list">
-			<li><a data-repo-path="/blob/main/ROADMAP.md"><b>Roadmap</b><span>What works today and what comes next.</span></a></li>
-			<li><a data-repo-path="/blob/main/docs/architecture.md"><b>Architecture</b><span>Layers, brushes, the document model, undo and coordinates.</span></a></li>
-			<li><a data-repo-path="/blob/main/docs/plugin-api.md"><b>Plugin API</b><span>Write a WebAssembly plugin in any language.</span></a></li>
-			<li><a data-repo-path="/blob/main/docs/sdk-format.md"><b>SDK manifests</b><span>Teach MapCraft a new game with an sdk.toml.</span></a></li>
-			<li><a data-repo-path="/blob/main/docs/mcmap-format.md"><b>The .mcmap format</b><span>Reference for importers and game tools.</span></a></li>
-			<li><a data-repo-path="/blob/main/godot/README.md"><b>Godot extension</b><span>Import plugin, runtime loading and entity maps.</span></a></li>
+			<li><a href="guide/index.html"><b>User guide</b><span>Install MapCraft, build your first map and learn every tool.</span></a></li>
+			<li><a href="guide/shortcuts.html"><b>Keyboard shortcuts</b><span>Every shortcut, the Hammer and TrenchBroom presets, and rebinding.</span></a></li>
+			<li><a href="roadmap.html"><b>Roadmap</b><span>What works today and what comes next, milestone by milestone.</span></a></li>
+			<li><a href="reference/surf-mapping.html"><b>Surf mapping</b><span>Ramp generators, the surf angle, curves and zones for SurfsUp.</span></a></li>
+			<li><a href="reference/plugin-api.html"><b>Plugin API</b><span>Write a WebAssembly plugin in any language.</span></a></li>
+			<li><a href="reference/sdk-format.html"><b>SDK manifests</b><span>Teach MapCraft a new game with an sdk.toml.</span></a></li>
+			<li><a href="reference/mcmap-format.html"><b>The .mcmap format</b><span>Reference for importers and game tools.</span></a></li>
+			<li><a href="reference/godot.html"><b>Godot extension</b><span>Import plugin, runtime loading and entity maps.</span></a></li>
+			<li><a href="reference/architecture.html"><b>Architecture</b><span>Layers, brushes, the document model, undo and coordinates.</span></a></li>
 		</ul>
 	</div>
 </section>

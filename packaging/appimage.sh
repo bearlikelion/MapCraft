@@ -17,7 +17,11 @@ mkdir -p "$app/usr/bin" "$app/usr/share/mapcraft" "$app/usr/share/doc/mapcraft" 
 	"$app/usr/share/icons/hicolor/256x256/apps" "$app/usr/share/icons/hicolor/512x512/apps"
 cp target/release/mapcraft "$app/usr/bin/"
 # The editor looks for ../share/mapcraft/sdks next to its executable.
-cp -r sdks "$app/usr/share/mapcraft/"
+# sdks is the MapCraftSDKs repository; only its SDK folders ship.
+mkdir -p "$app/usr/share/mapcraft/sdks"
+for sdk in sdks/*/; do
+	[ -f "$sdk/sdk.toml" ] && cp -r "$sdk" "$app/usr/share/mapcraft/sdks/"
+done
 cp LICENSE "$app/usr/share/doc/mapcraft/"
 cp "$assets/mapcraft.desktop" "$app/usr/share/applications/"
 cp "$assets/mapcraft-256.png" "$app/usr/share/icons/hicolor/256x256/apps/mapcraft.png"

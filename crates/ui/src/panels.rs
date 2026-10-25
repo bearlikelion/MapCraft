@@ -468,14 +468,10 @@ impl MapCraftApp {
         });
         if let Some((name, solid)) = pick {
             if solid {
-                if !self.session.selection.is_empty() {
-                    if let Err(e) = self.session.tie_to_entity(&name) {
-                        self.status = e.to_string();
-                    }
-                    self.mark_changed();
-                } else {
-                    self.status = format!("Select brushes and click {name} to tie them to it, or select a platform and use Tools > Zone from Selection");
-                }
+                let tie = self.chord("tools.tie_to_entity");
+                self.status = format!(
+                    "{name} picked: Tie to Entity ({tie}) turns the selected brushes into it, and Tools > Zone from Selection stands one on a platform"
+                );
                 self.session.default_solid_entity = name;
             } else {
                 self.entity_class = name;
@@ -634,7 +630,11 @@ impl MapCraftApp {
                         Some(NodeKind::Layer(mut l)) => {
                             ui.heading("Layer");
                             if ui.text_edit_singleline(&mut l.name).changed() {
-                                self.set_kind(*id, NodeKind::Layer(l), "Rename layer");
+                                self.set_kind(*id, NodeKind::Layer(l.clone()), "Rename layer");
+                            }
+                            let tip = "Importers and compiles skip this layer: reference geometry such as an imported map you are zoning";
+                            if ui.checkbox(&mut l.omit_from_export, "Leave out of exports").on_hover_text(tip).changed() {
+                                self.set_kind(*id, NodeKind::Layer(l), "Leave layer out of exports");
                             }
                             self.active_button(ui, *id);
                         }

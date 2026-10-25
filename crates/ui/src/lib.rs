@@ -9,6 +9,7 @@ mod panels;
 mod plugins;
 mod prefs;
 mod project;
+mod sdk_manager;
 mod shortcuts;
 mod thumbs;
 mod transform;

@@ -248,6 +248,25 @@ const COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec {
+        id: "view.lock_selected",
+        label: "Lock Selected",
+        menu: "View/Lock Selected",
+        shortcut: Some("Ctrl+Alt+K"),
+        enabled: has_selection,
+        run: |s| {
+            let ids: Vec<_> = s.selection.iter().copied().collect();
+            s.set_locked(&ids, true)
+        },
+    },
+    CommandSpec {
+        id: "view.unlock_all",
+        label: "Unlock All",
+        menu: "View/Unlock All",
+        shortcut: Some("Ctrl+Alt+Shift+K"),
+        enabled: |_| true,
+        run: Session::unlock_all,
+    },
+    CommandSpec {
         id: "view.hide_selected",
         label: "Hide Selected",
         menu: "View/Hide Selected",

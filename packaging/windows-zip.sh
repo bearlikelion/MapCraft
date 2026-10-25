@@ -15,7 +15,11 @@ rm -rf "$stage" dist/MapCraft-windows-x86_64.zip
 mkdir -p "$stage"
 # The editor looks for an sdks folder beside its executable.
 cp "target/$target/release/mapcraft.exe" "$stage/MapCraft.exe"
-cp -r sdks "$stage/"
+# sdks is the MapCraftSDKs repository; only its SDK folders ship.
+mkdir -p "$stage/sdks"
+for sdk in sdks/*/; do
+	[ -f "$sdk/sdk.toml" ] && cp -r "$sdk" "$stage/sdks/"
+done
 cp LICENSE "$stage/LICENSE.txt"
 
 cd dist
