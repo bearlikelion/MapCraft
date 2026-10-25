@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Extra, Map, Node, NodeId, NodeKind, ROOT, Tag, TagId};
+use mapcraft_map::{Cordon, Extra, Map, Node, NodeId, NodeKind, ROOT, Tag, TagId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -79,6 +79,8 @@ struct FileMap {
     #[serde(default)]
     tags: Vec<Tag>,
     #[serde(default)]
+    cordons: Vec<Cordon>,
+    #[serde(default)]
     extra: Extra,
     root: FileNode,
 }
@@ -131,6 +133,9 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
     if let Some(obj) = doc_map.as_object_mut() {
         if !map.tags.is_empty() {
             obj.insert("tags".into(), serde_json::to_value(&map.tags)?);
+        }
+        if !map.cordons.is_empty() {
+            obj.insert("cordons".into(), serde_json::to_value(&map.cordons)?);
         }
         if !map.extra.is_empty() {
             obj.insert("extra".into(), serde_json::to_value(&map.extra)?);
@@ -250,7 +255,8 @@ pub fn from_str(text: &str) -> Result<MapFile, FormatError> {
         }
         stack.extend(f.children.into_iter().map(|c| (c, Some(id))));
     }
-    let map = Map::from_nodes(nodes, env.map.tags, env.map.extra)?;
+    let mut map = Map::from_nodes(nodes, env.map.tags, env.map.extra)?;
+    map.cordons = env.map.cordons;
     Ok(MapFile { map, sdk: env.sdk, view: env.view })
 }
 
@@ -325,6 +331,7 @@ mod tests {
         e.insert(ROOT, NodeKind::Group(Group { name: "Pillars".into(), generator: None })).unwrap();
         e.insert(ROOT, NodeKind::Prefab(Prefab { path: "prefabs/start.mcmap".into(), origin: DVec3::new(0.0, 0.0, 128.0), ..Prefab::default() })).unwrap();
         map.apply(e.finish());
+        map.cordons.push(Cordon { name: "Start".into(), bounds: Aabb::new(DVec3::ZERO, DVec3::splat(512.0)), active: true });
         MapFile { map, sdk: Some("surfsup".into()), view: json!({ "camera": [0, 0, 64] }) }
     }
 

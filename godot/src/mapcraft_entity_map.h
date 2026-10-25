@@ -1,0 +1,29 @@
+#pragma once
+
+#include <godot_cpp/classes/resource.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+
+namespace godot {
+
+class MapCraftEntityMap : public Resource {
+	GDCLASS(MapCraftEntityMap, Resource)
+
+	Dictionary classes;
+	String point_default = "marker";
+	String solid_default = "area";
+
+protected:
+	static void _bind_methods();
+
+public:
+	void set_classes(const Dictionary &p_classes);
+	Dictionary get_classes() const;
+	void set_point_default(const String &p_node);
+	String get_point_default() const;
+	void set_solid_default(const String &p_node);
+	String get_solid_default() const;
+
+	Dictionary entity_config(const String &p_classname, bool p_solid) const;
+};
+
+} // namespace godot

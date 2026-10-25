@@ -1,0 +1,145 @@
+package mapcraft:plugin@0.1.0;
+
+/// Plain data shared by the host and plugins. Lengths are map units (1 unit = 1 inch), Z is up.
+interface types {
+    record vec3 {
+        x: f64,
+        y: f64,
+        z: f64,
+    }
+
+    /// The value of a command parameter; choices and materials are `text`.
+    variant value {
+        number(f64),
+        integer(s64),
+        toggle(bool),
+        text(string),
+    }
+
+    record number-range {
+        min: f64,
+        max: f64,
+        step: f64,
+    }
+
+    record integer-range {
+        min: s64,
+        max: s64,
+    }
+
+    variant param-kind {
+        number(number-range),
+        integer(integer-range),
+        toggle,
+        choice(list<string>),
+        text,
+        material,
+    }
+
+    record param-spec {
+        id: string,
+        label: string,
+        help: string,
+        kind: param-kind,
+        initial: value,
+    }
+
+    record param {
+        id: string,
+        value: value,
+    }
+
+    record command-spec {
+        id: string,
+        label: string,
+        /// Where the command appears under the Plugins menu, such as `SurfsUp/Surf Ramp`.
+        menu: string,
+        params: list<param-spec>,
+        /// The output lives in a group that runs the command again whenever its parameters change.
+        generator: bool,
+    }
+
+    record manifest {
+        id: string,
+        name: string,
+        version: string,
+        commands: list<command-spec>,
+        /// Whether `list-materials` lists the SDK's materials.
+        materials: bool,
+    }
+
+    /// Editor state a command may use: the grid size and the material picked in the browser.
+    record context {
+        grid: f64,
+        material: string,
+    }
+
+    /// A brush face: three points on its plane, clockwise seen from outside the brush.
+    record face {
+        points: tuple<vec3, vec3, vec3>,
+        material: string,
+    }
+
+    /// Faces of a hull whose outward normal is within about 8 degrees of `normal` get `material`.
+    record surface {
+        normal: vec3,
+        material: string,
+    }
+
+    /// The convex solid around `points`; faces no surface claims get `material`.
+    record hull {
+        points: list<vec3>,
+        material: string,
+        surfaces: list<surface>,
+    }
+
+    variant brush {
+        faces(list<face>),
+        hull(hull),
+    }
+
+    /// A point entity, or a brush entity when it has brushes.
+    record entity {
+        classname: string,
+        properties: list<tuple<string, string>>,
+        brushes: list<brush>,
+    }
+
+    /// What a command makes, around the origin; the editor moves it into place.
+    record output {
+        brushes: list<brush>,
+        entities: list<entity>,
+    }
+
+    /// A material for the browser. `image` is a path in the SDK's asset folders shown as its
+    /// preview; without one, `color` (sRGB) is.
+    record material-info {
+        name: string,
+        image: option<string>,
+        color: option<tuple<u8, u8, u8>>,
+    }
+}
+
+/// What the editor offers plugins. There is no other file, network or process access.
+interface host {
+    /// Writes a line to the editor's Output panel.
+    log: func(message: string);
+
+    /// Files in the SDK's asset folders with one of `extensions`, as `/`-separated relative paths.
+    list-files: func(extensions: list<string>) -> list<string>;
+
+    /// Reads a file from the SDK's asset folders.
+    read-file: func(path: string) -> result<list<u8>, string>;
+}
+
+world plugin {
+    use types.{manifest, param, context, output, material-info};
+
+    import host;
+
+    export manifest: func() -> manifest;
+
+    export run-command: func(id: string, params: list<param>, context: context) -> result<output, string>;
+
+    export list-materials: func() -> result<list<material-info>, string>;
+}

@@ -1,0 +1,24 @@
+[package]
+name = "mapcraft-plugin-host"
+description = "Runs MapCraft's WebAssembly plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+mapcraft-format = { workspace = true }
+mapcraft-sdk = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

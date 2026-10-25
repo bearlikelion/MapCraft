@@ -6,13 +6,21 @@ use mapcraft_map::{Brush, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, R
 use crate::{EngineError, Session};
 
 /// Brush shapes the block tool can draw.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Shape {
     #[default]
     Block,
     Wedge,
     Cylinder(usize),
     Spike(usize),
+    Sphere(usize),
+    /// Degrees of `arc` starting `start` degrees off +X, with walls `thickness` deep.
+    Arch {
+        sides: usize,
+        arc: f64,
+        start: f64,
+        thickness: f64,
+    },
 }
 
 /// Which side of a clip plane to keep.
@@ -36,8 +44,61 @@ fn is_point_entity(edit: &Edit, id: NodeId) -> bool {
     edit.node(id).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)) && n.children.is_empty())
 }
 
+/// An origin and angles after `m`; turns about Z (the usual case) carry over to the yaw.
+pub(crate) fn moved_placement(m: &DMat4, origin: DVec3, mut angles: DVec3) -> (DVec3, DVec3) {
+    let x = m.x_axis.truncate();
+    if m.z_axis.truncate().normalize_or_zero().abs_diff_eq(DVec3::Z, 1e-9) {
+        angles.y = (angles.y + x.y.atan2(x.x).to_degrees()).rem_euclid(360.0);
+    }
+    (m.transform_point3(origin), angles)
+}
+
+/// A brush, point entity or prefab moved by `m`; `None` for kinds placed by their children.
+pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool) -> Result<Option<NodeKind>, EngineError> {
+    Ok(Some(match kind {
+        NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, lock)?),
+        NodeKind::Entity(mut ent) if point => {
+            let origin = ent.origin().unwrap_or_default();
+            ent.set("origin", fmt_vec(m.transform_point3(origin)));
+            NodeKind::Entity(ent)
+        }
+        NodeKind::Prefab(mut p) => {
+            (p.origin, p.angles) = moved_placement(m, p.origin, p.angles);
+            NodeKind::Prefab(p)
+        }
+        _ => return Ok(None),
+    }))
+}
+
+/// Inserts copied or generated nodes under `parent`, moved by `m`, with fresh face ids; returns
+/// the new top-level nodes.
+pub(crate) fn insert_fragments(e: &mut Edit, parent: NodeId, frags: Vec<mapcraft_format::Fragment>, m: &DMat4, lock: bool) -> Result<Vec<NodeId>, EngineError> {
+    let mut roots = Vec::new();
+    let mut stack: Vec<(mapcraft_format::Fragment, NodeId, bool)> = frags.into_iter().rev().map(|f| (f, parent, true)).collect();
+    while let Some((frag, parent, root)) = stack.pop() {
+        if matches!(frag.kind, NodeKind::World(_)) {
+            continue;
+        }
+        let point = matches!(frag.kind, NodeKind::Entity(_)) && frag.children.is_empty();
+        let kind = match transform_kind(frag.kind.clone(), m, lock, point)? {
+            Some(NodeKind::Brush(mut b)) => {
+                b.faces.iter_mut().for_each(|f| f.id = FaceId(0));
+                NodeKind::Brush(b)
+            }
+            Some(k) => k,
+            None => frag.kind,
+        };
+        let id = e.insert(parent, kind)?;
+        if root {
+            roots.push(id);
+        }
+        stack.extend(frag.children.into_iter().rev().map(|c| (c, id, false)));
+    }
+    Ok(roots)
+}
+
 impl Session {
-    fn require_selection(&self) -> Result<Vec<NodeId>, EngineError> {
+    pub(crate) fn require_selection(&self) -> Result<Vec<NodeId>, EngineError> {
         if self.selection.is_empty() { Err(EngineError::NothingSelected) } else { Ok(self.selection.iter().copied().collect()) }
     }
 
@@ -77,20 +138,26 @@ impl Session {
         Ok(id)
     }
 
-    pub fn create_shape(&mut self, shape: Shape, bounds: Aabb) -> Result<NodeId, EngineError> {
-        let brush = match shape {
-            Shape::Block => Brush::cuboid(bounds, &self.tex),
-            Shape::Wedge => Brush::wedge(bounds, &self.tex)?,
-            Shape::Cylinder(n) => Brush::cylinder(bounds, n, &self.tex)?,
-            Shape::Spike(n) => Brush::spike(bounds, n, &self.tex)?,
+    /// Creates the brushes of `shape` filling `bounds` and selects them.
+    pub fn create_shape(&mut self, shape: Shape, bounds: Aabb) -> Result<Vec<NodeId>, EngineError> {
+        let brushes = match shape {
+            Shape::Block => vec![Brush::cuboid(bounds, &self.tex)],
+            Shape::Wedge => vec![Brush::wedge(bounds, &self.tex)?],
+            Shape::Cylinder(n) => vec![Brush::cylinder(bounds, n, &self.tex)?],
+            Shape::Spike(n) => vec![Brush::spike(bounds, n, &self.tex)?],
+            Shape::Sphere(n) => vec![Brush::sphere(bounds, n, &self.tex)?],
+            Shape::Arch { sides, arc, start, thickness } => Brush::arch(bounds, sides, arc, start, thickness, &self.tex)?,
         };
-        brush.solid()?;
         let mut e = self.map.edit();
-        let id = e.insert(self.active_parent, NodeKind::Brush(brush))?;
+        let mut ids = Vec::new();
+        for b in brushes {
+            b.solid()?;
+            ids.push(e.insert(self.active_parent, NodeKind::Brush(b))?);
+        }
         let c = e.finish();
         self.apply("Create brush", c);
-        self.selection = BTreeSet::from([id]);
-        Ok(id)
+        self.selection = ids.iter().copied().collect();
+        Ok(ids)
     }
 
     /// Bounds of the selection, with point entities counted as their origin.
@@ -186,37 +253,10 @@ impl Session {
     pub fn paste(&mut self, text: &str, delta: DVec3) -> Result<(), EngineError> {
         let frags = mapcraft_format::fragment_from_str(text)?;
         let mut e = self.map.edit();
-        let mut roots = BTreeSet::new();
-        let mut stack: Vec<(mapcraft_format::Fragment, NodeId, bool)> = frags.into_iter().rev().map(|f| (f, self.active_parent, true)).collect();
-        while let Some((frag, parent, root)) = stack.pop() {
-            let kind = match frag.kind {
-                NodeKind::Brush(b) => {
-                    let mut b = b.translated(delta, self.texture_lock);
-                    b.faces.iter_mut().for_each(|f| f.id = FaceId(0));
-                    NodeKind::Brush(b)
-                }
-                NodeKind::Entity(mut ent) if frag.children.is_empty() => {
-                    if let Some(o) = ent.origin() {
-                        ent.set("origin", fmt_vec(o + delta));
-                    }
-                    NodeKind::Entity(ent)
-                }
-                NodeKind::Prefab(mut p) => {
-                    p.origin += delta;
-                    NodeKind::Prefab(p)
-                }
-                NodeKind::World(_) => continue,
-                other => other,
-            };
-            let id = e.insert(parent, kind)?;
-            if root {
-                roots.insert(id);
-            }
-            stack.extend(frag.children.into_iter().rev().map(|c| (c, id, false)));
-        }
+        let roots = insert_fragments(&mut e, self.active_parent, frags, &DMat4::from_translation(delta), self.texture_lock)?;
         let c = e.finish();
         self.apply("Paste", c);
-        self.selection = roots;
+        self.selection = roots.into_iter().collect();
         Ok(())
     }
 
@@ -285,25 +325,18 @@ impl Session {
         let mut e = self.map.edit();
         for id in leaves {
             let Some(kind) = e.node(id).map(|n| n.kind.clone()) else { continue };
-            let new = match kind {
-                NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, self.texture_lock)?),
-                NodeKind::Entity(mut ent) if is_point_entity(&e, id) => {
-                    let origin = ent.origin().unwrap_or_default();
-                    ent.set("origin", fmt_vec(m.transform_point3(origin)));
-                    NodeKind::Entity(ent)
-                }
-                NodeKind::Prefab(mut p) => {
-                    p.origin = m.transform_point3(p.origin);
-                    // Turns about Z (the usual case) carry over to the instance's yaw.
-                    let x = m.x_axis.truncate();
-                    if m.z_axis.truncate().normalize_or_zero().abs_diff_eq(DVec3::Z, 1e-9) {
-                        p.angles.y = (p.angles.y + x.y.atan2(x.x).to_degrees()).rem_euclid(360.0);
-                    }
-                    NodeKind::Prefab(p)
-                }
-                _ => continue,
-            };
-            e.set_kind(id, new)?;
+            if let Some(new) = transform_kind(kind, m, self.texture_lock, is_point_entity(&e, id))? {
+                e.set_kind(id, new)?;
+            }
+        }
+        // Generator groups keep their placement in step so running them again lands here.
+        let groups: BTreeSet<NodeId> = self.selection.iter().flat_map(|id| self.map.subtree(*id)).collect();
+        for id in groups {
+            let Some(NodeKind::Group(mut g)) = e.node(id).map(|n| n.kind.clone()) else { continue };
+            if let Some(generator) = &mut g.generator {
+                (generator.origin, generator.angles) = moved_placement(m, generator.origin, generator.angles);
+                e.set_kind(id, NodeKind::Group(g))?;
+            }
         }
         let c = e.finish();
         self.apply_coalesced(label, c, coalesce);
@@ -710,11 +743,16 @@ mod tests {
         s.move_vertices(&[(DVec3::new(64.0, 32.0, 32.0), DVec3::new(64.0, 32.0, 64.0))], None).unwrap();
         assert!(s.map.get(m).unwrap().kind.brush().unwrap().bounds().unwrap().max.z == 64.0);
 
-        let w = s.create_shape(Shape::Wedge, Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let w = s.create_shape(Shape::Wedge, Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap()[0];
         let face = s.map.get(w).unwrap().kind.brush().unwrap().faces[0].id;
         s.face_selection = BTreeSet::from([(w, face)]);
         s.edit_faces("Scale", None, |f| f.u.scale = 2.0).unwrap();
         assert_eq!(s.map.get(w).unwrap().kind.brush().unwrap().faces[0].u.scale, 2.0);
+
+        let arch = Shape::Arch { sides: 6, arc: 180.0, start: 0.0, thickness: 16.0 };
+        let ids = s.create_shape(arch, Aabb::new(DVec3::ZERO, DVec3::new(256.0, 256.0, 32.0))).unwrap();
+        assert_eq!(ids.len(), 6);
+        assert_eq!(s.selection.len(), 6);
     }
 
     #[test]

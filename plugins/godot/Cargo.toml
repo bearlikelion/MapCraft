@@ -1,0 +1,13 @@
+[package]
+name = "plugin-godot"
+description = "Godot project materials for MapCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true }

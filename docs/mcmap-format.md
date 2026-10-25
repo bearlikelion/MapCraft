@@ -11,7 +11,7 @@ This page is the reference for anyone writing an importer (the Godot extension, 
   "schema_version": 1,
   "generator": "MapCraft 0.1.0",
   "sdk": "surfsup",
-  "map": { "root": { ... }, "tags": [ ... ], "extra": { ... } },
+  "map": { "root": { ... }, "tags": [ ... ], "cordons": [ ... ], "extra": { ... } },
   "view": { ... }
 }
 ```
@@ -20,6 +20,8 @@ This page is the reference for anyone writing an importer (the Godot extension, 
 - `schema_version` is an integer; readers refuse versions newer than they know.
 - `sdk` is the id of the SDK the map was made with and may be missing.
 - `view` holds editor state (cameras, layout) and is not part of the map.
+- `tags` is a list of `{id, name, color, parent, hidden}`; nodes list the tag ids they carry.
+- `cordons` is a list of `{name, bounds: {min, max}, active}` boxes; while one is active, compilers and exporters should keep only what touches an active cordon.
 - Unknown keys must be ignored, so newer writers can add data without breaking older readers.
 
 ## Nodes
@@ -38,7 +40,7 @@ Every node has an `id` (unique integer), a `type`, and optionally `children`, `t
 
 `properties` is a list of `[key, value]` string pairs in file order; keys can repeat in imported data.
 `connections` is a list of `{output, target, input, param, delay, times_to_fire}`; `times_to_fire` of -1 means every time.
-A `generator` (`{plugin, command, params}`) marks a group whose children were produced by a plugin; importers treat them as ordinary children.
+A `generator` (`{plugin, command, params, origin, angles}`) marks a group whose children were produced by a plugin; importers treat them as ordinary children.
 A prefab's `path` is relative to the map that contains it; `angles` are pitch, yaw and roll in degrees.
 
 ## Faces

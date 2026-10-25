@@ -1,8 +1,10 @@
-//! Workspace automation: `cargo xtask <ci|layers>`.
+//! Workspace automation: `cargo xtask <ci|layers|plugins>`.
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md`.
-//! - `ci`: fmt check, clippy -D warnings, tests (`cargo nextest run` when installed) and layers.
+//! - `plugins`: builds `plugins/` for wasm32-wasip2 and copies each plugin into the SDKs that list it.
+//! - `ci`: fmt check, clippy -D warnings, plugins, tests (`cargo nextest run` when installed) and layers.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use serde_json::Value;
@@ -64,14 +66,50 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("`{program} {}` failed", args.join(" "))) }
 }
 
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().map(Path::to_path_buf).unwrap_or_default()
+}
+
+const WASM_TARGET: &str = "wasm32-wasip2";
+
+fn plugins() -> Result<(), String> {
+    let root = root();
+    let manifest = root.join("plugins/Cargo.toml");
+    let manifest = manifest.to_string_lossy();
+    run(env!("CARGO"), &["build", "--manifest-path", &manifest, "--target", WASM_TARGET, "--release"])?;
+    let built = root.join("plugins/target").join(WASM_TARGET).join("release");
+    let sdks = std::fs::read_dir(root.join("sdks")).map_err(|e| format!("sdks: {e}"))?;
+    for sdk in sdks.flatten().map(|e| e.path()).filter(|p| p.join("sdk.toml").is_file()) {
+        let text = std::fs::read_to_string(sdk.join("sdk.toml")).map_err(|e| e.to_string())?;
+        let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", sdk.display()))?;
+        for id in doc.get("plugins").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()) {
+            let src = built.join(format!("plugin_{}.wasm", id.replace('-', "_")));
+            if !src.is_file() {
+                println!("{}: no first-party plugin `{id}`, skipped", sdk.display());
+                continue;
+            }
+            let dst = sdk.join("plugins").join(format!("{id}.wasm"));
+            std::fs::create_dir_all(sdk.join("plugins")).and_then(|()| std::fs::copy(&src, &dst)).map_err(|e| format!("{}: {e}", dst.display()))?;
+            println!("{} -> {}", src.display(), dst.display());
+        }
+    }
+    Ok(())
+}
+
 fn has_nextest() -> bool {
     Command::new(env!("CARGO")).args(["nextest", "--version"]).output().is_ok_and(|o| o.status.success())
 }
 
 fn ci() -> Result<(), String> {
     let cargo = env!("CARGO");
+    let plugins_manifest = root().join("plugins/Cargo.toml");
+    let pm = plugins_manifest.to_string_lossy();
     run(cargo, &["fmt", "--all", "--check"])?;
+    run(cargo, &["fmt", "--manifest-path", &pm, "--all", "--check"])?;
     run(cargo, &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
+    run(cargo, &["clippy", "--manifest-path", &pm, "--target", WASM_TARGET, "--", "-D", "warnings"])?;
+    run(cargo, &["test", "--manifest-path", &pm])?;
+    plugins()?;
     if has_nextest() {
         run(cargo, &["nextest", "run", "--workspace", "--no-tests", "pass"])?;
         run(cargo, &["test", "--workspace", "--doc"])?;
@@ -86,7 +124,8 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "ci" => ci(),
         "layers" => layers(),
-        _ => Err("usage: cargo xtask <ci|layers>".into()),
+        "plugins" => plugins(),
+        _ => Err("usage: cargo xtask <ci|layers|plugins>".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

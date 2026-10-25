@@ -8,10 +8,14 @@ use crate::{EngineError, Session};
 
 const MAX_DEPTH: usize = 16;
 
-/// Prefab angles (pitch, yaw, roll in degrees, Source order) and origin as a transform.
+/// Angles (pitch, yaw, roll in degrees, Source order) and an origin as a transform.
+pub fn placement(origin: DVec3, angles: DVec3) -> DMat4 {
+    let r = DQuat::from_rotation_z(angles.y.to_radians()) * DQuat::from_rotation_y(angles.x.to_radians()) * DQuat::from_rotation_x(angles.z.to_radians());
+    DMat4::from_rotation_translation(r, origin)
+}
+
 pub fn prefab_transform(p: &Prefab) -> DMat4 {
-    let r = DQuat::from_rotation_z(p.angles.y.to_radians()) * DQuat::from_rotation_y(p.angles.x.to_radians()) * DQuat::from_rotation_x(p.angles.z.to_radians());
-    DMat4::from_rotation_translation(r, p.origin)
+    placement(p.origin, p.angles)
 }
 
 fn fmt_vec(v: DVec3) -> String {

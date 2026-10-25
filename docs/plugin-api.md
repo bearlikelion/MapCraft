@@ -1,0 +1,105 @@
+# Plugin API
+
+MapCraft plugins are WebAssembly components built against [`wit/plugin.wit`](../wit/plugin.wit).
+Any language that can target the component model works: Rust, C and C++, C#, Go, JavaScript, Python and Zig.
+The core editor knows no game; plugins teach it how to work with one.
+
+## What a plugin can do
+
+A plugin exports three functions:
+
+| Export | Purpose |
+|---|---|
+| `manifest` | Its id, name, version, commands, and whether it lists materials |
+| `run-command` | Runs one of its commands with parameter values and returns brushes and entities |
+| `list-materials` | Lists the SDK's materials for the browser, with a preview image or color each |
+
+It can call three host functions:
+
+| Import | Purpose |
+|---|---|
+| `log` | Writes a line to the Output panel |
+| `list-files` | Lists files in the SDK's asset folders by extension |
+| `read-file` | Reads a file from the SDK's asset folders |
+
+Plugins get nothing else: no other files, no network, no processes, no environment.
+Each call has a fuel budget of a few seconds of work and each plugin a memory cap, so a plugin that loops or runs away is stopped and reported instead of freezing the editor.
+A plugin that traps is switched off until the SDK is reloaded.
+
+## Commands
+
+A command declares its parameters, and the editor builds the form for them: numbers and integers with ranges, toggles, choices, text and materials.
+Values arrive filled in and clamped to their ranges, so a plugin never sees a missing or out of range value.
+
+A command makes its output around the origin.
+The editor places it at the selection's center, or where the cursor last was in a 2D view.
+
+Brushes come in two forms:
+
+- `faces`: three points per face plane, clockwise seen from outside the brush, the same convention as `.map` and `.vmf` files.
+- `hull`: the convex solid around a list of points. Faces get the hull's material, except those whose outward normal is within about 8 degrees of a `surface` hint, which get that hint's material. This is the easy form for generators: list the corners and say which way the special faces point.
+
+An empty material means the material picked in the browser.
+
+### Generator groups
+
+A command with `generator: true` puts its output in a group that remembers the plugin, the command, the parameters and where the group sits.
+Selecting the group shows the parameters in the inspector; changing one runs the command again and replaces the group's contents, as one undo step per edit.
+Moving or turning the group moves the generator with it.
+Exporters and engine importers see ordinary brushes, so a map made with a generator does not need the plugin to load.
+
+## Materials
+
+A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
+Each material has a name, which is what faces store and what engine importers look up, and a preview: an image path in the asset folders, or an sRGB color.
+
+## Where plugins come from
+
+- An SDK lists the plugin ids it needs in `sdk.toml` (`plugins = ["godot", "surfsup"]`), and MapCraft loads `plugins/<id>.wasm` from the SDK folder.
+- Every `.wasm` file in the user's plugins folder is loaded too, whatever the SDK: `~/.local/share/mapcraft/plugins` on Linux, `%LOCALAPPDATA%\mapcraft\plugins` on Windows, `~/Library/Application Support/mapcraft/plugins` on macOS.
+
+## Writing a plugin in Rust
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"
+```
+
+```rust
+wit_bindgen::generate!({ path: "wit", world: "plugin" });
+
+struct Mine;
+
+impl Guest for Mine {
+    fn manifest() -> Manifest { /* ... */ }
+    fn run_command(id: String, params: Vec<Param>, context: Context) -> Result<Output, String> { /* ... */ }
+    fn list_materials() -> Result<Vec<MaterialInfo>, String> { Ok(Vec::new()) }
+}
+
+export!(Mine);
+```
+
+Build with `cargo build --target wasm32-wasip2 --release`.
+The first-party plugins in [`plugins/`](../plugins) are complete examples; `cargo xtask plugins` builds them and copies each into the SDKs that list it.
+
+## Writing a plugin in Python
+
+[`plugins/stairs-py/app.py`](../plugins/stairs-py/app.py) is a staircase generator written in Python.
+Build it with [componentize-py](https://github.com/bytecodealliance/componentize-py):
+
+```sh
+pip install componentize-py
+cd plugins/stairs-py
+componentize-py -d ../../wit -w plugin componentize app -o stairs.wasm
+```
+
+Then copy `stairs.wasm` into your user plugins folder.
+A Python plugin carries its own interpreter, so it is about 18 MB and takes a couple of seconds to load.
+
+## Versioning
+
+The WIT package is `mapcraft:plugin@0.1.0`.
+Until 1.0 the API may change between releases; a plugin built against an older version fails to load with a message naming what is missing.

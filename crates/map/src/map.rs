@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Entity, Extra, FaceId, Node, NodeId, NodeKind, Tag};
+use mapcraft_geom::Aabb;
+
+use crate::{Cordon, Entity, Extra, FaceId, Node, NodeId, NodeKind, Tag, TagId};
 
 pub const ROOT: NodeId = NodeId(1);
 
@@ -11,6 +13,7 @@ const MAX_DEPTH: usize = 256;
 pub struct Map {
     nodes: BTreeMap<NodeId, Node>,
     pub tags: Vec<Tag>,
+    pub cordons: Vec<Cordon>,
     pub extra: Extra,
     next_node: u64,
     next_face: u64,
@@ -21,13 +24,14 @@ pub struct Map {
 pub struct Changes {
     pub nodes: BTreeMap<NodeId, Option<Node>>,
     pub tags: Option<Vec<Tag>>,
+    pub cordons: Option<Vec<Cordon>>,
     next_node: u64,
     next_face: u64,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty() && self.tags.is_none()
+        self.nodes.is_empty() && self.tags.is_none() && self.cordons.is_none()
     }
 
     /// Folds `later` into `self` so both apply as one step.
@@ -35,6 +39,9 @@ impl Changes {
         self.nodes.extend(later.nodes);
         if later.tags.is_some() {
             self.tags = later.tags;
+        }
+        if later.cordons.is_some() {
+            self.cordons = later.cordons;
         }
         self.next_node = self.next_node.max(later.next_node);
         self.next_face = self.next_face.max(later.next_face);
@@ -74,7 +81,7 @@ impl Map {
             locked: false,
             extra: Extra::new(),
         };
-        Self { nodes: BTreeMap::from([(ROOT, world)]), tags: Vec::new(), extra: Extra::new(), next_node: ROOT.0 + 1, next_face: 1 }
+        Self { nodes: BTreeMap::from([(ROOT, world)]), tags: Vec::new(), cordons: Vec::new(), extra: Extra::new(), next_node: ROOT.0 + 1, next_face: 1 }
     }
 
     /// Builds a map from loaded nodes, checking the tree and giving fresh ids to unassigned or duplicate faces.
@@ -121,7 +128,7 @@ impl Map {
                 }
             }
         }
-        Ok(Self { nodes, tags, extra, next_node, next_face })
+        Ok(Self { nodes, tags, cordons: Vec::new(), extra, next_node, next_face })
     }
 
     pub fn get(&self, id: NodeId) -> Option<&Node> {
@@ -163,6 +170,32 @@ impl Map {
         out
     }
 
+    /// Nodes that are drawn and picked: not hidden, carrying no hidden tag, under no hidden
+    /// parent, and while a cordon is active, touching one.
+    pub fn visible_nodes(&self) -> BTreeSet<NodeId> {
+        let hidden_tags: BTreeSet<TagId> = self.tags.iter().filter(|t| t.hidden).map(|t| t.id).collect();
+        let cordons: Vec<Aabb> = self.cordons.iter().filter(|c| c.active).map(|c| c.bounds).collect();
+        let outside = |n: &Node| {
+            let inside = |b: &Aabb| cordons.iter().any(|c| c.intersects(b));
+            match &n.kind {
+                NodeKind::Brush(b) => b.bounds().is_ok_and(|b| !inside(&b)),
+                NodeKind::Entity(e) if n.children.is_empty() => e.origin().is_some_and(|o| !inside(&Aabb::new(o, o))),
+                NodeKind::Prefab(p) => !inside(&Aabb::new(p.origin, p.origin)),
+                _ => false,
+            }
+        };
+        let mut out = BTreeSet::new();
+        let mut stack = vec![ROOT];
+        while let Some(id) = stack.pop() {
+            let Some(n) = self.nodes.get(&id) else { continue };
+            if n.hidden || n.tags.iter().any(|t| hidden_tags.contains(t)) || (!cordons.is_empty() && outside(n)) || !out.insert(id) {
+                continue;
+            }
+            stack.extend(n.children.iter().copied());
+        }
+        out
+    }
+
     pub fn edit(&self) -> Edit<'_> {
         Edit { map: self, changes: Changes { next_node: self.next_node, next_face: self.next_face, ..Changes::default() } }
     }
@@ -178,6 +211,9 @@ impl Map {
         }
         if let Some(tags) = changes.tags {
             inverse.tags = Some(std::mem::replace(&mut self.tags, tags));
+        }
+        if let Some(cordons) = changes.cordons {
+            inverse.cordons = Some(std::mem::replace(&mut self.cordons, cordons));
         }
         // Ids only ever grow so undo and redo never hand out an id twice.
         self.next_node = self.next_node.max(changes.next_node);
@@ -335,6 +371,10 @@ impl Edit<'_> {
         self.changes.tags = Some(tags);
     }
 
+    pub fn set_cordons(&mut self, cordons: Vec<Cordon>) {
+        self.changes.cordons = Some(cordons);
+    }
+
     pub fn finish(self) -> Changes {
         self.changes
     }
@@ -393,6 +433,31 @@ mod tests {
         e.remove(g).unwrap();
         map.apply(e.finish());
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn visibility_tags_and_cordons() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let g = e.insert(ROOT, NodeKind::Group(Group::default())).unwrap();
+        let a = e.insert(g, brush()).unwrap();
+        let far = NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::splat(1000.0), DVec3::splat(1064.0)), &TexDefaults::default()));
+        let b = e.insert(ROOT, far).unwrap();
+        e.update(b, |_, _, tags, _| tags.push(TagId(1))).unwrap();
+        e.set_tags(vec![Tag { id: TagId(1), name: "Far".into(), color: None, parent: None, hidden: true }]);
+        map.apply(e.finish());
+        let v = map.visible_nodes();
+        assert!(v.contains(&a) && !v.contains(&b));
+
+        let mut e = map.edit();
+        e.update(g, |hidden, _, _, _| *hidden = true).unwrap();
+        e.set_tags(vec![]);
+        e.set_cordons(vec![Cordon { name: "Far".into(), bounds: Aabb::new(DVec3::splat(900.0), DVec3::splat(1100.0)), active: true }]);
+        let undo = map.apply(e.finish());
+        let v = map.visible_nodes();
+        assert!(!v.contains(&a) && v.contains(&b));
+        map.apply(undo);
+        assert!(map.cordons.is_empty() && map.tags.len() == 1);
     }
 
     #[test]

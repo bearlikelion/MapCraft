@@ -1,0 +1,73 @@
+[gd_resource type="MapCraftEntityMap" format=3]
+
+[resource]
+classes = {
+"bhop_zone": {
+"node": "area"
+},
+"finish_line": {
+"node": "marker"
+},
+"func_detail": {
+"node": "world"
+},
+"info_player_start": {
+"name": "SpawnPoint",
+"node": "marker",
+"properties": false
+},
+"kill_box": {
+"meta": {
+"sdk_zone": "kill"
+},
+"name": "KillBox"
+},
+"starting_platform": {
+"node": "marker"
+},
+"teleport_destination": {
+"node": "marker"
+},
+"teleport_zone": {
+"meta": {
+"sdk_zone": "teleport"
+}
+},
+"zone_booster": {
+"meta": {
+"sdk_zone": "booster"
+}
+},
+"zone_checkpoint": {
+"meta": {
+"sdk_zone": "checkpoint"
+}
+},
+"zone_finish": {
+"meta": {
+"sdk_zone": "finish"
+},
+"name": "FinishZone"
+},
+"zone_point_tp": {
+"meta": {
+"sdk_zone": "point_tp"
+}
+},
+"zone_respawn": {
+"meta": {
+"sdk_zone": "respawn"
+}
+},
+"zone_split": {
+"meta": {
+"sdk_zone": "split"
+}
+},
+"zone_start": {
+"meta": {
+"sdk_zone": "start"
+},
+"name": "StartZone"
+}
+}

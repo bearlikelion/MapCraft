@@ -3,14 +3,18 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod commands;
+mod generate;
 mod issues;
 mod ops;
+mod organize;
 mod prefab;
 mod session;
 
 pub use commands::{CommandSpec, commands, execute, find};
-pub use issues::{Issue, Severity, validate};
+pub use generate::generator_transform;
+pub use issues::{Fix, Issue, Severity, validate};
 pub use ops::{ClipKeep, Shape};
+pub use organize::find_entities;
 pub use prefab::{expand_instance, flatten_prefabs, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
 

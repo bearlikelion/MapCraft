@@ -1,0 +1,20 @@
+# First-party plugins, built for wasm32-wasip2 by `cargo xtask plugins` into each SDK that lists them.
+[workspace]
+resolver = "3"
+members = ["godot", "surfsup"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+wit-bindgen = "0.63"
+glam = "0.34"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

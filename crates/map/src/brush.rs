@@ -151,6 +151,26 @@ impl Face {
         self.v.offset = self.v.offset.rem_euclid(size.y);
     }
 
+    /// Takes `src`'s material and alignment, turned about the line where the two planes meet so
+    /// the texture runs on across a shared edge (Hammer's apply with alignment).
+    pub fn wrap_from(&mut self, src: &Face) {
+        self.material = src.material.clone();
+        let (Some(a), Some(b)) = (src.plane(), self.plane()) else { return };
+        let line = a.normal.cross(b.normal);
+        let (q, pivot) = if line.length_squared() < 1e-12 {
+            (mapcraft_geom::DQuat::IDENTITY, DVec3::ZERO)
+        } else {
+            let pivot = (a.dist * b.normal.cross(line) + b.dist * line.cross(a.normal)) / line.length_squared();
+            (mapcraft_geom::DQuat::from_rotation_arc(a.normal, b.normal), pivot)
+        };
+        for (dst, s) in [(&mut self.u, &src.u), (&mut self.v, &src.v)] {
+            let axis = q * s.axis;
+            let shift = if s.scale != 0.0 { (s.axis.dot(pivot) - axis.dot(pivot)) / s.scale } else { 0.0 };
+            *dst = TexAxis { axis, offset: s.offset + shift, scale: s.scale };
+        }
+        self.rotation = src.rotation;
+    }
+
     fn reversed(&self) -> Self {
         let mut f = self.clone();
         f.points = [self.points[2], self.points[1], self.points[0]];
@@ -283,6 +303,48 @@ impl Brush {
         let apex = DVec3::new(b.center().x, b.center().y, b.max.z);
         let pts: Vec<DVec3> = Self::ring(&b, sides, b.min.z).chain(std::iter::once(apex)).collect();
         Self::from_vertices(&pts, &[], tex)
+    }
+
+    /// A sphere (an ellipsoid for uneven boxes) inscribed in `b`, `sides` faces around.
+    pub fn sphere(b: Aabb, sides: usize, tex: &TexDefaults) -> Result<Self, BrushError> {
+        let sides = sides.clamp(4, 32);
+        let rings = sides / 2;
+        let (c, r) = (b.center(), b.size() / 2.0);
+        let mut pts = vec![c - DVec3::Z * r.z, c + DVec3::Z * r.z];
+        for i in 1..rings {
+            let lat = std::f64::consts::PI * i as f64 / rings as f64 - std::f64::consts::FRAC_PI_2;
+            for j in 0..sides {
+                let lon = std::f64::consts::TAU * (j as f64 + 0.5) / sides as f64;
+                pts.push(c + DVec3::new(r.x * lat.cos() * lon.cos(), r.y * lat.cos() * lon.sin(), r.z * lat.sin()));
+            }
+        }
+        Self::from_vertices(&pts, &[], tex)
+    }
+
+    /// The blocks of an arch inscribed in `b` around Z: `sides` blocks spanning `arc` degrees
+    /// counter-clockwise from `start` degrees off +X, each `thickness` deep (Hammer's arch).
+    pub fn arch(b: Aabb, sides: usize, arc: f64, start: f64, thickness: f64, tex: &TexDefaults) -> Result<Vec<Self>, BrushError> {
+        let sides = sides.clamp(1, 64);
+        let arc = arc.clamp(1.0, 360.0);
+        let (c, r) = (b.center(), b.size() / 2.0);
+        let (ix, iy) = ((r.x - thickness).max(0.0), (r.y - thickness).max(0.0));
+        let at = |deg: f64, rx: f64, ry: f64, z: f64| {
+            let a = deg.to_radians();
+            DVec3::new(c.x + rx * a.cos(), c.y + ry * a.sin(), z)
+        };
+        (0..sides)
+            .map(|i| {
+                let (a0, a1) = (start + arc * i as f64 / sides as f64, start + arc * (i + 1) as f64 / sides as f64);
+                let mut pts = Vec::with_capacity(8);
+                for z in [b.min.z, b.max.z] {
+                    for a in [a0, a1] {
+                        pts.push(at(a, r.x, r.y, z));
+                        pts.push(at(a, ix, iy, z));
+                    }
+                }
+                Self::from_vertices(&pts, &[], tex)
+            })
+            .collect()
     }
 
     /// One brush around all of `brushes` (Hammer and TrenchBroom's convex merge).
@@ -521,6 +583,37 @@ mod tests {
 
         let merged = Brush::merge(&[cube(0.0, 32.0), Brush::cuboid(Aabb::new(DVec3::new(32.0, 0.0, 0.0), DVec3::new(64.0, 32.0, 32.0)), &tex)]).unwrap();
         assert!((volume(&[merged]) - 64.0 * 32.0 * 32.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sphere_and_arch() {
+        let tex = TexDefaults::default();
+        let s = Brush::sphere(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), 8, &tex).unwrap();
+        assert_eq!(s.faces.len(), 32);
+        let v = volume(std::slice::from_ref(&s));
+        assert!(v > 0.4 * 64.0f64.powi(3) && v < 0.53 * 64.0f64.powi(3), "{v}");
+        let arch = Brush::arch(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 128.0, 32.0)), 8, 180.0, 0.0, 16.0, &tex).unwrap();
+        assert_eq!(arch.len(), 8);
+        assert!(arch.iter().all(|b| b.bounds().unwrap().min.y >= 64.0 - 1e-9));
+        let ring = Brush::arch(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 128.0, 32.0)), 4, 360.0, 0.0, 200.0, &tex).unwrap();
+        assert!((volume(&ring) - 64.0 * 64.0 * 2.0 * 32.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wrap_keeps_shared_edge_continuous() {
+        let b = cube(0.0, 64.0);
+        let mut top = b.faces[4].clone();
+        top.u.offset = 13.0;
+        top.v.offset = 7.0;
+        top.rotate_texture(30.0);
+        let mut side = b.faces[0].clone();
+        side.wrap_from(&top);
+        let size = DVec2::splat(64.0);
+        for p in [DVec3::new(64.0, 0.0, 64.0), DVec3::new(64.0, 50.0, 64.0)] {
+            assert!(side.uv(p, size).abs_diff_eq(top.uv(p, size), 1e-9));
+        }
+        let n = side.plane().unwrap().normal;
+        assert!(side.u.axis.dot(n).abs() < 1e-9 && side.v.axis.dot(n).abs() < 1e-9);
     }
 
     #[test]

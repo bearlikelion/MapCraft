@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub use brush::{Brush, BrushError, Face, Justify, TexAxis, TexDefaults};
 pub use entity::{Connection, Entity};
 pub use map::{Changes, Edit, EditError, Map, ROOT};
-pub use node::{Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};
+pub use node::{Cordon, Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};
 
 /// Data a plugin needs to round-trip but the core does not model.
 pub type Extra = BTreeMap<String, serde_json::Value>;

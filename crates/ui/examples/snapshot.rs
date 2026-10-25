@@ -2,7 +2,7 @@
 //! `cargo run -p mapcraft-ui --example snapshot -- out.png [map.mcmap] [steps]`.
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
-//! `--drag x,y x,y`, `--key <name>`, `--select-all`; `--var name=value` sets an SDK path.
+//! `--drag x,y x,y`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path.
 
 use std::path::PathBuf;
 
@@ -40,7 +40,7 @@ fn main() {
                 }
             }
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
-            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" => steps.push((a.clone(), take(1, &mut it))),
+            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" | "--wait" => steps.push((a.clone(), take(1, &mut it))),
             "--drag" => steps.push((a.clone(), take(2, &mut it))),
             path => options.open = Some(PathBuf::from(path)),
         }
@@ -51,6 +51,12 @@ fn main() {
         let arg = args.first().map(String::as_str).unwrap_or_default();
         match step.as_str() {
             "--click" => h.get_by_label(arg).click(),
+            "--wait" => {
+                for _ in 0..10 {
+                    std::thread::sleep(std::time::Duration::from_millis(arg.parse::<u64>().unwrap_or(500) / 10));
+                    h.run_steps(1);
+                }
+            }
             "--command" => h.state_mut().run_command_for_test(arg),
             "--key" => {
                 if let Some(k) = egui::Key::from_name(arg) {

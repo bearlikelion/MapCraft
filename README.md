@@ -19,12 +19,17 @@ See [ROADMAP.md](ROADMAP.md) for what works today and what comes next.
 
 ## Building
 
-Requires Rust 1.95 or newer.
+Requires Rust 1.95 or newer and the `wasm32-wasip2` target for the first-party plugins.
 
 ```sh
+rustup target add wasm32-wasip2
+cargo xtask plugins
 cargo build --release
 cargo xtask ci
 ```
+
+`cargo xtask plugins` builds the plugins in `plugins/` and copies each into the SDKs that use it.
+See [docs/plugin-api.md](docs/plugin-api.md) to write your own.
 
 ## License
 

@@ -120,6 +120,11 @@ impl Session {
         self.current_serial() != self.saved_serial
     }
 
+    /// Treats the map as changed since it was saved, e.g. one recovered from an autosave.
+    pub fn mark_unsaved(&mut self) {
+        self.saved_serial = u64::MAX;
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

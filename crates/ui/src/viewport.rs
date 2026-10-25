@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use mapcraft_engine::pick_target;
 use mapcraft_geom::{Aabb, DMat4, DVec2, DVec3, snap};
-use mapcraft_map::{FaceId, Map, NodeId, NodeKind, ROOT};
+use mapcraft_map::{FaceId, NodeId, NodeKind};
 use mapcraft_render::{LineVertex, SELECTED_EDGE, box_lines};
 
 use crate::app::MapCraftApp;
@@ -51,26 +51,45 @@ pub enum Drag {
         start: DVec3,
         applied: DVec3,
     },
+    /// Moving the selection along one gizmo arrow in the 3D view.
+    Axis {
+        view: usize,
+        axis: DVec3,
+        center: DVec3,
+        start: f64,
+        applied: f64,
+    },
+}
+
+/// What a vertex tool handle drags.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandleKind {
+    Vertex,
+    Edge,
+    Face,
+}
+
+const AXES: [(DVec3, Color32); 3] =
+    [(DVec3::X, Color32::from_rgb(230, 60, 60)), (DVec3::Y, Color32::from_rgb(70, 200, 70)), (DVec3::Z, Color32::from_rgb(70, 120, 240))];
+
+fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = if ab.length_sq() > 0.0 { ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+    p.distance(a + ab * t)
+}
+
+/// Parameter along the line `center + axis * t` closest to the ray.
+fn closest_on_axis(center: DVec3, axis: DVec3, origin: DVec3, dir: DVec3) -> Option<f64> {
+    let w = center - origin;
+    let (a, b, c, d, e) = (axis.dot(axis), axis.dot(dir), dir.dot(dir), axis.dot(w), dir.dot(w));
+    let denom = a * c - b * b;
+    (denom.abs() > 1e-9).then(|| (b * e - c * d) / denom)
 }
 
 const PREVIEW: [f32; 4] = [1.0, 1.0, 0.2, 1.0];
 
 fn dvec(v: Vec2) -> DVec2 {
     DVec2::new(f64::from(v.x), f64::from(v.y))
-}
-
-/// Nodes whose node and ancestors are all visible.
-pub fn visible_nodes(map: &Map) -> BTreeSet<NodeId> {
-    let mut out = BTreeSet::new();
-    let mut stack = vec![ROOT];
-    while let Some(id) = stack.pop() {
-        let Some(n) = map.get(id) else { continue };
-        if n.hidden || !out.insert(id) {
-            continue;
-        }
-        stack.extend(n.children.iter().copied());
-    }
-    out
 }
 
 impl MapCraftApp {
@@ -98,10 +117,11 @@ impl MapCraftApp {
         self.session.selection.iter().filter_map(|id| self.node_bounds(*id)).reduce(|a, b| a.union(&b))
     }
 
-    /// Nearest visible brush or point entity on the ray, with the hit distance.
-    pub(crate) fn pick(&self, origin: DVec3, dir: DVec3) -> Option<(NodeId, f64)> {
-        let visible = visible_nodes(self.view_map());
-        let mut best: Option<(NodeId, f64)> = None;
+    /// Visible brushes and point entities on the ray, nearest first, as the nodes of the real map
+    /// they belong to.
+    pub(crate) fn pick_all(&self, origin: DVec3, dir: DVec3) -> Vec<(NodeId, f64)> {
+        let visible = self.view_map().visible_nodes();
+        let mut hits: Vec<(NodeId, f64)> = Vec::new();
         for (id, n) in self.view_map().nodes() {
             if !visible.contains(&id) || n.locked {
                 continue;
@@ -111,18 +131,24 @@ impl MapCraftApp {
                 NodeKind::Entity(e) if n.children.is_empty() => self.point_box(e).ray_hit(origin, dir),
                 _ => None,
             };
-            if let Some(t) = t
-                && best.is_none_or(|(_, b)| t < b)
-            {
-                best = Some((id, t));
+            if let Some(t) = t {
+                hits.push((self.owner(id), t));
             }
         }
-        best.map(|(id, t)| (self.owner(id), t))
+        hits.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let mut seen = BTreeSet::new();
+        hits.retain(|(id, _)| seen.insert(*id));
+        hits
+    }
+
+    /// Nearest visible brush or point entity on the ray, with the hit distance.
+    pub(crate) fn pick(&self, origin: DVec3, dir: DVec3) -> Option<(NodeId, f64)> {
+        self.pick_all(origin, dir).into_iter().next()
     }
 
     /// Nearest visible brush face on the ray.
     pub(crate) fn pick_face(&self, origin: DVec3, dir: DVec3) -> Option<(NodeId, FaceId, f64)> {
-        let visible = visible_nodes(&self.session.map);
+        let visible = self.session.map.visible_nodes();
         let mut best: Option<(NodeId, FaceId, f64)> = None;
         for (id, n) in self.session.map.nodes() {
             let (true, false, Some(b)) = (visible.contains(&id), n.locked, n.kind.brush()) else { continue };
@@ -136,16 +162,24 @@ impl MapCraftApp {
         best
     }
 
-    /// Corners of the selected brushes.
-    fn selected_vertices(&self) -> Vec<DVec3> {
-        let mut out: Vec<DVec3> = Vec::new();
+    /// Vertex tool handles of the selected brushes: corners, edge midpoints and face centers,
+    /// each with the corners it drags.
+    fn vertex_handles(&self) -> Vec<(HandleKind, DVec3, Vec<DVec3>)> {
+        let mut out: Vec<(HandleKind, DVec3, Vec<DVec3>)> = Vec::new();
+        let mut add = |kind, at: DVec3, verts: Vec<DVec3>| {
+            if !out.iter().any(|(k, p, _)| *k == kind && p.distance_squared(at) < 1e-6) {
+                out.push((kind, at, verts));
+            }
+        };
         for id in self.session.selected_brushes() {
-            if let Some(Ok(vs)) = self.session.map.get(id).and_then(|n| n.kind.brush()).map(|b| b.vertices()) {
-                for v in vs {
-                    if !out.iter().any(|o| o.distance_squared(v) < 1e-6) {
-                        out.push(v);
-                    }
+            let Some(Ok(solid)) = self.session.map.get(id).and_then(|n| n.kind.brush()).map(|b| b.solid()) else { continue };
+            for w in solid.faces.iter().flatten() {
+                for (i, a) in w.0.iter().enumerate() {
+                    let b = w.0[(i + 1) % w.0.len()];
+                    add(HandleKind::Vertex, *a, vec![*a]);
+                    add(HandleKind::Edge, (*a + b) / 2.0, vec![*a, b]);
                 }
+                add(HandleKind::Face, w.center(), w.0.clone());
             }
         }
         out
@@ -181,6 +215,9 @@ impl MapCraftApp {
             out.push(LineVertex::new(b, PREVIEW));
         }
         self.link_lines(&mut out);
+        for c in self.session.map.cordons.iter().filter(|c| c.active) {
+            box_lines(&mut out, c.bounds.min, c.bounds.max, [0.3, 0.6, 1.0, 1.0]);
+        }
         if let Some(b) = self.selection_bounds().filter(|_| self.tool == Tool::Select) {
             box_lines(&mut out, b.min, b.max, [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], 0.35]);
         }
@@ -193,9 +230,16 @@ impl MapCraftApp {
         let center = |id: NodeId| self.node_bounds(id).map(|b| b.center());
         for sel in &self.session.selection {
             let Some(e) = map.get(*sel).and_then(|n| n.kind.entity()) else { continue };
-            let names: Vec<&str> = ["target", "parentname", "respawn", "landmark"]
+            let class = self.project.game.class(&e.classname);
+            let is_link = |k: &str| match &class {
+                Some(c) => c.property(k).is_some_and(|p| p.ty == "target_destination"),
+                None => ["target", "parentname", "respawn", "landmark"].contains(&k),
+            };
+            let names: Vec<&str> = e
+                .properties
                 .iter()
-                .filter_map(|k| e.get(k))
+                .filter(|(k, _)| is_link(k))
+                .map(|(_, v)| v.as_str())
                 .chain(e.connections.iter().map(|c| c.target.as_str()))
                 .filter(|n| !n.is_empty())
                 .collect();
@@ -274,23 +318,45 @@ impl MapCraftApp {
             && *view == index
             && let Some(p) = response.interact_pointer_pos()
         {
-            ui.painter().rect_stroke(Rect::from_two_pos(*start, p), 0.0, Stroke::new(1.0, Color32::YELLOW), egui::StrokeKind::Inside);
+            ui.painter_at(rect).rect_stroke(Rect::from_two_pos(*start, p), 0.0, Stroke::new(1.0, Color32::YELLOW), egui::StrokeKind::Inside);
         }
         if self.tool == Tool::Select {
             self.draw_handles(ui, index, rect);
         }
         if self.tool == Tool::Vertex
-            && let Some(cam) = self.panes.get(index).map(|p| p.camera)
+            && let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| c.is_2d())
         {
-            for v in self.selected_vertices() {
-                if let Some(p) = cam.project(v, dvec(rect.size())) {
-                    let r = Rect::from_center_size(rect.min + Vec2::new(p.x as f32, p.y as f32), Vec2::splat(6.0));
-                    if rect.contains(r.center()) {
-                        ui.painter().rect_filled(r, 0.0, Color32::from_rgb(255, 220, 60));
-                    }
+            for (kind, at, _) in self.vertex_handles().into_iter().rev() {
+                let Some(p) = cam.project(at, dvec(rect.size())) else { continue };
+                let c = rect.min + Vec2::new(p.x as f32, p.y as f32);
+                if !rect.contains(c) {
+                    continue;
                 }
+                match kind {
+                    HandleKind::Vertex => ui.painter_at(rect).rect_filled(Rect::from_center_size(c, Vec2::splat(6.0)), 0.0, Color32::from_rgb(255, 220, 60)),
+                    HandleKind::Edge => ui.painter_at(rect).rect_filled(Rect::from_center_size(c, Vec2::splat(5.0)), 0.0, Color32::from_rgb(80, 220, 240)),
+                    HandleKind::Face => ui.painter_at(rect).circle_filled(c, 3.0, Color32::from_rgb(120, 240, 120)),
+                };
             }
         }
+        for (_, a, b, color) in self.gizmo(index, rect) {
+            ui.painter_at(rect).line_segment([a, b], Stroke::new(3.0, color));
+            ui.painter_at(rect).circle_filled(b, 5.0, color);
+        }
+    }
+
+    /// The move arrows drawn at the selection's center in the 3D view: axis, screen start and end.
+    fn gizmo(&self, index: usize, rect: Rect) -> Vec<(DVec3, Pos2, Pos2, Color32)> {
+        let (Some(cam), Some(b)) = (self.panes.get(index).map(|p| p.camera), self.selection_bounds()) else { return Vec::new() };
+        if cam.is_2d() || self.tool != Tool::Select {
+            return Vec::new();
+        }
+        let size = dvec(rect.size());
+        let c = b.center();
+        let len = cam.position.distance(c) * 0.12;
+        let to_screen = |p: DVec3| cam.project(p, size).map(|q| rect.min + Vec2::new(q.x as f32, q.y as f32));
+        let Some(start) = to_screen(c) else { return Vec::new() };
+        AXES.iter().filter_map(|(axis, color)| Some((*axis, start, to_screen(c + *axis * len)?, *color))).collect()
     }
 
     fn handle_rects(&self, index: usize, rect: Rect) -> Vec<((i8, i8), Rect)> {
@@ -326,8 +392,8 @@ impl MapCraftApp {
 
     fn draw_handles(&self, ui: &egui::Ui, index: usize, rect: Rect) {
         for (_, r) in self.handle_rects(index, rect) {
-            ui.painter().rect_filled(r, 0.0, Color32::WHITE);
-            ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
+            ui.painter_at(rect).rect_filled(r, 0.0, Color32::WHITE);
+            ui.painter_at(rect).rect_stroke(r, 0.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
         }
     }
 
@@ -386,19 +452,20 @@ impl MapCraftApp {
                 let (origin, dir) = cam.ray(dvec(p - rect.min), size);
                 if let Some((id, face, _)) = self.pick_face(origin, dir) {
                     if response.clicked_by(egui::PointerButton::Primary) {
-                        let material = self
-                            .session
-                            .map
-                            .get(id)
-                            .and_then(|n| n.kind.brush())
-                            .and_then(|b| b.faces.iter().find(|f| f.id == face))
-                            .map(|f| f.material.clone());
-                        if let Some(m) = material {
-                            self.status = format!("Picked {m}");
-                            self.session.tex.material = m;
+                        let material = self.session.map.get(id).and_then(|n| n.kind.brush()).and_then(|b| b.faces.iter().find(|f| f.id == face)).cloned();
+                        if let Some(f) = material {
+                            self.status = format!("Picked {}", f.material);
+                            self.session.tex.material = f.material.clone();
+                            self.picked_face = Some(f);
                         }
-                    } else if let Err(e) = self.session.apply_material_to_face(id, face) {
-                        self.status = e.to_string();
+                    } else {
+                        let result = match (&self.picked_face, ctx.input(|i| i.modifiers.shift)) {
+                            (Some(src), true) => self.session.wrap_face(id, face, &src.clone()),
+                            _ => self.session.apply_material_to_face(id, face),
+                        };
+                        if let Err(e) = result {
+                            self.status = e.to_string();
+                        }
                     }
                     self.mark_changed();
                 }
@@ -425,8 +492,25 @@ impl MapCraftApp {
         let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
         match self.tool {
             Tool::Select | Tool::Block | Tool::Vertex => {
-                let hit = self.pick(origin, dir).map(|(id, _)| id);
-                self.session.click(hit, additive);
+                // Clicking the same spot again steps to the next object behind (drill select).
+                let mut targets = BTreeSet::new();
+                let hits: Vec<NodeId> = self
+                    .pick_all(origin, dir)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| targets.insert(pick_target(&self.session.map, *id, self.session.select_mode)))
+                    .collect();
+                let again = self.last_click.is_some_and(|(v, p)| v == index && p.distance(pos) < 4.0);
+                let current = hits.iter().position(|h| {
+                    let t = pick_target(&self.session.map, *h, self.session.select_mode);
+                    self.session.selection.len() == 1 && self.session.selection.contains(&t)
+                });
+                let i = match current {
+                    Some(c) if again && !additive && !hits.is_empty() => (c + 1) % hits.len(),
+                    _ => 0,
+                };
+                self.last_click = Some((index, pos));
+                self.session.click(hits.get(i).copied(), additive);
                 self.mark_changed();
             }
             Tool::Face => {
@@ -482,10 +566,17 @@ impl MapCraftApp {
 
     fn begin_drag(&mut self, index: usize, rect: Rect, pos: Pos2) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
+        let size = dvec(rect.size());
         if !cam.is_2d() {
+            let arrow = self.gizmo(index, rect).into_iter().find(|(_, a, b, _)| segment_distance(pos, *a, *b) < 6.0);
+            if let (Some((axis, ..)), Some(b)) = (arrow, self.selection_bounds()) {
+                let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
+                if let Some(start) = closest_on_axis(b.center(), axis, origin, dir) {
+                    self.drag = Drag::Axis { view: index, axis, center: b.center(), start, applied: 0.0 };
+                }
+            }
             return;
         }
-        let size = dvec(rect.size());
         match self.tool {
             Tool::Select => {
                 if let Some((handle, _)) = self.handle_rects(index, rect).into_iter().find(|(_, r)| r.expand(3.0).contains(pos))
@@ -514,8 +605,24 @@ impl MapCraftApp {
                 }
             }
             Tool::Vertex => {
-                let near: Vec<DVec3> =
-                    self.selected_vertices().into_iter().filter(|v| cam.project(*v, size).is_some_and(|p| (p - dvec(pos - rect.min)).length() < 6.0)).collect();
+                // Everything under the cursor moves together, so in a 2D view a corner takes the
+                // corners stacked behind it and an edge midpoint can take a whole side.
+                let handles = self.vertex_handles();
+                let under = |kind| -> Vec<DVec3> {
+                    handles
+                        .iter()
+                        .filter(|(k, at, _)| *k == kind && cam.project(*at, size).is_some_and(|p| (p - dvec(pos - rect.min)).length() < 6.0))
+                        .flat_map(|(_, _, v)| v.iter().copied())
+                        .collect()
+                };
+                let mut near = under(HandleKind::Vertex);
+                if near.is_empty() {
+                    near = under(HandleKind::Edge);
+                }
+                if near.is_empty() {
+                    near = under(HandleKind::Face);
+                }
+                near.dedup_by(|a, b| a.distance_squared(*b) < 1e-6);
                 if !near.is_empty() {
                     let start = cam.plane_point(dvec(pos - rect.min), size);
                     self.drag = Drag::Vertex { view: index, originals: near, start, applied: DVec3::ZERO };
@@ -575,6 +682,18 @@ impl MapCraftApp {
                     self.mark_changed();
                 }
             }
+            Drag::Axis { view, axis, center, start, applied } if view == index => {
+                let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
+                let Some(t) = closest_on_axis(center, axis, origin, dir) else { return };
+                let total = ((t - start) / g).round() * g;
+                if total != applied {
+                    if let Err(e) = self.session.translate_selection(axis * (total - applied), Some("drag-move")) {
+                        self.status = e.to_string();
+                    }
+                    self.drag = Drag::Axis { view, axis, center, start, applied: total };
+                    self.mark_changed();
+                }
+            }
             Drag::Block { view, start, .. } if view == index => {
                 if let Some(end) = self.snapped_plane_point(index, pos, rect) {
                     self.drag = Drag::Block { view, start, end };
@@ -593,7 +712,7 @@ impl MapCraftApp {
                 let (r, u, _) = cam.view.axes();
                 let (h0, h1) = (a.dot(r).min(b.dot(r)), a.dot(r).max(b.dot(r)));
                 let (v0, v1) = (a.dot(u).min(b.dot(u)), a.dot(u).max(b.dot(u)));
-                let visible = visible_nodes(self.view_map());
+                let visible = self.view_map().visible_nodes();
                 let mut picked = BTreeSet::new();
                 for (id, n) in self.view_map().nodes() {
                     if !visible.contains(&id) || n.locked {
@@ -609,7 +728,7 @@ impl MapCraftApp {
                 self.session.selection = picked;
                 self.mark_changed();
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::Vertex { .. } => self.session.end_coalesce(),
+            Drag::Move { .. } | Drag::Resize { .. } | Drag::Vertex { .. } | Drag::Axis { .. } => self.session.end_coalesce(),
             Drag::Block { start, end, .. } => {
                 let b = self.block_box(start, end);
                 if b.size().min_element() > 0.0 {

@@ -42,7 +42,7 @@
 
 @SolidClass base(Zone) color(200 0 255) = teleport_zone : "Teleports the player to a teleport destination."
 [
-	target(target_destination) : "Destination"
+	next_stage(target_destination) : "Destination"
 	kill_velocity(boolean) : "Kill velocity" : 0
 	cancel_run(boolean) : "Cancel run" : 0
 	align_to_spawn(boolean) : "Align to destination" : 1

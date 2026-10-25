@@ -7,13 +7,14 @@ use std::time::Instant;
 
 use craft_settings::{Location, SettingsStore};
 use eframe::egui_wgpu;
-use egui::{Color32, Pos2, Rect, Vec2};
+use egui::{Pos2, Rect, Vec2};
 use mapcraft_engine::{Issue, Session};
 use mapcraft_geom::{Aabb, DVec3};
 use mapcraft_map::{Map, NodeId, NodeKind};
 use mapcraft_render::{Camera, RenderMode, Renderer, Target, View, build_scene};
 use mapcraft_sdk::Sdk;
 
+use crate::dialogs::Dialogs;
 use crate::prefs::Prefs;
 use crate::project::{Project, sdk_search_dirs};
 use crate::viewport::{Drag, Tool};
@@ -44,6 +45,7 @@ pub(crate) struct Gpu {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LeftTab {
     Scene,
+    Tags,
     Materials,
     Entities,
 }
@@ -52,6 +54,7 @@ pub(crate) enum LeftTab {
 pub(crate) enum BottomTab {
     Output,
     Issues,
+    Find,
 }
 
 enum Pending {
@@ -60,7 +63,7 @@ enum Pending {
     Quit,
 }
 
-struct CompileJob {
+pub(crate) struct CompileJob {
     rx: mpsc::Receiver<String>,
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
@@ -97,13 +100,32 @@ pub struct MapCraftApp {
     pub(crate) cursor_world: Option<DVec3>,
     /// The map with prefab instances expanded, and which instance each expanded node belongs to.
     pub(crate) display: Option<(Map, BTreeMap<NodeId, NodeId>)>,
-    prefab_cache: HashMap<String, Option<Map>>,
-    show_new_dialog: bool,
-    new_sdk: Option<String>,
+    pub(crate) prefab_cache: HashMap<String, Option<Map>>,
+    pub(crate) dialogs: Dialogs,
+    /// Where autosaves and the crash marker live.
+    data_dir: Option<PathBuf>,
+    /// The view and spot of the last click, so clicking it again drills to the next object.
+    pub(crate) last_click: Option<(usize, Pos2)>,
+    /// Face whose material and alignment Alt+Shift+right click applies.
+    pub(crate) picked_face: Option<mapcraft_map::Face>,
+    pub(crate) thumbs: crate::thumbs::Thumbs,
+    pub(crate) find: crate::panels::FindState,
+    pub(crate) tag_name: String,
+    pub(crate) show_thumbs: bool,
+    /// Compiles plugins; `None` when the WebAssembly engine could not start.
+    plugin_host: Option<mapcraft_plugin_host::Host>,
+    pub(crate) plugin_dialog: Option<crate::plugins::PluginDialog>,
+    /// The status message and when it first showed, so it can give way to tool hints.
+    pub(crate) status_shown: (String, Instant),
+    pub(crate) inspector_tab: crate::panels::InspectorTab,
+    /// FGD-driven property widgets; off shows raw key values (Hammer's SmartEdit).
+    pub(crate) smart_edit: bool,
+    pub(crate) show_new_dialog: bool,
+    pub(crate) new_sdk: Option<String>,
     show_sdk_dialog: bool,
     pending: Option<Pending>,
     confirm_tools: Option<usize>,
-    compile: Option<CompileJob>,
+    pub(crate) compile: Option<CompileJob>,
     last_autosave: Instant,
     screenshot: Option<PathBuf>,
     sdk_var_overrides: Vec<(String, String)>,
@@ -121,7 +143,13 @@ impl MapCraftApp {
         if report.has_problems() {
             log::warn!("settings: {report:?}");
         }
+        crate::chrome::apply_theme(&cc.egui_ctx);
         let grid = prefs.get().view.grid;
+        let data_dir = match &options.settings_dir {
+            Some(dir) => Some(dir.join("data")),
+            None => craft_settings::paths::data_dir("mapcraft"),
+        };
+        let recovery = data_dir.as_deref().map(crate::dialogs::start_session).unwrap_or_default();
         let gpu = cc.wgpu_render_state.as_ref().map(|state| Gpu { renderer: Renderer::new(&state.device, &state.queue), state: state.clone() });
         let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING };
         let mut app = Self {
@@ -155,6 +183,19 @@ impl MapCraftApp {
             cursor_world: None,
             display: None,
             prefab_cache: HashMap::new(),
+            dialogs: Dialogs { recovery, ..Dialogs::default() },
+            data_dir,
+            last_click: None,
+            picked_face: None,
+            thumbs: crate::thumbs::Thumbs::new(),
+            find: crate::panels::FindState::default(),
+            tag_name: String::new(),
+            show_thumbs: true,
+            plugin_host: mapcraft_plugin_host::Host::new().map_err(|e| log::error!("plugins disabled: {e}")).ok(),
+            plugin_dialog: None,
+            status_shown: (String::new(), Instant::now()),
+            inspector_tab: crate::panels::InspectorTab::default(),
+            smart_edit: true,
             show_new_dialog: false,
             new_sdk: None,
             show_sdk_dialog: false,
@@ -207,7 +248,9 @@ impl MapCraftApp {
                 self.session.tex.material = d.clone();
             }
         }
-        self.project = Project::load(sdk, vars);
+        let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
+        self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        self.thumbs.clear();
         for p in &self.project.problems {
             self.output.push(p.clone());
         }
@@ -232,6 +275,8 @@ impl MapCraftApp {
             Ok(mut s) => {
                 s.grid = self.prefs.get().view.grid;
                 let sdk = s.sdk.clone();
+                // Layers are the map's outline, so the tree opens with them unfolded.
+                self.expanded = s.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).map(|(id, _)| id).chain([mapcraft_map::ROOT]).collect();
                 self.session = s;
                 self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
                 self.load_project(sdk);
@@ -250,8 +295,12 @@ impl MapCraftApp {
                 None => return false,
             },
         };
+        let old_autosave = self.autosave_path();
         match self.session.save_as(&path) {
             Ok(()) => {
+                if let Some(a) = old_autosave {
+                    let _ = std::fs::remove_file(a);
+                }
                 self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
                 self.status = format!("Saved {}", path.display());
                 true
@@ -298,7 +347,7 @@ impl MapCraftApp {
                 let px = f64::from(size.x.min(size.y).max(100.0));
                 cam.zoom = (px / (extent * 1.3)).clamp(1.0 / 256.0, 64.0);
             } else {
-                cam.position = c - cam.forward() * extent * 1.2;
+                cam.position = c - cam.forward() * extent * 0.85;
             }
         }
     }
@@ -342,7 +391,8 @@ impl MapCraftApp {
         let names: BTreeSet<String> = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
         self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
         let renderer = &gpu.renderer;
-        let scene = build_scene(map, &self.session.selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project);
+        let colorize = self.prefs.get().view.colorize;
+        let scene = build_scene(map, &self.session.selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, colorize);
         gpu.renderer.set_scene(&scene);
         self.scene_dirty = false;
     }
@@ -352,9 +402,9 @@ impl MapCraftApp {
         self.session.map.len()
     }
 
-    /// Runs an engine command by id, as a menu item would.
+    /// Runs an action or engine command by id, as a menu item would.
     pub fn run_command_for_test(&mut self, id: &str) {
-        self.run_command(id);
+        self.run_action(id);
     }
 
     pub(crate) fn run_command(&mut self, id: &str) {
@@ -368,57 +418,69 @@ impl MapCraftApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        let file = [
-            (crate::shortcuts::parse("Ctrl+S"), "save"),
-            (crate::shortcuts::parse("Ctrl+Shift+S"), "save_as"),
-            (crate::shortcuts::parse("Ctrl+O"), "open"),
-            (crate::shortcuts::parse("Ctrl+N"), "new"),
-        ];
-        // Longer chords first so Ctrl+Shift+S is not taken by Ctrl+S.
-        for (sc, action) in file.iter().rev() {
-            if let Some(sc) = sc
-                && ctx.input_mut(|i| i.consume_shortcut(sc))
-            {
-                match *action {
-                    "save" => {
-                        self.save(false);
-                    }
-                    "save_as" => {
-                        self.save(true);
-                    }
-                    "open" => self.open_dialog(),
-                    _ => self.show_new_dialog = true,
-                }
+        // WASD and friends fly the 3D camera while the right button is down.
+        let flying = ctx.input(|i| i.pointer.secondary_down());
+        let prefs = self.prefs.get();
+        for (sc, id) in crate::shortcuts::bindings(prefs.keymap, &prefs.shortcuts) {
+            if flying && !sc.modifiers.command {
+                continue;
             }
-        }
-        let mut cmds: Vec<_> = mapcraft_engine::commands().iter().filter_map(|c| Some((crate::shortcuts::parse(c.shortcut?)?, c.id))).collect();
-        cmds.sort_by_key(|(sc, _)| std::cmp::Reverse(sc.modifiers.shift as u8 + sc.modifiers.command as u8 + sc.modifiers.alt as u8));
-        for (sc, id) in cmds {
             if ctx.input_mut(|i| i.consume_shortcut(&sc)) {
-                self.run_command(id);
+                self.run_action(id);
             }
         }
         self.clipboard(ctx);
-        let keys = [
-            (egui::Key::Escape, Tool::Select),
-            (egui::Key::B, Tool::Block),
-            (egui::Key::E, Tool::Entity),
-            (egui::Key::X, Tool::Clip),
-            (egui::Key::F, Tool::Face),
-            (egui::Key::V, Tool::Vertex),
-        ];
-        for (key, tool) in keys {
-            if ctx.input(|i| i.key_pressed(key) && i.modifiers.is_none()) {
-                if key == egui::Key::Escape {
-                    self.clip_points.clear();
-                    self.drag = Drag::None;
-                }
-                self.tool = tool;
-            }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.clip_points.clear();
+            self.drag = Drag::None;
+            self.tool = Tool::Select;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() == 2 {
             self.apply_clip();
         }
+    }
+
+    /// Runs a bindable action: the shell's own, or an engine command.
+    pub(crate) fn run_action(&mut self, id: &str) {
+        let tool = match id {
+            "tool.select" => Some(Tool::Select),
+            "tool.block" => Some(Tool::Block),
+            "tool.entity" => Some(Tool::Entity),
+            "tool.clip" => Some(Tool::Clip),
+            "tool.vertex" => Some(Tool::Vertex),
+            "tool.face" => Some(Tool::Face),
+            _ => None,
+        };
+        if let Some(t) = tool {
+            self.clip_points.clear();
+            self.drag = Drag::None;
+            self.tool = t;
+            return;
+        }
+        match id {
+            "file.new" => {
+                self.new_sdk = self.project.id().map(String::from);
+                self.show_new_dialog = true;
+            }
+            "file.open" => self.open_dialog(),
+            "file.save" => {
+                self.save(false);
+            }
+            "file.save_as" => {
+                self.save(true);
+            }
+            "edit.preferences" => self.dialogs.preferences = true,
+            "tools.transform" => self.dialogs.transform.open = true,
+            "tools.replace_materials" => self.open_replace_materials(),
+            "prefab.make_local" => self.make_local(),
+            _ => self.run_command(id),
+        }
+    }
+
+    /// The chord shown next to an action in menus.
+    pub(crate) fn chord(&self, id: &str) -> String {
+        let p = self.prefs.get();
+        crate::shortcuts::chord(id, p.keymap, &p.shortcuts).unwrap_or_default()
     }
 
     fn clipboard(&mut self, ctx: &egui::Context) {
@@ -446,22 +508,36 @@ impl MapCraftApp {
         }
     }
 
+    pub(crate) fn open_dialog_path(&mut self, path: PathBuf) {
+        self.request(Pending::Open(path));
+    }
+
+    fn make_local(&mut self) {
+        let doc = self.session.path.clone();
+        if let Err(e) = self.session.make_local(&mut prefab_loader(&mut self.prefab_cache, doc)) {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
+    }
+
     pub(crate) fn open_dialog(&mut self) {
         if let Some(p) = rfd::FileDialog::new().add_filter("MapCraft map", &["mcmap"]).pick_file() {
             self.request(Pending::Open(p));
         }
     }
 
+    fn action_button(&mut self, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) {
+        let button = egui::Button::new(label).shortcut_text(self.chord(id));
+        if ui.add_enabled(enabled, button).clicked() {
+            self.run_action(id);
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New Map…").clicked() {
-                    self.new_sdk = self.project.id().map(String::from);
-                    self.show_new_dialog = true;
-                }
-                if ui.button("Open…").clicked() {
-                    self.open_dialog();
-                }
+                self.action_button(ui, "file.new", "New Map…", true);
+                self.action_button(ui, "file.open", "Open…", true);
                 ui.menu_button("Open Recent", |ui| {
                     for p in self.prefs.get().recent.clone() {
                         if ui.button(&p).clicked() {
@@ -470,12 +546,8 @@ impl MapCraftApp {
                     }
                 });
                 ui.separator();
-                if ui.button("Save").clicked() {
-                    self.save(false);
-                }
-                if ui.button("Save As…").clicked() {
-                    self.save(true);
-                }
+                self.action_button(ui, "file.save", "Save", true);
+                self.action_button(ui, "file.save_as", "Save As…", true);
                 ui.separator();
                 if ui.button("SDK Settings…").clicked() {
                     self.show_sdk_dialog = true;
@@ -488,6 +560,13 @@ impl MapCraftApp {
             for top in ["Edit", "Tools", "View"] {
                 ui.menu_button(top, |ui| {
                     if top == "Tools" {
+                        if ui.button("Check for Problems").clicked() {
+                            self.check_problems();
+                        }
+                        let any = !self.session.selection.is_empty();
+                        self.action_button(ui, "tools.transform", "Transform…", any);
+                        self.action_button(ui, "tools.replace_materials", "Replace Materials…", true);
+                        ui.separator();
                         self.prefab_menu(ui);
                         ui.separator();
                     }
@@ -497,21 +576,32 @@ impl MapCraftApp {
                                 self.render_mode = mode;
                             }
                         }
+                        let mut colorize = self.prefs.get().view.colorize;
+                        if ui.checkbox(&mut colorize, "Color brushes by object").on_hover_text("Each brush gets its own color in the 2D views").changed() {
+                            self.prefs.update(|p| p.view.colorize = colorize);
+                            self.mark_changed();
+                        }
                         if ui.button("Frame All").clicked() {
                             self.frame_all();
+                        }
+                        if ui.button("Find Entities").clicked() {
+                            self.bottom_tab = BottomTab::Find;
+                            self.show_bottom = true;
                         }
                         ui.separator();
                     }
                     for c in mapcraft_engine::commands().iter().filter(|c| c.menu.split('/').next() == Some(top)) {
                         let label = c.menu.rsplit('/').next().unwrap_or(c.label);
                         let enabled = (c.enabled)(&self.session);
-                        let button = egui::Button::new(label).shortcut_text(c.shortcut.unwrap_or_default());
-                        if ui.add_enabled(enabled, button).clicked() {
-                            self.run_command(c.id);
-                        }
+                        self.action_button(ui, c.id, label, enabled);
+                    }
+                    if top == "Edit" {
+                        ui.separator();
+                        self.action_button(ui, "edit.preferences", "Preferences…", true);
                     }
                 });
             }
+            self.plugins_menu(ui);
             ui.menu_button("Run", |ui| {
                 let profiles: Vec<String> = self.project.sdk.iter().flat_map(|s| s.manifest.compile.iter().map(|p| p.name.clone())).collect();
                 if profiles.is_empty() {
@@ -522,18 +612,17 @@ impl MapCraftApp {
                         self.start_compile(i);
                     }
                 }
-                if let Some(job) = &self.compile
-                    && ui.button("Cancel").clicked()
-                {
-                    job.cancel.store(true, Ordering::Relaxed);
+                if self.compile.is_some() && ui.button("Cancel").clicked() {
+                    self.cancel_compile();
                 }
             });
-            if ui.button("Check for Problems").clicked() {
-                self.issues = mapcraft_engine::validate(&self.session.map, self.project.sdk.as_ref().map(|_| &self.project.game));
-                self.bottom_tab = BottomTab::Issues;
-                self.show_bottom = true;
-            }
         });
+    }
+
+    pub(crate) fn check_problems(&mut self) {
+        self.issues = mapcraft_engine::validate(&self.session.map, self.project.sdk.as_ref().map(|_| &self.project.game));
+        self.bottom_tab = BottomTab::Issues;
+        self.show_bottom = true;
     }
 
     fn prefab_menu(&mut self, ui: &mut egui::Ui) {
@@ -559,92 +648,11 @@ impl MapCraftApp {
             }
             self.mark_changed();
         }
-        if ui.add_enabled(!self.session.selection.is_empty(), egui::Button::new("Make Prefab Local")).clicked() {
-            let doc = self.session.path.clone();
-            if let Err(e) = self.session.make_local(&mut prefab_loader(&mut self.prefab_cache, doc)) {
-                self.status = e.to_string();
-            }
-            self.mark_changed();
-        }
+        let any = !self.session.selection.is_empty();
+        self.action_button(ui, "prefab.make_local", "Make Prefab Local", any);
         if ui.button("Reload Prefabs").clicked() {
             self.reload_prefabs();
         }
-    }
-
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for (tool, label, tip) in [
-                (Tool::Select, "Select", "Select and move (Esc)"),
-                (Tool::Block, "Block", "Drag in a 2D view to create a brush (B)"),
-                (Tool::Entity, "Entity", "Click to place the entity class chosen in the Entities tab (E)"),
-                (Tool::Clip, "Clip", "Click two points in a 2D view, Enter to clip (X)"),
-                (Tool::Vertex, "Vertex", "Drag the corners of selected brushes in a 2D view (V)"),
-                (Tool::Face, "Face", "Click faces in the 3D view to texture them; Alt+click picks a material, Alt+right click applies it (F)"),
-            ] {
-                if ui.selectable_label(self.tool == tool, label).on_hover_text(tip).clicked() {
-                    self.tool = tool;
-                    self.clip_points.clear();
-                }
-            }
-            ui.separator();
-            use mapcraft_engine::SelectMode as M;
-            for (mode, label) in [(M::Groups, "Groups"), (M::Objects, "Objects"), (M::Solids, "Solids")] {
-                if ui.selectable_label(self.session.select_mode == mode, label).on_hover_text("Selection mode").clicked() {
-                    self.session.select_mode = mode;
-                }
-            }
-            ui.separator();
-            if self.tool == Tool::Block {
-                use mapcraft_engine::Shape as S;
-                for (shape, label) in [(S::Block, "Block"), (S::Wedge, "Wedge"), (S::Cylinder(8), "Cylinder"), (S::Spike(4), "Spike")] {
-                    let same = std::mem::discriminant(&self.shape) == std::mem::discriminant(&shape);
-                    if ui.selectable_label(same, label).clicked() {
-                        self.shape = match (shape, self.shape) {
-                            (S::Cylinder(_), S::Cylinder(n)) | (S::Cylinder(_), S::Spike(n)) => S::Cylinder(n),
-                            (S::Spike(_), S::Spike(n)) | (S::Spike(_), S::Cylinder(n)) => S::Spike(n),
-                            (s, _) => s,
-                        };
-                    }
-                }
-                if let S::Cylinder(n) | S::Spike(n) = &mut self.shape {
-                    ui.add(egui::DragValue::new(n).range(3..=64).prefix("sides "));
-                }
-                ui.separator();
-            }
-            if self.tool == Tool::Clip {
-                use mapcraft_engine::ClipKeep as K;
-                for (k, label) in [(K::Both, "Keep both"), (K::Front, "Keep front"), (K::Back, "Keep back")] {
-                    if ui.selectable_label(self.clip_keep == k, label).clicked() {
-                        self.clip_keep = k;
-                    }
-                }
-                ui.separator();
-            }
-            ui.label(format!("Material: {}", if self.session.tex.material.is_empty() { "(none)" } else { &self.session.tex.material }));
-        });
-    }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(&self.status);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.selectable_label(self.show_bottom, "Output").clicked() {
-                    self.show_bottom = !self.show_bottom;
-                }
-                ui.separator();
-                ui.label(format!("Grid {}", self.session.grid));
-                ui.separator();
-                ui.label(if self.session.texture_lock { "Texture lock on" } else { "Texture lock off" });
-                ui.separator();
-                ui.label(format!("{} selected", self.session.selection.len()));
-                if let Some(p) = self.cursor_world {
-                    ui.separator();
-                    ui.label(format!("{:.0} {:.0} {:.0}", p.x, p.y, p.z));
-                }
-                ui.separator();
-                ui.label(self.project.sdk.as_ref().map_or("No SDK".to_string(), |s| s.manifest.name.clone()));
-            });
-        });
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -778,7 +786,7 @@ impl MapCraftApp {
         }
     }
 
-    fn start_compile(&mut self, index: usize) {
+    pub(crate) fn start_compile(&mut self, index: usize) {
         let Some(sdk) = self.project.sdk.clone() else { return };
         let Some(profile) = sdk.manifest.compile.get(index).cloned() else { return };
         if !self.prefs.get().approved_tools.contains(&sdk.manifest.id) {
@@ -827,16 +835,20 @@ impl MapCraftApp {
         }
     }
 
+    fn autosave_path(&self) -> Option<PathBuf> {
+        let stem = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".to_string(), |s| s.to_string_lossy().into_owned());
+        Some(self.data_dir.as_ref()?.join("autosave").join(format!("{stem}.autosave.mcmap")))
+    }
+
     fn autosave(&mut self) {
         let minutes = self.prefs.get().view.autosave_minutes;
         if minutes == 0 || !self.session.is_dirty() || self.last_autosave.elapsed().as_secs() < u64::from(minutes) * 60 {
             return;
         }
         self.last_autosave = Instant::now();
-        let Some(dir) = craft_settings::paths::data_dir("mapcraft").map(|d| d.join("autosave")) else { return };
-        let stem = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".to_string(), |s| s.to_string_lossy().into_owned());
-        let path = dir.join(format!("{stem}.autosave.mcmap"));
-        let result = std::fs::create_dir_all(&dir)
+        let Some(path) = self.autosave_path() else { return };
+        let Some(dir) = path.parent() else { return };
+        let result = std::fs::create_dir_all(dir)
             .map_err(|e| e.to_string())
             .and_then(|()| mapcraft_format::save(&path, &self.session.map, self.session.sdk.as_deref(), &self.session.view).map_err(|e| e.to_string()));
         if let Err(e) = result {
@@ -846,7 +858,7 @@ impl MapCraftApp {
 
     fn central(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(full, 0.0, Color32::from_gray(24));
+        ui.painter().rect_filled(full, 0.0, crate::chrome::BG);
         if let Some(m) = self.maximized {
             self.pane_ui(ui, m, full);
             return;
@@ -882,22 +894,23 @@ impl MapCraftApp {
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) {
-        let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 20.0));
+        let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 22.0));
         let body = Rect::from_min_max(Pos2::new(rect.left(), header.bottom()), rect.max);
-        let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let Some(pane) = self.panes.get_mut(index) else { return };
-        egui::ComboBox::from_id_salt(("view", index)).selected_text(pane.camera.view.label()).width(110.0).show_ui(&mut header_ui, |ui| {
-            for v in View::ALL {
-                if ui.selectable_value(&mut pane.camera.view, v, v.label()).changed() {
-                    pane.camera = Camera { view: v, ..pane.camera };
-                }
-            }
-        });
-        let label = if self.maximized.is_some() { "Restore" } else { "Maximize" };
-        if header_ui.small_button(label).clicked() {
-            self.maximized = if self.maximized.is_some() { None } else { Some(index) };
-        }
+        let active = ui.ctx().pointer_hover_pos().is_some_and(|p| rect.contains(p));
+        self.pane_header(ui, index, header, active);
         self.viewport(ui, index, body);
+        if let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| !c.is_2d()) {
+            self.axis_widget(ui, &cam, body);
+        }
+        if active {
+            ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, crate::chrome::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+        }
+    }
+
+    pub(crate) fn cancel_compile(&self) {
+        if let Some(job) = &self.compile {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     fn take_screenshot(&mut self, ctx: &egui::Context) {
@@ -934,7 +947,7 @@ impl MapCraftApp {
 }
 
 /// Loads prefabs by the path stored in an instance, relative to the map at `doc`, once each.
-fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Option<PathBuf>) -> impl FnMut(&str) -> Option<Map> + '_ {
+pub(crate) fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Option<PathBuf>) -> impl FnMut(&str) -> Option<Map> + '_ {
     move |stored| {
         cache
             .entry(stored.to_string())
@@ -967,16 +980,22 @@ impl eframe::App for MapCraftApp {
         }
         egui::Panel::top("menu").show(ui, |ui| {
             self.menu_bar(ui);
-            self.toolbar(ui);
+            ui.add_space(2.0);
+            self.top_bar(ui);
+            ui.add_space(2.0);
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         if self.show_bottom {
             egui::Panel::bottom("output").resizable(true).default_size(160.0).show(ui, |ui| self.bottom_panel(ui));
         }
         egui::Panel::left("left").resizable(true).default_size(260.0).show(ui, |ui| self.left_panel(ui));
+        egui::Panel::left("tools").resizable(false).exact_size(44.0).show(ui, |ui| self.tool_palette(ui));
         egui::Panel::right("inspector").resizable(true).default_size(300.0).show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| self.central(ui));
         self.dialogs(&ctx);
+        self.extra_dialogs(&ctx);
+        self.plugin_window(&ctx);
+        self.thumbs.poll(&ctx);
         if self.frame_pending && self.panes.iter().all(|p| p.rect.is_positive()) {
             self.frame_pending = false;
             self.frame_all();
@@ -987,6 +1006,12 @@ impl eframe::App for MapCraftApp {
     }
 
     fn on_exit(&mut self) {
+        if let Some(a) = self.autosave_path() {
+            let _ = std::fs::remove_file(a);
+        }
+        if let Some(d) = &self.data_dir {
+            crate::dialogs::end_session(d);
+        }
         let grid = self.session.grid;
         self.prefs.update(|p| p.view.grid = grid);
         if let Err(e) = self.prefs.flush() {

@@ -1,0 +1,6 @@
+/build/
+/addons/mapcraft/bin/
+/test/addons
+/test/.godot/
+build.log
+/test/**/*.import

@@ -7,6 +7,7 @@ fgd = ["fgd/surfsup.fgd"]
 [textures]
 roots = ["${project}/Assets/Textures"]
 extensions = ["png", "jpg", "jpeg"]
+default = "ramps-orange1"
 scale = 1.0
 
 [paths.project]
@@ -15,3 +16,36 @@ prompt = "SurfsUp Godot project folder"
 [paths.godot]
 prompt = "Godot editor executable"
 kind = "file"
+
+[paths.game]
+prompt = "SurfsUp game executable"
+kind = "file"
+
+[paths.maps]
+prompt = "Folder SurfsUp loads map packs from (Maps next to the game)"
+
+# The project needs the MapCraft Godot addon (godot/addons/mapcraft) and must have been opened
+# in the Godot editor once so the addon is registered.
+[[compile]]
+name = "Import into Godot"
+steps = [
+    { copy = "${map}", to = "${project}/maps/${map_name}/${map_name}.mcmap" },
+    { run = "${godot}", args = ["--headless", "--path", "${project}", "--import"] },
+]
+
+[[compile]]
+name = "Build map pack"
+steps = [
+    { copy = "${map}", to = "${project}/maps/${map_name}/${map_name}.mcmap" },
+    { run = "${godot}", args = ["--headless", "--path", "${project}", "--import"] },
+    { run = "${godot}", args = ["--headless", "--path", "${project}", "-s", "res://addons/mapcraft/tools/pack_map.gd", "--", "res://maps/${map_name}/${map_name}.mcmap", "res://maps/${map_name}/${map_name}.scn", "${maps}/${map_name}.pck"] },
+]
+
+[[compile]]
+name = "Build and play"
+steps = [
+    { copy = "${map}", to = "${project}/maps/${map_name}/${map_name}.mcmap" },
+    { run = "${godot}", args = ["--headless", "--path", "${project}", "--import"] },
+    { run = "${godot}", args = ["--headless", "--path", "${project}", "-s", "res://addons/mapcraft/tools/pack_map.gd", "--", "res://maps/${map_name}/${map_name}.mcmap", "res://maps/${map_name}/${map_name}.scn", "${maps}/${map_name}.pck"] },
+    { run = "${game}", args = ["+map", "${map_name}"] },
+]

@@ -1,4 +1,4 @@
-use mapcraft_geom::DVec3;
+use mapcraft_geom::{Aabb, DVec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{Brush, Entity, Extra, NodeId, TagId};
@@ -88,11 +88,17 @@ pub struct Group {
     pub generator: Option<Generator>,
 }
 
+/// A plugin command whose output fills a group, placed by `origin` and `angles` (pitch, yaw,
+/// roll in degrees) so running it again puts the new output where the group now is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Generator {
     pub plugin: String,
     pub command: String,
     pub params: serde_json::Value,
+    #[serde(default)]
+    pub origin: DVec3,
+    #[serde(default)]
+    pub angles: DVec3,
 }
 
 /// Another map instanced into this one.
@@ -126,4 +132,16 @@ pub struct Tag {
     pub color: Option<[u8; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<TagId>,
+    /// Hides every node carrying the tag (Hammer's visgroup checkbox).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+}
+
+/// A box that limits what is drawn and compiled while active (Hammer's cordon).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cordon {
+    pub name: String,
+    pub bounds: Aabb,
+    #[serde(default)]
+    pub active: bool,
 }

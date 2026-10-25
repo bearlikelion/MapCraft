@@ -16,6 +16,7 @@ mapcraft-map = { path = "crates/map" }
 mapcraft-fgd = { path = "crates/fgd" }
 mapcraft-format = { path = "crates/format" }
 mapcraft-sdk = { path = "crates/sdk" }
+mapcraft-plugin-host = { path = "crates/plugin-host" }
 mapcraft-engine = { path = "crates/engine" }
 mapcraft-render = { path = "crates/render" }
 mapcraft-ui = { path = "crates/ui" }
@@ -24,6 +25,7 @@ mapcraft-ui = { path = "crates/ui" }
 craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
 craft-docpath = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
 craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
 
 # foundation
 glam = { version = "0.34", features = ["serde"] }
@@ -35,6 +37,10 @@ log = "0.4"
 tempfile = "3"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
+
+# plugins
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "parallel-compilation"] }
+wasmtime-wasi = { version = "50", default-features = false, features = ["p2"] }
 
 # gpu: the same wgpu egui-wgpu 0.36 uses
 wgpu = "30"

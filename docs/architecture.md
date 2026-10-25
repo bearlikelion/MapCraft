@@ -46,6 +46,13 @@ A `Prefab` node names another `.mcmap` file, relative to the map that holds it, 
 Nested prefabs expand up to 16 levels and a prefab that contains itself is refused.
 Make Local runs the same expansion on the real map.
 
+## Plugins
+
+Game-specific code lives in WebAssembly plugins (`plugin-host`, API in [`plugin-api.md`](plugin-api.md)).
+The host compiles each plugin with wasmtime, links WASI with no folders, environment or network, and offers read-only access to the SDK's asset folders.
+Plugin output arrives as `format::Fragment` trees, the same type the clipboard uses, so the engine inserts it like a paste.
+A generator group stores the plugin, command, parameters and placement in its `Generator`; the UI runs the plugin again when a parameter changes and the engine swaps the group's children in one undo step.
+
 ## Viewports
 
 Each viewport renders into its own offscreen texture (`render::Target`, 4x MSAA) that egui shows as an image.
