@@ -11,8 +11,23 @@ use std::process::{Command, ExitCode};
 use serde_json::Value;
 
 /// (crate name without the `mapcraft-` prefix, layer). See `docs/architecture.md`.
-const LAYERS: &[(&str, u8)] =
-    &[("geom", 0), ("map", 1), ("fgd", 1), ("format", 2), ("sdk", 2), ("plugin-host", 3), ("render", 3), ("engine", 4), ("ui", 5), ("mapcraft", 6), ("cli", 6)];
+const LAYERS: &[(&str, u8)] = &[
+    ("geom", 0),
+    ("map", 1),
+    ("fgd", 1),
+    ("format", 2),
+    ("sdk", 2),
+    ("plugin-host", 3),
+    ("render", 3),
+    ("engine", 4),
+    ("sdk-manager", 5),
+    ("ui", 6),
+    ("mapcraft", 7),
+    ("cli", 7),
+];
+
+/// The first layer that may use UI crates.
+const UI_LAYER: u8 = 6;
 
 const UI_ONLY: &[&str] = &["craft-ui", "egui", "eframe", "egui-wgpu", "winit", "rfd", "muda"];
 
@@ -43,7 +58,7 @@ fn layers() -> Result<(), String> {
         };
         let deps = p["dependencies"].as_array().into_iter().flatten().filter(|d| d["kind"].is_null() || d["kind"] == "build");
         for d in deps.filter_map(|d| d["name"].as_str()) {
-            if l < 5 && UI_ONLY.contains(&d) {
+            if l < UI_LAYER && UI_ONLY.contains(&d) {
                 errors.push(format!("{name} (L{l}) depends on UI crate `{d}`"));
             }
             if let (true, Some(dl)) = (d.starts_with("mapcraft-"), layer_of(d))

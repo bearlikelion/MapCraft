@@ -35,6 +35,15 @@ pub struct Manifest {
     pub name: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    /// SPDX expression, such as `MIT`.
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub homepage: String,
     /// Ids of the plugins this SDK needs.
     #[serde(default)]
     pub plugins: Vec<String>,
@@ -59,15 +68,15 @@ fn default_units_per_meter() -> f64 {
     39.37
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Files {
     #[serde(default)]
     pub roots: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Textures {
     #[serde(default)]
     pub roots: Vec<String>,
@@ -119,7 +128,7 @@ impl Sdk {
         let path = dir.join(MANIFEST);
         let text = std::fs::read_to_string(&path).map_err(|source| SdkError::Io { path: path.clone(), source })?;
         let manifest: Manifest = toml::from_str(&text).map_err(|source| SdkError::Toml { path, source })?;
-        if manifest.id.is_empty() || !manifest.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+        if !valid_id(&manifest.id) {
             return Err(SdkError::Invalid(format!("SDK id `{}` must use lowercase letters, digits, '_' or '-'", manifest.id)));
         }
         if !manifest.units_per_meter.is_finite() || manifest.units_per_meter <= 0.0 {
@@ -159,6 +168,11 @@ impl Sdk {
         let roots = textures.chain(&self.manifest.files.roots).filter_map(|r| self.resolve(r, vars).ok()).filter(|p| p.is_dir()).collect();
         Vfs::new(roots)
     }
+}
+
+/// SDK and plugin ids: lowercase letters, digits, `_` and `-`, so they are safe as folder names.
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// Every SDK folder (one holding `sdk.toml`) directly inside the given directories.

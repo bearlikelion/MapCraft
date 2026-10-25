@@ -52,7 +52,6 @@
 
 		<article class="feature">
 			<div class="copy">
-				<p class="kicker">Views</p>
 				<h2>Four views, one scene tree</h2>
 				<p>Top, front, side and a textured 3D view, the way Hammer lays them out. <kbd>Space</kbd> maximizes the view under the pointer.</p>
 				<p>Layers, groups, entities and brushes live in a scene tree you can drag to reorder. The inspector edits whatever you select, with fields and help text from the game's FGD.</p>
@@ -62,9 +61,8 @@
 			</figure>
 		</article>
 
-		<article class="feature">
+		<article class="feature flip">
 			<div class="copy">
-				<p class="kicker">Generators</p>
 				<h2>Surf ramps and bhop from the Block tool</h2>
 				<p>The SurfsUp plugin adds <b>Surf Ramp</b> and <b>Bhop Platforms</b> next to Box, Wedge and Cylinder. Pick one and a ghost shows where it will land, with its parameters in the inspector.</p>
 				<p>Placed generators stay live: change a radius or a platform count and the group rebuilds in one undo step.</p>
@@ -81,7 +79,6 @@
 
 		<article class="feature">
 			<div class="copy">
-				<p class="kicker">Terrain</p>
 				<h2>Displacements and the Sculpt tool</h2>
 				<p>Turn any four-cornered face into a displacement grid, then raise, lower, smooth, flatten or roughen it with the Sculpt tool in the 3D view.</p>
 				<p>Neighboring displacements stay sewn together, and a grayscale heightmap can shape a whole terrain at once.</p>
@@ -91,41 +88,41 @@
 			</figure>
 		</article>
 
-		<article class="feature">
-			<div class="copy">
-				<p class="kicker">Clip</p>
-				<h2>Clip with a live preview</h2>
-				<p>Draw a line across the selection in a 2D view, or on a face in 3D, and see both halves before you commit. Keep the front, the back or both.</p>
-				<p>Carve, hollow, merge, extrude, vertex editing and texture lock are all there too.</p>
-			</div>
-			<figure class="shot">
-				<a href="assets/clip.webp"><img src="assets/clip.webp" width="953" height="492" loading="lazy" alt="The Clip tool cutting a surf ramp diagonally, with the clip line in the top view and the cut previewed in 3D."></a>
-			</figure>
-		</article>
-
-		<article class="feature">
-			<div class="copy">
-				<p class="kicker">Keyboard</p>
-				<h2>Every action has a shortcut</h2>
-				<p>Every menu item, panel, tool and toggle can be rebound, and no two clash. Press <kbd>F1</kbd> to see them all.</p>
-				<p>Coming from another editor? Switch the keymap to the <b>Hammer</b> or <b>TrenchBroom</b> preset in Preferences.</p>
-			</div>
-			<figure class="shot">
-				<a href="assets/shortcuts.webp"><img src="assets/shortcuts.webp" width="1115" height="460" loading="lazy" alt="The Keyboard Shortcuts window beside Preferences, with the shortcut presets MapCraft, Hammer and TrenchBroom."></a>
-			</figure>
-		</article>
-
-		<article class="feature">
-			<div class="copy">
-				<p class="kicker">SDKs and plugins</p>
-				<h2>Games are data, code is WebAssembly</h2>
-				<p>MapCraft knows no game by itself. An SDK is a folder with an <code>sdk.toml</code>: entity definitions, material folders, compile profiles and the plugins it needs.</p>
-				<p>Plugins are sandboxed WebAssembly components, so you can write one in Rust, C, C++, C#, Go, Python, JavaScript or Zig. They add commands, generators, material lists and importers. A plugin that traps or runs away is stopped and reported; the editor keeps going.</p>
-			</div>
-			<div class="shots">
-				<figure class="shot narrow">
-					<a href="assets/plugins.webp"><img src="assets/plugins.webp" width="760" height="420" loading="lazy" alt="The Plugins menu listing the Surf Ramp and Bhop Platforms commands and the Godot and SurfsUp plugins."></a>
+		<div class="pair">
+			<article class="feature">
+				<div class="copy">
+					<h2>Clip with a live preview</h2>
+					<p>Draw a line across the selection in a 2D view, or on a face in 3D, and see both halves before you commit. Keep the front, the back or both.</p>
+					<p>Carve, hollow, merge, extrude, vertex editing and texture lock are all there too.</p>
+				</div>
+				<figure class="shot">
+					<a href="assets/clip.webp"><img src="assets/clip.webp" width="953" height="492" loading="lazy" alt="The Clip tool cutting a surf ramp diagonally, with the clip line in the top view and the cut previewed in 3D."></a>
 				</figure>
+			</article>
+
+			<article class="feature">
+				<div class="copy">
+					<h2>Every action has a shortcut</h2>
+					<p>Every menu item, panel, tool and toggle can be rebound, and no two clash. Press <kbd>F1</kbd> to see them all.</p>
+					<p>Coming from another editor? Switch the keymap to the <b>Hammer</b> or <b>TrenchBroom</b> preset in Preferences.</p>
+				</div>
+				<figure class="shot">
+					<a href="assets/shortcuts.webp"><img src="assets/shortcuts.webp" width="1115" height="460" loading="lazy" alt="The Keyboard Shortcuts window beside Preferences, with the shortcut presets MapCraft, Hammer and TrenchBroom."></a>
+				</figure>
+			</article>
+		</div>
+
+		<div class="pair">
+			<article class="feature">
+				<div class="copy">
+					<h2>Games are data, code is WebAssembly</h2>
+					<p>MapCraft knows no game by itself. An SDK is a folder with an <code>sdk.toml</code>: entity definitions, material folders, compile profiles and the plugins it needs.</p>
+					<p>Plugins are sandboxed WebAssembly components, so you can write one in Rust, C, C++, C#, Go, Python, JavaScript or Zig. They add commands, generators, material lists and importers. A plugin that traps or runs away is stopped and reported; the editor keeps going.</p>
+				</div>
+				<div class="shots">
+					<figure class="shot">
+						<a href="assets/plugins.webp"><img src="assets/plugins.webp" width="760" height="420" loading="lazy" alt="The Plugins menu listing the Surf Ramp and Bhop Platforms commands and the Godot and SurfsUp plugins."></a>
+					</figure>
 <pre class="code" aria-label="An SDK manifest"><code>id = "surfsup"
 name = "SurfsUp"
 plugins = ["godot", "surfsup"]
@@ -133,26 +130,25 @@ fgd = ["fgd/surfsup.fgd"]
 
 [textures]
 roots = ["${project}/Assets/Textures"]</code></pre>
-			</div>
-		</article>
+				</div>
+			</article>
 
-		<article class="feature">
-			<div class="copy">
-				<p class="kicker">Godot</p>
-				<h2>Straight into Godot</h2>
-				<p>The MapCraft GDExtension imports <code>.mcmap</code> files as Godot scenes: merged world meshes, convex collision, <code>Area3D</code> triggers and markers for entities. The scenes use only built-in nodes, so a game ships without the extension.</p>
-				<p>The SurfsUp SDK's Run menu imports, packs and plays a map in one step. Godot 4.4 and newer.</p>
-			</div>
-			<figure class="shot narrow">
-				<a href="assets/godot-run.webp"><img src="assets/godot-run.webp" width="760" height="420" loading="lazy" alt="The Run menu with Import into Godot, Build map pack and Build and play."></a>
-			</figure>
-		</article>
+			<article class="feature">
+				<div class="copy">
+					<h2>Straight into Godot</h2>
+					<p>The MapCraft GDExtension imports <code>.mcmap</code> files as Godot scenes: merged world meshes, convex collision, <code>Area3D</code> triggers and markers for entities. The scenes use only built-in nodes, so a game ships without the extension.</p>
+					<p>The SurfsUp SDK's Run menu imports, packs and plays a map in one step. Godot 4.4 and newer.</p>
+				</div>
+				<figure class="shot">
+					<a href="assets/godot-run.webp"><img src="assets/godot-run.webp" width="760" height="420" loading="lazy" alt="The Run menu with Import into Godot, Build map pack and Build and play."></a>
+				</figure>
+			</article>
+		</div>
 
-		<article class="feature soon">
+		<article class="feature solo">
 			<div class="copy">
-				<p class="kicker">Source BSP <span class="badge">Coming soon</span></p>
 				<h2>Bring compiled Source maps back in</h2>
-				<p>A Source BSP importer plugin is on the way. It reads Valve BSP files, versions 19 to 21, and brings their brushes and entities into MapCraft from File &gt; Import.</p>
+				<p>File &gt; Import reads Valve BSP maps, versions 19 to 21, and brings back their brushes, entities and static props, so you can zone an existing Counter-Strike: Source surf map for SurfsUp.</p>
 			</div>
 		</article>
 
@@ -181,7 +177,7 @@ roots = ["${project}/Assets/Textures"]</code></pre>
 				<p>Unzip the <a data-repo-path="/releases/latest/download/MapCraft-godot-addon.zip">Godot addon</a> into your project's root folder and open the project in Godot once.</p>
 			</li>
 		</ol>
-		<h3 class="build-title">Build from source</h3>
+		<h3>Build from source</h3>
 		<p>Needs Rust 1.95 or newer.</p>
 <pre class="code"><code>rustup target add wasm32-wasip2
 cargo xtask plugins

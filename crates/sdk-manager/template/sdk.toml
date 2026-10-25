@@ -1,0 +1,38 @@
+# MapCraft SDK manifest: tells MapCraft how to edit maps for one game.
+# Every key is described in docs/sdk-format.md in the MapCraft repository.
+
+# The id is saved in every map made with this SDK, so pick it once and keep it.
+id = "{{id}}"
+name = "{{name}}"
+version = "0.1.0"
+description = "Edit maps for {{name}}."
+author = ""
+license = "MIT"
+homepage = ""
+
+# WebAssembly plugins this SDK needs, loaded from plugins/<id>.wasm.
+plugins = []
+
+# 39.37 units per meter makes one unit one inch, like Source and Quake.
+units_per_meter = 39.37
+
+# Entity definitions, merged in order.
+fgd = ["fgd/entities.fgd"]
+
+[textures]
+# Folders searched for materials; ${game} is the folder the user picks in SDK Settings.
+roots = ["${game}/textures"]
+extensions = ["png", "jpg", "tga"]
+scale = 1.0
+
+# Each [paths.<name>] asks the user for a folder (or a program with kind = "file") once and
+# makes it available as ${name}.
+[paths.game]
+prompt = "Folder {{name}} is installed in"
+
+# Compile profiles appear in the Run menu; MapCraft asks before running an SDK's programs.
+[[compile]]
+name = "Copy to game"
+steps = [
+    { copy = "${map}", to = "${game}/maps/${map_name}.mcmap" },
+]

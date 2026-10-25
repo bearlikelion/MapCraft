@@ -197,13 +197,26 @@ impl MapCraftApp {
         let Some(p) = self.project.plugin(plugin) else { return };
         let result = p.import(&importer.id, &name, &data, &ctx).map_err(|e| e.to_string());
         self.output.extend(p.take_log());
-        match result.and_then(|frags| self.session.import_layer(&name, frags).map_err(|e| e.to_string())) {
+        let imported = match result {
+            Ok(i) => i,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        if let Some(dir) = self.material_cache() {
+            let saved = self.project.cache_materials(&dir, &imported.materials);
+            if saved > 0 {
+                self.output.push(format!("Kept {saved} material pictures from {name} in {}", dir.display()));
+            }
+        }
+        match self.session.import_layer(&name, imported.nodes) {
             Ok(_) => {
                 self.status = format!("Imported {name}");
                 self.mark_changed();
                 self.frame_all();
             }
-            Err(e) => self.status = e,
+            Err(e) => self.status = e.to_string(),
         }
     }
 

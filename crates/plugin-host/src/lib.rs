@@ -35,6 +35,25 @@ use bindings::mapcraft::plugin::{host, types};
 /// Fuel for one call; roughly a few seconds of work.
 const FUEL: u64 = 20_000_000_000;
 const MEMORY: usize = 512 << 20;
+/// An import may use this much more memory than the file it reads.
+const IMPORT_HEADROOM: usize = 256 << 20;
+const MAX_RANGE: u64 = 256 << 20;
+
+/// What an importer read: nodes in map space, and pictures for materials the SDK lacks.
+#[derive(Debug, Default)]
+pub struct Imported {
+    pub nodes: Vec<mapcraft_format::Fragment>,
+    pub materials: Vec<ImportedMaterial>,
+}
+
+/// An RGBA8 picture for a material an import brought.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedMaterial {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginError {
@@ -81,6 +100,13 @@ impl host::Host for State {
 
     fn read_file(&mut self, path: String) -> Result<Vec<u8>, String> {
         self.vfs.read(&path).ok_or_else(|| format!("{path} not found"))
+    }
+
+    fn read_range(&mut self, path: String, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+        if length > MAX_RANGE {
+            return Err(format!("{length} bytes is more than one read may take"));
+        }
+        self.vfs.read_range(&path, offset, length).ok_or_else(|| format!("{path} not found"))
     }
 }
 
@@ -177,14 +203,20 @@ impl Plugin {
     }
 
     /// Reads `data`, the file `name`, with one of the plugin's importers; the result is in map space.
-    pub fn import(&mut self, importer: &str, name: &str, data: &[u8], ctx: &Context) -> Result<Vec<mapcraft_format::Fragment>, PluginError> {
+    pub fn import(&mut self, importer: &str, name: &str, data: &[u8], ctx: &Context) -> Result<Imported, PluginError> {
         if !self.manifest.importers.iter().any(|i| i.id == importer) {
             return Err(PluginError::UnknownCommand(self.manifest.id.clone(), importer.into()));
         }
         let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        // The plugin holds the whole file, so big maps need more than the usual cap; wasm32 tops out at 4 GiB.
+        let cap = data.len().saturating_add(IMPORT_HEADROOM).clamp(MEMORY, 4 << 30);
+        self.store.data_mut().limits = StoreLimitsBuilder::new().memory_size(cap).instances(16).build();
         self.begin()?;
         match self.bindings.call_import_file(&mut self.store, importer, name, data, &wit_ctx) {
-            Ok(Ok(out)) => Ok(convert::output(out, ctx)),
+            Ok(Ok(mut out)) => {
+                let materials = convert::images(std::mem::take(&mut out.materials));
+                Ok(Imported { nodes: convert::output(out, ctx), materials })
+            }
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),
         }

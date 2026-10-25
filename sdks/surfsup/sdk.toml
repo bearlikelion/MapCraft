@@ -10,6 +10,10 @@ extensions = ["png", "jpg", "jpeg"]
 default = "ramps-orange1"
 scale = 1.0
 
+# Imported Source maps read their stock textures from the game's packages; CS:S uses HL2's too.
+[files]
+roots = ["${cstrike}", "${cstrike}/../hl2"]
+
 [paths.project]
 prompt = "SurfsUp Godot project folder"
 
@@ -23,6 +27,9 @@ kind = "file"
 
 [paths.maps]
 prompt = "Folder SurfsUp loads map packs from (Maps next to the game)"
+
+[paths.cstrike]
+prompt = "Counter-Strike: Source game folder (the cstrike folder), for textures of imported BSP maps"
 
 # The project needs the MapCraft Godot addon (godot/addons/mapcraft) and must have been opened
 # in the Godot editor once so the addon is registered.

@@ -85,6 +85,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("tools.transform", "Transform", "Ctrl+M"),
     ("tools.replace_materials", "Replace Materials", ""),
     ("file.sdk_settings", "SDK Settings", "Ctrl+Shift+Comma"),
+    ("file.sdk_manager", "SDK Manager", ""),
     ("file.quit", "Quit", "Ctrl+Q"),
     ("help.shortcuts", "Keyboard Shortcuts", "F1"),
     ("tools.check_problems", "Check for Problems", "Alt+P"),

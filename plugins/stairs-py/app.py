@@ -61,7 +61,7 @@ class WitWorld(wit_world.WitWorld):
         steps, rise, run, width = int(p["steps"]), p["rise"], p["run"], p["width"]
         host.log(f"stairs: {steps} steps, {steps * rise:g} units high")
         brushes = [box(i * run, -width / 2, 0.0, (i + 1) * run, width / 2, (i + 1) * rise, p["material"]) for i in range(steps)]
-        return Output(brushes, [])
+        return Output(brushes, [], [], [])
 
     def list_materials(self):
         return []

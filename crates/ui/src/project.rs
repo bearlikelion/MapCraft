@@ -86,8 +86,9 @@ impl Project {
             user.sort();
             paths.extend(user);
         }
+        let readable = self.sdk.as_ref().map_or_else(|| self.vfs.clone(), |sdk| sdk.plugin_vfs(&self.vars));
         for path in paths {
-            match host.load_file(&path, self.vfs.clone()) {
+            match host.load_file(&path, readable.clone()) {
                 Ok(plugin) if self.plugins.iter().any(|p| p.manifest.id == plugin.manifest.id) => {
                     self.problems.push(format!("{}: plugin `{}` is already loaded", path.display(), plugin.manifest.id));
                 }
@@ -111,6 +112,29 @@ impl Project {
             listed.dedup_by(|b, a| a.name == b.name);
             self.materials = listed;
         }
+    }
+
+    /// Adds the pictures imports saved in `dir` as materials, for names the SDK does not have.
+    pub fn add_cached_materials(&mut self, dir: &Path) {
+        let have: std::collections::BTreeSet<String> = self.materials.iter().map(|m| m.name.clone()).collect();
+        let cached = Vfs::new(vec![dir.to_path_buf()]).list(&["png".to_string()]);
+        self.materials.extend(cached.into_iter().filter(|(n, _)| !have.contains(n)).map(|(name, path)| Material { name, image: Some(path), color: None }));
+        self.materials.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
+    /// Saves imported pictures into `dir` as PNGs named after their materials, then lists them.
+    pub fn cache_materials(&mut self, dir: &Path, materials: &[mapcraft_plugin_host::ImportedMaterial]) -> usize {
+        let mut saved = 0;
+        for m in materials {
+            let parts: Vec<&str> = m.name.split('/').filter(|c| !c.is_empty() && *c != "." && *c != "..").collect();
+            let Some((last, folders)) = parts.split_last() else { continue };
+            let folder = folders.iter().fold(dir.to_path_buf(), |p, c| p.join(c));
+            let path = folder.join(format!("{last}.png"));
+            let ok = std::fs::create_dir_all(&folder).is_ok() && image::save_buffer(&path, &m.rgba, m.width, m.height, image::ColorType::Rgba8).is_ok();
+            saved += usize::from(ok);
+        }
+        self.add_cached_materials(dir);
+        saved
     }
 
     /// The loaded plugin with this id.
@@ -185,40 +209,5 @@ impl EntityStyle for Project {
     fn size(&self, classname: &str) -> Option<(DVec3, DVec3)> {
         let (a, b) = self.game.class(classname)?.size()?;
         Some((DVec3::from_array(a), DVec3::from_array(b)))
-    }
-}
-
-/// Folders searched for SDKs, each once: an `sdks` folder beside the executable or up to four
-/// folders above it (a build in `target/release` finds the source tree's), the installed share
-/// folder, the source tree this was built from, `MAPCRAFT_SDK_PATH`, the user's data folder, and
-/// folders from the preferences.
-pub fn sdk_search_dirs(extra: &[String]) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        dirs.extend(exe_dir.ancestors().take(5).map(|d| d.join("sdks")));
-        dirs.push(exe_dir.join("../share/mapcraft/sdks"));
-    }
-    dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks"));
-    if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {
-        dirs.extend(std::env::split_paths(&paths));
-    }
-    if let Some(data) = craft_settings::paths::data_dir("mapcraft") {
-        dirs.push(data.join("sdks"));
-    }
-    dirs.extend(extra.iter().map(PathBuf::from));
-    let mut seen = std::collections::BTreeSet::new();
-    dirs.retain(|d| d.canonicalize().is_ok_and(|c| seen.insert(c)));
-    dirs
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_the_source_tree_sdks_once() {
-        let dirs = sdk_search_dirs(&[String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks"))]);
-        let found = mapcraft_sdk::discover(&dirs);
-        assert_eq!(found.iter().filter(|(_, sdk)| sdk.as_ref().is_ok_and(|s| s.manifest.id == "surfsup")).count(), 1);
     }
 }

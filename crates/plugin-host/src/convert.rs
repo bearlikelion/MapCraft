@@ -1,6 +1,6 @@
 use mapcraft_format::Fragment;
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Brush, Entity, Face, NodeKind, TexDefaults};
+use mapcraft_map::{Brush, Entity, Face, Group, NodeKind, TexAxis, TexDefaults};
 use serde_json::{Value as Json, json};
 
 use crate::bindings::mapcraft::plugin::types as t;
@@ -159,7 +159,18 @@ fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
     let tex = |m: &str| TexDefaults { material: if m.is_empty() { ctx.material.clone() } else { m.to_string() }, scale: ctx.scale };
     match b {
         t::Brush::Faces(faces) => {
-            let faces: Vec<Face> = faces.iter().map(|f| Face::new([vec3(&f.points.0), vec3(&f.points.1), vec3(&f.points.2)], &tex(&f.material))).collect();
+            let faces: Vec<Face> = faces
+                .iter()
+                .map(|f| {
+                    let mut face = Face::new([vec3(&f.points.0), vec3(&f.points.1), vec3(&f.points.2)], &tex(&f.material));
+                    if let Some((u, v)) = &f.uv
+                        && let (Some(u), Some(v)) = (tex_axis(u), tex_axis(v))
+                    {
+                        (face.u, face.v) = (u, v);
+                    }
+                    face
+                })
+                .collect();
             Brush::pruned(faces).ok()
         }
         t::Brush::Hull(h) => {
@@ -178,14 +189,58 @@ fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
     }
 }
 
-pub(crate) fn output(out: t::Output, ctx: &Context) -> Vec<Fragment> {
+/// A texture axis, or `None` when it would divide by zero or is not a number.
+fn tex_axis(a: &t::TexAxis) -> Option<TexAxis> {
+    let axis = vec3(&a.axis);
+    (axis.is_finite() && axis.length_squared() > 1e-12 && a.scale.is_finite() && a.scale.abs() > 1e-9 && a.offset.is_finite())
+        .then_some(TexAxis { axis, offset: a.offset, scale: a.scale })
+}
+
+fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize) -> Vec<Fragment> {
     let leaf = |kind| Fragment { kind, children: Vec::new() };
-    let mut frags: Vec<Fragment> = out.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx)).map(|b| leaf(NodeKind::Brush(b))).collect();
-    for e in out.entities.into_iter().take(MAX_NODES.saturating_sub(frags.len())) {
+    let take = |n: &mut usize| *n > 0 && {
+        *n -= 1;
+        true
+    };
+    let mut frags: Vec<Fragment> = Vec::new();
+    for b in brushes {
+        if !take(budget) {
+            break;
+        }
+        frags.extend(brush(b, ctx).map(|b| leaf(NodeKind::Brush(b))));
+    }
+    for e in entities {
+        if !take(budget) {
+            break;
+        }
         let mut ent = Entity::new(e.classname);
         ent.properties = e.properties;
         let children = e.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx)).map(|b| leaf(NodeKind::Brush(b))).collect();
         frags.push(Fragment { kind: NodeKind::Entity(ent), children });
     }
     frags
+}
+
+pub(crate) fn output(out: t::Output, ctx: &Context) -> Vec<Fragment> {
+    let mut budget = MAX_NODES;
+    let mut frags = contents(out.brushes, out.entities, ctx, &mut budget);
+    for g in out.groups {
+        let children = contents(g.brushes, g.entities, ctx, &mut budget);
+        if !children.is_empty() {
+            frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children });
+        }
+    }
+    frags
+}
+
+/// The pictures among `materials` whose size and pixel count agree, up to 8192 on a side.
+pub(crate) fn images(materials: Vec<t::MaterialInfo>) -> Vec<crate::ImportedMaterial> {
+    materials
+        .into_iter()
+        .filter_map(|m| {
+            let p = m.pixels?;
+            let ok = (1..=8192).contains(&p.width) && (1..=8192).contains(&p.height) && p.rgba.len() == p.width as usize * p.height as usize * 4;
+            ok.then_some(crate::ImportedMaterial { name: m.name, width: p.width, height: p.height, rgba: p.rgba })
+        })
+        .collect()
 }

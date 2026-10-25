@@ -17,6 +17,9 @@ mapcraft-format = { workspace = true }
 mapcraft-geom = { workspace = true }
 mapcraft-map = { workspace = true }
 mapcraft-sdk = { workspace = true }
+mapcraft-sdk-manager = { workspace = true }
+mapcraft-plugin-host = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

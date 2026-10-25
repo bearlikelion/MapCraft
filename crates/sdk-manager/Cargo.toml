@@ -1,0 +1,28 @@
+[package]
+name = "mapcraft-sdk-manager"
+description = "SDK registries, installs, packaging, scaffolding and checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-engine = { workspace = true }
+mapcraft-fgd = { workspace = true }
+mapcraft-format = { workspace = true }
+mapcraft-plugin-host = { workspace = true }
+mapcraft-sdk = { workspace = true }
+craft-settings = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+rustls = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

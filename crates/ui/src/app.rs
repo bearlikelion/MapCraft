@@ -300,6 +300,9 @@ impl MapCraftApp {
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        if let Some(dir) = self.material_cache() {
+            self.project.add_cached_materials(&dir);
+        }
         self.thumbs.clear();
         for p in &self.project.problems {
             self.output.push(p.clone());
@@ -687,6 +690,11 @@ impl MapCraftApp {
             self.status = e.to_string();
         }
         self.mark_changed();
+    }
+
+    /// Where pictures of materials brought in by imports are kept between sessions.
+    pub(crate) fn material_cache(&self) -> Option<PathBuf> {
+        self.data_dir.as_ref().map(|d| d.join("materials"))
     }
 
     /// The chord shown next to an action in menus.

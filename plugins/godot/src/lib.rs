@@ -140,7 +140,7 @@ impl Guest for Godot {
             let res = parse(&text);
             used.extend(res.textures.iter().filter_map(|t| locate(t, &images)));
             let name = path.strip_suffix(".tres").unwrap_or(&path).to_string();
-            out.push(MaterialInfo { name, image: res.albedo.and_then(|t| locate(&t, &images)), color: res.color });
+            out.push(MaterialInfo { name, image: res.albedo.and_then(|t| locate(&t, &images)), color: res.color, pixels: None });
         }
         // Images no material uses are materials of their own, except the extra maps of a folder
         // that already has a material or a color image.
@@ -152,7 +152,7 @@ impl Guest for Godot {
                 continue;
             }
             let name = img.rsplit_once('.').map_or(img.as_str(), |(n, _)| n).to_string();
-            out.push(MaterialInfo { name, image: Some(img.clone()), color: None });
+            out.push(MaterialInfo { name, image: Some(img.clone()), color: None, pixels: None });
         }
         Ok(out)
     }

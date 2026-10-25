@@ -33,6 +33,16 @@ impl Vfs {
         std::fs::read(self.find(rel)?).ok()
     }
 
+    /// Up to `len` bytes from `offset`; shorter at the end of the file.
+    pub fn read_range(&self, rel: &str, offset: u64, len: u64) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(self.find(rel)?).ok()?;
+        f.seek(SeekFrom::Start(offset)).ok()?;
+        let mut out = Vec::new();
+        f.take(len).read_to_end(&mut out).ok()?;
+        Some(out)
+    }
+
     /// The file for a material name such as `concrete/wall01`, trying each extension in order.
     pub fn find_material(&self, name: &str, extensions: &[String]) -> Option<PathBuf> {
         extensions.iter().find_map(|ext| self.find(&format!("{name}.{ext}")))

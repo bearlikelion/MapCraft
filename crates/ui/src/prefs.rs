@@ -2,13 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     pub recent: Vec<String>,
     pub last_sdk: Option<String>,
     /// Extra folders searched for SDKs.
     pub sdk_dirs: Vec<String>,
+    /// SDK registry URLs or paths the SDK Manager lists SDKs from.
+    pub registries: Vec<String>,
     /// Per SDK id, the folders and programs the user picked for its `paths`.
     pub sdk_paths: BTreeMap<String, BTreeMap<String, String>>,
     /// SDKs whose compile tools the user allowed to run.
@@ -17,6 +19,22 @@ pub struct Prefs {
     pub keymap: crate::shortcuts::Preset,
     /// The user's own chords by action id, over the preset; empty unbinds.
     pub shortcuts: BTreeMap<String, String>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            recent: Vec::new(),
+            last_sdk: None,
+            sdk_dirs: Vec::new(),
+            registries: vec![mapcraft_sdk_manager::DEFAULT_REGISTRY.to_string()],
+            sdk_paths: BTreeMap::new(),
+            approved_tools: BTreeSet::new(),
+            view: ViewPrefs::default(),
+            keymap: crate::shortcuts::Preset::default(),
+            shortcuts: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

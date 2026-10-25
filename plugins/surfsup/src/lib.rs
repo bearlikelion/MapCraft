@@ -216,7 +216,7 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
             Brush::Hull(Hull { points: piece.points.into_iter().map(v).collect(), material: side.to_string(), surfaces })
         })
         .collect();
-    Ok(Output { brushes, entities: Vec::new() })
+    Ok(Output { brushes, entities: Vec::new(), groups: Vec::new(), materials: Vec::new() })
 }
 
 fn bhop(p: &Params) -> Output {
@@ -270,7 +270,7 @@ fn bhop(p: &Params) -> Output {
             Brush::Hull(Hull { points, material: material.clone(), surfaces: Vec::new() })
         })
         .collect();
-    Output { brushes, entities: Vec::new() }
+    Output { brushes, entities: Vec::new(), groups: Vec::new(), materials: Vec::new() }
 }
 
 const TRIGGER: &str = "tools/trigger";
@@ -328,7 +328,7 @@ fn surf_window(p: &Params) -> Output {
         "Kill" => vec![entity("kill_box", &[], vec![hole])],
         _ => Vec::new(),
     };
-    Output { brushes, entities }
+    Output { brushes, entities, groups: Vec::new(), materials: Vec::new() }
 }
 
 fn stage_command() -> CommandSpec {
@@ -390,7 +390,7 @@ fn surf_stage(p: &Params) -> Output {
         let kill = cuboid(DVec3::new(end.x.min(start.x) - reach, -reach, floor - 256.0), DVec3::new(end.x.max(start.x) + reach, reach, floor), TRIGGER);
         entities.push(entity("kill_box", &[], vec![kill]));
     }
-    Output { brushes: vec![slab(start), slab(end)], entities }
+    Output { brushes: vec![slab(start), slab(end)], entities, groups: Vec::new(), materials: Vec::new() }
 }
 
 impl Guest for SurfsUp {

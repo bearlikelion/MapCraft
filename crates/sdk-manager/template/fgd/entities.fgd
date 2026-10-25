@@ -1,0 +1,34 @@
+// Entity definitions for {{name}}.
+// Point classes sit at one spot; solid classes are built from brushes.
+// docs/sdk-format.md in the MapCraft repository lists the FGD features MapCraft reads.
+
+@SolidClass = worldspawn : "The world: every brush that belongs to no other entity." []
+
+@BaseClass = Named
+[
+	targetname(target_source) : "Name" : : "Other entities use this name to point at this one."
+]
+
+@PointClass size(-16 -16 0, 16 16 72) color(80 220 120) = info_player_start : "Where a player appears when the map loads."
+[
+	angles(angle) : "Facing (pitch yaw roll)" : "0 0 0"
+]
+
+@PointClass base(Named) size(-8 -8 -8, 8 8 8) color(255 220 120) = light_point : "A light that shines in every direction."
+[
+	color(color255) : "Color" : "255 255 255"
+	range(float) : "Range in units" : "512"
+	shadows(boolean) : "Casts shadows" : 1
+]
+
+@SolidClass base(Named) color(240 160 40) = trigger_area : "An invisible volume that reacts when something enters it."
+[
+	once(boolean) : "Only once" : 0
+	who(choices) : "Who sets it off" : 0 =
+	[
+		0 : "Players"
+		1 : "Anything that moves"
+	]
+]
+
+@SolidClass color(140 140 160) = detail : "Brushes that are drawn but do not cut the world up for visibility." []

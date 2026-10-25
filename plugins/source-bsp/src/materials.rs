@@ -1,0 +1,277 @@
+//! Finds the pictures of a map's materials in its embedded pakfile and in the game's VPK packages.
+
+use std::borrow::Cow;
+use std::collections::HashMap;
+
+use crate::bsp::{lzma, u16_at, u32_at};
+use crate::vtf;
+
+/// Game files the plugin may read: the host in the editor, the disk in tests.
+pub trait Files {
+    fn read(&self, path: &str) -> Option<Vec<u8>>;
+    fn read_range(&self, path: &str, offset: u64, length: u64) -> Option<Vec<u8>>;
+}
+
+/// The packages CS:S looks in after the map's own pakfile, in order.
+const PACKAGES: &[&str] = &["cstrike_pak_dir.vpk", "hl2_textures_dir.vpk", "hl2_misc_dir.vpk"];
+const MAX_INCLUDES: usize = 8;
+
+/// Where a file was found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Origin {
+    Map,
+    Game,
+}
+
+fn normalize(path: &str) -> String {
+    path.trim().to_ascii_lowercase().replace('\\', "/").trim_start_matches('/').to_string()
+}
+
+/// The stored or LZMA-compressed files of a zip archive, by lowercase path.
+fn zip_entries(zip: &[u8]) -> HashMap<String, (u16, usize, usize, usize)> {
+    let mut out = HashMap::new();
+    let tail = zip.len().saturating_sub(22 + 65535);
+    let Some(end) = (tail..zip.len().saturating_sub(21)).rev().find(|&at| zip.get(at..at + 4) == Some(b"PK\x05\x06")) else { return out };
+    let (count, mut at) = (u16_at(zip, end + 10), u32_at(zip, end + 16) as usize);
+    for _ in 0..count {
+        if zip.get(at..at + 4) != Some(b"PK\x01\x02") {
+            break;
+        }
+        let (method, packed, size) = (u16_at(zip, at + 10), u32_at(zip, at + 20) as usize, u32_at(zip, at + 24) as usize);
+        let (name, extra, comment) = (usize::from(u16_at(zip, at + 28)), usize::from(u16_at(zip, at + 30)), usize::from(u16_at(zip, at + 32)));
+        let local = u32_at(zip, at + 42) as usize;
+        if let Some(name) = zip.get(at + 46..at + 46 + name) {
+            out.insert(normalize(&String::from_utf8_lossy(name)), (method, local, packed, size));
+        }
+        at += 46 + name + extra + comment;
+    }
+    out
+}
+
+fn zip_read<'a>(zip: &'a [u8], &(method, local, packed, size): &(u16, usize, usize, usize)) -> Option<Cow<'a, [u8]>> {
+    if zip.get(local..local.checked_add(4)?) != Some(b"PK\x03\x04") {
+        return None;
+    }
+    let start = local + 30 + usize::from(u16_at(zip, local + 26)) + usize::from(u16_at(zip, local + 28));
+    let data = zip.get(start..start.checked_add(packed)?)?;
+    match method {
+        0 => Some(Cow::Borrowed(data)),
+        // Zip's LZMA: a 2-byte version, a 2-byte property size, the properties, then the stream.
+        14 => lzma(data.get(4..9)?, data.get(9..)?, size).ok().map(Cow::Owned),
+        _ => None,
+    }
+}
+
+struct VpkEntry {
+    preload: (usize, usize),
+    archive: u16,
+    offset: u32,
+    length: u32,
+}
+
+/// A VPK directory: the materials and textures it holds and the archives holding their bytes.
+struct Vpk {
+    name: &'static str,
+    dir: Vec<u8>,
+    data_start: usize,
+    entries: HashMap<String, VpkEntry>,
+}
+
+fn c_str(b: &[u8], at: &mut usize) -> Option<String> {
+    let rest = b.get(*at..)?;
+    let len = rest.iter().position(|&c| c == 0)?;
+    *at += len + 1;
+    Some(String::from_utf8_lossy(rest.get(..len)?).to_ascii_lowercase())
+}
+
+impl Vpk {
+    fn open(name: &'static str, dir: Vec<u8>) -> Option<Self> {
+        if u32_at(&dir, 0) != 0x55aa_1234 {
+            return None;
+        }
+        let header = match u32_at(&dir, 4) {
+            1 => 12,
+            2 => 28,
+            _ => return None,
+        };
+        let data_start = header + u32_at(&dir, 8) as usize;
+        let mut entries = HashMap::new();
+        let mut at = header;
+        while let Some(ext) = c_str(&dir, &mut at).filter(|s| !s.is_empty()) {
+            while let Some(path) = c_str(&dir, &mut at).filter(|s| !s.is_empty()) {
+                while let Some(file) = c_str(&dir, &mut at).filter(|s| !s.is_empty()) {
+                    let e = dir.get(at..at + 18)?;
+                    let preload = usize::from(u16_at(e, 4));
+                    let entry = VpkEntry { preload: (at + 18, preload), archive: u16_at(e, 6), offset: u32_at(e, 8), length: u32_at(e, 12) };
+                    at += 18 + preload;
+                    if ext == "vmt" || ext == "vtf" {
+                        let full = if path == " " { format!("{file}.{ext}") } else { format!("{path}/{file}.{ext}") };
+                        entries.insert(full, entry);
+                    }
+                }
+            }
+        }
+        Some(Vpk { name, dir, data_start, entries })
+    }
+
+    fn read(&self, path: &str, files: &dyn Files) -> Option<Vec<u8>> {
+        let e = self.entries.get(path)?;
+        let mut out = self.dir.get(e.preload.0..e.preload.0 + e.preload.1)?.to_vec();
+        if e.length > 0 {
+            let rest = if e.archive == 0x7fff {
+                let at = self.data_start.checked_add(e.offset as usize)?;
+                self.dir.get(at..at.checked_add(e.length as usize)?)?.to_vec()
+            } else {
+                let archive = self.name.strip_suffix("dir.vpk")?;
+                files.read_range(&format!("{archive}{:03}.vpk", e.archive), u64::from(e.offset), u64::from(e.length))?
+            };
+            out.extend(rest);
+        }
+        Some(out)
+    }
+}
+
+/// Every place a material or texture can come from, searched in the engine's order.
+pub struct Library<'a> {
+    pak: &'a [u8],
+    pak_entries: HashMap<String, (u16, usize, usize, usize)>,
+    vpks: Vec<Vpk>,
+    files: &'a dyn Files,
+}
+
+impl<'a> Library<'a> {
+    pub fn new(pak: &'a [u8], files: &'a dyn Files) -> Self {
+        let vpks = PACKAGES.iter().filter_map(|name| Vpk::open(name, files.read(name)?)).collect();
+        Library { pak, pak_entries: zip_entries(pak), vpks, files }
+    }
+
+    pub fn has_game_files(&self) -> bool {
+        !self.vpks.is_empty()
+    }
+
+    fn find(&self, path: &str) -> Option<(Cow<'a, [u8]>, Origin)> {
+        if let Some(data) = self.pak_entries.get(path).and_then(|e| zip_read(self.pak, e)) {
+            return Some((data, Origin::Map));
+        }
+        let packed = self.vpks.iter().find_map(|v| v.read(path, self.files));
+        packed.or_else(|| self.files.read(path)).or_else(|| self.files.read(&format!("download/{path}"))).map(|d| (Cow::Owned(d), Origin::Game))
+    }
+
+    /// The textures that picture the material, Hammer's `%tooltexture` first, following `include` through patch materials.
+    fn textures(&self, material: &str) -> Vec<String> {
+        let mut name = material.to_string();
+        for _ in 0..MAX_INCLUDES {
+            let Some((vmt, _)) = self.find(&format!("materials/{name}.vmt")) else { break };
+            let text = String::from_utf8_lossy(&vmt);
+            let tokens = tokens(&text);
+            let found: Vec<String> = ["%tooltexture", "$basetexture"]
+                .iter()
+                .filter_map(|key| value(&tokens, key))
+                .map(|t| normalize(t).trim_start_matches("materials/").trim_end_matches(".vtf").to_string())
+                .collect();
+            match value(&tokens, "include") {
+                Some(include) if found.is_empty() => name = normalize(include).trim_start_matches("materials/").trim_end_matches(".vmt").to_string(),
+                _ => return found,
+            }
+        }
+        Vec::new()
+    }
+
+    /// The material's picture, no wider or taller than `max`, and where its texture was found.
+    pub fn picture(&self, material: &str, max: usize) -> Option<(vtf::Picture, Origin)> {
+        self.textures(material).iter().find_map(|texture| {
+            let (data, origin) = self.find(&format!("materials/{texture}.vtf"))?;
+            vtf::decode(&data, max).ok().map(|p| (p, origin))
+        })
+    }
+}
+
+/// KeyValues tokens: quoted or bare strings and braces, without `//` comments.
+fn tokens(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return out;
+        }
+        if rest.starts_with("//") {
+            rest = rest.split_once('\n').map_or("", |(_, r)| r);
+        } else if let Some(quoted) = rest.strip_prefix('"') {
+            let (token, after) = quoted.split_once('"').unwrap_or((quoted, ""));
+            out.push(token);
+            rest = after;
+        } else {
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '{' || c == '}').unwrap_or(rest.len()).max(1);
+            let (token, after) = rest.split_at(rest.ceil_char_boundary(end));
+            out.push(token);
+            rest = after;
+        }
+    }
+}
+
+/// The first value of `key` at any depth; a string followed by a brace names a block instead.
+fn value<'t>(tokens: &[&'t str], key: &str) -> Option<&'t str> {
+    let brace = |t: &str| t == "{" || t == "}";
+    let mut i = 0;
+    while let (Some(&k), Some(&v)) = (tokens.get(i), tokens.get(i + 1)) {
+        if brace(k) || brace(v) {
+            i += 1;
+        } else if k.eq_ignore_ascii_case(key) {
+            return Some(v);
+        } else {
+            i += 2;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_vmt_values() {
+        let text = "\"LightmappedGeneric\"\n{\n// \"$basetexture\" \"no\"\n\t$basetexture \"Concrete\\Floor01\"\n\t\"%keywords\" \"a b\"\n\t\"Proxies\" { \"x\" { } }\n}";
+        let t = tokens(text);
+        assert_eq!(value(&t, "$BaseTexture"), Some("Concrete\\Floor01"));
+        assert_eq!(value(&t, "%keywords"), Some("a b"));
+        assert_eq!(value(&t, "proxies"), None);
+        let patch = tokens("patch { include \"materials/a/b.vmt\" insert { \"$envmap\" \"c\" } }");
+        assert_eq!(value(&patch, "include"), Some("materials/a/b.vmt"));
+        assert_eq!(value(&patch, "$basetexture"), None);
+        assert_eq!(tokens("{\"unterminated"), vec!["{", "unterminated"]);
+    }
+
+    #[test]
+    fn reads_stored_zip_entries() {
+        // A one-file zip as bspzip writes it: stored, no compression.
+        let (name, body) = (b"Materials/A.vmt", b"x{}");
+        let mut zip = b"PK\x03\x04".to_vec();
+        zip.extend([0u8; 22]);
+        zip.extend((name.len() as u16).to_le_bytes());
+        zip.extend([0, 0]);
+        zip.extend(name);
+        zip.extend(body);
+        let central = zip.len();
+        zip.extend(b"PK\x01\x02");
+        zip.extend([0u8; 16]);
+        zip.extend((body.len() as u32).to_le_bytes());
+        zip.extend((body.len() as u32).to_le_bytes());
+        zip.extend((name.len() as u16).to_le_bytes());
+        zip.extend([0u8; 12]);
+        zip.extend(0u32.to_le_bytes());
+        zip.extend(name);
+        let size = zip.len() - central;
+        zip.extend(b"PK\x05\x06");
+        zip.extend([0u8; 6]);
+        zip.extend(1u16.to_le_bytes());
+        zip.extend((size as u32).to_le_bytes());
+        zip.extend((central as u32).to_le_bytes());
+        zip.extend([0, 0]);
+        let entries = zip_entries(&zip);
+        let entry = entries.get("materials/a.vmt").unwrap();
+        assert_eq!(zip_read(&zip, entry).as_deref(), Some(&body[..]));
+        assert!(zip_entries(&zip[..zip.len() - 3]).is_empty());
+    }
+}

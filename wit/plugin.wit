@@ -84,9 +84,18 @@ interface types {
     }
 
     /// A brush face: three points on its plane, clockwise seen from outside the brush.
+    /// A texture axis in Valve220 form: `u = dot(p, axis) / scale + offset`, in texels.
+    record tex-axis {
+        axis: vec3,
+        offset: f64,
+        scale: f64,
+    }
+
     record face {
         points: tuple<vec3, vec3, vec3>,
         material: string,
+        /// The u and v texture axes; without them the texture is aligned to the world.
+        uv: option<tuple<tex-axis, tex-axis>>,
     }
 
     /// Faces of a hull whose outward normal is within about 8 degrees of `normal` get `material`.
@@ -114,10 +123,27 @@ interface types {
         brushes: list<brush>,
     }
 
+    /// Output the editor keeps together in a group named `name`.
+    record group {
+        name: string,
+        brushes: list<brush>,
+        entities: list<entity>,
+    }
+
     /// What a command makes, around the origin; the editor moves it into place.
     record output {
         brushes: list<brush>,
         entities: list<entity>,
+        groups: list<group>,
+        /// Materials the output uses that the SDK lacks, with their pictures; imports keep them.
+        materials: list<material-info>,
+    }
+
+    /// An RGBA8 picture, rows top to bottom.
+    record image {
+        width: u32,
+        height: u32,
+        rgba: list<u8>,
     }
 
     /// A material for the browser. `image` is a path in the SDK's asset folders shown as its
@@ -126,6 +152,8 @@ interface types {
         name: string,
         image: option<string>,
         color: option<tuple<u8, u8, u8>>,
+        /// The picture itself, for a material from outside the SDK's asset folders.
+        pixels: option<image>,
     }
 }
 
@@ -139,6 +167,9 @@ interface host {
 
     /// Reads a file from the SDK's asset folders.
     read-file: func(path: string) -> result<list<u8>, string>;
+
+    /// Reads part of a file from the SDK's asset folders, for archives too big to read whole.
+    read-range: func(path: string, offset: u64, length: u64) -> result<list<u8>, string>;
 }
 
 world plugin {

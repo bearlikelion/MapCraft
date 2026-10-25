@@ -15,6 +15,7 @@ mapcraft-map = { workspace = true }
 mapcraft-plugin-host = { workspace = true }
 mapcraft-render = { workspace = true }
 mapcraft-sdk = { workspace = true }
+mapcraft-sdk-manager = { workspace = true }
 craft-settings = { workspace = true }
 craft-docpath = { workspace = true }
 craft-ui = { workspace = true }
