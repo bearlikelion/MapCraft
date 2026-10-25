@@ -83,7 +83,7 @@ const COMMANDS: &[CommandSpec] = &[
         id: "edit.select_groups",
         label: "Select Groups",
         menu: "Edit/Selection Mode/Groups",
-        shortcut: None,
+        shortcut: Some("Alt+1"),
         enabled: always,
         run: |s| {
             s.select_mode = SelectMode::Groups;
@@ -94,7 +94,7 @@ const COMMANDS: &[CommandSpec] = &[
         id: "edit.select_objects",
         label: "Select Objects",
         menu: "Edit/Selection Mode/Objects",
-        shortcut: None,
+        shortcut: Some("Alt+2"),
         enabled: always,
         run: |s| {
             s.select_mode = SelectMode::Objects;
@@ -105,7 +105,7 @@ const COMMANDS: &[CommandSpec] = &[
         id: "edit.select_solids",
         label: "Select Solids",
         menu: "Edit/Selection Mode/Solids",
-        shortcut: None,
+        shortcut: Some("Alt+3"),
         enabled: always,
         run: |s| {
             s.select_mode = SelectMode::Solids;
@@ -123,6 +123,14 @@ const COMMANDS: &[CommandSpec] = &[
             let t = s.grid.max(1.0);
             s.hollow(t)
         },
+    },
+    CommandSpec {
+        id: "tools.snap_to_grid",
+        label: "Snap Selection to Grid",
+        menu: "Tools/Snap Selection to Grid",
+        shortcut: Some("Ctrl+B"),
+        enabled: has_selection,
+        run: Session::snap_selection_to_grid,
     },
     CommandSpec {
         id: "tools.group",
@@ -177,7 +185,14 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec { id: "tools.flip_x", label: "Flip X", menu: "Tools/Flip X", shortcut: Some("Ctrl+L"), enabled: has_selection, run: |s| s.flip_selection(0) },
     CommandSpec { id: "tools.flip_y", label: "Flip Y", menu: "Tools/Flip Y", shortcut: Some("Ctrl+I"), enabled: has_selection, run: |s| s.flip_selection(1) },
-    CommandSpec { id: "tools.flip_z", label: "Flip Z", menu: "Tools/Flip Z", shortcut: None, enabled: has_selection, run: |s| s.flip_selection(2) },
+    CommandSpec {
+        id: "tools.flip_z",
+        label: "Flip Z",
+        menu: "Tools/Flip Z",
+        shortcut: Some("Ctrl+Alt+L"),
+        enabled: has_selection,
+        run: |s| s.flip_selection(2),
+    },
     CommandSpec {
         id: "tools.merge",
         label: "Merge Brushes",
@@ -191,7 +206,7 @@ const COMMANDS: &[CommandSpec] = &[
         label: "Apply Current Material",
         menu: "Tools/Apply Current Material",
         shortcut: Some("Shift+T"),
-        enabled: has_selection,
+        enabled: |s| has_selection(s) || !s.face_selection.is_empty(),
         run: Session::apply_material,
     },
     CommandSpec {

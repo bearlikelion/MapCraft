@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use mapcraft_geom::{Aabb, DMat3, DMat4, DVec2, DVec3, Plane, Side, Solid, SolidError, convex_hull};
+use mapcraft_geom::{Aabb, DMat3, DMat4, DVec2, DVec3, EPSILON, Plane, Side, Solid, SolidError, convex_hull};
 use serde::{Deserialize, Serialize};
 
+use crate::disp::{Displacement, ray_triangle};
 use crate::{Extra, FaceId};
 
 /// One texture axis in Valve220 form: `u = (p . axis) / scale + offset`, in texels.
@@ -29,6 +30,8 @@ pub struct Face {
     pub attrs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Extra::is_empty")]
     pub extra: Extra,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disp: Option<Displacement>,
 }
 
 /// Where to anchor a texture on its face.
@@ -70,7 +73,17 @@ impl Face {
     pub fn new(points: [DVec3; 3], tex: &TexDefaults) -> Self {
         let axis = |axis| TexAxis { axis, offset: 0.0, scale: tex.scale };
         let (u, v) = Plane::from_points(points[0], points[1], points[2]).map(|p| world_axes(p.normal)).unwrap_or((DVec3::X, -DVec3::Y));
-        Self { id: FaceId(0), points, material: tex.material.clone(), u: axis(u), v: axis(v), rotation: 0.0, attrs: BTreeMap::new(), extra: Extra::new() }
+        Self {
+            id: FaceId(0),
+            points,
+            material: tex.material.clone(),
+            u: axis(u),
+            v: axis(v),
+            rotation: 0.0,
+            attrs: BTreeMap::new(),
+            extra: Extra::new(),
+            disp: None,
+        }
     }
 
     pub fn plane(&self) -> Option<Plane> {
@@ -181,6 +194,12 @@ impl Face {
     fn transform(&mut self, m: &DMat4, inv_t: &DMat3, mirror: bool, lock: bool) {
         let p = self.points.map(|p| m.transform_point3(p));
         self.points = if mirror { [p[2], p[1], p[0]] } else { p };
+        if let Some(d) = &mut self.disp {
+            d.start = m.transform_point3(d.start);
+            if mirror {
+                *d = d.transposed();
+            }
+        }
         if !lock {
             return;
         }
@@ -347,6 +366,30 @@ impl Brush {
             .collect()
     }
 
+    /// The brush with face `id` moved `distance` along its outward normal, or `None` when that
+    /// would add or remove faces or leave no volume (TrenchBroom's extrude rules).
+    pub fn extrude_face(&self, id: FaceId, distance: f64) -> Option<Self> {
+        let mut b = self.clone();
+        let face = b.faces.iter_mut().find(|f| f.id == id)?;
+        let n = face.plane()?.normal;
+        face.points = face.points.map(|p| p + n * distance);
+        let solid = b.solid().ok()?;
+        (solid.faces.iter().all(Option::is_some) && solid.volume() > EPSILON).then_some(b)
+    }
+
+    /// A new brush between face `id` and a copy of it moved `distance` along its normal
+    /// (TrenchBroom's stamp); faces keep the textures of the planes they share with this brush.
+    pub fn stamp_face(&self, id: FaceId, distance: f64) -> Option<Self> {
+        let solid = self.solid().ok()?;
+        let i = self.faces.iter().position(|f| f.id == id)?;
+        let face = self.faces.get(i)?;
+        let n = face.plane()?.normal;
+        let poly = solid.faces.get(i)?.as_ref()?;
+        let pts: Vec<DVec3> = poly.0.iter().flat_map(|p| [*p, *p + n * distance]).collect();
+        let tex = TexDefaults { material: face.material.clone(), scale: face.u.scale };
+        Self::from_vertices(&pts, &self.faces, &tex).ok().map(Self::with_new_ids)
+    }
+
     /// One brush around all of `brushes` (Hammer and TrenchBroom's convex merge).
     pub fn merge(brushes: &[Self]) -> Result<Self, BrushError> {
         let mut pts = Vec::new();
@@ -366,8 +409,48 @@ impl Brush {
         Ok(Solid::from_planes(&self.planes()?)?)
     }
 
+    /// The box around the brush, including any displaced surface raised out of it.
     pub fn bounds(&self) -> Result<Aabb, BrushError> {
-        Ok(self.solid()?.bounds)
+        let solid = self.solid()?;
+        let raised = self.displaced(&solid).into_iter().flat_map(|(_, v)| v);
+        Ok(Aabb::from_points(raised).map_or(solid.bounds, |b| b.union(&solid.bounds)))
+    }
+
+    /// Whether a face is displaced; the brush then counts only as its displaced surfaces.
+    pub fn has_displacement(&self) -> bool {
+        self.faces.iter().any(|f| f.disp.is_some())
+    }
+
+    /// The displaced grid of each face whose displacement fits it, by face index.
+    pub fn displaced(&self, solid: &Solid) -> Vec<(usize, Vec<DVec3>)> {
+        self.faces
+            .iter()
+            .zip(&solid.faces)
+            .enumerate()
+            .filter_map(|(i, (f, w))| Some((i, f.disp.as_ref()?.vertices(&w.as_ref()?.0, f.plane()?.normal)?)))
+            .collect()
+    }
+
+    /// The nearest face the ray hits and the distance to it; a displaced brush is hit on its
+    /// displaced surfaces, or on its volume when the ray misses them, as an edge-on view does.
+    pub fn ray_hit(&self, origin: DVec3, dir: DVec3) -> Option<(f64, usize)> {
+        let volume = || mapcraft_geom::ray_hit(&self.planes().ok()?, origin, dir);
+        if !self.has_displacement() {
+            return volume();
+        }
+        let solid = self.solid().ok()?;
+        let mut best: Option<(f64, usize)> = None;
+        for (i, v) in self.displaced(&solid) {
+            let Some(d) = self.faces.get(i).and_then(|f| f.disp.as_ref()) else { continue };
+            for [a, b, c] in d.triangles() {
+                if let Some(t) = ray_triangle(origin, dir, [v[a], v[b], v[c]])
+                    && best.is_none_or(|(bt, _)| t < bt)
+                {
+                    best = Some((t, i));
+                }
+            }
+        }
+        best.or_else(volume)
     }
 
     /// The brush with faces that cut nothing away removed.
@@ -396,6 +479,9 @@ impl Brush {
         let mut b = self.clone();
         for f in &mut b.faces {
             f.points = f.points.map(|p| p + t);
+            if let Some(d) = &mut f.disp {
+                d.start += t;
+            }
             if lock {
                 for a in [&mut f.u, &mut f.v] {
                     if a.scale != 0.0 {
@@ -407,7 +493,7 @@ impl Brush {
         b
     }
 
-    fn with_new_ids(mut self) -> Self {
+    pub fn with_new_ids(mut self) -> Self {
         for f in &mut self.faces {
             f.id = FaceId(0);
         }
@@ -583,6 +669,26 @@ mod tests {
 
         let merged = Brush::merge(&[cube(0.0, 32.0), Brush::cuboid(Aabb::new(DVec3::new(32.0, 0.0, 0.0), DVec3::new(64.0, 32.0, 32.0)), &tex)]).unwrap();
         assert!((volume(&[merged]) - 64.0 * 32.0 * 32.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn extrude_and_stamp() {
+        let mut b = cube(0.0, 64.0);
+        for (i, f) in b.faces.iter_mut().enumerate() {
+            f.id = FaceId(i as u64 + 1);
+        }
+        let top = b.faces.iter().find(|f| f.plane().unwrap().normal.z > 0.99).unwrap().id;
+        let taller = b.extrude_face(top, 32.0).unwrap();
+        assert_eq!(taller.bounds().unwrap().max.z, 96.0);
+        assert!(b.extrude_face(top, -64.0).is_none(), "pushing a face through the brush is refused");
+        let mut w = Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap();
+        for (i, f) in w.faces.iter_mut().enumerate() {
+            f.id = FaceId(i as u64 + 1);
+        }
+        let bottom = w.faces.iter().find(|f| f.plane().unwrap().normal.z < -0.99).unwrap().id;
+        assert!(w.extrude_face(bottom, 16.0).is_some());
+        let stamp = b.stamp_face(top, 16.0).unwrap();
+        assert_eq!(stamp.bounds().unwrap(), Aabb::new(DVec3::new(0.0, 0.0, 64.0), DVec3::new(64.0, 64.0, 80.0)));
     }
 
     #[test]

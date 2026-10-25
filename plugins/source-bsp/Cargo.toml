@@ -1,0 +1,15 @@
+[package]
+name = "plugin-source-bsp"
+description = "Valve Source BSP importer for MapCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true }
+glam = { workspace = true }
+lzma-rs = "0.3"

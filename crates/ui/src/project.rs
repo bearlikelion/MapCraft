@@ -128,6 +128,15 @@ impl Project {
         sdk.manifest.paths.keys().filter(|k| self.vars.get(*k).is_none_or(|v| v.is_empty())).cloned().collect()
     }
 
+    /// Unset paths that materials or entity definitions come from, so editing needs them; the
+    /// rest only matter when compiling.
+    pub fn missing_for_editing(&self) -> Vec<String> {
+        let Some(sdk) = &self.sdk else { return Vec::new() };
+        let m = &sdk.manifest;
+        let used: Vec<&String> = m.textures.roots.iter().chain(&m.fgd).collect();
+        self.missing_paths().into_iter().filter(|k| used.iter().any(|s| s.contains(&format!("${{{k}}}")))).collect()
+    }
+
     pub fn material(&self, name: &str) -> Option<&Material> {
         self.materials.binary_search_by(|m| m.name.as_str().cmp(name)).ok().and_then(|i| self.materials.get(i))
     }
@@ -179,20 +188,37 @@ impl EntityStyle for Project {
     }
 }
 
-/// Folders searched for SDKs: next to the executable, the user's data folder, the source tree in
-/// development builds, and folders from the preferences.
+/// Folders searched for SDKs, each once: an `sdks` folder beside the executable or up to four
+/// folders above it (a build in `target/release` finds the source tree's), the installed share
+/// folder, the source tree this was built from, `MAPCRAFT_SDK_PATH`, the user's data folder, and
+/// folders from the preferences.
 pub fn sdk_search_dirs(extra: &[String]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        dirs.push(exe_dir.join("sdks"));
+        dirs.extend(exe_dir.ancestors().take(5).map(|d| d.join("sdks")));
         dirs.push(exe_dir.join("../share/mapcraft/sdks"));
     }
-    if cfg!(debug_assertions) {
-        dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks"));
+    dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks"));
+    if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {
+        dirs.extend(std::env::split_paths(&paths));
     }
     if let Some(data) = craft_settings::paths::data_dir("mapcraft") {
         dirs.push(data.join("sdks"));
     }
     dirs.extend(extra.iter().map(PathBuf::from));
+    let mut seen = std::collections::BTreeSet::new();
+    dirs.retain(|d| d.canonicalize().is_ok_and(|c| seen.insert(c)));
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_source_tree_sdks_once() {
+        let dirs = sdk_search_dirs(&[String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks"))]);
+        let found = mapcraft_sdk::discover(&dirs);
+        assert_eq!(found.iter().filter(|(_, sdk)| sdk.as_ref().is_ok_and(|s| s.manifest.id == "surfsup")).count(), 1);
+    }
 }

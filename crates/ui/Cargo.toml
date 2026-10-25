@@ -27,6 +27,8 @@ rfd = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu", "snapshot"] }
 tempfile = { workspace = true }
 

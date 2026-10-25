@@ -26,6 +26,33 @@ pub fn find_entities(map: &Map, query: &str) -> Vec<NodeId> {
 }
 
 impl Session {
+    /// Moves `ids` under `parent` in front of its child at `index`, keeping their order.
+    pub fn move_nodes(&mut self, ids: &[NodeId], parent: NodeId, index: usize) -> Result<(), EngineError> {
+        let target = self.map.get(parent).ok_or(EngineError::Refused("the drop target is gone"))?;
+        if matches!(&target.kind, NodeKind::Group(g) if g.generator.is_some()) {
+            return Err(EngineError::Refused("a generator group rebuilds its own contents"));
+        }
+        let before = target.children.clone();
+        let mut e = self.map.edit();
+        let mut at = index;
+        for id in ids {
+            if let Some(i) = e.node(parent).and_then(|p| p.children.iter().position(|c| c == id))
+                && i < at
+            {
+                at -= 1;
+            }
+            e.reparent(*id, parent, Some(at))?;
+            at += 1;
+        }
+        let changes = e.finish();
+        let moved_in = ids.iter().any(|id| !before.contains(id));
+        let after = changes.nodes.get(&parent).and_then(Option::as_ref).map(|n| &n.children);
+        if moved_in || after.is_some_and(|c| *c != before) {
+            self.apply("Move in tree", changes);
+        }
+        Ok(())
+    }
+
     /// The nodes an edit with `selected_only` reaches: the selected subtrees, or the whole map.
     fn scope(&self, selected_only: bool) -> BTreeSet<NodeId> {
         if selected_only { self.selection.iter().flat_map(|id| self.map.subtree(*id)).collect() } else { self.map.nodes().map(|(id, _)| id).collect() }
@@ -169,6 +196,28 @@ mod tests {
     use mapcraft_map::Connection;
 
     use super::*;
+
+    #[test]
+    fn move_nodes_reorders_and_reparents() {
+        let mut s = Session::default();
+        let ids: Vec<NodeId> =
+            (0..4).map(|i| s.create_brush(Aabb::new(DVec3::splat(f64::from(i) * 64.0), DVec3::splat(f64::from(i) * 64.0 + 32.0))).unwrap()).collect();
+        let parent = s.map.get(ids[0]).unwrap().parent.unwrap();
+        let order = |s: &Session| s.map.get(parent).unwrap().children.iter().filter(|c| ids.contains(c)).copied().collect::<Vec<_>>();
+        s.move_nodes(&[ids[0], ids[1]], parent, s.map.get(parent).unwrap().children.len()).unwrap();
+        assert_eq!(order(&s), [ids[2], ids[3], ids[0], ids[1]]);
+        let at = s.map.get(parent).unwrap().children.iter().position(|c| *c == ids[0]).unwrap();
+        let undo = s.undo_label().map(str::to_string);
+        s.move_nodes(&[ids[0]], parent, at).unwrap();
+        assert_eq!(s.undo_label().map(str::to_string), undo, "dropping a node where it was adds no undo step");
+        s.selection = BTreeSet::from([ids[2], ids[3]]);
+        let group = s.group_selection().unwrap();
+        s.move_nodes(&[ids[0]], group, 0).unwrap();
+        assert_eq!(s.map.get(group).unwrap().children[0], ids[0]);
+        assert!(s.move_nodes(&[group], ids[1], 0).is_err(), "a brush holds nothing");
+        s.undo();
+        assert_eq!(s.map.get(ids[0]).unwrap().parent, Some(parent));
+    }
 
     #[test]
     fn tags_cordons_and_replace() {

@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/base_material3d.hpp>
 #include <godot_cpp/classes/collision_object3d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
+#include <godot_cpp/classes/concave_polygon_shape3d.hpp>
 #include <godot_cpp/classes/convex_polygon_shape3d.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/json.hpp>
@@ -108,6 +109,12 @@ Vector3 newell_normal(const PackedVector3Array &p_points) {
 	return n.normalized();
 }
 
+// A convex hull, or with `triangles` a triangle soup such as a displaced surface.
+struct Shape {
+	PackedVector3Array points;
+	bool triangles = false;
+};
+
 void own(Node *p_node, Node *p_owner) {
 	p_node->set_owner(p_owner);
 	if (!p_node->get_scene_file_path().is_empty()) {
@@ -126,7 +133,7 @@ class Builder {
 	HashMap<String, Ref<Material>> materials;
 	HashMap<String, Vector2> sizes;
 	Surfaces world_surfaces;
-	Vector<PackedVector3Array> world_hulls;
+	Vector<Shape> world_hulls;
 	int brush_count = 0;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
@@ -146,12 +153,14 @@ class Builder {
 	}
 
 	Ref<Material> material(const String &p_name, Vector2 &r_size);
-	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<PackedVector3Array> *p_hulls);
+	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls);
+	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
+	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_name);
 	void walk(const Dictionary &p_node, int p_depth);
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
 	MeshInstance3D *make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset);
-	void add_shapes(Node *p_parent, const Vector<PackedVector3Array> &p_hulls, const Vector3 &p_offset);
+	void add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset);
 	void add(Node *p_parent, Node *p_child, bool p_readable_name);
 
 public:
@@ -203,8 +212,75 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 	return mat;
 }
 
-bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<PackedVector3Array> *p_hulls) {
+Ref<SurfaceTool> Builder::surface_for(Surfaces &p_surfaces, const String &p_name) {
+	if (!p_surfaces.has(p_name)) {
+		Ref<SurfaceTool> st;
+		st.instantiate();
+		st->begin(Mesh::PRIMITIVE_TRIANGLES);
+		p_surfaces[p_name] = st;
+	}
+	return p_surfaces[p_name];
+}
+
+void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles) {
+	const int n = int(Math::round(Math::sqrt(double(p_grid.size()))));
+	if (n < 2 || n * n != p_grid.size()) {
+		return;
+	}
+	Vector<Vector3> map_points;
+	PackedVector3Array points;
+	for (int k = 0; k < p_grid.size(); k++) {
+		Vector3 m = read_vec3(p_grid[k]);
+		map_points.push_back(m);
+		points.push_back(to_godot(m));
+	}
+	Vector<int> order;
+	for (int j = 0; j + 1 < n; j++) {
+		for (int i = 0; i + 1 < n; i++) {
+			const int a = j * n + i, b = a + 1, c = a + n + 1, d = a + n;
+			// Same alternating diagonals as the editor, reversed because Godot's front is clockwise.
+			const int tris[6] = { a, c, b, a, d, c };
+			const int flipped[6] = { a, d, b, b, d, c };
+			for (int t : (i + j) % 2 == 0 ? tris : flipped) {
+				order.push_back(t);
+			}
+		}
+	}
+	for (int k : order) {
+		r_triangles.push_back(points[k]);
+	}
+	String name = p_face.get("material", "");
+	if (p_surfaces == nullptr || name.to_lower().begins_with("tools/")) {
+		return;
+	}
+	Vector2 size;
+	material(name, size);
+	Ref<SurfaceTool> st = surface_for(*p_surfaces, name);
+	Dictionary u = p_face.get("u", Dictionary());
+	Dictionary v = p_face.get("v", Dictionary());
+	Vector3 u_axis = read_vec3(u.get("axis", Array()));
+	Vector3 v_axis = read_vec3(v.get("axis", Array()));
+	double u_scale = u.get("scale", 1.0), v_scale = v.get("scale", 1.0);
+	double u_offset = u.get("offset", 0.0), v_offset = v.get("offset", 0.0);
+	u_scale = u_scale == 0.0 ? 1.0 : u_scale;
+	v_scale = v_scale == 0.0 ? 1.0 : v_scale;
+	for (int k : order) {
+		const int i = k % n, j = k / n;
+		Vector3 du = points[j * n + MIN(i + 1, n - 1)] - points[j * n + MAX(i - 1, 0)];
+		Vector3 dv = points[MIN(j + 1, n - 1) * n + i] - points[MAX(j - 1, 0) * n + i];
+		const Vector3 &m = map_points[k];
+		st->set_normal(du.cross(dv).normalized());
+		st->set_uv(Vector2((m.dot(u_axis) / u_scale + u_offset) / size.x, (m.dot(v_axis) / v_scale + v_offset) / size.y));
+		st->add_vertex(points[k]);
+	}
+}
+
+bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls) {
 	Array faces = p_brush.get("faces", Array());
+	bool displaced = false;
+	for (int i = 0; i < faces.size(); i++) {
+		displaced = displaced || Dictionary(faces[i]).has("disp_vertices");
+	}
 	AABB bounds;
 	bool first = true;
 	for (int i = 0; i < faces.size(); i++) {
@@ -224,9 +300,16 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 	}
 
 	PackedVector3Array hull;
+	PackedVector3Array triangles;
 	for (int i = 0; i < faces.size(); i++) {
 		Dictionary face = faces[i];
 		Array polygon = face.get("polygon", Array());
+		Array grid = face.get("disp_vertices", Array());
+		// A displaced brush is only its displaced faces, as Source compiles it.
+		if (displaced) {
+			add_displacement(face, grid, p_surfaces, triangles);
+			continue;
+		}
 		if (polygon.size() < 3) {
 			continue;
 		}
@@ -246,13 +329,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 
 		Vector2 size;
 		material(name, size);
-		if (!p_surfaces->has(name)) {
-			Ref<SurfaceTool> st;
-			st.instantiate();
-			st->begin(Mesh::PRIMITIVE_TRIANGLES);
-			(*p_surfaces)[name] = st;
-		}
-		Ref<SurfaceTool> st = (*p_surfaces)[name];
+		Ref<SurfaceTool> st = surface_for(*p_surfaces, name);
 		Dictionary u = face.get("u", Dictionary());
 		Dictionary v = face.get("v", Dictionary());
 		Vector3 u_axis = read_vec3(u.get("axis", Array()));
@@ -280,7 +357,10 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 		}
 	}
 	if (p_hulls != nullptr && hull.size() >= 4) {
-		p_hulls->push_back(hull);
+		p_hulls->push_back(Shape{ hull, false });
+	}
+	if (p_hulls != nullptr && triangles.size() >= 3) {
+		p_hulls->push_back(Shape{ triangles, true });
 	}
 	return true;
 }
@@ -306,18 +386,26 @@ MeshInstance3D *Builder::make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset
 	return mi;
 }
 
-void Builder::add_shapes(Node *p_parent, const Vector<PackedVector3Array> &p_hulls, const Vector3 &p_offset) {
-	for (const PackedVector3Array &hull : p_hulls) {
+void Builder::add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset) {
+	for (const Shape &hull : p_hulls) {
 		PackedVector3Array points;
-		for (const Vector3 &p : hull) {
+		for (const Vector3 &p : hull.points) {
 			points.push_back(p - p_offset);
 		}
-		Ref<ConvexPolygonShape3D> shape;
-		shape.instantiate();
-		shape->set_points(points);
 		CollisionShape3D *cs = memnew(CollisionShape3D);
 		cs->set_name("Brush" + itos(++brush_count));
-		cs->set_shape(shape);
+		if (hull.triangles) {
+			Ref<ConcavePolygonShape3D> shape;
+			shape.instantiate();
+			shape->set_faces(points);
+			shape->set_backface_collision_enabled(true);
+			cs->set_shape(shape);
+		} else {
+			Ref<ConvexPolygonShape3D> shape;
+			shape.instantiate();
+			shape->set_points(points);
+			cs->set_shape(shape);
+		}
 		add(p_parent, cs, false);
 	}
 }
@@ -410,7 +498,7 @@ void Builder::add_entity(const Dictionary &p_entity) {
 
 	if (solid) {
 		Surfaces surfaces;
-		Vector<PackedVector3Array> hulls;
+		Vector<Shape> hulls;
 		bool visible = kind == "static" || bool(config.get("visible", false));
 		for (int i = 0; i < brushes.size(); i++) {
 			add_brush(brushes[i], visible ? &surfaces : nullptr, &hulls);
@@ -419,9 +507,9 @@ void Builder::add_entity(const Dictionary &p_entity) {
 			memdelete(node);
 			return;
 		}
-		AABB box(hulls[0][0], Vector3());
-		for (const PackedVector3Array &h : hulls) {
-			for (const Vector3 &p : h) {
+		AABB box(hulls[0].points[0], Vector3());
+		for (const Shape &h : hulls) {
+			for (const Vector3 &p : h.points) {
 				box.expand_to(p);
 			}
 		}

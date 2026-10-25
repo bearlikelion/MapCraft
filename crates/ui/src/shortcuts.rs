@@ -44,7 +44,8 @@ impl Preset {
         }
     }
 
-    /// Chords that differ from the defaults; an empty chord unbinds.
+    /// Chords that differ from the defaults (Godot-style transform keys on Q W E R T); an empty
+    /// chord unbinds.
     fn overrides(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Preset::MapCraft => &[],
@@ -58,8 +59,6 @@ impl Preset {
                 ("tools.move_to_world", "Ctrl+Shift+W"),
             ],
             Preset::TrenchBroom => &[
-                ("tool.select", "Escape"),
-                ("tool.clip", "C"),
                 ("tool.entity", ""),
                 ("tools.carve", "Ctrl+K"),
                 ("tools.hollow", "Ctrl+Shift+K"),
@@ -85,13 +84,48 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("edit.preferences", "Preferences", "Ctrl+Comma"),
     ("tools.transform", "Transform", "Ctrl+M"),
     ("tools.replace_materials", "Replace Materials", ""),
-    ("prefab.make_local", "Make Prefab Local", ""),
-    ("tool.select", "Select Tool", ""),
+    ("file.sdk_settings", "SDK Settings", "Ctrl+Shift+Comma"),
+    ("file.quit", "Quit", "Ctrl+Q"),
+    ("help.shortcuts", "Keyboard Shortcuts", "F1"),
+    ("tools.check_problems", "Check for Problems", "Alt+P"),
+    ("prefab.save", "Save Selection as Prefab", "Ctrl+Shift+P"),
+    ("prefab.insert", "Insert Prefab", "Ctrl+Alt+P"),
+    ("prefab.make_local", "Make Prefab Local", "Ctrl+Shift+U"),
+    ("prefab.reload", "Reload Prefabs", "Ctrl+Alt+R"),
+    ("layer.new", "New Layer", "Ctrl+Shift+N"),
+    ("view.maximize", "Maximize View", "Space"),
+    ("view.link_zoom", "Link 2D Zoom", "Shift+Z"),
+    ("view.render_cycle", "Next Render Mode", "Z"),
+    ("view.render_textured", "Textured", "Ctrl+Alt+1"),
+    ("view.render_flat", "Flat Shaded", "Ctrl+Alt+2"),
+    ("view.render_wireframe", "Wireframe", "Ctrl+Alt+3"),
+    ("view.colorize", "Color Brushes by Object", "Ctrl+Alt+C"),
+    ("view.frame_all", "Frame All", "Home"),
+    ("view.frame_selection", "Focus Selection", "F"),
+    ("view.find_entities", "Find Entities", "Ctrl+F"),
+    ("panel.scene", "Scene Panel", "Ctrl+1"),
+    ("panel.tags", "Tags Panel", "Ctrl+2"),
+    ("panel.materials", "Materials Panel", "Ctrl+3"),
+    ("panel.entities", "Entities Panel", "Ctrl+4"),
+    ("panel.output", "Output Panel", "Ctrl+5"),
+    ("inspector.smart_edit", "Smart Edit", "Ctrl+Alt+E"),
+    ("shape.next", "Next Block Shape", "Alt+B"),
+    ("clip.next_side", "Next Clip Side", "Alt+C"),
+    ("run.again", "Run Last Profile", "F9"),
+    ("run.cancel", "Cancel Run", "Shift+F9"),
+    ("view.snap_grid", "Snap to Grid", "Shift+W"),
+    ("view.snap_vertices", "Snap to Corners", "Shift+Q"),
+    ("tool.select", "Select Tool", "Q"),
+    ("tool.move", "Move Tool", "W"),
+    ("tool.extrude", "Extrude Tool", "E"),
+    ("tool.rotate", "Rotate Tool", "R"),
+    ("tool.scale", "Scale Tool", "T"),
     ("tool.block", "Block Tool", "B"),
-    ("tool.entity", "Entity Tool", "E"),
-    ("tool.clip", "Clip Tool", "X"),
+    ("tool.entity", "Entity Tool", "N"),
+    ("tool.clip", "Clip Tool", "C"),
     ("tool.vertex", "Vertex Tool", "V"),
-    ("tool.face", "Face Tool", "F"),
+    ("tool.face", "Face Tool", "Shift+F"),
+    ("tool.sculpt", "Sculpt Tool", "D"),
 ];
 
 /// The chord bound to `id`: the user's own, else the preset's, else the default.
@@ -136,6 +170,15 @@ mod tests {
             }
         }
         assert_eq!(chord("tools.carve", Preset::TrenchBroom, &none).as_deref(), Some("Ctrl+K"));
+        for preset in Preset::ALL {
+            let mut seen: Vec<(KeyboardShortcut, &str)> = Vec::new();
+            for (sc, id) in bindings(preset, &none) {
+                if let Some((_, other)) = seen.iter().find(|(s, _)| *s == sc) {
+                    panic!("{preset:?}: {id} and {other} share {sc:?}");
+                }
+                seen.push((sc, id));
+            }
+        }
         assert_eq!(chord("tool.entity", Preset::TrenchBroom, &none), None);
         let custom = BTreeMap::from([("tools.carve".to_string(), "Ctrl+Alt+C".to_string())]);
         assert_eq!(chord("tools.carve", Preset::TrenchBroom, &custom).as_deref(), Some("Ctrl+Alt+C"));

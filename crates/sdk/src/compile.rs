@@ -80,13 +80,34 @@ pub fn builtin_vars(map: &Path, sdk_dir: &Path) -> BTreeMap<String, String> {
 
 fn pipe_lines(r: impl Read + Send + 'static, tx: mpsc::Sender<String>) {
     std::thread::spawn(move || {
-        for line in BufReader::new(r).lines() {
-            let Ok(line) = line else { break };
+        let mut r = BufReader::new(r);
+        let mut buf = Vec::new();
+        while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            let line = strip_ansi(String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']));
+            buf.clear();
             if tx.send(line).is_err() {
                 break;
             }
         }
     });
+}
+
+/// `line` without the terminal escape sequences (colors, cursor moves) tools print even into pipes.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+        } else if chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Runs the steps in order, streaming tool output line by line; stops at the first failure or when
@@ -157,6 +178,12 @@ pub fn run_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_terminal_colors() {
+        let line = "[  16% ] \u{1b}[90m\u{1b}[1mloading_editor_layout\u{1b}[22m | Loading docks...\u{1b}[39m\u{1b}[0m";
+        assert_eq!(strip_ansi(line), "[  16% ] loading_editor_layout | Loading docks...");
+    }
 
     #[test]
     fn expansion() {

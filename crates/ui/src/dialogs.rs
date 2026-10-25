@@ -32,6 +32,8 @@ pub(crate) struct ReplaceDialog {
 #[derive(Default)]
 pub(crate) struct Dialogs {
     pub preferences: bool,
+    pub shortcuts: bool,
+    pub shortcut_filter: String,
     pub transform: TransformDialog,
     pub replace: ReplaceDialog,
     /// Autosaves left behind by a session that did not close cleanly.
@@ -84,7 +86,50 @@ impl MapCraftApp {
         self.transform_dialog(ctx);
         self.replace_dialog(ctx);
         self.preferences_dialog(ctx);
+        self.shortcuts_dialog(ctx);
         self.recovery_dialog(ctx);
+    }
+
+    fn shortcuts_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.shortcuts;
+        let prefs = self.prefs.get().clone();
+        let mut edit = false;
+        egui::Window::new("Keyboard Shortcuts").open(&mut open).default_width(420.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.dialogs.shortcut_filter).hint_text("Search").desired_width(220.0));
+                edit = ui.button("Edit in Preferences").clicked();
+            });
+            let needle = self.dialogs.shortcut_filter.to_lowercase();
+            const FIXED: [(&str, &str); 11] = [
+                ("Copy", "Ctrl+C"),
+                ("Cut", "Ctrl+X"),
+                ("Paste", "Ctrl+V"),
+                ("Cancel the current drag or tool step", "Escape"),
+                ("Confirm the clip or block", "Enter"),
+                ("Extrude a face", "Shift+Drag"),
+                ("Extrude into a new brush", "Ctrl+Shift+Drag"),
+                ("Stamp a copy along a face", "Ctrl+Alt+Shift+Drag"),
+                ("Pick a face's material", "Alt+Click"),
+                ("Apply or wrap the picked material", "Alt+Right Click, Alt+Shift+Right Click"),
+                ("Fly the 3D camera", "Right Drag + WASD"),
+            ];
+            let bound = crate::shortcuts::actions().filter_map(|(id, label)| Some((label, crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts)?)));
+            let rows: Vec<(&str, String)> = bound
+                .chain(FIXED.iter().map(|(l, c)| (*l, c.to_string())))
+                .filter(|(l, c)| needle.is_empty() || l.to_lowercase().contains(&needle) || c.to_lowercase().contains(&needle))
+                .collect();
+            egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                egui::Grid::new("shortcut-list").num_columns(2).striped(true).show(ui, |ui| {
+                    for (label, chord) in rows {
+                        ui.label(label);
+                        ui.monospace(chord);
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+        self.dialogs.shortcuts = open && !edit;
+        self.dialogs.preferences |= edit;
     }
 
     fn transform_dialog(&mut self, ctx: &egui::Context) {

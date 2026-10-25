@@ -99,9 +99,13 @@ fn node_value(map: &Map, id: NodeId) -> Result<Value, FormatError> {
     if let (NodeKind::Brush(b), Some(faces)) = (&node.kind, v.get_mut("faces").and_then(Value::as_array_mut)) {
         // Engine importers read these polygons so they need no brush kernel; invalid brushes get none.
         if let Ok(solid) = b.solid() {
-            for (face, winding) in faces.iter_mut().zip(&solid.faces) {
+            let displaced: std::collections::BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
+            for (i, (face, winding)) in faces.iter_mut().zip(&solid.faces).enumerate() {
                 if let (Some(obj), Some(w)) = (face.as_object_mut(), winding) {
                     obj.insert("polygon".into(), json!(w.0.iter().map(|p| tidy(*p)).collect::<Vec<_>>()));
+                    if let Some(grid) = displaced.get(&i) {
+                        obj.insert("disp_vertices".into(), json!(grid.iter().map(|p| tidy(*p)).collect::<Vec<_>>()));
+                    }
                 }
             }
         }

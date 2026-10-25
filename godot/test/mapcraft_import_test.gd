@@ -59,10 +59,26 @@ func _check_imported(root: Node3D) -> void:
 	if mesh != null:
 		_check_checker_surface(mesh.mesh as ArrayMesh)
 	var body: StaticBody3D = root.get_node_or_null("WorldCollision") as StaticBody3D
-	_expect(body != null and body.get_child_count() == 8, "walls, detail and wedge collide")
+	_expect(body != null and body.get_child_count() == 9, "walls, detail, wedge and terrain collide")
+	_check_displacement(body)
 
 	for node: Node in root.find_children("*", "", true, false):
 		_expect(node.get_script() == null, "%s carries no script" % node.name)
+
+
+# The displaced floor collides as triangles and its middle vertex rises 48 units.
+func _check_displacement(body: StaticBody3D) -> void:
+	var faces: PackedVector3Array = PackedVector3Array()
+	if body != null:
+		for child: Node in body.get_children():
+			var holder: CollisionShape3D = child as CollisionShape3D
+			if holder != null and holder.shape is ConcavePolygonShape3D:
+				faces = (holder.shape as ConcavePolygonShape3D).get_faces()
+	_expect(faces.size() == 96, "a power 2 displacement collides as 32 triangles")
+	var top: float = -INF
+	for p: Vector3 in faces:
+		top = maxf(top, p.y)
+	_expect(is_equal_approx(top, 48.0 / UNITS_PER_METER), "the displacement keeps its bump")
 
 
 # Every face of the 64 unit detail block shows its 32x16 texture at one texel per unit.

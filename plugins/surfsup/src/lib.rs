@@ -231,6 +231,7 @@ impl Guest for SurfsUp {
             version: env!("CARGO_PKG_VERSION").into(),
             commands: vec![ramp_command(), bhop_command()],
             materials: false,
+            importers: Vec::new(),
         }
     }
 
@@ -241,6 +242,10 @@ impl Guest for SurfsUp {
             "bhop" => Ok(bhop(&p)),
             other => Err(format!("unknown command {other}")),
         }
+    }
+
+    fn import_file(_importer: String, _name: String, _data: Vec<u8>, _context: Context) -> Result<Output, String> {
+        Err("this plugin imports no files".into())
     }
 
     fn list_materials() -> Result<Vec<MaterialInfo>, String> {

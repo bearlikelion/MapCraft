@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::{Color32, RichText};
+use egui::{Color32, Rect, RichText};
 use mapcraft_engine::Severity;
 use mapcraft_geom::DVec2;
 use mapcraft_map::{Brush, Connection, Cordon, Face, Justify, NodeId, NodeKind, Prefab, PropertyOverride, ROOT};
@@ -28,9 +28,14 @@ pub(crate) struct FindState {
 impl MapCraftApp {
     pub(crate) fn left_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            for (tab, label) in [(LeftTab::Scene, "Scene"), (LeftTab::Tags, "Tags"), (LeftTab::Materials, "Materials"), (LeftTab::Entities, "Entities")] {
-                if ui.selectable_label(self.left_tab == tab, label).clicked() {
-                    self.left_tab = tab;
+            for (tab, label, id) in [
+                (LeftTab::Scene, "Scene", "panel.scene"),
+                (LeftTab::Tags, "Tags", "panel.tags"),
+                (LeftTab::Materials, "Materials", "panel.materials"),
+                (LeftTab::Entities, "Entities", "panel.entities"),
+            ] {
+                if ui.selectable_label(self.left_tab == tab, label).on_hover_text(self.chord(id)).clicked() {
+                    self.run_action(id);
                 }
             }
         });
@@ -56,67 +61,173 @@ impl MapCraftApp {
         rows
     }
 
+    /// The selected nodes without those inside another selected node, in tree order.
+    fn dragged_selection(&self, rows: &[(NodeId, usize)]) -> Vec<NodeId> {
+        let sel = &self.session.selection;
+        let mut ids: Vec<NodeId> = sel.iter().copied().filter(|id| *id != ROOT && !self.session.map.ancestors(*id).iter().any(|a| sel.contains(a))).collect();
+        ids.sort_by_key(|id| rows.iter().position(|(r, _)| r == id).unwrap_or(usize::MAX));
+        ids
+    }
+
+    /// Where the dragged rows land when dropped at `f` (0 top, 1 bottom) of `id`'s row: the
+    /// parent, the index among its children, and whether they go inside `id`.
+    fn drop_target(&self, id: NodeId, f: f32) -> Option<(NodeId, usize, bool)> {
+        let map = &self.session.map;
+        let n = map.get(id)?;
+        if self.tree_drag.contains(&id) || map.ancestors(id).iter().any(|a| self.tree_drag.contains(a)) {
+            return None;
+        }
+        let fits = |parent: &mapcraft_map::Node| {
+            !matches!(&parent.kind, NodeKind::Group(g) if g.generator.is_some())
+                && self.tree_drag.iter().all(|d| map.get(*d).is_some_and(|dn| parent.kind.can_contain(&dn.kind)))
+        };
+        if fits(n) {
+            // Below an unfolded row is above its first child.
+            if self.expanded.contains(&id) && !n.children.is_empty() && f >= 0.75 {
+                return Some((id, 0, false));
+            }
+            if id == ROOT || (0.25..0.75).contains(&f) {
+                return Some((id, n.children.len(), true));
+            }
+        }
+        let parent = n.parent?;
+        let siblings = map.get(parent)?;
+        let at = siblings.children.iter().position(|c| *c == id)?;
+        fits(siblings).then_some((parent, if f < 0.5 { at } else { at + 1 }, false))
+    }
+
     fn scene_tree(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("New Layer").clicked() {
-                let n = self.session.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).count() + 1;
-                if let Err(e) = self.session.create_layer(&format!("Layer {n}")) {
-                    self.status = e.to_string();
-                }
-                self.mark_changed();
+            if ui.button("New Layer").on_hover_text(self.chord("layer.new")).clicked() {
+                self.run_action("layer.new");
             }
             if ui.add_enabled(!self.session.selection.is_empty(), egui::Button::new("Group")).clicked() {
                 self.run_command("tools.group");
             }
         });
+        let reveal = self.session.selection != self.tree_revealed;
+        if reveal {
+            for id in &self.session.selection {
+                self.expanded.extend(self.session.map.ancestors(*id));
+            }
+            self.tree_revealed = self.session.selection.clone();
+        }
         let rows = self.scene_rows();
         let mut action: Option<(NodeId, &'static str)> = None;
-        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, ROW, rows.len(), |ui, range| {
+        let mut drop: Option<(NodeId, usize)> = None;
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let mut scroll = egui::ScrollArea::vertical().auto_shrink(false);
+        let (offset, height) = self.tree_view;
+        if reveal && let Some(i) = rows.iter().position(|(id, _)| self.session.selection.contains(id)) {
+            let y = i as f32 * ROW;
+            if y < offset || y + ROW > offset + height {
+                scroll = scroll.vertical_scroll_offset((y - height / 3.0).max(0.0));
+            }
+        }
+        let out = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             for &(id, depth) in rows.get(range).unwrap_or_default() {
                 let Some(n) = self.session.map.get(id) else { continue };
-                ui.horizontal(|ui| {
-                    ui.add_space(depth as f32 * 12.0);
-                    if n.children.is_empty() {
-                        ui.add_space(18.0);
-                    } else {
-                        let open = self.expanded.contains(&id);
-                        if ui.small_button(if open { "⏷" } else { "⏵" }).clicked() {
-                            action = Some((id, "toggle"));
-                        }
+                let label = n.kind.label();
+                let selected = self.session.selection.contains(&id);
+                let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::click_and_drag());
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
+                let painter = ui.painter_at(row);
+                if selected {
+                    painter.rect_filled(row, 3.0, crate::chrome::ACCENT_DIM);
+                } else if resp.hovered() {
+                    painter.rect_filled(row, 3.0, crate::chrome::WIDGET);
+                }
+
+                let chevron = Rect::from_min_size(egui::pos2(row.left() + 2.0 + depth as f32 * 14.0, row.top()), egui::vec2(16.0, ROW));
+                if !n.children.is_empty() {
+                    let r = ui.interact(chevron, ui.id().with(("tree-chevron", id.0)), egui::Sense::click());
+                    let c = if r.hovered() { crate::chrome::TEXT } else { crate::chrome::TEXT_WEAK };
+                    crate::chrome::icons::chevron(&painter, chevron, c, self.expanded.contains(&id));
+                    if r.clicked() {
+                        action = Some((id, "toggle"));
                     }
-                    if id != ROOT && ui.small_button(if n.hidden { "○" } else { "👁" }).on_hover_text("Show or hide").clicked() {
+                }
+                let icon = Rect::from_min_size(egui::pos2(chevron.right(), row.top()), egui::vec2(16.0, ROW));
+                let entity_color =
+                    n.kind.entity().and_then(|e| mapcraft_render::EntityStyle::color(&self.project, &e.classname)).map(|c| Color32::from_rgb(c[0], c[1], c[2]));
+                crate::chrome::icons::node_kind(&painter, icon, &n.kind, entity_color);
+
+                let eye = Rect::from_min_size(egui::pos2(row.right() - 24.0, row.top()), egui::vec2(20.0, ROW));
+                if id != ROOT {
+                    let r = ui.interact(eye, ui.id().with(("tree-eye", id.0)), egui::Sense::click());
+                    let c = if r.hovered() {
+                        crate::chrome::TEXT
+                    } else if n.hidden {
+                        crate::chrome::TEXT_WEAK.gamma_multiply(0.6)
+                    } else {
+                        crate::chrome::TEXT_WEAK
+                    };
+                    crate::chrome::icons::eye(&painter, eye, c, !n.hidden);
+                    if r.on_hover_text(if n.hidden { "Show" } else { "Hide" }).clicked() {
                         action = Some((id, "visibility"));
                     }
-                    let active = self.session.active_parent == id;
-                    let mut text = RichText::new(n.kind.label());
-                    if matches!(n.kind, NodeKind::Layer(_) | NodeKind::Group(_)) {
-                        text = text.strong();
+                }
+
+                let color = if self.session.active_parent == id {
+                    crate::chrome::ACCENT
+                } else if n.hidden {
+                    crate::chrome::TEXT_WEAK.gamma_multiply(0.7)
+                } else if matches!(n.kind, NodeKind::Brush(_)) {
+                    crate::chrome::TEXT_WEAK
+                } else {
+                    crate::chrome::TEXT
+                };
+                let text_area = Rect::from_min_max(egui::pos2(icon.right() + 4.0, row.top()), egui::pos2(eye.left() - 2.0, row.bottom()));
+                ui.painter_at(text_area).text(text_area.left_center(), egui::Align2::LEFT_CENTER, &label, egui::TextStyle::Body.resolve(ui.style()), color);
+
+                if resp.clicked() {
+                    action = Some((id, if ui.input(|i| i.modifiers.command) { "toggle-select" } else { "select" }));
+                }
+                if resp.drag_started() && id != ROOT {
+                    self.tree_drag = if selected { self.dragged_selection(&rows) } else { vec![id] };
+                }
+                if !self.tree_drag.is_empty()
+                    && let Some(p) = pointer.filter(|p| row.contains(*p))
+                    && let Some((target, index, into)) = self.drop_target(id, (p.y - row.top()) / ROW)
+                {
+                    let x = row.left() + 18.0 + depth as f32 * 14.0;
+                    let stroke = egui::Stroke::new(2.0, crate::chrome::ACCENT);
+                    if into {
+                        painter.rect_stroke(row.shrink(1.0), 3.0, stroke, egui::StrokeKind::Inside);
+                    } else {
+                        let y = if (p.y - row.top()) / ROW < 0.5 { row.top() } else { row.bottom() };
+                        painter.line_segment([egui::pos2(x, y), egui::pos2(row.right(), y)], stroke);
                     }
-                    if active {
-                        text = text.color(Color32::LIGHT_BLUE);
+                    drop = Some((target, index));
+                }
+                if resp.double_clicked() {
+                    action = Some((id, "frame"));
+                }
+                resp.context_menu(|ui| {
+                    if matches!(n.kind, NodeKind::World(_) | NodeKind::Layer(_) | NodeKind::Group(_)) && ui.button("New objects go here").clicked() {
+                        action = Some((id, "activate"));
                     }
-                    if n.hidden {
-                        text = text.weak();
+                    if id != ROOT && ui.button("Delete").clicked() {
+                        action = Some((id, "delete"));
                     }
-                    let r = ui.selectable_label(self.session.selection.contains(&id), text);
-                    if r.clicked() {
-                        action = Some((id, if ui.input(|i| i.modifiers.command) { "toggle-select" } else { "select" }));
-                    }
-                    if r.double_clicked() {
-                        action = Some((id, "frame"));
-                    }
-                    r.context_menu(|ui| {
-                        if matches!(n.kind, NodeKind::World(_) | NodeKind::Layer(_) | NodeKind::Group(_)) && ui.button("New objects go here").clicked() {
-                            action = Some((id, "activate"));
-                        }
-                        if id != ROOT && ui.button("Delete").clicked() {
-                            action = Some((id, "delete"));
-                        }
-                    });
                 });
             }
         });
+        self.tree_view = (out.state.offset.y, out.inner_rect.height());
+        if !self.tree_drag.is_empty() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if !ui.input(|i| i.pointer.primary_down()) {
+                let ids = std::mem::take(&mut self.tree_drag);
+                if let Some((parent, index)) = drop {
+                    if let Err(e) = self.session.move_nodes(&ids, parent, index) {
+                        self.status = e.to_string();
+                    }
+                    self.expanded.insert(parent);
+                    self.mark_changed();
+                }
+            }
+        }
         let Some((id, what)) = action else { return };
         match what {
             "toggle" => {
@@ -492,6 +603,10 @@ impl MapCraftApp {
     }
 
     pub(crate) fn inspector(&mut self, ui: &mut egui::Ui) {
+        if self.tool == Tool::Block && self.plugin_shape.is_some() {
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.plugin_shape_inspector(ui));
+            return;
+        }
         if self.tool == Tool::Face {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.face_editor(ui));
             return;
@@ -713,6 +828,63 @@ impl MapCraftApp {
                 });
             }
         });
+        self.displacement_editor(ui, faces.iter().any(|(_, f)| f.disp.is_some()));
+    }
+
+    /// Making, removing and heightmapping displacements on the picked faces.
+    fn displacement_editor(&mut self, ui: &mut egui::Ui, any: bool) {
+        ui.separator();
+        ui.label(RichText::new("Displacement").strong());
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("disp-power").selected_text(format!("Power {}", self.disp_power)).show_ui(ui, |ui| {
+                for p in 2..=mapcraft_map::disp::MAX_POWER {
+                    let n = (1 << p) + 1;
+                    ui.selectable_value(&mut self.disp_power, p, format!("Power {p} ({n} by {n})"));
+                }
+            });
+            let label = if any { "Set power" } else { "Make" };
+            if ui.button(label).on_hover_text("Turns four-cornered faces into a grid you can sculpt").clicked() {
+                let r = self.session.displace_faces(self.disp_power).map(|_| ());
+                self.after_edit(r);
+            }
+            if ui.add_enabled(any, egui::Button::new("Remove")).clicked() {
+                let r = self.session.remove_displacements();
+                self.after_edit(r);
+            }
+        });
+        ui.add_enabled_ui(any, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Heightmap");
+                ui.add(egui::DragValue::new(&mut self.heightmap_range.0).speed(4.0).prefix("black "));
+                ui.add(egui::DragValue::new(&mut self.heightmap_range.1).speed(4.0).prefix("white "));
+                if ui.button("Load…").on_hover_text("A grayscale image stretched over all the picked displacements").clicked() {
+                    self.load_heightmap();
+                }
+            });
+        });
+        ui.label(RichText::new(format!("Sculpt them with the Sculpt tool ({}).", self.chord("tool.sculpt"))).weak().small());
+    }
+
+    fn after_edit(&mut self, result: Result<(), mapcraft_engine::EngineError>) {
+        if let Err(e) = result {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
+    }
+
+    fn load_heightmap(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "tga", "bmp", "tif", "tiff", "exr"]).pick_file() else { return };
+        let img = match image::open(&path) {
+            Ok(i) => i.to_luma32f(),
+            Err(e) => {
+                self.status = format!("cannot read {}: {e}", path.display());
+                return;
+            }
+        };
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let (low, high) = self.heightmap_range;
+        let r = self.session.apply_heightmap(img.as_raw(), w, h, low, high);
+        self.after_edit(r);
     }
 
     fn face_edit(&mut self, label: &str, coalesce: Option<&str>, f: impl Fn(&mut Face)) {
@@ -786,7 +958,8 @@ impl MapCraftApp {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.toggle_value(&mut self.smart_edit, "Smart edit").on_hover_text("Off shows the raw key values");
+                let tip = format!("Off shows the raw key values  ({})", self.chord("inspector.smart_edit"));
+                ui.toggle_value(&mut self.smart_edit, "Smart edit").on_hover_text(tip);
             });
         });
 

@@ -12,6 +12,16 @@ pub(crate) struct PluginDialog {
     params: Value,
 }
 
+/// A plugin generator picked as the block tool's shape: previewed under the pointer, placed with a click.
+pub(crate) struct PluginShape {
+    pub plugin: String,
+    pub command: CommandSpec,
+    pub params: Value,
+    pub yaw: f64,
+    /// Edges of the output for the parameters it was made from, around the generator's origin.
+    ghost: Option<(Value, Vec<[DVec3; 2]>)>,
+}
+
 /// Parameter widgets generated from the command's specs; true when a value changed.
 fn param_widgets(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug, specs: &[ParamSpec], values: &mut Value, current_material: &str) -> bool {
     if !values.is_object() {
@@ -155,6 +165,136 @@ impl MapCraftApp {
         }
     }
 
+    /// File > Import: one entry per importer of the loaded plugins.
+    pub(crate) fn import_menu(&mut self, ui: &mut egui::Ui) {
+        let importers: Vec<(String, mapcraft_plugin_host::ImporterSpec)> =
+            self.project.plugins.iter().flat_map(|p| p.manifest.importers.iter().map(|i| (p.manifest.id.clone(), i.clone()))).collect();
+        ui.add_enabled_ui(!importers.is_empty(), |ui| {
+            ui.menu_button("Import", |ui| {
+                for (plugin, importer) in importers {
+                    if ui.button(format!("{}…", importer.label)).clicked() {
+                        self.import_file(&plugin, &importer);
+                    }
+                }
+            })
+        })
+        .response
+        .on_disabled_hover_text("This SDK's plugins import no file formats");
+    }
+
+    /// Picks a file for `importer` and puts what it reads in a new layer.
+    fn import_file(&mut self, plugin: &str, importer: &mapcraft_plugin_host::ImporterSpec) {
+        let Some(path) = rfd::FileDialog::new().add_filter(&importer.label, &importer.extensions).pick_file() else { return };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("cannot read {}: {e}", path.display());
+                return;
+            }
+        };
+        let ctx = self.plugin_context();
+        let Some(p) = self.project.plugin(plugin) else { return };
+        let result = p.import(&importer.id, &name, &data, &ctx).map_err(|e| e.to_string());
+        self.output.extend(p.take_log());
+        match result.and_then(|frags| self.session.import_layer(&name, frags).map_err(|e| e.to_string())) {
+            Ok(_) => {
+                self.status = format!("Imported {name}");
+                self.mark_changed();
+                self.frame_all();
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Generator commands of the loaded plugins, offered as block tool shapes.
+    pub(crate) fn generator_shapes(&self) -> Vec<(String, CommandSpec)> {
+        self.project.plugins.iter().flat_map(|p| p.manifest.commands.iter().filter(|c| c.generator).map(|c| (p.manifest.id.clone(), c.clone()))).collect()
+    }
+
+    /// Picks a generator as the block shape, or a built-in shape with `None`, keeping each generator's parameters.
+    pub(crate) fn pick_plugin_shape(&mut self, pick: Option<(String, CommandSpec)>) {
+        if let Some(old) = self.plugin_shape.take() {
+            self.plugin_params.insert(format!("{}/{}", old.plugin, old.command.id), old.params);
+        }
+        self.plugin_shape = pick.map(|(plugin, command)| {
+            let params = self.plugin_params.get(&format!("{plugin}/{}", command.id)).cloned().unwrap_or_else(|| command.defaults());
+            PluginShape { plugin, command, params, yaw: 0.0, ghost: None }
+        });
+    }
+
+    /// The picked generator's parameters, shown in the inspector while the block tool is placing it.
+    pub(crate) fn plugin_shape_inspector(&mut self, ui: &mut egui::Ui) {
+        let material = self.session.tex.material.clone();
+        let Some(shape) = &mut self.plugin_shape else { return };
+        ui.label(egui::RichText::new(&shape.command.label).heading());
+        ui.label(egui::RichText::new("Click in a view to place it; it stays editable from the inspector.").weak().small());
+        ui.horizontal(|ui| {
+            ui.label("Turn");
+            ui.add(egui::DragValue::new(&mut shape.yaw).range(-360.0..=360.0).speed(15.0).suffix("°"));
+            if ui.small_button("90°").on_hover_text("Turn a quarter turn counter-clockwise").clicked() {
+                shape.yaw = (shape.yaw + 90.0) % 360.0;
+            }
+        });
+        ui.separator();
+        param_widgets(ui, ("shape", &shape.command.id), &shape.command.params, &mut shape.params, &material);
+        self.refresh_ghost();
+        if self.ghost_at.is_none() {
+            self.ghost_at = Some((0, self.placement_point()));
+        }
+    }
+
+    /// Runs the picked generator again when its parameters changed since the ghost was made.
+    pub(crate) fn refresh_ghost(&mut self) {
+        let Some(shape) = &self.plugin_shape else { return };
+        if shape.ghost.as_ref().is_some_and(|(p, _)| *p == shape.params) {
+            return;
+        }
+        let (plugin, command, params) = (shape.plugin.clone(), shape.command.id.clone(), shape.params.clone());
+        let edges = match self.run_plugin(&plugin, &command, &params) {
+            Ok(frags) => fragment_edges(&frags),
+            Err(e) => {
+                self.status = e;
+                Vec::new()
+            }
+        };
+        if let Some(shape) = &mut self.plugin_shape {
+            shape.ghost = Some((params, edges));
+        }
+    }
+
+    /// The ghost's edges placed at `at`, for the overlay.
+    pub(crate) fn ghost_lines(&self, at: DVec3) -> Vec<[DVec3; 2]> {
+        let Some(shape) = &self.plugin_shape else { return Vec::new() };
+        let m = mapcraft_engine::generator_transform(&Self::shape_generator(shape, at));
+        shape.ghost.iter().flat_map(|(_, e)| e).map(|[a, b]| [m.transform_point3(*a), m.transform_point3(*b)]).collect()
+    }
+
+    fn shape_generator(shape: &PluginShape, origin: DVec3) -> Generator {
+        Generator {
+            plugin: shape.plugin.clone(),
+            command: shape.command.id.clone(),
+            params: shape.params.clone(),
+            origin,
+            angles: DVec3::new(0.0, shape.yaw, 0.0),
+        }
+    }
+
+    /// Places the picked generator at `at` as a group that stays editable.
+    pub(crate) fn place_plugin_shape(&mut self, at: DVec3) {
+        let Some(shape) = &self.plugin_shape else { return };
+        let (g, label) = (Self::shape_generator(shape, at), shape.command.label.clone());
+        match self.run_plugin(&g.plugin, &g.command, &g.params) {
+            Ok(frags) => {
+                if let Err(e) = self.session.create_generator(&label, g, frags) {
+                    self.status = e.to_string();
+                }
+            }
+            Err(e) => self.status = e,
+        }
+        self.mark_changed();
+    }
+
     /// Parameters of a generator group; editing one runs the plugin again.
     pub(crate) fn generator_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, generator: Generator) {
         let spec = self.project.plugin(&generator.plugin).and_then(|p| p.manifest.commands.iter().find(|c| c.id == generator.command).cloned());
@@ -180,4 +320,18 @@ impl MapCraftApp {
         }
         self.mark_changed();
     }
+}
+
+/// Every edge of the brushes in `frags`, for drawing them as wireframe.
+fn fragment_edges(frags: &[mapcraft_format::Fragment]) -> Vec<[DVec3; 2]> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&mapcraft_format::Fragment> = frags.iter().collect();
+    while let Some(f) = stack.pop() {
+        stack.extend(&f.children);
+        let Some(solid) = f.kind.brush().and_then(|b| b.solid().ok()) else { continue };
+        for w in solid.faces.iter().flatten() {
+            out.extend(w.0.iter().zip(w.0.iter().cycle().skip(1)).map(|(a, b)| [*a, *b]));
+        }
+    }
+    out
 }

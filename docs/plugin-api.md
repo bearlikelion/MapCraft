@@ -6,13 +6,14 @@ The core editor knows no game; plugins teach it how to work with one.
 
 ## What a plugin can do
 
-A plugin exports three functions:
+A plugin exports four functions:
 
 | Export | Purpose |
 |---|---|
-| `manifest` | Its id, name, version, commands, and whether it lists materials |
+| `manifest` | Its id, name, version, commands, importers, and whether it lists materials |
 | `run-command` | Runs one of its commands with parameter values and returns brushes and entities |
 | `list-materials` | Lists the SDK's materials for the browser, with a preview image or color each |
+| `import-file` | Reads a file the user picked for one of its importers and returns brushes and entities |
 
 It can call three host functions:
 
@@ -48,6 +49,14 @@ Selecting the group shows the parameters in the inspector; changing one runs the
 Moving or turning the group moves the generator with it.
 Exporters and engine importers see ordinary brushes, so a map made with a generator does not need the plugin to load.
 
+## Importers
+
+A manifest's `importers` list file formats the plugin reads, each with an id, a label and its extensions.
+They appear under File > Import.
+The editor reads the picked file and passes its bytes and file name to `import-file`, so an importer needs no file access of its own.
+The output is placed as it is, in map space, in a new layer named after the file.
+A plugin with no importers returns an empty list and an error from `import-file`.
+
 ## Materials
 
 A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
@@ -77,6 +86,10 @@ impl Guest for Mine {
     fn manifest() -> Manifest { /* ... */ }
     fn run_command(id: String, params: Vec<Param>, context: Context) -> Result<Output, String> { /* ... */ }
     fn list_materials() -> Result<Vec<MaterialInfo>, String> { Ok(Vec::new()) }
+
+    fn import_file(_importer: String, _name: String, _data: Vec<u8>, _context: Context) -> Result<Output, String> {
+        Err("this plugin imports no files".into())
+    }
 }
 
 export!(Mine);

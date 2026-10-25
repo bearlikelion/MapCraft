@@ -28,7 +28,7 @@
 - [x] Organization: tags (visgroups) panel, cordons, prefab override editing.
 - [x] Quality: undo and redo with coalescing, autosave, issue browser, offscreen UI smoke test.
 - [x] Quality: quick fixes, crash recovery prompt, entity report, find and replace, Hammer and TrenchBroom keymap presets, preferences window.
-- [ ] Later: FGD `@AutoVisGroup` tags, rotate and scale gizmo modes, vertex editing in the 3D view.
+- [ ] Later: FGD `@AutoVisGroup` tags, vertex editing in the 3D view, extruding faces behind a brush in 3D.
 
 ## UX pass
 
@@ -36,8 +36,24 @@
 - [x] Viewport headers with axes, zoom and render mode, a 3D axis widget, the hovered view outlined, per-object colors in 2D views.
 - [x] Status bar with selection, cursor, grid and mode, and a hint for the current tool.
 - [x] `tools/` brushes (triggers, zones, clips) drawn see-through in their entity color; layers open unfolded.
+- [x] Snapping like TrenchBroom: drags snap the grabbed corner to the grid or to a nearby brush corner, with a marker showing where it lands, and toggles for both.
+- [x] Space maximizes the viewport under the pointer and restores the four views.
+- [x] Linked 2D zoom (on by default, chain toggle in each 2D header).
+- [x] TrenchBroom's extrude: drag a face (Extrude tool, or Shift+drag with Select), Ctrl splits off a new brush or splits inward, Ctrl+Alt stamps; coplanar faces of several brushes move together.
+- [x] Godot-style keys: Q select, W move, E extrude, R rotate (2D drag or 3D rings, 15 degree steps), T scale (3D handles); B block, N entity, C clip, V vertex, F face.
+- [x] SDK Settings opens by itself when a path materials need is unset, lists those paths first, flags paths that do not exist and applies on close.
+- [x] Release builds find the SDKs in the source tree; `MAPCRAFT_SDK_PATH` adds more folders.
+- [x] Scene tree rows with flat disclosure arrows, node kind icons and the visibility eye at the far right.
+- [x] Viewports are shown with correct gamma, so grid lines, textures and colors read as intended.
 - [x] Inspector with Keyvalues, Outputs and Inputs tabs, SmartEdit, and help for the hovered property.
-- [ ] Later: dockable and rearrangeable panels, rotate and scale gizmo modes, a lit 3D preview, a model browser.
+- [x] Every menu item, panel, toolbar toggle and mode has a rebindable shortcut, shown in menus and tooltips, with no clashes in any preset; F1 lists them all.
+- [x] Blocks can be drawn in the 3D view: on the ground or on any brush face, Shift drags the height.
+- [x] 2D views snap to the grid they draw, which coarsens when zoomed out (the header says so), and a grid point beats a farther brush corner.
+- [x] Scene tree rows drag to reorder or move into another layer, group or brush entity; a selection made in a view is revealed in the tree.
+- [x] Clicking an axis on the 3D axis widget looks down that axis; clicking it again looks from the other side.
+- [x] Tool output in the Output panel has terminal color codes stripped.
+- [x] Faces picked with the Face tool keep their true color with a cyan outline; entering the Face tool picks the selected brushes' faces.
+- [ ] Later: dockable and rearrangeable panels, a lit 3D preview, a model browser.
 
 ## M3 Plugins and the SurfsUp SDK
 

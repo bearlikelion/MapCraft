@@ -27,11 +27,16 @@ pub struct ViewPrefs {
     pub fly_speed: f64,
     /// Draw each brush in its own color in the 2D views, as Hammer does.
     pub colorize: bool,
+    pub snap_grid: bool,
+    /// Dragged points snap to nearby brush corners and entity origins.
+    pub snap_vertices: bool,
+    /// Zooming one 2D view zooms them all.
+    pub link_zoom: bool,
 }
 
 impl Default for ViewPrefs {
     fn default() -> Self {
-        Self { grid: 16.0, autosave_minutes: 5, fly_speed: 512.0, colorize: true }
+        Self { grid: 16.0, autosave_minutes: 5, fly_speed: 512.0, colorize: true, snap_grid: true, snap_vertices: true, link_zoom: true }
     }
 }
 

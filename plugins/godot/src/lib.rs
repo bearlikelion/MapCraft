@@ -108,11 +108,15 @@ fn locate(res: &str, files: &BTreeSet<String>) -> Option<String> {
 
 impl Guest for Godot {
     fn manifest() -> Manifest {
-        Manifest { id: "godot".into(), name: "Godot".into(), version: env!("CARGO_PKG_VERSION").into(), commands: Vec::new(), materials: true }
+        Manifest { id: "godot".into(), name: "Godot".into(), version: env!("CARGO_PKG_VERSION").into(), commands: Vec::new(), materials: true, importers: Vec::new() }
     }
 
     fn run_command(id: String, _params: Vec<Param>, _context: Context) -> Result<Output, String> {
         Err(format!("unknown command {id}"))
+    }
+
+    fn import_file(_importer: String, _name: String, _data: Vec<u8>, _context: Context) -> Result<Output, String> {
+        Err("this plugin imports no files".into())
     }
 
     fn list_materials() -> Result<Vec<MaterialInfo>, String> {

@@ -59,6 +59,14 @@ interface types {
         generator: bool,
     }
 
+    /// A file format `import-file` reads, offered under File > Import.
+    record importer-spec {
+        id: string,
+        label: string,
+        /// Extensions without the dot, such as `bsp`.
+        extensions: list<string>,
+    }
+
     record manifest {
         id: string,
         name: string,
@@ -66,6 +74,7 @@ interface types {
         commands: list<command-spec>,
         /// Whether `list-materials` lists the SDK's materials.
         materials: bool,
+        importers: list<importer-spec>,
     }
 
     /// Editor state a command may use: the grid size and the material picked in the browser.
@@ -142,4 +151,8 @@ world plugin {
     export run-command: func(id: string, params: list<param>, context: context) -> result<output, string>;
 
     export list-materials: func() -> result<list<material-info>, string>;
+
+    /// Reads a file the user picked for one of the manifest's importers; `name` is its file name.
+    /// The output is placed as is, in map space.
+    export import-file: func(importer: string, name: string, data: list<u8>, context: context) -> result<output, string>;
 }

@@ -89,6 +89,7 @@ const TOOL_ALPHA: f32 = 0.3;
 pub const WORLD_EDGE: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
 pub const SELECTED_EDGE: [f32; 4] = [1.0, 0.1, 0.1, 1.0];
 const SELECTED_TINT: [f32; 4] = [1.0, 0.62, 0.55, 1.0];
+const PICKED_FACE_EDGE: [f32; 4] = [0.0, 0.8, 1.0, 1.0];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const SOLID_ENTITY: [u8; 3] = [220, 30, 220];
 const POINT_ENTITY: [u8; 3] = [80, 220, 80];
@@ -137,15 +138,21 @@ pub fn build_scene(
                 let Ok(solid) = b.solid() else { continue };
                 let world = if colorize { object_color(id) } else { WORLD_EDGE };
                 let edge = if selected { SELECTED_EDGE } else { entity_color.unwrap_or(world) };
-                for (face, winding) in b.faces.iter().zip(&solid.faces) {
+                let displaced: BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
+                for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
                     let Some(w) = winding else { continue };
+                    // A displaced brush shows only its displaced faces, as Source compiles it.
+                    if b.has_displacement() && !displaced.contains_key(&index) {
+                        continue;
+                    }
                     let normal = face.plane().map_or(DVec3::Z, |p| p.normal).as_vec3().to_array();
                     let size = texture_size(&face.material).map_or(DVec2::splat(64.0), |s| DVec2::new(f64::from(s[0]), f64::from(s[1])));
                     let face_selected = faces.contains(&(id, face.id));
                     let tool = is_tool_material(&face.material);
+                    // Picked faces keep their true color so materials can be judged; the outline marks them.
                     let tint = match (selected || face_selected, tool) {
-                        (true, false) => SELECTED_TINT,
-                        (false, false) => WHITE,
+                        (true, false) if selected => SELECTED_TINT,
+                        (_, false) => WHITE,
                         (true, true) => [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], TOOL_ALPHA + 0.15],
                         (false, true) => {
                             let c = entity_color.unwrap_or([0.8, 0.5, 0.1, 1.0]);
@@ -153,12 +160,30 @@ pub fn build_scene(
                         }
                     };
                     let verts = if tool { &mut scene.translucent } else { scene.batches.entry(face.material.clone()).or_default() };
+                    let edges = if selected || face_selected { &mut scene.selected_edges } else { &mut scene.edges };
+                    let edge = if face_selected { PICKED_FACE_EDGE } else { edge };
+                    if let (Some(grid), Some(d)) = (displaced.get(&index), &face.disp) {
+                        let normals = d.normals(grid, face.plane().map_or(DVec3::Z, |p| p.normal));
+                        let v = |k: usize| MeshVertex {
+                            pos: grid[k].as_vec3().to_array(),
+                            normal: normals[k].as_vec3().to_array(),
+                            uv: face.uv(grid[k], size).as_vec2().to_array(),
+                            tint,
+                        };
+                        verts.extend(d.triangles().into_iter().flat_map(|[a, b, c]| [v(a), v(b), v(c)]));
+                        let n = d.size();
+                        for k in 0..n * n {
+                            for next in [(k % n + 1 < n).then_some(k + 1), (k + n < n * n).then_some(k + n)].into_iter().flatten() {
+                                edges.push(LineVertex::new(grid[k], edge));
+                                edges.push(LineVertex::new(grid[next], edge));
+                            }
+                        }
+                        continue;
+                    }
                     let v = |p: DVec3| MeshVertex { pos: p.as_vec3().to_array(), normal, uv: face.uv(p, size).as_vec2().to_array(), tint };
                     for i in 1..w.0.len().saturating_sub(1) {
                         verts.extend([v(w.0[0]), v(w.0[i]), v(w.0[i + 1])]);
                     }
-                    let edges = if selected || face_selected { &mut scene.selected_edges } else { &mut scene.edges };
-                    let edge = if face_selected { SELECTED_EDGE } else { edge };
                     for i in 0..w.0.len() {
                         edges.push(LineVertex::new(w.0[i], edge));
                         edges.push(LineVertex::new(w.0[(i + 1) % w.0.len()], edge));
@@ -229,5 +254,10 @@ mod tests {
 
         let scene = build_scene(&map, &BTreeSet::from([b]), &BTreeSet::new(), &|_| None, &NoStyle, true);
         assert_eq!(scene.selected_edges.len(), 48);
+
+        let face = map.get(b).unwrap().kind.brush().unwrap().faces[0].id;
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::from([(b, face)]), &|_| None, &NoStyle, true);
+        assert_eq!(scene.selected_edges.len(), 8, "a picked face is outlined");
+        assert!(scene.batches["a"].iter().all(|v| v.tint == WHITE), "and keeps its true color");
     }
 }

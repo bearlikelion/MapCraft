@@ -14,6 +14,7 @@ pub use camera::{Camera, View};
 pub use scene::{EntityStyle, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, WORLD_EDGE, box_lines, build_scene, is_tool_material};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SAMPLES: u32 = 4;
 
@@ -43,13 +44,15 @@ struct Batch {
     count: u32,
 }
 
-/// One viewport's render target; `view` is what the UI displays.
+/// One viewport's render target. Rendering writes `view`, an sRGB view; `display` reads the same
+/// bytes without decoding them, which is what egui expects of the textures it shows.
 pub struct Target {
     pub size: [u32; 2],
     msaa: wgpu::TextureView,
     depth: wgpu::TextureView,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub display: wgpu::TextureView,
     globals: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
 }
@@ -134,42 +137,51 @@ impl Renderer {
         let mesh_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
         let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         // `depth` is (write, test): overlays skip the test, see-through faces skip the write.
-        let pipeline =
-            |label: &str, layout: &wgpu::PipelineLayout, vs: &str, fs: &str, buffers: &[Option<wgpu::VertexBufferLayout>], topology, depth: (bool, bool)| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(layout),
-                    vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers },
-                    primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(depth.0),
-                        depth_compare: Some(if depth.1 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(fs),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: COLOR_FORMAT,
-                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
+        let pipeline = |label: &str,
+                        layout: &wgpu::PipelineLayout,
+                        vs: &str,
+                        fs: &str,
+                        buffers: &[Option<wgpu::VertexBufferLayout>],
+                        topology,
+                        depth: (bool, bool),
+                        bias: wgpu::DepthBiasState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers },
+                primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(depth.0),
+                    depth_compare: Some(if depth.1 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+                    stencil: Default::default(),
+                    bias,
+                }),
+                multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let mesh_buffers = [Some(vertex_layout(std::mem::size_of::<MeshVertex>(), &mesh_attrs))];
         let line_buffers = [Some(vertex_layout(std::mem::size_of::<LineVertex>(), &line_attrs))];
-        let mesh_pipeline = pipeline("mesh", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true));
+        let none = wgpu::DepthBiasState::default();
+        let mesh_pipeline = pipeline("mesh", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
+        // Pulled toward the camera so a trigger lying on a floor never fights it.
+        let pull = wgpu::DepthBiasState { constant: -8, slope_scale: -2.0, clamp: 0.0 };
         let translucent_pipeline =
-            pipeline("translucent", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (false, true));
-        let line_pipeline = pipeline("line", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (true, true));
-        let overlay_pipeline = pipeline("overlay", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (false, false));
+            pipeline("translucent", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (false, true), pull);
+        let line_pipeline = pipeline("line", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (true, true), none);
+        let overlay_pipeline = pipeline("overlay", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (false, false), none);
 
         let white = texture_bind_group(device, queue, &texture_layout, &sampler, 1, 1, &[255, 255, 255, 255]);
         let checker: Vec<u8> = (0..64u32).flat_map(|i| if (i % 8 < 4) ^ (i / 8 < 4) { [255, 0, 255, 255] } else { [0, 0, 0, 255] }).collect();
@@ -234,7 +246,7 @@ impl Renderer {
     pub fn target(&self, size: [u32; 2]) -> Target {
         let size = [size[0].clamp(1, 8192), size[1].clamp(1, 8192)];
         let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
-        let tex = |label, format, samples, usage| {
+        let tex = |label, format, samples, usage, view_formats: &[wgpu::TextureFormat]| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: extent,
@@ -243,14 +255,15 @@ impl Renderer {
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
-                view_formats: &[],
+                view_formats,
             })
         };
-        let msaa = tex("viewport msaa", COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
-        let depth = tex("viewport depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT).create_view(&Default::default());
-        let texture =
-            tex("viewport", COLOR_FORMAT, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let msaa = tex("viewport msaa", COLOR_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT, &[]).create_view(&Default::default());
+        let depth = tex("viewport depth", DEPTH_FORMAT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT, &[]).create_view(&Default::default());
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
+        let texture = tex("viewport", COLOR_FORMAT, 1, usage, &[DISPLAY_FORMAT]);
         let view = texture.create_view(&Default::default());
+        let display = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(DISPLAY_FORMAT), ..Default::default() });
         let globals = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -262,7 +275,7 @@ impl Renderer {
             layout: &self.globals_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
         });
-        Target { size, msaa, depth, texture, view, globals, globals_bind }
+        Target { size, msaa, depth, texture, view, display, globals, globals_bind }
     }
 
     /// Draws the scene into `target`; `grid` is the 2D grid spacing, `overlay` lines draw on top.
@@ -388,27 +401,41 @@ fn texture_bind_group(
 }
 
 /// Grid lines covering a 2D view; spacing doubles until lines are at least 6 pixels apart.
+/// The grid spacing a 2D view at `zoom` pixels per unit draws: `grid` doubled until cells are
+/// at least 8 pixels wide.
+pub fn grid_step(grid: f64, zoom: f64) -> f64 {
+    if !grid.is_finite() || grid <= 0.0 || !zoom.is_finite() || zoom <= 0.0 {
+        return grid;
+    }
+    let mut step = grid;
+    while step * zoom < 8.0 {
+        step *= 2.0;
+    }
+    step
+}
+
 fn grid_lines(out: &mut Vec<LineVertex>, camera: &Camera, size: DVec2, grid: f64) {
     if !grid.is_finite() || grid <= 0.0 {
         return;
     }
-    let mut step = grid;
-    while step * camera.zoom < 6.0 {
-        step *= 2.0;
-    }
+    let step = grid_step(grid, camera.zoom);
+    // 1024 unit lines only stand out while finer lines lie between them.
+    let mark_1024 = step * 4.0 <= 1024.0;
     let (r, u, _) = camera.view.axes();
     let half = size / (2.0 * camera.zoom);
     let (h0, h1) = (camera.center.x - half.x, camera.center.x + half.x);
     let (v0, v1) = (camera.center.y - half.y, camera.center.y + half.y);
+    // Linear colors; on screen the axes are a muted blue, 1024 unit lines dark brown, every eighth
+    // line mid gray and the rest a dim gray.
     let color = |c: f64| {
         if c == 0.0 {
-            [0.0, 0.25, 0.35, 1.0]
-        } else if (c / 1024.0).fract() == 0.0 {
-            [0.15, 0.08, 0.0, 1.0]
+            [0.013, 0.078, 0.157, 1.0]
+        } else if mark_1024 && (c / 1024.0).fract() == 0.0 {
+            [0.058, 0.023, 0.007, 1.0]
         } else if (c / (step * 8.0)).fract() == 0.0 {
-            [0.06, 0.06, 0.06, 1.0]
+            [0.045, 0.045, 0.045, 1.0]
         } else {
-            [0.025, 0.025, 0.025, 1.0]
+            [0.02, 0.02, 0.02, 1.0]
         }
     };
     let mut h = (h0 / step).floor() * step;

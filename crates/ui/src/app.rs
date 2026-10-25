@@ -93,6 +93,12 @@ pub struct MapCraftApp {
     pub(crate) entity_filter: String,
     pub(crate) entity_class: String,
     pub(crate) expanded: BTreeSet<mapcraft_map::NodeId>,
+    /// Scene tree rows being dragged, empty when none are.
+    pub(crate) tree_drag: Vec<mapcraft_map::NodeId>,
+    /// The selection the scene tree last unfolded and scrolled to.
+    pub(crate) tree_revealed: BTreeSet<mapcraft_map::NodeId>,
+    /// The scene tree's scroll offset and visible height last frame.
+    pub(crate) tree_view: (f32, f32),
     pub(crate) last_box: Aabb,
     pub(crate) clip_points: Vec<DVec3>,
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
@@ -115,9 +121,36 @@ pub struct MapCraftApp {
     /// Compiles plugins; `None` when the WebAssembly engine could not start.
     plugin_host: Option<mapcraft_plugin_host::Host>,
     pub(crate) plugin_dialog: Option<crate::plugins::PluginDialog>,
+    /// A plugin generator picked as the block tool's shape.
+    pub(crate) plugin_shape: Option<crate::plugins::PluginShape>,
+    /// Parameters last used for each generator shape, by `plugin/command`.
+    pub(crate) plugin_params: BTreeMap<String, serde_json::Value>,
+    /// Where a click would place the plugin shape, and in which view.
+    pub(crate) ghost_at: Option<(usize, DVec3)>,
+    /// The sculpt brush: mode, radius, and height per second at full strength.
+    pub(crate) sculpt: (mapcraft_engine::SculptMode, f64, f64),
+    /// The displaced surface under the sculpt brush: view, point and normal.
+    pub(crate) sculpt_at: Option<(usize, DVec3, DVec3)>,
+    /// Power of new displacements, and the heights a heightmap's black and white map to.
+    pub(crate) disp_power: u32,
+    pub(crate) heightmap_range: (f64, f64),
     /// The status message and when it first showed, so it can give way to tool hints.
     pub(crate) status_shown: (String, Instant),
     pub(crate) inspector_tab: crate::panels::InspectorTab,
+    /// Corners and entity origins drags snap to, rebuilt after the map changes.
+    pub(crate) snap_points: Option<Vec<(NodeId, DVec3)>>,
+    /// The view and point a drag or a placing tool would snap to, and whether a corner caught it.
+    pub(crate) snap_mark: Option<(usize, DVec3, bool)>,
+    /// The viewport under the pointer, which Space maximizes.
+    pub(crate) hovered_pane: Option<usize>,
+    /// The face an extrude drag would take, shown highlighted.
+    pub(crate) extrude_hover: Option<crate::transform::ExtrudeHover>,
+    /// The compile profile Run Last Profile repeats.
+    last_compile: Option<usize>,
+    /// Quit was asked for from a menu or shortcut.
+    quit_requested: bool,
+    /// SDK paths were edited since the SDK last loaded.
+    sdk_paths_changed: bool,
     /// FGD-driven property widgets; off shows raw key values (Hammer's SmartEdit).
     pub(crate) smart_edit: bool,
     pub(crate) show_new_dialog: bool,
@@ -176,6 +209,9 @@ impl MapCraftApp {
             entity_filter: String::new(),
             entity_class: "info_player_start".into(),
             expanded: BTreeSet::from([mapcraft_map::ROOT]),
+            tree_drag: Vec::new(),
+            tree_revealed: BTreeSet::new(),
+            tree_view: (0.0, 0.0),
             last_box: Aabb::new(DVec3::ZERO, DVec3::splat(64.0)),
             clip_points: Vec::new(),
             clip_keep: mapcraft_engine::ClipKeep::Both,
@@ -193,8 +229,22 @@ impl MapCraftApp {
             show_thumbs: true,
             plugin_host: mapcraft_plugin_host::Host::new().map_err(|e| log::error!("plugins disabled: {e}")).ok(),
             plugin_dialog: None,
+            plugin_shape: None,
+            plugin_params: BTreeMap::new(),
+            ghost_at: None,
+            sculpt: (mapcraft_engine::SculptMode::Raise, 128.0, 256.0),
+            sculpt_at: None,
+            disp_power: 3,
+            heightmap_range: (0.0, 512.0),
             status_shown: (String::new(), Instant::now()),
             inspector_tab: crate::panels::InspectorTab::default(),
+            snap_points: None,
+            snap_mark: None,
+            hovered_pane: None,
+            extrude_hover: None,
+            last_compile: None,
+            quit_requested: false,
+            sdk_paths_changed: false,
             smart_edit: true,
             show_new_dialog: false,
             new_sdk: None,
@@ -254,9 +304,11 @@ impl MapCraftApp {
         for p in &self.project.problems {
             self.output.push(p.clone());
         }
-        let missing = self.project.missing_paths();
+        let missing = self.project.missing_for_editing();
         if !missing.is_empty() {
-            self.status = format!("Set {} in File > SDK Settings", missing.join(", "));
+            // Materials cannot load until these are set, so ask right away.
+            self.show_sdk_dialog = true;
+            self.status = format!("Set {} in SDK Settings to load this SDK's materials", missing.join(", "));
         }
         self.scene_dirty = true;
     }
@@ -266,8 +318,8 @@ impl MapCraftApp {
         self.session.grid = self.prefs.get().view.grid;
         self.session.sdk = sdk.clone();
         self.prefs.update(|p| p.last_sdk = sdk.clone());
-        self.load_project(sdk);
         self.status = "New map".into();
+        self.load_project(sdk);
     }
 
     pub(crate) fn open_now(&mut self, path: &Path) {
@@ -279,9 +331,9 @@ impl MapCraftApp {
                 self.expanded = s.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).map(|(id, _)| id).chain([mapcraft_map::ROOT]).collect();
                 self.session = s;
                 self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
+                self.status = format!("Opened {}", path.display());
                 self.load_project(sdk);
                 self.frame_pending = true;
-                self.status = format!("Opened {}", path.display());
             }
             Err(e) => self.status = format!("Cannot open {}: {e}", path.display()),
         }
@@ -354,6 +406,7 @@ impl MapCraftApp {
 
     pub(crate) fn mark_changed(&mut self) {
         self.scene_dirty = true;
+        self.snap_points = None;
     }
 
     pub(crate) fn reload_prefabs(&mut self) {
@@ -402,6 +455,40 @@ impl MapCraftApp {
         self.session.map.len()
     }
 
+    /// The editing session, for tests.
+    pub fn session_for_test(&mut self) -> &mut Session {
+        self.mark_changed();
+        &mut self.session
+    }
+
+    /// Each view's 2D zoom, for tests.
+    pub fn zooms_for_test(&self) -> Vec<f64> {
+        self.panes.iter().map(|p| p.camera.zoom).collect()
+    }
+
+    /// Whether the SDK Settings window is open, for tests.
+    pub fn sdk_settings_open_for_test(&self) -> bool {
+        self.show_sdk_dialog
+    }
+
+    /// Where a world point shows in view `index`, for tests that drag things.
+    pub fn screen_for_test(&self, index: usize, p: DVec3) -> Pos2 {
+        let Some(pane) = self.panes.get(index) else { return Pos2::ZERO };
+        let q = pane.camera.project(p, mapcraft_geom::DVec2::new(f64::from(pane.rect.width()), f64::from(pane.rect.height()))).unwrap_or_default();
+        pane.rect.min + Vec2::new(q.x as f32, q.y as f32)
+    }
+
+    /// The maximized view, for tests.
+    pub fn maximized_for_test(&self) -> Option<usize> {
+        self.maximized
+    }
+
+    /// Where a point dragged in view `index` would snap, and whether a corner caught it.
+    pub fn snap_for_test(&mut self, index: usize, p: DVec3) -> (DVec3, bool) {
+        let rect = self.panes.get(index).map_or(Rect::NOTHING, |pane| pane.rect);
+        self.snap_point(index, rect, p, &BTreeSet::new(), &[])
+    }
+
     /// Runs an action or engine command by id, as a menu item would.
     pub fn run_command_for_test(&mut self, id: &str) {
         self.run_action(id);
@@ -431,30 +518,53 @@ impl MapCraftApp {
         }
         self.clipboard(ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.clip_points.clear();
-            self.drag = Drag::None;
-            self.tool = Tool::Select;
+            self.set_tool(Tool::Select);
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() == 2 {
             self.apply_clip();
         }
     }
 
+    /// Switches tools; the Face tool takes over the selected brushes as picked faces, as in Hammer.
+    fn set_tool(&mut self, t: Tool) {
+        self.clip_points.clear();
+        self.drag = Drag::None;
+        if t == Tool::Face && self.tool != Tool::Face {
+            let map = &self.session.map;
+            let faces: BTreeSet<_> = self
+                .session
+                .selected_brushes()
+                .into_iter()
+                .filter_map(|id| Some(map.get(id)?.kind.brush()?.faces.iter().map(move |f| (id, f.id)).collect::<Vec<_>>()))
+                .flatten()
+                .collect();
+            self.session.face_selection = faces;
+            self.session.selection.clear();
+        } else if t != Tool::Face {
+            self.session.face_selection.clear();
+        }
+        self.tool = t;
+        self.mark_changed();
+    }
+
     /// Runs a bindable action: the shell's own, or an engine command.
     pub(crate) fn run_action(&mut self, id: &str) {
         let tool = match id {
             "tool.select" => Some(Tool::Select),
+            "tool.move" => Some(Tool::Move),
+            "tool.extrude" => Some(Tool::Extrude),
+            "tool.rotate" => Some(Tool::Rotate),
+            "tool.scale" => Some(Tool::Scale),
             "tool.block" => Some(Tool::Block),
             "tool.entity" => Some(Tool::Entity),
             "tool.clip" => Some(Tool::Clip),
             "tool.vertex" => Some(Tool::Vertex),
             "tool.face" => Some(Tool::Face),
+            "tool.sculpt" => Some(Tool::Sculpt),
             _ => None,
         };
         if let Some(t) = tool {
-            self.clip_points.clear();
-            self.drag = Drag::None;
-            self.tool = t;
+            self.set_tool(t);
             return;
         }
         match id {
@@ -472,9 +582,110 @@ impl MapCraftApp {
             "edit.preferences" => self.dialogs.preferences = true,
             "tools.transform" => self.dialogs.transform.open = true,
             "tools.replace_materials" => self.open_replace_materials(),
+            "view.snap_grid" => {
+                self.prefs.update(|p| p.view.snap_grid = !p.view.snap_grid);
+            }
+            "view.snap_vertices" => {
+                self.prefs.update(|p| p.view.snap_vertices = !p.view.snap_vertices);
+            }
+            "view.link_zoom" => {
+                self.prefs.update(|p| p.view.link_zoom = !p.view.link_zoom);
+            }
+            "view.maximize" => {
+                self.maximized = if self.maximized.is_some() { None } else { self.hovered_pane };
+            }
             "prefab.make_local" => self.make_local(),
+            "prefab.save" => self.save_prefab(),
+            "prefab.insert" => self.insert_prefab(),
+            "prefab.reload" => self.reload_prefabs(),
+            "file.sdk_settings" => self.show_sdk_dialog = true,
+            "file.quit" => self.quit_requested = true,
+            "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
+            "tools.check_problems" => self.check_problems(),
+            "layer.new" => {
+                let n = self.session.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).count() + 1;
+                if let Err(e) = self.session.create_layer(&format!("Layer {n}")) {
+                    self.status = e.to_string();
+                }
+                self.mark_changed();
+            }
+            "view.render_cycle" => {
+                self.render_mode = match self.render_mode {
+                    RenderMode::Textured => RenderMode::Flat,
+                    RenderMode::Flat => RenderMode::Wireframe,
+                    RenderMode::Wireframe => RenderMode::Textured,
+                };
+            }
+            "view.render_textured" => self.render_mode = RenderMode::Textured,
+            "view.render_flat" => self.render_mode = RenderMode::Flat,
+            "view.render_wireframe" => self.render_mode = RenderMode::Wireframe,
+            "view.colorize" => {
+                self.prefs.update(|p| p.view.colorize = !p.view.colorize);
+                self.mark_changed();
+            }
+            "view.frame_all" => self.frame_all(),
+            "view.frame_selection" if self.session.selection.is_empty() => self.frame_all(),
+            "view.frame_selection" => self.frame_selection(),
+            "view.find_entities" => {
+                self.bottom_tab = BottomTab::Find;
+                self.show_bottom = true;
+            }
+            "panel.scene" => self.left_tab = LeftTab::Scene,
+            "panel.tags" => self.left_tab = LeftTab::Tags,
+            "panel.materials" => self.left_tab = LeftTab::Materials,
+            "panel.entities" => self.left_tab = LeftTab::Entities,
+            "panel.output" => self.show_bottom = !self.show_bottom,
+            "inspector.smart_edit" => self.smart_edit = !self.smart_edit,
+            "shape.next" => {
+                self.shape = crate::chrome::next_shape(self.shape);
+                self.pick_plugin_shape(None);
+            }
+            "clip.next_side" => {
+                use mapcraft_engine::ClipKeep as K;
+                self.clip_keep = match self.clip_keep {
+                    K::Both => K::Front,
+                    K::Front => K::Back,
+                    K::Back => K::Both,
+                };
+            }
+            "run.again" => {
+                let count = self.project.sdk.as_ref().map_or(0, |s| s.manifest.compile.len());
+                match self.last_compile.filter(|i| *i < count).or((count > 0).then_some(0)) {
+                    Some(i) if self.compile.is_none() => self.start_compile(i),
+                    Some(_) => self.status = "A compile is already running".into(),
+                    None => self.status = "This SDK has no compile profiles".into(),
+                }
+            }
+            "run.cancel" => self.cancel_compile(),
             _ => self.run_command(id),
         }
+    }
+
+    fn save_prefab(&mut self) {
+        if self.session.selection.is_empty() {
+            self.status = "Select what the prefab should hold first".into();
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new().add_filter("MapCraft map", &["mcmap"]).set_file_name("prefab.mcmap");
+        if let Some(dir) = self.session.path.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.save_file() {
+            match self.session.save_selection_as_prefab(&path.with_extension(mapcraft_format::EXTENSION)) {
+                Ok(_) => self.reload_prefabs(),
+                Err(e) => self.status = e.to_string(),
+            }
+        }
+    }
+
+    fn insert_prefab(&mut self) {
+        let Some(path) = rfd::FileDialog::new().add_filter("MapCraft map", &["mcmap"]).pick_file() else { return };
+        let stored = self.session.relative_path(&path);
+        let at = self.cursor_world.map_or(DVec3::ZERO, |p| mapcraft_geom::snap(p, self.session.grid));
+        if let Err(e) = self.session.insert_prefab(&stored, at) {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
     }
 
     /// The chord shown next to an action in menus.
@@ -526,9 +737,16 @@ impl MapCraftApp {
         }
     }
 
-    fn action_button(&mut self, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) {
+    pub(crate) fn action_button(&mut self, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) {
         let button = egui::Button::new(label).shortcut_text(self.chord(id));
         if ui.add_enabled(enabled, button).clicked() {
+            self.run_action(id);
+        }
+    }
+
+    /// A menu item that shows `on` as selected.
+    fn action_toggle(&mut self, ui: &mut egui::Ui, id: &str, label: &str, on: bool) {
+        if ui.add(egui::Button::selectable(on, label).shortcut_text(self.chord(id))).clicked() {
             self.run_action(id);
         }
     }
@@ -549,20 +767,16 @@ impl MapCraftApp {
                 self.action_button(ui, "file.save", "Save", true);
                 self.action_button(ui, "file.save_as", "Save As…", true);
                 ui.separator();
-                if ui.button("SDK Settings…").clicked() {
-                    self.show_sdk_dialog = true;
-                }
+                self.import_menu(ui);
                 ui.separator();
-                if ui.button("Quit").clicked() {
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                self.action_button(ui, "file.sdk_settings", "SDK Settings…", true);
+                ui.separator();
+                self.action_button(ui, "file.quit", "Quit", true);
             });
             for top in ["Edit", "Tools", "View"] {
                 ui.menu_button(top, |ui| {
                     if top == "Tools" {
-                        if ui.button("Check for Problems").clicked() {
-                            self.check_problems();
-                        }
+                        self.action_button(ui, "tools.check_problems", "Check for Problems", true);
                         let any = !self.session.selection.is_empty();
                         self.action_button(ui, "tools.transform", "Transform…", any);
                         self.action_button(ui, "tools.replace_materials", "Replace Materials…", true);
@@ -571,23 +785,33 @@ impl MapCraftApp {
                         ui.separator();
                     }
                     if top == "View" {
-                        for (mode, label) in [(RenderMode::Textured, "Textured"), (RenderMode::Flat, "Flat"), (RenderMode::Wireframe, "Wireframe")] {
-                            if ui.radio(self.render_mode == mode, label).clicked() {
-                                self.render_mode = mode;
+                        let mode = self.render_mode;
+                        self.action_toggle(ui, "view.render_textured", "Textured", mode == RenderMode::Textured);
+                        self.action_toggle(ui, "view.render_flat", "Flat Shaded", mode == RenderMode::Flat);
+                        self.action_toggle(ui, "view.render_wireframe", "Wireframe", mode == RenderMode::Wireframe);
+                        self.action_button(ui, "view.render_cycle", "Next Render Mode", true);
+                        ui.separator();
+                        let view = self.prefs.get().view.clone();
+                        self.action_toggle(ui, "view.link_zoom", "Link 2D Zoom", view.link_zoom);
+                        self.action_toggle(ui, "view.colorize", "Color Brushes by Object", view.colorize);
+                        self.action_toggle(ui, "view.snap_grid", "Snap to Grid", view.snap_grid);
+                        self.action_toggle(ui, "view.snap_vertices", "Snap to Corners", view.snap_vertices);
+                        ui.separator();
+                        self.action_button(ui, "view.frame_all", "Frame All", true);
+                        self.action_button(ui, "view.frame_selection", "Focus Selection", true);
+                        self.action_button(ui, "view.maximize", "Maximize View Under Pointer", true);
+                        self.action_button(ui, "view.find_entities", "Find Entities", true);
+                        ui.menu_button("Panels", |ui| {
+                            for (id, label) in [
+                                ("panel.scene", "Scene"),
+                                ("panel.tags", "Tags"),
+                                ("panel.materials", "Materials"),
+                                ("panel.entities", "Entities"),
+                                ("panel.output", "Output"),
+                            ] {
+                                self.action_button(ui, id, label, true);
                             }
-                        }
-                        let mut colorize = self.prefs.get().view.colorize;
-                        if ui.checkbox(&mut colorize, "Color brushes by object").on_hover_text("Each brush gets its own color in the 2D views").changed() {
-                            self.prefs.update(|p| p.view.colorize = colorize);
-                            self.mark_changed();
-                        }
-                        if ui.button("Frame All").clicked() {
-                            self.frame_all();
-                        }
-                        if ui.button("Find Entities").clicked() {
-                            self.bottom_tab = BottomTab::Find;
-                            self.show_bottom = true;
-                        }
+                        });
                         ui.separator();
                     }
                     for c in mapcraft_engine::commands().iter().filter(|c| c.menu.split('/').next() == Some(top)) {
@@ -612,9 +836,12 @@ impl MapCraftApp {
                         self.start_compile(i);
                     }
                 }
-                if self.compile.is_some() && ui.button("Cancel").clicked() {
-                    self.cancel_compile();
-                }
+                ui.separator();
+                self.action_button(ui, "run.again", "Run Last Profile", !profiles.is_empty() && self.compile.is_none());
+                self.action_button(ui, "run.cancel", "Cancel", self.compile.is_some());
+            });
+            ui.menu_button("Help", |ui| {
+                self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
             });
         });
     }
@@ -626,33 +853,11 @@ impl MapCraftApp {
     }
 
     fn prefab_menu(&mut self, ui: &mut egui::Ui) {
-        if ui.add_enabled(!self.session.selection.is_empty(), egui::Button::new("Save Selection as Prefab…")).clicked() {
-            let mut dialog = rfd::FileDialog::new().add_filter("MapCraft map", &["mcmap"]).set_file_name("prefab.mcmap");
-            if let Some(dir) = self.session.path.as_ref().and_then(|p| p.parent()) {
-                dialog = dialog.set_directory(dir);
-            }
-            if let Some(path) = dialog.save_file() {
-                match self.session.save_selection_as_prefab(&path.with_extension(mapcraft_format::EXTENSION)) {
-                    Ok(_) => self.reload_prefabs(),
-                    Err(e) => self.status = e.to_string(),
-                }
-            }
-        }
-        if ui.button("Insert Prefab…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("MapCraft map", &["mcmap"]).pick_file()
-        {
-            let stored = self.session.relative_path(&path);
-            let at = self.cursor_world.map_or(DVec3::ZERO, |p| mapcraft_geom::snap(p, self.session.grid));
-            if let Err(e) = self.session.insert_prefab(&stored, at) {
-                self.status = e.to_string();
-            }
-            self.mark_changed();
-        }
         let any = !self.session.selection.is_empty();
+        self.action_button(ui, "prefab.save", "Save Selection as Prefab…", any);
+        self.action_button(ui, "prefab.insert", "Insert Prefab…", true);
         self.action_button(ui, "prefab.make_local", "Make Prefab Local", any);
-        if ui.button("Reload Prefabs").clicked() {
-            self.reload_prefabs();
-        }
+        self.action_button(ui, "prefab.reload", "Reload Prefabs", true);
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -750,12 +955,21 @@ impl MapCraftApp {
             return;
         };
         let mut changed = false;
-        egui::Window::new(format!("{} SDK Settings", sdk.manifest.name)).open(&mut open).show(ctx, |ui| {
-            egui::Grid::new("sdk-paths").num_columns(3).show(ui, |ui| {
-                for (key, setting) in &sdk.manifest.paths {
-                    ui.label(&setting.prompt);
+        let mut apply = false;
+        let editing = self.project.missing_for_editing();
+        // Paths that materials and entities need come first; the rest only matter for Run.
+        let mut paths: Vec<_> = sdk.manifest.paths.iter().collect();
+        let needed = |k: &String| sdk.manifest.textures.roots.iter().chain(&sdk.manifest.fgd).any(|s| s.contains(&format!("${{{k}}}")));
+        paths.sort_by_key(|(k, _)| !needed(k));
+        egui::Window::new(format!("{} SDK Settings", sdk.manifest.name)).open(&mut open).min_width(680.0).show(ctx, |ui| {
+            egui::Grid::new("sdk-paths").num_columns(3).min_col_width(80.0).show(ui, |ui| {
+                for (key, setting) in paths {
+                    let label = ui.label(&setting.prompt);
                     let mut value = self.project.vars.get(key).cloned().unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut value).desired_width(320.0)).changed() {
+                    let bad = !value.is_empty() && !std::path::Path::new(&value).exists();
+                    let edit = egui::TextEdit::singleline(&mut value).min_size(egui::vec2(300.0, 0.0)).desired_width(300.0);
+                    let edit = if bad { edit.text_color(egui::Color32::LIGHT_RED) } else { edit };
+                    if ui.add(edit).on_hover_text(if bad { "This path does not exist" } else { "" }).changed() {
                         self.project.vars.insert(key.clone(), value.clone());
                         changed = true;
                     }
@@ -767,26 +981,37 @@ impl MapCraftApp {
                         }
                     }
                     ui.end_row();
+                    if editing.contains(key) {
+                        label.on_hover_text("Needed to load materials and entities");
+                    }
                 }
             });
-            if ui.button("Reload SDK").clicked() {
-                let id = sdk.manifest.id.clone();
-                self.load_project(Some(id));
+            if !editing.is_empty() {
+                ui.colored_label(crate::chrome::ACCENT, format!("Materials load once {} is set.", editing.join(", ")));
             }
+            ui.horizontal(|ui| {
+                apply = ui.add_enabled(self.sdk_paths_changed || changed, egui::Button::new("Apply")).clicked();
+                ui.label(egui::RichText::new("Closing the window applies changes too.").color(crate::chrome::TEXT_WEAK));
+            });
         });
         if changed {
+            self.sdk_paths_changed = true;
             let (id, vars) = (sdk.manifest.id.clone(), self.project.vars.clone());
             self.prefs.update(|p| {
                 p.sdk_paths.insert(id, vars);
             });
         }
         self.show_sdk_dialog &= open;
-        if !self.show_sdk_dialog && changed {
+        if (apply || !self.show_sdk_dialog) && self.sdk_paths_changed {
+            self.sdk_paths_changed = false;
             self.load_project(Some(sdk.manifest.id.clone()));
+            self.show_sdk_dialog = !open || apply;
+            self.show_sdk_dialog &= open;
         }
     }
 
     pub(crate) fn start_compile(&mut self, index: usize) {
+        self.last_compile = Some(index);
         let Some(sdk) = self.project.sdk.clone() else { return };
         let Some(profile) = sdk.manifest.compile.get(index).cloned() else { return };
         if !self.prefs.get().approved_tools.contains(&sdk.manifest.id) {
@@ -858,6 +1083,7 @@ impl MapCraftApp {
 
     fn central(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
+        self.hovered_pane = None;
         ui.painter().rect_filled(full, 0.0, crate::chrome::BG);
         if let Some(m) = self.maximized {
             self.pane_ui(ui, m, full);
@@ -897,10 +1123,13 @@ impl MapCraftApp {
         let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 22.0));
         let body = Rect::from_min_max(Pos2::new(rect.left(), header.bottom()), rect.max);
         let active = ui.ctx().pointer_hover_pos().is_some_and(|p| rect.contains(p));
+        if active {
+            self.hovered_pane = Some(index);
+        }
         self.pane_header(ui, index, header, active);
         self.viewport(ui, index, body);
-        if let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| !c.is_2d()) {
-            self.axis_widget(ui, &cam, body);
+        if self.panes.get(index).is_some_and(|p| !p.camera.is_2d()) {
+            self.axis_widget(ui, index, body);
         }
         if active {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, crate::chrome::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Inside);
@@ -962,7 +1191,7 @@ impl eframe::App for MapCraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending = Some(Pending::Quit);
         }
-        if self.quit_confirmed {
+        if self.quit_confirmed || std::mem::take(&mut self.quit_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.prefs.tick(Instant::now());

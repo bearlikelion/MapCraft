@@ -15,7 +15,7 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
-pub use convert::{CommandSpec, Context, Manifest, ParamKind, ParamSpec};
+pub use convert::{CommandSpec, Context, ImporterSpec, Manifest, ParamKind, ParamSpec};
 
 /// A material a plugin lists: a preview image path in the asset folders, or else an sRGB color.
 #[derive(Clone, Debug, PartialEq)]
@@ -170,6 +170,20 @@ impl Plugin {
         self.begin()?;
         let result = self.bindings.call_run_command(&mut self.store, command, &params, &wit_ctx);
         match result {
+            Ok(Ok(out)) => Ok(convert::output(out, ctx)),
+            Ok(Err(message)) => Err(self.failed(message)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Reads `data`, the file `name`, with one of the plugin's importers; the result is in map space.
+    pub fn import(&mut self, importer: &str, name: &str, data: &[u8], ctx: &Context) -> Result<Vec<mapcraft_format::Fragment>, PluginError> {
+        if !self.manifest.importers.iter().any(|i| i.id == importer) {
+            return Err(PluginError::UnknownCommand(self.manifest.id.clone(), importer.into()));
+        }
+        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        self.begin()?;
+        match self.bindings.call_import_file(&mut self.store, importer, name, data, &wit_ctx) {
             Ok(Ok(out)) => Ok(convert::output(out, ctx)),
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),

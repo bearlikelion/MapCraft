@@ -11,6 +11,7 @@ mod prefs;
 mod project;
 mod shortcuts;
 mod thumbs;
+mod transform;
 mod viewport;
 
 pub use app::{MapCraftApp, Options};

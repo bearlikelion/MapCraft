@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MapCraft
+GenericName=Level Editor
+Comment=Build levels from brushes, entities and prefabs
+Exec=mapcraft %f
+Icon=mapcraft
+Terminal=false
+StartupWMClass=mapcraft
+Categories=Development;Graphics;3DGraphics;

@@ -17,6 +17,15 @@ pub struct Manifest {
     pub version: String,
     pub commands: Vec<CommandSpec>,
     pub materials: bool,
+    pub importers: Vec<ImporterSpec>,
+}
+
+/// A file format the plugin imports.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImporterSpec {
+    pub id: String,
+    pub label: String,
+    pub extensions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,7 +120,8 @@ pub(crate) fn manifest(m: t::Manifest) -> Manifest {
                 .collect(),
         })
         .collect();
-    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials }
+    let importers = m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
+    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers }
 }
 
 /// Stored parameter values as the plugin expects them; missing or wrong values fall back to the

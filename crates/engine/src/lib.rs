@@ -9,14 +9,16 @@ mod ops;
 mod organize;
 mod prefab;
 mod session;
+mod terrain;
 
 pub use commands::{CommandSpec, commands, execute, find};
 pub use generate::generator_transform;
 pub use issues::{Fix, Issue, Severity, validate};
-pub use ops::{ClipKeep, Shape};
+pub use ops::{ClipKeep, ExtrudeMode, Shape};
 pub use organize::find_entities;
 pub use prefab::{expand_instance, flatten_prefabs, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
+pub use terrain::{Sculpt, SculptMode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -34,6 +36,8 @@ pub enum EngineError {
     UnknownCommand(String),
     #[error("`{0}` is not available right now")]
     Disabled(&'static str),
+    #[error("refused: {0}")]
+    Refused(&'static str),
     #[error("prefab: {0}")]
     Prefab(String),
     #[error("internal error in `{0}`; the map was kept")]

@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod brush;
+pub mod disp;
 mod entity;
 mod map;
 mod node;
@@ -12,6 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use brush::{Brush, BrushError, Face, Justify, TexAxis, TexDefaults};
+pub use disp::Displacement;
 pub use entity::{Connection, Entity};
 pub use map::{Changes, Edit, EditError, Map, ROOT};
 pub use node::{Cordon, Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};

@@ -23,6 +23,17 @@ impl Session {
         Ok(roots)
     }
 
+    /// Puts imported nodes, already in map space, in a new layer named `name`.
+    pub fn import_layer(&mut self, name: &str, frags: Vec<Fragment>) -> Result<NodeId, EngineError> {
+        let mut e = self.map.edit();
+        let layer = e.insert(mapcraft_map::ROOT, NodeKind::Layer(mapcraft_map::Layer { name: name.into(), ..Default::default() }))?;
+        insert_fragments(&mut e, layer, frags, &DMat4::IDENTITY, true)?;
+        let c = e.finish();
+        self.apply(&format!("Import {name}"), c);
+        self.selection.clear();
+        Ok(layer)
+    }
+
     /// Creates a group that holds a generator's output and runs it again when edited.
     pub fn create_generator(&mut self, name: &str, generator: Generator, frags: Vec<Fragment>) -> Result<NodeId, EngineError> {
         let m = generator_transform(&generator);

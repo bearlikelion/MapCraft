@@ -1,7 +1,8 @@
-//! Workspace automation: `cargo xtask <ci|layers|plugins>`.
+//! Workspace automation: `cargo xtask <ci|layers|plugins|desktop>`.
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md`.
 //! - `plugins`: builds `plugins/` for wasm32-wasip2 and copies each plugin into the SDKs that list it.
+//! - `desktop [exec]`: installs the desktop entry and icon for the current user, launching `exec` (default `target/debug/mapcraft`).
 //! - `ci`: fmt check, clippy -D warnings, plugins, tests (`cargo nextest run` when installed) and layers.
 
 use std::path::{Path, PathBuf};
@@ -119,13 +120,59 @@ fn ci() -> Result<(), String> {
     layers()
 }
 
+fn desktop(exec: Option<String>) -> Result<(), String> {
+    let root = root();
+    let assets = root.join("apps/mapcraft/assets");
+    let exec = std::path::absolute(exec.map_or_else(|| root.join("target/debug/mapcraft"), PathBuf::from)).map_err(|e| e.to_string())?;
+    let exec = exec.to_str().ok_or("exec path is not UTF-8")?;
+    if exec.contains(['"', '`', '$', '\\', '%', '\n']) {
+        return Err(format!("{exec}: path has characters a desktop entry cannot quote"));
+    }
+    let share = std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .ok_or("HOME is not set")?;
+    let hicolor = share.join("icons/hicolor");
+    let mut copies: Vec<(PathBuf, PathBuf)> =
+        [256, 512].iter().map(|n| (assets.join(format!("mapcraft-{n}.png")), hicolor.join(format!("{n}x{n}/apps/mapcraft.png")))).collect();
+    copies.push((assets.join("mapcraft.svg"), hicolor.join("scalable/apps/mapcraft.svg")));
+    for (src, dst) in &copies {
+        dst.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::copy(src, dst)).map_err(|e| format!("{}: {e}", dst.display()))?;
+        println!("{}", dst.display());
+    }
+    let entry = std::fs::read_to_string(assets.join("mapcraft.desktop")).map_err(|e| format!("mapcraft.desktop: {e}"))?;
+    let entry: String = entry.lines().map(|l| if l.starts_with("Exec=") { format!("Exec=\"{exec}\" %f\n") } else { format!("{l}\n") }).collect();
+    let apps = share.join("applications");
+    let dst = apps.join("mapcraft.desktop");
+    std::fs::create_dir_all(&apps).and_then(|()| std::fs::write(&dst, entry)).map_err(|e| format!("{}: {e}", dst.display()))?;
+    println!("{}", dst.display());
+    if !Path::new(exec).is_file() {
+        println!("note: {exec} does not exist yet, build it with `cargo build -p mapcraft`");
+    }
+    let apps = apps.to_string_lossy();
+    let hicolor_str = hicolor.to_string_lossy();
+    let mut refresh = vec![("update-desktop-database", vec![&*apps]), ("kbuildsycoca6", vec![])];
+    // Only refresh an existing GTK cache; creating one would hide icons other tools add later.
+    if hicolor.join("icon-theme.cache").is_file() {
+        refresh.push(("gtk-update-icon-cache", vec!["-f", "-t", &*hicolor_str]));
+    }
+    for (program, args) in refresh {
+        if let Err(e) = run(program, &args) {
+            println!("skipped: {e}");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let result = match task.as_str() {
         "ci" => ci(),
         "layers" => layers(),
         "plugins" => plugins(),
-        _ => Err("usage: cargo xtask <ci|layers|plugins>".into()),
+        "desktop" => desktop(std::env::args().nth(2)),
+        _ => Err("usage: cargo xtask <ci|layers|plugins|desktop [exec]>".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
