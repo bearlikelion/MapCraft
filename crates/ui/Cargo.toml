@@ -1,0 +1,32 @@
+[package]
+name = "mapcraft-ui"
+description = "The MapCraft editor interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-engine = { workspace = true }
+mapcraft-fgd = { workspace = true }
+mapcraft-format = { workspace = true }
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+mapcraft-render = { workspace = true }
+mapcraft-sdk = { workspace = true }
+craft-settings = { workspace = true }
+craft-docpath = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
+egui = { workspace = true }
+image = { workspace = true }
+rfd = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["eframe", "wgpu", "snapshot"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "mapcraft-cli"
+description = "Headless MapCraft tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mapcraft-cli"
+path = "src/main.rs"
+
+[dependencies]
+mapcraft-engine = { workspace = true }
+mapcraft-fgd = { workspace = true }
+mapcraft-format = { workspace = true }
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+mapcraft-sdk = { workspace = true }
+
+[lints]
+workspace = true

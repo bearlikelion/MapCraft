@@ -1,0 +1,16 @@
+[package]
+name = "mapcraft-map"
+description = "The MapCraft document model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-geom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

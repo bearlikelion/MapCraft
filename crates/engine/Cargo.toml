@@ -1,0 +1,21 @@
+[package]
+name = "mapcraft-engine"
+description = "Editing session: commands, undo and selection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+mapcraft-format = { workspace = true }
+mapcraft-fgd = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

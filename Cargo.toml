@@ -1,0 +1,75 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*", "xtask"]
+default-members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# internal
+mapcraft-geom = { path = "crates/geom" }
+mapcraft-map = { path = "crates/map" }
+mapcraft-fgd = { path = "crates/fgd" }
+mapcraft-format = { path = "crates/format" }
+mapcraft-sdk = { path = "crates/sdk" }
+mapcraft-engine = { path = "crates/engine" }
+mapcraft-render = { path = "crates/render" }
+mapcraft-ui = { path = "crates/ui" }
+
+# craft-libs (MIT OR Apache-2.0), pinned by rev
+craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
+craft-docpath = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
+craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "8a503cfe79f0a4e7da2e167e01e71155668e0cee" }
+
+# foundation
+glam = { version = "0.34", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+thiserror = "2"
+toml = "1"
+log = "0.4"
+tempfile = "3"
+bytemuck = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
+
+# gpu: the same wgpu egui-wgpu 0.36 uses
+wgpu = "30"
+pollster = "0.4"
+
+# ui
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+rfd = "0.17"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package.mapcraft-geom]
+opt-level = 3
+
+[profile.dev.package.mapcraft-render]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

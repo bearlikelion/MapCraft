@@ -1,0 +1,6 @@
+*~
+plan/
+target/
+.DS_Store
+.claude/worktrees/
+/godot/build/

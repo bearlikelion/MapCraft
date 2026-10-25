@@ -1,0 +1,17 @@
+id = "surfsup"
+name = "SurfsUp"
+version = "3"
+plugins = ["godot", "surfsup"]
+fgd = ["fgd/surfsup.fgd"]
+
+[textures]
+roots = ["${project}/Assets/Textures"]
+extensions = ["png", "jpg", "jpeg"]
+scale = 1.0
+
+[paths.project]
+prompt = "SurfsUp Godot project folder"
+
+[paths.godot]
+prompt = "Godot editor executable"
+kind = "file"

@@ -1,0 +1,87 @@
+// SurfsUp entities for MapCraft. Zones become Area3D nodes tagged with `sdk_zone` in Godot.
+
+@SolidClass = worldspawn : "World" []
+
+@BaseClass = Targetname
+[
+	targetname(target_source) : "Name" : : "The name other entities use to refer to this one."
+]
+
+@BaseClass base(Targetname) color(255 140 0) = Zone []
+
+@SolidClass base(Zone) color(0 255 0) = zone_start : "Starts the run timer when the player leaves it."
+[
+	course_id(integer) : "Course" : 0 : "0 is the main course, higher numbers are bonuses."
+	play_sfx(boolean) : "Play sound" : 1
+]
+
+@SolidClass base(Zone) color(255 0 0) = zone_finish : "Stops the run timer."
+[
+	course_id(integer) : "Course" : 0
+	reset_staged_map(boolean) : "Reset staged map" : 0
+	reset_on_entry(boolean) : "Reset on entry" : 0
+]
+
+@SolidClass base(Zone) color(160 0 0) = kill_box : "Sends the player back to their respawn point."
+[
+	play_sfx(boolean) : "Play sound" : 0
+	disabled_in_freestyle(boolean) : "Disabled in freestyle" : 0
+]
+
+@SolidClass base(Zone) color(0 160 255) = zone_split : "Records a split time."
+[
+	split_index(integer) : "Split index" : -1
+	course_id(integer) : "Course" : 0
+]
+
+@SolidClass base(Zone) color(0 200 200) = zone_checkpoint : "Saves the player's progress."
+[
+	pause_score(boolean) : "Pause score" : 0
+	keep_jump_on_teleport(boolean) : "Keep jump on teleport" : 0
+]
+
+@SolidClass base(Zone) color(200 0 255) = teleport_zone : "Teleports the player to a teleport destination."
+[
+	target(target_destination) : "Destination"
+	kill_velocity(boolean) : "Kill velocity" : 0
+	cancel_run(boolean) : "Cancel run" : 0
+	align_to_spawn(boolean) : "Align to destination" : 1
+	keep_offset(boolean) : "Keep offset" : 0
+]
+
+@SolidClass base(Zone) color(255 255 0) = zone_booster : "Pushes the player."
+[
+	boost_velocity(float) : "Boost velocity" : "1000"
+	boost_direction(vector) : "Boost direction" : "0 0 0"
+	freeze_gravity(boolean) : "Freeze gravity" : 1
+]
+
+@SolidClass base(Zone) color(255 200 100) = zone_respawn : "Changes where the player respawns."
+[
+	respawn(target_destination) : "Respawn at"
+	is_alt_spawn(boolean) : "Alternative spawn" : 0
+	bhop_area(boolean) : "Bunny hop area" : 0
+]
+
+@SolidClass base(Zone) color(150 0 200) = zone_point_tp : "Teleports the player to a point."
+[
+	target(target_destination) : "Destination"
+	reset_velocity_on_teleport(boolean) : "Reset velocity" : 0
+	reset_view_on_teleport(boolean) : "Reset view" : 0
+	cancel_run(boolean) : "Cancel run" : 1
+]
+
+@SolidClass color(100 200 255) = bhop_zone : "Bunny hop area." []
+
+@SolidClass color(128 128 128) = func_detail : "Geometry that does not block visibility." []
+
+@PointClass size(-16 -16 0, 16 16 72) color(0 255 0) = info_player_start : "Where the player spawns." []
+
+@PointClass base(Targetname) size(-8 -8 -8, 8 8 8) color(200 0 255) = teleport_destination : "Where teleports send the player."
+[
+	angles(angle) : "Pitch Yaw Roll" : "0 0 0"
+]
+
+@PointClass size(-64 -64 0, 64 64 16) color(0 255 0) = starting_platform : "A start platform with its own start zone." []
+
+@PointClass size(-64 -64 0, 64 64 16) color(255 0 0) = finish_line : "A landing platform with a finish zone." []

@@ -1,0 +1,19 @@
+[package]
+name = "mapcraft-sdk"
+description = "SDK manifests, asset file system and compile profiles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-fgd = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

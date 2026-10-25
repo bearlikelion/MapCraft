@@ -1,0 +1,21 @@
+[package]
+name = "mapcraft-render"
+description = "wgpu renderer for MapCraft viewports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+bytemuck = { workspace = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+pollster = { workspace = true }
+image = { workspace = true }
+mapcraft-format = { workspace = true }
+
+[lints]
+workspace = true

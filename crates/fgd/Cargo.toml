@@ -1,0 +1,10 @@
+[package]
+name = "mapcraft-fgd"
+description = "FGD entity definition parser (Valve and TrenchBroom dialects)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

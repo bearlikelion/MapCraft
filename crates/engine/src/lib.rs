@@ -1,0 +1,37 @@
+//! The editing session: undo, selection, edit operations and the command registry.
+
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+mod commands;
+mod issues;
+mod ops;
+mod prefab;
+mod session;
+
+pub use commands::{CommandSpec, commands, execute, find};
+pub use issues::{Issue, Severity, validate};
+pub use ops::{ClipKeep, Shape};
+pub use prefab::{expand_instance, flatten_prefabs, prefab_transform};
+pub use session::{SelectMode, Session, pick_target};
+
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    #[error(transparent)]
+    Edit(#[from] mapcraft_map::EditError),
+    #[error(transparent)]
+    Brush(#[from] mapcraft_map::BrushError),
+    #[error(transparent)]
+    Format(#[from] mapcraft_format::FormatError),
+    #[error("nothing is selected")]
+    NothingSelected,
+    #[error("the map has not been saved yet")]
+    NoPath,
+    #[error("unknown command `{0}`")]
+    UnknownCommand(String),
+    #[error("`{0}` is not available right now")]
+    Disabled(&'static str),
+    #[error("prefab: {0}")]
+    Prefab(String),
+    #[error("internal error in `{0}`; the map was kept")]
+    Panic(&'static str),
+}
