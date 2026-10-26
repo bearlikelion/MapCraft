@@ -898,7 +898,8 @@
           "type": "entity",
           "classname": "teleport_zone",
           "properties": [
-            ["next_stage", "dest1"]
+            ["next_stage", "dest1"],
+            ["filter_name", "7"]
           ],
           "children": [
             {

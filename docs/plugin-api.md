@@ -6,16 +6,18 @@ The core editor knows no game; plugins teach it how to work with one.
 
 ## What a plugin can do
 
-A plugin exports six functions:
+A plugin exports eight functions:
 
 | Export | Purpose |
 |---|---|
-| `manifest` | Its id, name, version, commands, importers, exporters, and whether it lists materials or validates maps |
+| `manifest` | Its id, name, version, commands, importers, exporters, the model file types it reads, and whether it lists materials or validates maps |
 | `run-command` | Runs one of its commands with parameter values and returns brushes and entities |
 | `list-materials` | Lists the SDK's materials for the browser, with a preview image or color each |
+| `load-materials` | Returns full-size pictures of materials it listed smaller, for the textures a map uses |
 | `import-file` | Reads a file the user picked for one of its importers and returns brushes and entities |
 | `export-file` | Writes the map in one of its export formats and returns the file's bytes |
 | `validate` | Checks the map and returns problems for Check for Problems |
+| `load-model` | Reads a model a point entity names, for the views |
 
 It can call four host functions:
 
@@ -58,6 +60,7 @@ A manifest's `importers` list file formats the plugin reads, each with an id, a 
 They appear under File > Import.
 The editor reads the picked file and passes its bytes and file name to `import-file`, so an importer needs no file access of its own.
 The output is placed as it is, in map space, in a new layer named after the file.
+A point entity named `worldspawn` in the output is not placed: its keys go on the map's world, filling in those the world does not have yet, so a file's level settings (such as Quake's `_sunlight` or `message`) come along without replacing the open map's own.
 A plugin with no importers returns an empty list and an error from `import-file`.
 
 ## Exporters
@@ -82,6 +85,8 @@ A plugin that sets `materials` in its manifest replaces the plain image listing 
 Each material has a name, which is what faces store and what engine importers look up, and a preview: an image path in the asset folders, or an sRGB color.
 A plugin that returns its own pictures (`pixels`) may shrink them to save memory; it then sets `size` to the texture's real width and height, because texture scales and offsets count real texels.
 Importers do the same for the materials they return.
+When a map uses a material whose listed picture is smaller than its `size`, the editor asks the plugin's `load-materials` for the full picture of every such material at once, so a big library can list small previews and the views still draw the textures sharp.
+A plugin that never shrinks its pictures returns `none` for each name.
 
 `pbr` gives the maps the Lit view shades with, as paths in the asset folders; the editor reads them only when a map uses the material, so listing stays cheap.
 Leave it out (`none`) for materials without such maps; they draw fully rough and not metallic.
@@ -95,6 +100,15 @@ Leave it out (`none`) for materials without such maps; they draw fully rough and
 
 Ambient occlusion darkens only ambient light.
 A packed occlusion, roughness and metallic picture is one path named three times with the channels `red`, `green` and `blue`.
+
+## Models
+
+The editor reads glTF models itself; a plugin reads the game's own model formats.
+A plugin lists the extensions it reads in its manifest's `models`, such as `mdl` and `bsp` for Quake, and the editor then asks it, through `load-model`, for every model path with one of them that an entity's class or `model` key names.
+The model comes back as parts, each a list of positions in map units around the entity's origin and facing +X, one UV per position (0 to 1 across the texture, V down), three indices per triangle and an index into the model's `textures`, which are RGBA pictures.
+The editor works out the normals and places the model by the entity's `origin`, `angles` or `angle`, and `scale`.
+A model that fails to load shows as the entity's box, with the plugin's message in the Output panel.
+A plugin that reads no models leaves `models` empty and returns an error from `load-model`.
 
 ## Where plugins come from
 
@@ -131,6 +145,14 @@ impl Guest for Mine {
 
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
+    }
+
+    fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
+        names.iter().map(|_| None).collect()
+    }
+
+    fn load_model(path: String) -> Result<Model, String> {
+        Err(format!("this plugin reads no models: {path}"))
     }
 }
 

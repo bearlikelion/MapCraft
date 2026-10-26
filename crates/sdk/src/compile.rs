@@ -196,15 +196,15 @@ mod tests {
         let profile: CompileProfile = toml::from_str(
             r#"
 name = "zones"
-steps = [{ export = "zon", to = "${dir}/x.zon" }]
+steps = [{ export = "vmf", to = "${dir}/x.vmf" }]
 "#,
         )
         .unwrap();
-        assert_eq!(profile.steps, vec![Step::Export { export: "zon".into(), to: "${dir}/x.zon".into() }]);
+        assert_eq!(profile.steps, vec![Step::Export { export: "vmf".into(), to: "${dir}/x.vmf".into() }]);
         let vars = BTreeMap::from([("dir".to_string(), "/tmp".to_string())]);
         let mut lines = Vec::new();
         run_profile(&profile, &vars, &mut |l| lines.push(l.to_string()), &AtomicBool::new(false)).unwrap();
-        assert_eq!(lines, vec!["> export zon /tmp/x.zon".to_string()], "the editor writes exports; the runner only reports them");
+        assert_eq!(lines, vec!["> export vmf /tmp/x.vmf".to_string()], "the editor writes exports; the runner only reports them");
     }
 
     #[test]

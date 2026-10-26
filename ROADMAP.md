@@ -114,5 +114,6 @@
 ## M7 Platform
 
 - [x] SDK Manager (File > SDK Manager…): installed SDKs with Configure, Check, Test, Open Folder and Remove; install and update from registries with checksums and safe unpacking; new SDKs from a template; `mapcraft-cli sdk` and the MapCraftSDKs registry format. See [`docs/sdk-registry.md`](docs/sdk-registry.md).
-- [x] MCP server: `mapcraft-cli mcp` opens, edits, checks and saves maps headlessly through the engine's commands. See [`docs/guide/mcp.md`](docs/guide/mcp.md).
-- [ ] macOS, packaging, editor control channel (MCP against the open map), Unity importer.
+- [x] MCP server: `mapcraft-cli mcp` opens, edits, checks and saves maps headlessly through the engine's commands. See [`docs/ai-agents.md`](docs/ai-agents.md).
+- [x] Editor control channel: with the editor open, MCP tools edit the open map live and add screenshots, the SDK's entity classes, materials, plugin generators, FGD and plugin checks and compile profiles.
+- [ ] macOS, packaging, Unity importer.

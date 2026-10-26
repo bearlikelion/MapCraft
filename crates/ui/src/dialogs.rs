@@ -56,6 +56,7 @@ pub(crate) struct Dialogs {
     pub replace: ReplaceDialog,
     /// Autosaves left behind by a session that did not close cleanly.
     pub recovery: Vec<PathBuf>,
+    pub switch_sdk: bool,
 }
 
 /// Marks a running editor; finding it at startup means the last session did not close cleanly.
@@ -107,6 +108,17 @@ impl MapCraftApp {
         self.preferences_dialog(ctx);
         self.shortcuts_dialog(ctx);
         self.recovery_dialog(ctx);
+        self.switch_sdk_dialog(ctx);
+    }
+
+    fn switch_sdk_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.switch_sdk;
+        let mut picked = false;
+        egui::Window::new("Switch SDK").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            ui.label(egui::RichText::new("The map keeps its brushes and entities and is saved with the SDK picked.").color(crate::chrome::TEXT_WEAK));
+            picked = self.sdk_choices(ui);
+        });
+        self.dialogs.switch_sdk = open && !picked;
     }
 
     fn shortcuts_dialog(&mut self, ctx: &egui::Context) {
@@ -119,7 +131,7 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 20] = [
+            const FIXED: [(&str, &str); 23] = [
                 ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
                 ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
@@ -131,6 +143,7 @@ impl MapCraftApp {
                 ("Pick a face's material", "Alt+Click"),
                 ("Apply or wrap the picked material", "Alt+Right Click, Alt+Shift+Right Click"),
                 ("Fly the 3D camera", "Right Drag + WASD"),
+                ("Change the fly speed", "Right Drag + Scroll"),
                 ("Lock a UV grab or scale to U or V", "X, Y"),
                 ("Snap a UV grab, rotate or scale", "Ctrl"),
                 ("Apply a UV grab, rotate or scale", "Click, Enter"),
@@ -140,6 +153,8 @@ impl MapCraftApp {
                 ("Cancel a bevel being sized", "Escape, Right Click"),
                 ("Move a 3D vertex handle up and down", "Shift+Drag"),
                 ("Add a third clip point that tilts the cut", "Click in the 3D view"),
+                ("Move a clip point", "Drag the point"),
+                ("Nudge the selection one grid step, or the picked handles in the Vertex tool", "Arrow keys"),
             ];
             let bound = crate::shortcuts::actions().filter_map(|(id, label)| Some((label, crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts)?)));
             let rows: Vec<(&str, String)> = bound

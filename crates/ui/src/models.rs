@@ -146,17 +146,28 @@ impl Models {
 }
 
 impl crate::project::Project {
-    /// The glTF model a point entity shows: its class's fixed model, else its model key.
+    /// The model a point entity shows: its class's fixed model, else its model key; a glTF file,
+    /// or a file a loaded plugin reads.
     pub fn model_path(&self, e: &Entity) -> Option<String> {
         let fixed = self.game.class(&e.classname).and_then(|c| c.model());
-        model_file(&fixed.or_else(|| e.get(&self.models.key).map(str::to_string))?)
+        let raw = fixed.or_else(|| e.get(&self.models.key).map(str::to_string))?;
+        model_file(&raw).or_else(|| {
+            let path = raw.trim().replace('\\', "/");
+            self.plugins.iter().any(|p| p.reads_model(&path)).then_some(path)
+        })
     }
 
     /// Queues the models `map` uses and uploads the textures of loaded ones the renderer lacks.
-    pub fn prepare_models(&mut self, map: &Map, renderer: &mut Renderer) {
+    /// Models plugins read load right away, since a plugin cannot leave the editor's thread.
+    pub fn prepare_models(&mut self, map: &Map, renderer: &mut Renderer, problems: &mut Vec<String>) {
         let paths: BTreeSet<String> = map.nodes().filter(|(_, n)| n.children.is_empty()).filter_map(|(_, n)| self.model_path(n.kind.entity()?)).collect();
         for p in paths {
-            self.models.request(&p);
+            if model_file(&p).is_some() {
+                self.models.request(&p);
+            } else if !self.models.loaded.contains_key(&p) {
+                let model = self.plugin_model(&p, problems).map_err(|e| problems.push(format!("{p}: {e}; showing a box instead"))).ok();
+                self.models.loaded.insert(p, model.map(Arc::new));
+            }
         }
         for m in self.models.loaded.values().flatten() {
             for (i, t) in m.textures.iter().enumerate() {
@@ -166,6 +177,17 @@ impl crate::project::Project {
                 }
             }
         }
+    }
+
+    fn plugin_model(&mut self, path: &str, problems: &mut Vec<String>) -> Result<Model, String> {
+        let plugin = self.plugins.iter_mut().find(|p| p.reads_model(path)).ok_or("no plugin reads it")?;
+        let m = plugin.load_model(path).map_err(|e| e.to_string());
+        problems.extend(plugin.take_log());
+        let m = m?;
+        let textures = m.textures.into_iter().map(|t| mapcraft_render::Picture { width: t.width, height: t.height, rgba: t.rgba }).collect();
+        let parts =
+            m.parts.into_iter().map(|p| mapcraft_render::MeshPart { texture: p.texture, positions: p.positions, uvs: p.uvs, indices: p.indices }).collect();
+        mapcraft_render::mesh_model(path, parts, textures)
     }
 
     /// Keys for a new point entity, with the model picked in the Models tab when `class` is the SDK's prop class.

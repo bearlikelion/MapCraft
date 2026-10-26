@@ -1,9 +1,14 @@
-//! Builds the MapCraft website: copies `site/`, then renders the guides in `docs/guide/`, the
-//! reference docs in `docs/`, `godot/README.md` and a roadmap page from `ROADMAP.md`.
+//! Builds the MapCraft website: copies `site/`, then renders the guide in `docs/guide/`, the
+//! technical docs in `docs/` and `godot/README.md`.
 //!
 //! `cargo run --manifest-path site/gen/Cargo.toml -- [--out DIR] [--sync]`
 //! writes to `target/site` by default; `--sync` also rewrites the shortcut table in
 //! `docs/guide/shortcuts.md` from the code.
+//!
+//! Each section's `README.md` is its index page; its `##` headings group the sidebar and its link
+//! order sets the page order. Pages are split into blocks at `##` and `###` headings, and a
+//! paragraph holding only images becomes the block's screenshots, shown beside its text
+//! (`img/x.webp#wide` spans the block instead).
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -17,7 +22,10 @@ type Result<T> = std::result::Result<T, String>;
 const DEFAULT_REPO: &str = "https://github.com/bearlikelion/MapCraft";
 const SHORTCUTS_START: &str = "<!-- shortcuts:start -->";
 const SHORTCUTS_END: &str = "<!-- shortcuts:end -->";
-const SECTIONS: [&str; 3] = ["Guide", "Reference", "Project"];
+const SECTIONS: [&str; 2] = ["Guide", "Technical"];
+/// Folders whose `img/` is copied beside their pages.
+const IMAGES: [(&str, &str); 2] = [("docs/guide", "guide"), ("docs", "technical")];
+const FONTS: &str = "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..900&family=Source+Sans+3:ital,wght@0,400..700;1,400&family=JetBrains+Mono:wght@400..600&display=swap";
 
 struct Page {
     /// Repository path of the Markdown source.
@@ -26,13 +34,20 @@ struct Page {
     out: String,
     title: String,
     section: &'static str,
+    /// The sidebar group, from the section index's `##` headings.
+    group: String,
     text: String,
 }
 
 struct Heading {
-    level: usize,
     id: String,
     text: String,
+}
+
+struct Ctx<'a> {
+    root: &'a Path,
+    pages: &'a [Page],
+    repo: &'a str,
 }
 
 fn main() {
@@ -70,80 +85,153 @@ fn run() -> Result<()> {
     }
 
     copy_dir(&root.join("site"), &out, &["gen"])?;
+    for (from, to) in IMAGES {
+        let dir = root.join(from).join("img");
+        if dir.is_dir() {
+            copy_dir(&dir, &out.join(to).join("img"), &[])?;
+        }
+    }
+    let ctx = Ctx { root: &root, pages: &pages, repo: &repo };
     for p in &pages {
-        let page = if p.src == "ROADMAP.md" { roadmap(p, &pages, &repo) } else { render(p, &pages, &repo) };
-        write(&out.join(&p.out), &page)?;
+        write(&out.join(&p.out), &render(p, &ctx))?;
     }
     println!("site: {} pages in {}", pages.len(), out.display());
     Ok(())
 }
 
-/// Every page in sidebar order: the guide (its README's link order first), the reference docs by
-/// title, then the roadmap.
+/// Every page in sidebar order: the guide, then the technical docs.
 fn collect(root: &Path) -> Result<Vec<Page>> {
-    let mut pages = Vec::new();
-    let readme = read(&root.join("docs/guide/README.md"))?;
-    let order: Vec<String> = links(&readme).into_iter().map(|l| l.trim_start_matches("./").to_string()).collect();
-    let mut guides = md_files(&root.join("docs/guide"))?;
-    guides.retain(|n| n != "README.md");
-    guides.sort_by_key(|n| order.iter().position(|o| o == n).unwrap_or(usize::MAX));
-    pages.push(page("docs/guide/README.md".into(), "guide/index.html".into(), "Guide", readme));
-    for n in guides {
-        let src = format!("docs/guide/{n}");
-        let text = read(&root.join(&src))?;
-        pages.push(page(src, format!("guide/{}.html", stem(&n)), "Guide", text));
-    }
-    let mut reference = Vec::new();
-    for n in md_files(&root.join("docs"))? {
-        let src = format!("docs/{n}");
-        let text = read(&root.join(&src))?;
-        reference.push(page(src, format!("reference/{}.html", stem(&n)), "Reference", text));
-    }
-    let godot = read(&root.join("godot/README.md"))?;
-    reference.push(page("godot/README.md".into(), "reference/godot.html".into(), "Reference", godot));
-    reference.sort_by_key(|p| p.title.to_lowercase());
-    pages.extend(reference);
-    pages.push(page("ROADMAP.md".into(), "roadmap.html".into(), "Project", read(&root.join("ROADMAP.md"))?));
+    let guide = md_files(&root.join("docs/guide"))?.into_iter().map(|n| format!("docs/guide/{n}")).collect();
+    let mut technical: Vec<String> = md_files(&root.join("docs"))?.into_iter().map(|n| format!("docs/{n}")).collect();
+    technical.push("godot/README.md".into());
+    let mut pages = section(root, "Guide", "docs/guide/README.md", "guide", guide)?;
+    pages.extend(section(root, "Technical", "docs/README.md", "technical", technical)?);
     Ok(pages)
 }
 
-fn page(src: String, out: String, section: &'static str, text: String) -> Page {
+/// A section's index page, then its other pages in the order the index links them, each in the
+/// group of the `##` heading it is linked under; unlinked pages come last under More.
+fn section(root: &Path, name: &'static str, index: &str, dir: &str, srcs: Vec<String>) -> Result<Vec<Page>> {
+    let text = read(&root.join(index))?;
+    let base = index.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut order: Vec<(String, String)> = Vec::new();
+    let mut group = String::new();
+    for line in text.lines() {
+        if let Some(h) = line.strip_prefix("## ") {
+            group = h.trim().to_string();
+            continue;
+        }
+        for l in links(line) {
+            let path = l.split('#').next().unwrap_or_default();
+            if let Some(src) = normalize(&format!("{base}/{path}")).filter(|s| !order.iter().any(|(o, _)| o == s)) {
+                order.push((src, group.clone()));
+            }
+        }
+    }
+    let mut rest = Vec::new();
+    for src in srcs.into_iter().filter(|s| s != index) {
+        let at = order.iter().position(|(s, _)| *s == src);
+        let group = at.and_then(|i| order.get(i)).map_or_else(|| "More".to_string(), |(_, g)| g.clone());
+        let file = match stem(&src) {
+            "README" => src.rsplit('/').nth(1).unwrap_or("readme"),
+            s => s,
+        };
+        let text = read(&root.join(&src))?;
+        rest.push((at.unwrap_or(usize::MAX), page(src.clone(), format!("{dir}/{file}.html"), name, group, text)));
+    }
+    rest.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())));
+    let mut pages = vec![page(index.to_string(), format!("{dir}/index.html"), name, String::new(), text)];
+    pages.extend(rest.into_iter().map(|(_, p)| p));
+    Ok(pages)
+}
+
+fn page(src: String, out: String, section: &'static str, group: String, text: String) -> Page {
     let title = text.lines().find_map(|l| l.strip_prefix("# ")).map_or_else(|| stem(&src).to_string(), |t| t.replace('`', ""));
-    Page { src, out, title, section, text }
+    Page { src, out, title, section, group, text }
 }
 
-fn render(p: &Page, pages: &[Page], repo: &str) -> String {
-    let (body, toc) = markdown(&p.text, &p.src, &p.out, pages, repo);
-    layout(p, pages, repo, &body, &toc, "prose")
+fn render(p: &Page, ctx: &Ctx) -> String {
+    let (body, toc) = markdown(&p.text, p, ctx, true);
+    layout(p, ctx, &body, &toc)
 }
 
-/// Markdown to HTML with heading anchors, wrapped tables, keycaps for chords and links rewritten
-/// to generated pages or to the repository on GitHub.
-fn markdown(text: &str, src: &str, from: &str, pages: &[Page], repo: &str) -> (String, Vec<Heading>) {
-    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let mut events: Vec<Event> = Vec::new();
+/// A block of a page: the text under one heading, and the screenshots that go beside it.
+struct Block<'a> {
+    level: usize,
+    text: Vec<Event<'a>>,
+    media: String,
+    wide: String,
+}
+
+impl Block<'_> {
+    fn html(self) -> String {
+        let mut text = String::new();
+        html::push_html(&mut text, self.text.into_iter());
+        if self.level == 0 {
+            return text + &self.wide;
+        }
+        let (class, media) = if self.media.is_empty() { ("", String::new()) } else { (" has-media", format!("<div class=\"block-media\">\n{}</div>\n", self.media)) };
+        let wide = if self.wide.is_empty() { String::new() } else { format!("<div class=\"block-wide\">\n{}</div>\n", self.wide) };
+        let kind = if self.level == 1 { "intro" } else { "block" };
+        format!("<section class=\"{kind} l{}{class}\">\n<div class=\"block-text\">\n{text}</div>\n{media}{wide}</section>\n", self.level)
+    }
+}
+
+/// Markdown to HTML with heading anchors, wrapped tables, keycaps for chords, links rewritten to
+/// generated pages or to the repository on GitHub, and, with `blocks`, one section per heading.
+fn markdown(text: &str, p: &Page, ctx: &Ctx, blocks: bool) -> (String, Vec<Heading>) {
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM;
+    let dir = ctx.root.join(p.src.rsplit_once('/').map_or("", |(d, _)| d));
+    let mut done: Vec<Block> = Vec::new();
+    let mut block = Block { level: if blocks { 1 } else { 0 }, text: Vec::new(), media: String::new(), wide: String::new() };
     let mut toc = Vec::new();
     let mut ids = BTreeSet::new();
     let mut heading: Option<(usize, Vec<Event>)> = None;
+    let mut para: Option<Vec<Event>> = None;
     for ev in Parser::new_ext(text, opts) {
         let ev = match ev {
             Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
-                Event::Start(Tag::Link { link_type, dest_url: link(&dest_url, src, from, pages, repo).into(), title, id })
+                Event::Start(Tag::Link { link_type, dest_url: link(&dest_url, &p.src, &p.out, ctx).into(), title, id })
             }
             Event::Code(code) => match keys(&code) {
                 Some(h) => Event::InlineHtml(h.into()),
                 None => Event::Code(code),
             },
             Event::Start(Tag::Table(align)) => {
-                events.push(Event::Html("<div class=\"table-wrap\">".into()));
+                block.text.push(Event::Html("<div class=\"table-wrap\">".into()));
                 Event::Start(Tag::Table(align))
             }
             Event::End(TagEnd::Table) => {
-                events.push(Event::End(TagEnd::Table));
+                block.text.push(Event::End(TagEnd::Table));
                 Event::Html("</div>\n".into())
             }
+            Event::Start(Tag::Paragraph) if heading.is_none() => {
+                para = Some(Vec::new());
+                continue;
+            }
+            Event::End(TagEnd::Paragraph) if heading.is_none() => {
+                let buf = para.take().unwrap_or_default();
+                match figures(&buf, &dir) {
+                    Some(figs) => {
+                        for (wide, fig) in figs {
+                            if wide || !blocks { block.wide.push_str(&fig) } else { block.media.push_str(&fig) }
+                        }
+                    }
+                    None => {
+                        block.text.push(Event::Start(Tag::Paragraph));
+                        block.text.extend(buf);
+                        block.text.push(Event::End(TagEnd::Paragraph));
+                    }
+                }
+                continue;
+            }
             Event::Start(Tag::Heading { level, .. }) => {
-                heading = Some((level as usize, Vec::new()));
+                let level = level as usize;
+                if blocks && (2..=3).contains(&level) {
+                    let next = Block { level, text: Vec::new(), media: String::new(), wide: String::new() };
+                    done.push(std::mem::replace(&mut block, next));
+                }
+                heading = Some((level, Vec::new()));
                 continue;
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -159,35 +247,77 @@ fn markdown(text: &str, src: &str, from: &str, pages: &[Page], repo: &str) -> (S
                 let mut h = String::new();
                 html::push_html(&mut h, inner.into_iter());
                 let anchor = if level > 1 { format!("<a class=\"anchor\" href=\"#{id}\" aria-hidden=\"true\" tabindex=\"-1\">#</a>") } else { String::new() };
-                if (2..=3).contains(&level) {
-                    toc.push(Heading { level, id: id.clone(), text: text.clone() });
+                if level == 2 {
+                    toc.push(Heading { id: id.clone(), text: text.clone() });
                 }
                 Event::Html(format!("<h{level} id=\"{id}\">{h}{anchor}</h{level}>\n").into())
             }
             other => other,
         };
-        match &mut heading {
-            Some((_, inner)) => inner.push(ev),
-            None => events.push(ev),
+        match (&mut heading, &mut para) {
+            (Some((_, inner)), _) => inner.push(ev),
+            (None, Some(buf)) => buf.push(ev),
+            (None, None) => block.text.push(ev),
         }
     }
-    let mut out = String::new();
-    html::push_html(&mut out, events.into_iter());
+    done.push(block);
+    let out = done.into_iter().map(Block::html).collect();
     (out, toc)
+}
+
+/// The figures of a paragraph that holds only images, as (spans the block, HTML).
+fn figures(events: &[Event], dir: &Path) -> Option<Vec<(bool, String)>> {
+    let mut out = Vec::new();
+    let mut image: Option<(String, String, String)> = None;
+    for e in events {
+        match (e, &mut image) {
+            (Event::Start(Tag::Image { dest_url, title, .. }), None) => image = Some((dest_url.to_string(), title.to_string(), String::new())),
+            (Event::End(TagEnd::Image), Some(_)) => {
+                let (url, title, alt) = image.take()?;
+                out.push(figure(&url, &title, &alt, dir));
+            }
+            (Event::Text(t), Some((_, _, alt))) => alt.push_str(t),
+            (Event::SoftBreak | Event::HardBreak, None) => {}
+            (Event::Text(t), None) if t.trim().is_empty() => {}
+            _ => return None,
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn figure(url: &str, title: &str, alt: &str, dir: &Path) -> (bool, String) {
+    let (path, wide) = url.strip_suffix("#wide").map_or((url, false), |p| (p, true));
+    let size = webp_size(&dir.join(path)).map_or_else(String::new, |(w, h)| format!(" width=\"{w}\" height=\"{h}\""));
+    let caption = if title.is_empty() { String::new() } else { format!("<figcaption>{}</figcaption>", esc(title)) };
+    let path = esc(path);
+    let html = format!("<figure class=\"shot\"><a href=\"{path}\"><img src=\"{path}\" alt=\"{}\"{size} loading=\"lazy\" decoding=\"async\"></a>{caption}</figure>\n", esc(alt));
+    (wide, html)
+}
+
+/// Width and height of a WebP image, from its header.
+fn webp_size(path: &Path) -> Option<(u32, u32)> {
+    let b = fs::read(path).ok()?;
+    let le = |at: usize, n: usize| b.get(at..at + n).map(|s| s.iter().rev().fold(0u32, |a, &x| (a << 8) | u32::from(x)));
+    match b.get(12..16)? {
+        b"VP8X" => Some((le(24, 3)? + 1, le(27, 3)? + 1)),
+        b"VP8L" => le(21, 4).map(|v| ((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1)),
+        b"VP8 " => Some((le(26, 2)? & 0x3fff, le(28, 2)? & 0x3fff)),
+        _ => None,
+    }
 }
 
 /// A link to another rendered Markdown file becomes a link to its page; any other repository path
 /// goes to GitHub.
-fn link(url: &str, src: &str, from: &str, pages: &[Page], repo: &str) -> String {
+fn link(url: &str, src: &str, from: &str, ctx: &Ctx) -> String {
     if url.starts_with('#') || url.contains("://") || url.starts_with("mailto:") {
         return url.to_string();
     }
     let (path, frag) = url.split_once('#').map_or((url, String::new()), |(p, f)| (p, format!("#{f}")));
     let dir = src.rsplit_once('/').map_or("", |(d, _)| d);
     let Some(target) = normalize(&format!("{dir}/{path}")) else { return url.to_string() };
-    match pages.iter().find(|p| p.src == target) {
+    match ctx.pages.iter().find(|p| p.src == target) {
         Some(p) => format!("{}{}{frag}", up(from), p.out),
-        None => format!("{repo}/blob/main/{target}{frag}"),
+        None => format!("{}/blob/main/{target}{frag}", ctx.repo),
     }
 }
 
@@ -261,120 +391,57 @@ fn is_key(k: &str) -> bool {
     NAMED.contains(&k) || function || (k.len() == 1 && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
 }
 
-/// The roadmap as milestones with progress, open items first, later items apart and done items folded.
-fn roadmap(p: &Page, pages: &[Page], repo: &str) -> String {
-    struct Milestone {
-        name: String,
-        done: Vec<String>,
-        next: Vec<String>,
-        later: Vec<String>,
-    }
-    let mut milestones: Vec<Milestone> = Vec::new();
-    for line in p.text.lines() {
-        if let Some(name) = line.strip_prefix("## ") {
-            milestones.push(Milestone { name: name.trim().to_string(), done: Vec::new(), next: Vec::new(), later: Vec::new() });
-            continue;
-        }
-        let Some(m) = milestones.last_mut() else { continue };
-        if let Some(item) = line.strip_prefix("- [x] ").or_else(|| line.strip_prefix("- [X] ")) {
-            m.done.push(item.to_string());
-        } else if let Some(item) = line.strip_prefix("- [ ] ") {
-            match item.strip_prefix("Later: ") {
-                Some(later) => m.later.push(capitalize(later)),
-                None => m.next.push(item.to_string()),
-            }
-        }
-    }
-    let inline = |text: &str| -> String {
-        let (h, _) = markdown(text, &p.src, &p.out, pages, repo);
-        h.trim().trim_start_matches("<p>").trim_end_matches("</p>").to_string()
-    };
-    let count = |m: &Milestone| (m.done.len(), m.done.len() + m.next.len() + m.later.len());
-    let (done, total) = milestones.iter().map(count).fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
-    let mut body = String::new();
-    let _ = writeln!(body, "<h1 id=\"roadmap\">{}</h1>", esc(&p.title));
-    let _ = writeln!(
-        body,
-        "<p class=\"rm-lead\">{done} of {total} items done across {} milestones. Open items are what comes next; later items are planned but not scheduled.</p>",
-        milestones.len()
-    );
-    body.push_str("<ol class=\"rm-overview\">\n");
-    let mut ids = BTreeSet::new();
-    let ids: Vec<String> = milestones.iter().map(|m| unique(slug(&m.name), &mut ids)).collect();
-    for (m, id) in milestones.iter().zip(&ids) {
-        let (d, t) = count(m);
-        let _ = writeln!(
-            body,
-            "<li><a href=\"#{id}\"><span class=\"rm-name\">{}</span><span class=\"rm-count\">{d}/{t}</span>{}</a></li>",
-            esc(&m.name),
-            bar(d, t)
-        );
-    }
-    body.push_str("</ol>\n");
-    for (m, id) in milestones.iter().zip(&ids) {
-        let (d, t) = count(m);
-        let (class, status) = match (d, t) {
-            (d, t) if t > 0 && d == t => ("done", "Done"),
-            (0, _) => ("planned", "Planned"),
-            _ => ("active", "In progress"),
-        };
-        let _ = writeln!(
-            body,
-            "<section class=\"rm-milestone\" id=\"{id}\">\n<div class=\"rm-head\"><h2>{}</h2><span class=\"pill {class}\">{status}</span><span class=\"rm-count\">{d} of {t} done</span></div>\n{}",
-            esc(&m.name),
-            bar(d, t)
-        );
-        for (items, label, class) in [(&m.next, "Next", "next"), (&m.later, "Later", "later")] {
-            if !items.is_empty() {
-                let _ = writeln!(body, "<h3 class=\"rm-label\">{label}</h3>\n<ul class=\"rm-list {class}\">");
-                for i in items.iter() {
-                    let _ = writeln!(body, "<li>{}</li>", inline(i));
-                }
-                body.push_str("</ul>\n");
-            }
-        }
-        if !m.done.is_empty() {
-            let _ = writeln!(body, "<details class=\"rm-done\"><summary>Done ({})</summary>\n<ul class=\"rm-list done\">", m.done.len());
-            for i in &m.done {
-                let _ = writeln!(body, "<li>{}</li>", inline(i));
-            }
-            body.push_str("</ul>\n</details>\n");
-        }
-        body.push_str("</section>\n");
-    }
-    layout(p, pages, repo, &body, &[], "prose wide")
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
-}
-
-fn bar(done: usize, total: usize) -> String {
-    let pct = (done * 100).checked_div(total).unwrap_or(0);
-    format!("<span class=\"bar\" role=\"img\" aria-label=\"{done} of {total} done\"><span style=\"--p: {pct}%\"></span></span>")
-}
-
-fn layout(p: &Page, pages: &[Page], repo: &str, body: &str, toc: &[Heading], class: &str) -> String {
+fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
     let base = up(&p.out);
+    let repo = ctx.repo;
     let mut nav = String::new();
-    for section in SECTIONS {
-        let _ = writeln!(nav, "<p class=\"doc-nav-title\">{section}</p>\n<ul>");
-        for q in pages.iter().filter(|q| q.section == section) {
-            let current = if q.out == p.out { " aria-current=\"page\"" } else { "" };
-            let _ = writeln!(nav, "<li><a href=\"{base}{}\"{current}>{}</a></li>", q.out, esc(&q.title));
+    // Each section has its own sidebar; the header switches between them.
+    for section in SECTIONS.into_iter().filter(|s| *s == p.section) {
+        let class = section.to_lowercase();
+        let note = if section == "Technical" { "<span class=\"side-note\">optional</span>" } else { "" };
+        let _ = writeln!(nav, "<div class=\"side-section {class}\">\n<p class=\"side-title\">{section}{note}</p>");
+        let mut group: Option<&str> = None;
+        for q in ctx.pages.iter().filter(|q| q.section == section) {
+            if group != Some(q.group.as_str()) {
+                if group.is_some() {
+                    nav.push_str("</ul>\n");
+                }
+                if !q.group.is_empty() {
+                    let _ = writeln!(nav, "<p class=\"side-group\">{}</p>", esc(&q.group));
+                }
+                nav.push_str("<ul>\n");
+                group = Some(q.group.as_str());
+            }
+            let title = if q.out.ends_with("/index.html") { "Overview" } else { q.title.as_str() };
+            if q.out != p.out {
+                let _ = writeln!(nav, "<li><a href=\"{base}{}\">{}</a></li>", q.out, esc(title));
+                continue;
+            }
+            let _ = write!(nav, "<li><a href=\"{base}{}\" aria-current=\"page\">{}</a>", q.out, esc(title));
+            if toc.len() > 1 {
+                nav.push_str("\n<ul class=\"side-toc\">\n");
+                for h in toc {
+                    let _ = writeln!(nav, "<li><a href=\"#{}\">{}</a></li>", h.id, esc(&h.text));
+                }
+                nav.push_str("</ul>\n");
+            }
+            nav.push_str("</li>\n");
         }
-        nav.push_str("</ul>\n");
-    }
-    let mut aside = String::new();
-    if toc.len() > 1 {
-        aside.push_str("<aside class=\"doc-toc\" aria-label=\"On this page\">\n<p>On this page</p>\n<ul>\n");
-        for h in toc {
-            let _ = writeln!(aside, "<li class=\"toc-h{}\"><a href=\"#{}\">{}</a></li>", h.level, h.id, esc(&h.text));
+        if group.is_some() {
+            nav.push_str("</ul>\n");
         }
-        aside.push_str("</ul>\n</aside>\n");
+        nav.push_str("</div>\n");
     }
-    let siblings: Vec<&Page> = pages.iter().filter(|q| q.section == p.section).collect();
+    let siblings: Vec<&Page> = ctx.pages.iter().filter(|q| q.section == p.section).collect();
+    let side = if siblings.len() > 1 {
+        format!(
+            "<nav class=\"side\" aria-label=\"{section}\">\n<details class=\"side-menu\" id=\"side-menu\">\n<summary>{section} pages</summary>\n{nav}</details>\n</nav>\n",
+            section = p.section
+        )
+    } else {
+        String::new()
+    };
+    let shell = if side.is_empty() { "doc-shell single" } else { "doc-shell" };
     let at = siblings.iter().position(|q| q.out == p.out).unwrap_or(0);
     let mut pager = String::new();
     let prev = at.checked_sub(1).and_then(|i| siblings.get(i));
@@ -389,8 +456,11 @@ fn layout(p: &Page, pages: &[Page], repo: &str, body: &str, toc: &[Heading], cla
         }
         pager.push_str("</nav>\n");
     }
-    let on = " aria-current=\"true\"";
-    let (docs, project) = if p.section == "Project" { ("", on) } else { (on, "") };
+    let crumb = match (p.section, p.group.as_str()) {
+        (s, "") => format!("<p class=\"crumb {}\"><span>{s}</span></p>\n", s.to_lowercase()),
+        (s, g) => format!("<p class=\"crumb {}\"><span>{s}</span>{}</p>\n", s.to_lowercase(), esc(g)),
+    };
+    let current = |s: &str| if p.section == s { " aria-current=\"true\"" } else { "" };
     format!(
         r##"<!doctype html>
 <html lang="en" data-repo="{repo}">
@@ -399,51 +469,53 @@ fn layout(p: &Page, pages: &[Page], repo: &str, body: &str, toc: &[Heading], cla
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} | MapCraft</title>
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#121316" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15171b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef0f3" media="(prefers-color-scheme: light)">
 <link rel="icon" href="{base}assets/mapcraft.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="{FONTS}">
 <link rel="stylesheet" href="{base}style.css">
 </head>
-<body>
+<body class="docs-page">
 
+<a class="skip" href="#main">Skip to content</a>
 <header class="top">
-	<div class="wrap top-inner">
+	<div class="top-inner">
 		<a class="brand" href="{base}index.html"><img src="{base}assets/mapcraft.svg" width="28" height="28" alt="">MapCraft</a>
 		<nav aria-label="Site">
-			<a class="opt" href="{base}index.html#features">Features</a>
-			<a href="{base}guide/index.html"{docs}>Docs</a>
-			<a class="opt" href="{base}roadmap.html"{project}>Roadmap</a>
+			<a class="opt" href="{base}index.html#download">Download</a>
+			<a href="{base}guide/index.html"{guide}>Guide</a>
+			<a href="{base}technical/index.html"{technical}>Technical</a>
 			<a href="{repo}">GitHub</a>
 		</nav>
 	</div>
 </header>
 
-<div class="wrap doc-layout">
-<details class="doc-nav" id="doc-nav">
-<summary>Docs menu</summary>
-{nav}</details>
-<main class="doc-main">
-<article class="{class}">
-{body}</article>
-{pager}<p class="doc-source"><a href="{repo}/blob/main/{src}">View the source of this page on GitHub</a></p>
+<div class="{shell}">
+{side}<main class="doc" id="main">
+{crumb}{body}{pager}<p class="doc-source"><a href="{repo}/blob/main/{src}">Edit this page on GitHub</a></p>
 </main>
-{aside}</div>
+</div>
 
 <footer class="foot">
-	<div class="wrap foot-inner">
-		<p>MapCraft is free software under the <a href="{repo}/blob/main/LICENSE">MIT license</a>.</p>
+	<div class="foot-inner">
+		<p>MapCraft is made by <a href="https://github.com/bearlikelion">Mark</a> and is free under the <a href="{repo}/blob/main/LICENSE">MIT License</a>.</p>
 		<p>Docs are built from the Markdown in the repository.</p>
 	</div>
 </footer>
 
 <script>
-	if (matchMedia("(min-width: 901px)").matches) document.getElementById("doc-nav").open = true;
+	const menu = document.getElementById("side-menu");
+	if (menu && matchMedia("(min-width: 1000px)").matches) menu.open = true;
 </script>
 </body>
 </html>
 "##,
         title = esc(&p.title),
         src = p.src,
+        guide = current("Guide"),
+        technical = current("Technical"),
     )
 }
 
@@ -643,13 +715,17 @@ fn write(path: &Path, text: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn ctx_page(src: &str, out: &str, text: &str) -> Page {
+        page(src.into(), out.into(), "Guide", String::new(), text.into())
+    }
+
     #[test]
     fn helpers() {
         assert_eq!(normalize("docs/../wit/plugin.wit").as_deref(), Some("wit/plugin.wit"));
         assert_eq!(normalize("/ROADMAP.md").as_deref(), Some("ROADMAP.md"));
         assert_eq!(normalize("docs/../../x"), None);
         assert_eq!(up("guide/views.html"), "../");
-        assert_eq!(up("roadmap.html"), "");
+        assert_eq!(up("index.html"), "");
         assert_eq!(slug("The `.mcmap` format"), "the-mcmap-format");
         assert!(keys("Ctrl+Shift+M").is_some());
         assert!(keys("Alt+Right Click, Alt+Shift+Right Click").is_some());
@@ -659,17 +735,34 @@ mod tests {
         assert!(keys("C++").is_none());
         let t = splice("a\n<!-- shortcuts:start -->\nold\n<!-- shortcuts:end -->\nb", "new\n").unwrap_or_default();
         assert!(t.contains("new") && !t.contains("old") && t.ends_with("b"));
+        let card = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/card-views.webp");
+        assert_eq!(webp_size(&card), Some((800, 500)));
     }
 
     #[test]
     fn links_resolve() {
-        let pages = vec![page("docs/plugin-api.md".into(), "reference/plugin-api.html".into(), "Reference", "# Plugin API".into())];
-        let repo = "https://github.com/o/r";
-        assert_eq!(link("../plugin-api.md#imports", "docs/guide/x.md", "guide/x.html", &pages, repo), "../reference/plugin-api.html#imports");
-        assert_eq!(
-            link("../wit/plugin.wit", "docs/plugin-api.md", "reference/plugin-api.html", &pages, repo),
-            "https://github.com/o/r/blob/main/wit/plugin.wit"
-        );
-        assert_eq!(link("https://x.y/z", "ROADMAP.md", "roadmap.html", &pages, repo), "https://x.y/z");
+        let pages = vec![page("docs/plugin-api.md".into(), "technical/plugin-api.html".into(), "Technical", String::new(), "# Plugin API".into())];
+        let ctx = Ctx { root: Path::new("."), pages: &pages, repo: "https://github.com/o/r" };
+        assert_eq!(link("../plugin-api.md#imports", "docs/guide/x.md", "guide/x.html", &ctx), "../technical/plugin-api.html#imports");
+        assert_eq!(link("../wit/plugin.wit", "docs/plugin-api.md", "technical/plugin-api.html", &ctx), "https://github.com/o/r/blob/main/wit/plugin.wit");
+        assert_eq!(link("https://x.y/z", "docs/README.md", "technical/index.html", &ctx), "https://x.y/z");
+    }
+
+    #[test]
+    fn blocks_put_images_beside_text() {
+        let text = "# T\n\nLede.\n\n## Step\n\nDo it.\n\n![Alt](img/a.webp)\n\n![Wide](img/b.webp#wide \"Cap\")\n\n### Sub\n\n> [!TIP]\n> Hint.\n";
+        let p = ctx_page("docs/guide/t.md", "guide/t.html", text);
+        let pages = vec![];
+        let ctx = Ctx { root: Path::new("."), pages: &pages, repo: "r" };
+        let (html, toc) = markdown(text, &p, &ctx, true);
+        assert_eq!(toc.len(), 1);
+        assert!(html.starts_with("<section class=\"intro l1\">"));
+        assert!(html.contains("<section class=\"block l2 has-media\">"));
+        assert!(html.contains("<div class=\"block-media\">\n<figure class=\"shot\"><a href=\"img/a.webp\">"));
+        assert!(html.contains("<div class=\"block-wide\">\n<figure class=\"shot\"><a href=\"img/b.webp\">"));
+        assert!(html.contains("<figcaption>Cap</figcaption>"));
+        assert!(html.contains("<section class=\"block l3\">"));
+        assert!(html.contains("markdown-alert-tip"));
+        assert!(!html.contains("<p><img"));
     }
 }

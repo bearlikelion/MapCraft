@@ -10,8 +10,6 @@ Pick the Block tool (B); the shape bar lists the plugin generators next to the p
 |---|---|
 | Surf Ramp | Straight, curved, spiral, S-curve, dip and arc ramps, solid or thin |
 | Bhop Platforms | Lines, grids and spirals of box, triangle or round platforms |
-| Surf Window | A wall across the ramp's path with an opening to surf through, optionally holding a split or kill zone |
-| Surf Stage | Start and end platforms with their zones, the arrival point for teleports, and a kill zone under the stage |
 
 While a generator is picked, its parameters are in the inspector and a ghost follows the pointer; click to place it.
 Placed generators stay editable: select the group and change any parameter, and the brushes are rebuilt live.
@@ -50,7 +48,7 @@ In Godot, turn on Trimesh collision in the MapCraft import options or on a `MapC
 - Make start zones big enough to strafe in before leaving.
 - Space checkpoints so each stage takes about ten seconds or more.
 - Point every `teleport_destination` the way the stage continues, so players arrive facing forward.
-- Put a kill zone under every stage; Surf Stage adds one at the depth you set.
+- Put a kill zone under every stage.
 
 ## Symmetric maps
 

@@ -1,4 +1,5 @@
-//! File > SDK Manager: installed SDKs with checks, SDKs from registries, and new SDKs from the template.
+//! File > SDK Manager: installed SDKs with checks, SDKs from registries, and new SDKs from the
+//! template or a TrenchBroom game.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use egui::{Color32, RichText};
 use mapcraft_sdk::Sdk;
-use mapcraft_sdk_manager::{self as manager, Entry, Item, Level, Origin, Registry};
+use mapcraft_sdk_manager::{self as manager, Entry, Item, Level, Origin, Registry, TrenchBroomImport};
 
 use crate::app::MapCraftApp;
 use crate::chrome::{ACCENT, TEXT_WEAK};
@@ -64,6 +65,7 @@ struct Download {
 }
 
 type Fetched = Vec<(String, Result<Registry, String>)>;
+type ImportJob = Job<Result<(Sdk, Vec<String>), String>>;
 
 #[derive(Default)]
 pub(crate) struct SdkManager {
@@ -80,6 +82,9 @@ pub(crate) struct SdkManager {
     download: Option<Download>,
     new_id: String,
     new_name: String,
+    /// A TrenchBroom game folder or Godot project to import.
+    import_folder: String,
+    importing: Option<ImportJob>,
     /// The outcome of the last install, removal or creation, and whether it worked.
     note: Option<(bool, String)>,
 }
@@ -105,6 +110,8 @@ enum Act {
     Refresh,
     Install(String, Entry),
     Create,
+    BrowseImport,
+    Import,
 }
 
 /// Shows a folder in the system file manager.
@@ -344,6 +351,29 @@ impl MapCraftApp {
         if ui.add_enabled(ready, egui::Button::new("Create SDK")).clicked() {
             acts.push(Act::Create);
         }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.strong("Import from TrenchBroom / func_godot");
+        ui.label("Make an SDK from a TrenchBroom game, such as one func_godot exported: pick its folder in TrenchBroom's games folder, or the Godot project that uses func_godot.");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let label = ui.label("Folder");
+            ui.add(egui::TextEdit::singleline(&mut m.import_folder).hint_text("TrenchBroom game folder or Godot project").desired_width(360.0))
+                .labelled_by(label.id);
+            if ui.button("Browse…").clicked() {
+                acts.push(Act::BrowseImport);
+            }
+        });
+        ui.horizontal(|ui| {
+            let ready = m.importing.is_none() && !m.import_folder.trim().is_empty() && target.is_some();
+            if ui.add_enabled(ready, egui::Button::new("Import SDK")).clicked() {
+                acts.push(Act::Import);
+            }
+            if m.importing.is_some() {
+                ui.spinner();
+            }
+        });
     }
 
     fn sdk_act(&mut self, act: Act) {
@@ -375,7 +405,25 @@ impl MapCraftApp {
             Act::Refresh => self.fetch_registries(),
             Act::Install(registry, entry) => self.sdk_manager.confirm_install = Some((registry, entry)),
             Act::Create => self.create_sdk(),
+            Act::BrowseImport => {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    self.sdk_manager.import_folder = dir.to_string_lossy().into_owned();
+                }
+            }
+            Act::Import => self.start_import(),
         }
+    }
+
+    /// Reads the TrenchBroom game or Godot project and writes its SDK into the user SDK folder.
+    fn start_import(&mut self) {
+        let Some(sdks) = self.data_dir.as_deref().map(manager::user_dir) else { return };
+        let folder = PathBuf::from(self.sdk_manager.import_folder.trim());
+        let found: Vec<PathBuf> = self.sdks.iter().map(|i| i.dir.clone()).collect();
+        self.sdk_manager.note = None;
+        self.sdk_manager.importing = Some(Job::spawn(move || {
+            let game = TrenchBroomImport::read(&folder).map_err(|e| e.to_string())?;
+            game.write(&sdks.join(game.id()), &found).map_err(|e| e.to_string())
+        }));
     }
 
     fn start_check(&mut self, dir: PathBuf) {
@@ -465,6 +513,11 @@ impl MapCraftApp {
             }
             None => {}
         }
+        let imported = m.importing.as_ref().and_then(|j| Some(j.poll()?.and_then(|r| r)));
+        busy |= m.importing.is_some() && imported.is_none();
+        if imported.is_some() {
+            m.importing = None;
+        }
         let finished = m.download.as_ref().and_then(|d| Some((d.entry.clone(), d.job.poll()?.and_then(|r| r))));
         busy |= m.download.is_some() && finished.is_none();
         if let Some((entry, result)) = finished {
@@ -476,6 +529,18 @@ impl MapCraftApp {
             if result.is_ok() {
                 self.sdk_changed(&entry.id);
             }
+        }
+        match imported {
+            Some(Ok((sdk, notes))) => {
+                let text = std::iter::once(format!("Imported {} into {}.", sdk.manifest.name, sdk.dir.display())).chain(notes).collect::<Vec<_>>().join("\n");
+                self.sdk_manager.note = Some((true, text));
+                self.sdk_manager.import_folder.clear();
+                self.sdk_manager.tab = Tab::Installed;
+                self.sdk_changed(&sdk.manifest.id);
+                self.start_check(sdk.dir);
+            }
+            Some(Err(e)) => self.sdk_manager.note = Some((false, e)),
+            None => {}
         }
         if busy {
             ctx.request_repaint_after(Duration::from_millis(100));

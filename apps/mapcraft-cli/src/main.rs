@@ -21,7 +21,7 @@ const USAGE: &str = "usage:
   mapcraft-cli validate <map.mcmap> [--sdk <dir>] [--var name=value]...
   mapcraft-cli fgd <file.fgd>... [--class <name>]
   mapcraft-cli mcp
-  mapcraft-cli sdk <list|check|install|remove|package|new> ...";
+  mapcraft-cli sdk <list|check|install|remove|package|new|import-trenchbroom> ...";
 
 /// A hollow 512 x 512 x 256 room with a player start, so a new map can be compiled right away.
 fn new_map(args: &[String]) -> Result<(), String> {

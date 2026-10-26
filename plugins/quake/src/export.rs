@@ -233,7 +233,8 @@ mod tests {
             0
         });
         nodes.extend(output.brushes.iter().map(|b| node(top, solid(b))));
-        for e in &output.entities {
+        // The editor turns an imported `worldspawn` into the world's keys rather than an entity.
+        for e in output.entities.iter().filter(|e| e.classname != "worldspawn") {
             entity(&mut nodes, top, e);
         }
         for g in &output.groups {
@@ -281,8 +282,13 @@ mod tests {
         MapData { name: "test".into(), world, nodes }
     }
 
+    /// The entities an import places; its `worldspawn` holds the world's keys, checked on their own.
+    fn placed(entities: &[crate::mapcraft::plugin::types::Entity]) -> Vec<&crate::mapcraft::plugin::types::Entity> {
+        entities.iter().filter(|e| e.classname != "worldspawn").collect()
+    }
+
     fn fingerprint(output: &Output) -> String {
-        format!("{:?}\n{:?}\n{:?}", output.brushes, output.entities, output.groups)
+        format!("{:?}\n{:?}\n{:?}", output.brushes, placed(&output.entities), output.groups)
     }
 
     fn worldspawn(text: &str) -> Vec<(String, String)> {
@@ -342,7 +348,8 @@ mod tests {
 
         let back = import(text, &no_files()).unwrap().output;
         assert_eq!(back.brushes.len(), 1);
-        assert_eq!(back.entities.iter().map(|e| e.classname.as_str()).collect::<Vec<_>>(), ["info_player_start"]);
+        assert_eq!(back.entities.iter().map(|e| e.classname.as_str()).collect::<Vec<_>>(), ["info_player_start", "worldspawn"]);
+        assert_eq!(back.entities[1].properties, [("message".to_string(), "Demo".to_string())], "the world's keys survive the round trip");
         let groups: Vec<(&str, usize, Vec<&str>)> =
             back.groups.iter().map(|g| (g.name.as_str(), g.brushes.len(), g.entities.iter().map(|e| e.classname.as_str()).collect())).collect();
         assert_eq!(groups, [("Detail", 1, vec![]), ("Detail / Stairs / Rail", 1, vec!["light", "func_door"])]);
@@ -425,7 +432,7 @@ mod tests {
             let layered = import(&export(&editor_map(&name, Vec::new(), &first, Some("Imported"))).unwrap().text, &no_files()).unwrap().output;
             assert!(layered.brushes.is_empty() && layered.entities.is_empty());
             assert_eq!(layered.groups[0].name, "Imported");
-            assert_eq!(format!("{:?}{:?}", layered.groups[0].brushes, layered.groups[0].entities), format!("{:?}{:?}", first.brushes, first.entities));
+            assert_eq!(format!("{:?}{:?}", layered.groups[0].brushes, layered.groups[0].entities), format!("{:?}{:?}", first.brushes, placed(&first.entities)));
             eprintln!("{}: {} brushes and {} entities round trip", path.display(), first.brushes.len(), first.entities.len());
         }
     }

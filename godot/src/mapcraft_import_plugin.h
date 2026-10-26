@@ -24,6 +24,7 @@ public:
 	bool _get_option_visibility(const String &p_path, const StringName &p_option_name, const Dictionary &p_options) const override;
 	float _get_priority() const override;
 	int32_t _get_import_order() const override;
+	int32_t _get_format_version() const override;
 	Error _import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options, const TypedArray<String> &p_platform_variants,
 			const TypedArray<String> &p_gen_files) const override;
 };

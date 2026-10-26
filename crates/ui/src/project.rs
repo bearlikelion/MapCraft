@@ -283,14 +283,15 @@ impl Project {
     }
 
     /// Decodes and uploads every material in `names` the renderer does not have yet; returns how many failed.
-    pub fn upload_materials<'a>(&self, renderer: &mut Renderer, names: impl Iterator<Item = &'a str>) -> usize {
+    pub fn upload_materials<'a>(&mut self, renderer: &mut Renderer, names: impl Iterator<Item = &'a str>) -> usize {
+        let wanted: Vec<&str> = names.filter(|n| !n.is_empty() && !renderer.has_material(n)).collect();
+        self.fetch_full_size(&wanted);
+        let skies = self.sdk.as_ref().map(|s| s.manifest.textures.sky.clone()).unwrap_or_default();
         let mut failed = 0;
-        for name in names {
-            if name.is_empty() || renderer.has_material(name) {
-                continue;
-            }
+        for name in wanted {
             let Some(m) = self.find_material(name) else { continue };
-            if upload(renderer, name, &m) {
+            let sky = skies.iter().any(|p| !p.is_empty() && name.len() >= p.len() && name.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
+            if upload(renderer, name, &m, sky) {
                 if let Some(size) = m.size {
                     renderer.set_material_size(name, size);
                 }
@@ -303,6 +304,28 @@ impl Project {
             }
         }
         failed
+    }
+
+    /// Swaps the shrunken previews plugins listed for `names` for their full-size pictures, once.
+    fn fetch_full_size(&mut self, names: &[&str]) {
+        let shrunk: Vec<String> = names
+            .iter()
+            .filter(|n| self.material(n).is_some_and(|m| matches!((&m.pixels, m.size), (Some(p), Some([w, h])) if [p.width, p.height] != [w, h])))
+            .map(|n| n.to_string())
+            .collect();
+        if shrunk.is_empty() {
+            return;
+        }
+        for plugin in self.plugins.iter_mut().filter(|p| p.manifest.materials) {
+            let pictures = plugin.load_materials(&shrunk);
+            self.problems.extend(plugin.take_log());
+            let Ok(pictures) = pictures else { continue };
+            for (name, picture) in shrunk.iter().zip(pictures) {
+                if let (Some(p), Some(m)) = (picture, self.materials.iter_mut().find(|m| &m.name == name)) {
+                    m.pixels = Some(std::sync::Arc::new(p));
+                }
+            }
+        }
     }
 
     fn picture(&self, path: &str) -> Option<RgbaImage> {
@@ -370,9 +393,10 @@ fn pack(pbr: &Pbr, load: &dyn Fn(&str) -> Option<RgbaImage>) -> (RgbaImage, Rgba
 }
 
 /// Uploads one material's picture, file or color swatch; a material with none of them counts as done.
-fn upload(renderer: &mut Renderer, name: &str, m: &Material) -> bool {
+fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool {
+    let mut put = |w: u32, h: u32, rgba: &[u8]| if sky { renderer.upload_sky(name, w, h, rgba) } else { renderer.upload_material(name, w, h, rgba) };
     if let Some(p) = &m.pixels {
-        return renderer.upload_material(name, p.width, p.height, &p.rgba);
+        return put(p.width, p.height, &p.rgba);
     }
     let Some(path) = &m.image else {
         return m.color.is_none_or(|c| renderer.upload_material(name, SWATCH, SWATCH, &swatch(c)));
@@ -380,7 +404,7 @@ fn upload(renderer: &mut Renderer, name: &str, m: &Material) -> bool {
     match image::open(path) {
         Ok(img) => {
             let rgba = img.to_rgba8();
-            renderer.upload_material(name, rgba.width(), rgba.height(), rgba.as_raw())
+            put(rgba.width(), rgba.height(), rgba.as_raw())
         }
         Err(e) => {
             log::warn!("{}: {e}", path.display());

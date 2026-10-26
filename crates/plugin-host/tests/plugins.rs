@@ -163,9 +163,9 @@ fn bsp_import_groups_and_textures() {
     assert!(b.faces.iter().any(|f| f.u.axis != mapcraft_geom::DVec3::X && f.u.axis != mapcraft_geom::DVec3::Y), "faces keep the map's texture axes");
 }
 
-/// A start and a finish zone export as the two blocks SurfsUp v3 needs.
+/// SurfsUp checks report map-wide problems and point zone problems back at their node.
 #[test]
-fn zones_export_as_zon() {
+fn surfsup_validates_zones() {
     use mapcraft_geom::{Aabb, DVec3};
     use mapcraft_map::{Brush, Entity, Map, ROOT, TexDefaults};
     let host = Host::new().unwrap();
@@ -178,11 +178,6 @@ fn zones_export_as_zon() {
         e.insert(zone, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(x, 0.0, 0.0), DVec3::new(x + 256.0, 256.0, 256.0)), &tex))).unwrap();
     }
     map.apply(e.finish());
-    let text = String::from_utf8(p.export("zon", &map, "surf_test", &ctx()).unwrap()).unwrap();
-    assert!(text.starts_with("\"zones\""), "{text}");
-    assert!(text.contains("\"main0_start\"") && text.contains("\"main0_end\""));
-    assert!(text.contains("\"2048.000000 0.000000 0.000000\""), "the finish keeps its corner");
-    assert!(p.export("zon", &Map::new(), "empty", &ctx()).is_err(), "no start or finish is an error");
 
     let mut e = map.edit();
     let teleport = e.insert(ROOT, NodeKind::Entity(Entity::new("teleport_zone"))).unwrap();
@@ -190,6 +185,44 @@ fn zones_export_as_zon() {
     let issues = p.validate(&map, "surf_test").unwrap();
     assert!(issues.iter().any(|i| i.error && i.node.is_none() && i.message.contains("info_player_start")), "{issues:?}");
     assert!(issues.iter().any(|i| i.node == Some(teleport) && i.message.contains("no Destination")), "issues point back at their node: {issues:?}");
+}
+
+/// A SurfsUp SDK scene comes in as brushes, zones and a material for its color.
+#[test]
+fn surfsup_imports_sdk_scenes() {
+    let host = Host::new().unwrap();
+    let Some(mut p) = load(&host, "surfsup", Vfs::default()) else { return };
+    let scene = r#"[gd_scene format=3]
+
+[sub_resource type="StandardMaterial3D" id="red"]
+albedo_color = Color(1, 0, 0, 1)
+
+[sub_resource type="BoxShape3D" id="box"]
+size = Vector3(4, 2, 4)
+
+[node name="Map" type="Node3D"]
+
+[node name="SpawnPoint" type="Marker3D" parent="."]
+
+[node name="Deck" type="CSGBox3D" parent="."]
+use_collision = true
+size = Vector3(4, 1, 4)
+material = SubResource("red")
+
+[node name="StartZone" type="Area3D" parent="."]
+
+[node name="Shape" type="CollisionShape3D" parent="StartZone"]
+shape = SubResource("box")
+"#;
+    assert!(p.manifest.importers.iter().any(|i| i.extensions.contains(&"pck".to_string())));
+    let imported = p.import("pck", "deck.tscn", scene.as_bytes(), &ctx()).unwrap();
+    let classes: Vec<&str> = imported.nodes.iter().filter_map(|n| n.kind.entity()).map(|e| e.classname.as_str()).collect();
+    assert_eq!(classes, ["info_player_start", "zone_start"]);
+    let deck = imported.nodes.iter().find(|n| matches!(&n.kind, NodeKind::Group(g) if g.name == "Deck")).unwrap();
+    let NodeKind::Brush(b) = &deck.children[0].kind else { panic!("the deck is not a brush") };
+    assert!(b.faces.iter().all(|f| f.material == "deck/red"));
+    assert_eq!(imported.materials.first().map(|m| (m.name.as_str(), &m.rgba[..4])), Some(("deck/red", &[255, 0, 0, 255][..])));
+    assert!(p.take_log().iter().any(|l| l.contains("2 brushes, 1 groups, 1 zones")));
 }
 
 /// A cached host compiles a plugin once; the next load reads the compiled code back.

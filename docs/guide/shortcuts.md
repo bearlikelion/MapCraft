@@ -1,25 +1,41 @@
 # Keyboard shortcuts
 
-Press `F1` in MapCraft for the full list, with a search box.
-Every menu item, panel, tool and toggle has a shortcut you can change, and no two actions share one in any preset.
-The UV editor's keys work only with the pointer over a UV editor, where they win over the same keys elsewhere.
-The Vertex tool's keys (select modes, Merge and Bevel) work only in the Vertex tool, where they win the same way.
+Every menu item, panel, tool and switch has a shortcut, and you can change any of them.
+Coming from Hammer or TrenchBroom? Pick their preset and your hands already know the keys.
+New to MapCraft? Start with [Hotkeys](hotkeys.md), the keys you will use every minute.
+Want them all at a glance? The [cheat sheet](hotkeys.md#every-key-on-one-page) fits every key on one page, ready to print.
+
+## See every shortcut
+
+Press `F1` for the list of every shortcut, with a search box.
+**Edit in Preferences** takes you straight to changing them.
+
+Menus and tooltips always show the key that is bound right now.
+
+![The Keyboard Shortcuts window with its search box and the File shortcuts at the top](img/shortcuts-f1.webp)
 
 ## Change a shortcut
 
-1. Open **Edit > Preferences** (`Ctrl+Comma`), or press **Edit in Preferences** in the `F1` list.
+1. Open **Edit > Preferences** (`Ctrl+Comma`).
 2. Pick a preset under **Shortcuts**: MapCraft, Hammer or TrenchBroom.
 3. Open **Key bindings** and type a chord such as `Ctrl+Shift+K` next to an action, or clear it to unbind the action.
-4. **Reset** returns an action to its preset's chord.
 
-Chords you type win over the preset, so they survive a preset switch.
-A chord MapCraft cannot read turns red.
-Menus and tooltips always show the chord that is bound right now.
+**Reset** next to an action returns it to its preset's key.
+
+![Preferences with the Shortcuts preset menu open on MapCraft, Hammer and TrenchBroom, and Key bindings below](img/shortcuts-preferences.webp)
+
+- Keys you type win over the preset, so they survive a preset switch.
+- A chord MapCraft cannot read turns red.
+- No two actions share a key in any preset.
+
+> [!NOTE]
+> Some keys only work in one place, where they win over the same key elsewhere.
+> The UV editor's keys work with the pointer over a UV editor, and the Vertex tool's keys (select modes, Merge and Bevel) work in the Vertex tool.
 
 ## All shortcuts
 
 These are the MapCraft preset's keys.
-The tables are generated from the editor's code, so they match the version the site was built from.
+The tables come straight from the editor's code, so they match the version this site was built from.
 
 <!-- shortcuts:start -->
 
@@ -32,6 +48,7 @@ The tables are generated from the editor's code, so they match the version the s
 | Save | `Ctrl+S` |
 | Save As | `Ctrl+Shift+S` |
 | SDK Settings | `Ctrl+Shift+Comma` |
+| Switch SDK | *none* |
 | SDK Manager | *none* |
 | Quit | `Ctrl+Q` |
 
@@ -219,6 +236,7 @@ These cannot be rebound.
 | Pick a face's material | `Alt+Click` |
 | Apply or wrap the picked material | `Alt+Right Click, Alt+Shift+Right Click` |
 | Fly the 3D camera | `Right Drag + WASD` |
+| Change the fly speed | `Right Drag + Scroll` |
 | Lock a UV grab or scale to U or V | `X, Y` |
 | Snap a UV grab, rotate or scale | `Ctrl` |
 | Apply a UV grab, rotate or scale | `Click, Enter` |
@@ -228,6 +246,8 @@ These cannot be rebound.
 | Cancel a bevel being sized | `Escape, Right Click` |
 | Move a 3D vertex handle up and down | `Shift+Drag` |
 | Add a third clip point that tilts the cut | `Click in the 3D view` |
+| Move a clip point | `Drag the point` |
+| Nudge the selection one grid step, or the picked handles in the Vertex tool | `Arrow keys` |
 
 ### Hammer and TrenchBroom presets
 

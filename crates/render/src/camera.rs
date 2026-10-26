@@ -71,16 +71,17 @@ impl Camera {
     pub fn view_proj(&self, size: DVec2) -> DMat4 {
         let aspect = (size.x / size.y.max(1.0)).max(1e-3);
         match self.view {
-            View::Perspective => perspective(self.fov_y.to_radians(), aspect, 1.0, WORLD_EXTENT * 4.0) * look_to(self.position, self.forward()),
+            // Near and far swap places for reversed depth.
+            View::Perspective => perspective(self.fov_y.to_radians(), aspect, WORLD_EXTENT * 4.0, 1.0) * look_to(self.position, self.forward()),
             _ => {
                 let (r, u, t) = self.view.axes();
                 let (sx, sy) = (2.0 * self.zoom / size.x.max(1.0), 2.0 * self.zoom / size.y.max(1.0));
                 let depth = 1.0 / (WORLD_EXTENT * 8.0);
                 // Rows map world to (right, up, toward-viewer) then scale into clip space.
                 DMat4::from_cols(
-                    DVec4::new(r.x * sx, u.x * sy, -t.x * depth, 0.0),
-                    DVec4::new(r.y * sx, u.y * sy, -t.y * depth, 0.0),
-                    DVec4::new(r.z * sx, u.z * sy, -t.z * depth, 0.0),
+                    DVec4::new(r.x * sx, u.x * sy, t.x * depth, 0.0),
+                    DVec4::new(r.y * sx, u.y * sy, t.y * depth, 0.0),
+                    DVec4::new(r.z * sx, u.z * sy, t.z * depth, 0.0),
                     DVec4::new(-self.center.x * sx, -self.center.y * sy, 0.5, 1.0),
                 )
             }
@@ -141,7 +142,7 @@ fn look_to(eye: DVec3, dir: DVec3) -> DMat4 {
     )
 }
 
-/// Right-handed perspective projection with wgpu's 0 to 1 depth range.
+/// Right-handed perspective projection with wgpu's 0 to 1 depth range, `near` mapping to 0.
 fn perspective(fov_y: f64, aspect: f64, near: f64, far: f64) -> DMat4 {
     let f = 1.0 / (fov_y / 2.0).tan();
     let r = far / (near - far);

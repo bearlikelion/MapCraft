@@ -11,7 +11,8 @@ pub const USAGE: &str = "  mapcraft-cli sdk list [--registry <url|path>] [--data
   mapcraft-cli sdk install <id> [--registry <url|path>] [--data <dir>]
   mapcraft-cli sdk remove <id> [--data <dir>]
   mapcraft-cli sdk package <dir> [--out <dir>] [--url <base>]
-  mapcraft-cli sdk new <dir> --id <id> --name <name>";
+  mapcraft-cli sdk new <dir> --id <id> --name <name>
+  mapcraft-cli sdk import-trenchbroom <trenchbroom game folder|godot project> [--out <dir>] [--data <dir>]";
 
 #[derive(Default)]
 struct Args {
@@ -127,6 +128,20 @@ pub fn run(args: &[String]) -> Result<bool, String> {
             let (id, name) = a.id.as_deref().zip(a.name.as_deref()).ok_or("sdk new needs --id and --name")?;
             let sdk = manager::create(Path::new(first(&a)?), id, name).map_err(err)?;
             println!("created {} in {}", sdk.manifest.name, sdk.dir.display());
+            Ok(true)
+        }
+        "import-trenchbroom" => {
+            let game = manager::TrenchBroomImport::read(Path::new(first(&a)?)).map_err(err)?;
+            let dir = match &a.out {
+                Some(dir) => dir.clone(),
+                None => user_dir(data)?.join(game.id()),
+            };
+            let sdks: Vec<PathBuf> = manager::installed(&manager::search_dirs(data, &[])).into_iter().map(|i| i.dir).collect();
+            let (sdk, notes) = game.write(&dir, &sdks).map_err(err)?;
+            for note in &notes {
+                println!("note: {note}");
+            }
+            println!("imported {} into {}", sdk.manifest.name, sdk.dir.display());
             Ok(true)
         }
         _ => Err(USAGE.to_string()),

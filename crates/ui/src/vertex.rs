@@ -190,10 +190,20 @@ impl MapCraftApp {
 
     /// Moves the dragged corners from `applied` to `total` off where they began; false when refused.
     pub(crate) fn drag_corners(&mut self, originals: &[(NodeId, Vec<DVec3>)], applied: DVec3, total: DVec3) -> bool {
+        self.shift_corners(originals, applied, total, "drag-vertex")
+    }
+
+    /// Moves the picked corners, edges or faces by `d`, as the arrow keys do.
+    pub(crate) fn nudge_components(&mut self, d: DVec3) {
+        let corners = self.selected_corners();
+        self.shift_corners(&corners, DVec3::ZERO, d, "nudge-vertex");
+    }
+
+    fn shift_corners(&mut self, originals: &[(NodeId, Vec<DVec3>)], applied: DVec3, total: DVec3, coalesce: &str) -> bool {
         let moves: Vec<(NodeId, Vec<(DVec3, DVec3)>)> =
             originals.iter().map(|(id, corners)| (*id, corners.iter().map(|o| (*o + applied, *o + total)).collect())).collect();
         self.mark_changed();
-        match self.session.move_corners(&moves, Some("drag-vertex")) {
+        match self.session.move_corners(&moves, Some(coalesce)) {
             Ok(()) => {
                 for c in &mut self.vertex.selected {
                     c.at += total - applied;

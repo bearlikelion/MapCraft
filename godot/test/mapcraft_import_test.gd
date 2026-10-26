@@ -3,6 +3,7 @@ extends SceneTree
 
 const MAP: String = "res://course.mcmap"
 const PACKED_MAP: String = "res://maps/course/course.scn"
+const ENTITY_MAP: String = "res://addons/mapcraft/sdks/surfsup.tres"
 const UNITS_PER_METER: float = 39.37
 
 var _failures: PackedStringArray = PackedStringArray()
@@ -18,6 +19,7 @@ func _initialize() -> void:
 		_check_imported(root)
 		root.free()
 	_check_runtime_build()
+	_check_runtime_load()
 	_check_pack(OS.get_cmdline_user_args())
 	for failure: String in _failures:
 		printerr("FAIL: ", failure)
@@ -39,6 +41,8 @@ func _check_imported(root: Node3D) -> void:
 		var shape: Node = start.get_child(0) if start.get_child_count() == 1 else null
 		_expect(shape is CollisionShape3D, "StartZone has its brush shape")
 		_expect(typeof(start.get_meta(&"course_id")) == TYPE_INT, "course_id is an int")
+		_expect(start.collision_layer == 0 and start.collision_mask == 2, \
+				"StartZone only sees the player layer")
 
 	var finish: Area3D = root.get_node_or_null("FinishZone") as Area3D
 	_expect(_zone_kind(finish) == "finish", "FinishZone is a finish zone")
@@ -46,6 +50,8 @@ func _check_imported(root: Node3D) -> void:
 	var teleport: Area3D = root.get_node_or_null("teleport_zone") as Area3D
 	var stage: String = teleport.get_meta(&"next_stage", "") if teleport != null else ""
 	_expect(stage == "dest1", "teleport names its destination")
+	var filter: Variant = teleport.get_meta(&"filter_name", null) if teleport != null else null
+	_expect(filter is String and filter == "7", "keys the entity map lists as strings stay text")
 	_expect(root.find_child("dest1", false, false) is Marker3D, "the destination is a Marker3D")
 
 	var booster: Area3D = root.get_node_or_null("zone_booster") as Area3D
@@ -61,8 +67,11 @@ func _check_imported(root: Node3D) -> void:
 	if mesh != null:
 		_check_checker_surface(mesh.mesh as ArrayMesh)
 	var body: StaticBody3D = root.get_node_or_null("WorldCollision") as StaticBody3D
-	_expect(body != null and body.get_child_count() == 9, "walls, detail, wedge and terrain collide")
-	_check_displacement(body)
+	var holder: CollisionShape3D = null
+	if body != null and body.get_child_count() == 1:
+		holder = body.get_child(0) as CollisionShape3D
+	_expect(holder != null and holder.shape is ConcavePolygonShape3D, \
+			"SurfsUp worlds collide as one triangle mesh")
 
 	for node: Node in root.find_children("*", "", true, false):
 		_expect(node.get_script() == null, "%s carries no script" % node.name)
@@ -123,6 +132,18 @@ func _check_runtime_build() -> void:
 	_expect(_entities_built == 8, "entity_built fires once per entity")
 	map.free()
 
+	var sdk: MapCraftEntityMap = load(ENTITY_MAP) as MapCraftEntityMap
+	var per_brush: MapCraftMap = MapCraftMap.new()
+	per_brush.map_file = MAP
+	per_brush.entity_map = sdk.duplicate() as MapCraftEntityMap
+	per_brush.entity_map.trimesh_collision = false
+	_expect(per_brush.build() == OK, "MapCraftMap builds with a convex shape per brush")
+	var brushes: StaticBody3D = per_brush.get_node_or_null("WorldCollision") as StaticBody3D
+	_expect(brushes != null and brushes.get_child_count() == 9, \
+			"walls, detail, wedge and terrain collide")
+	_check_displacement(brushes)
+	per_brush.free()
+
 	var solid: MapCraftMap = MapCraftMap.new()
 	solid.map_file = MAP
 	solid.trimesh_collision = true
@@ -137,6 +158,25 @@ func _check_runtime_build() -> void:
 		var faces: PackedVector3Array = (holder.shape as ConcavePolygonShape3D).get_faces()
 		_expect(faces.size() == 86 * 3, "faces hidden between touching brushes are left out")
 	solid.free()
+
+
+func _check_runtime_load() -> void:
+	var copy: String = "user://runtime_course.mcmap"
+	var file: FileAccess = FileAccess.open(copy, FileAccess.WRITE)
+	file.store_string(FileAccess.get_file_as_string(MAP))
+	file.close()
+	var packed: PackedScene = load(copy) as PackedScene
+	_expect(packed != null, "a .mcmap outside the project loads as a scene")
+	var root: Node = packed.instantiate() if packed != null else null
+	if root != null:
+		var start: Area3D = root.get_node_or_null("StartZone") as Area3D
+		_expect(_zone_kind(start) == "start", "the loaded map has its zones")
+		_expect(root.get_node_or_null("WorldEnvironment") is WorldEnvironment, \
+				"a map with no light_environment gets a sky")
+		var sun: DirectionalLight3D = root.get_node_or_null("Sun") as DirectionalLight3D
+		_expect(sun != null and (-sun.basis.z).y < 0.0, "the default sun shines down")
+		root.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(copy))
 
 
 func _check_pack(args: PackedStringArray) -> void:

@@ -26,6 +26,21 @@ impl Session {
     /// Puts imported nodes, already in map space, in a new layer named `name`.
     pub fn import_layer(&mut self, name: &str, frags: Vec<Fragment>) -> Result<NodeId, EngineError> {
         let mut e = self.map.edit();
+        // An imported `worldspawn` point entity carries the world's keys; the open map's own keys win.
+        let (worlds, frags): (Vec<Fragment>, Vec<Fragment>) = frags.into_iter().partition(|f| {
+            f.children.is_empty() && f.kind.entity().is_some_and(|x| matches!(f.kind, NodeKind::Entity(_)) && x.classname.eq_ignore_ascii_case("worldspawn"))
+        });
+        if let Some(NodeKind::World(mut world)) = e.node(mapcraft_map::ROOT).map(|n| n.kind.clone()) {
+            let before = world.properties.len();
+            for (key, value) in worlds.iter().filter_map(|f| f.kind.entity()).flat_map(|x| x.properties.iter()) {
+                if key != "classname" && key != "origin" && world.get(key).is_none() {
+                    world.set(key, value);
+                }
+            }
+            if world.properties.len() != before {
+                e.set_kind(mapcraft_map::ROOT, NodeKind::World(world))?;
+            }
+        }
         let layer = e.insert(mapcraft_map::ROOT, NodeKind::Layer(mapcraft_map::Layer { name: name.into(), ..Default::default() }))?;
         insert_fragments(&mut e, layer, frags, &DMat4::IDENTITY, true)?;
         let c = e.finish();
@@ -80,6 +95,28 @@ mod tests {
     fn bounds(s: &Session, group: NodeId) -> Aabb {
         let child = s.map.get(group).unwrap().children[0];
         s.map.get(child).unwrap().kind.brush().unwrap().bounds().unwrap()
+    }
+
+    /// An import's `worldspawn` fills in the world's keys without replacing the open map's own.
+    #[test]
+    fn imports_give_the_world_their_keys() {
+        let mut s = Session::default();
+        let mut world = s.map.get(mapcraft_map::ROOT).unwrap().kind.entity().unwrap().clone();
+        world.set("message", "Mine");
+        let mut e = s.map.edit();
+        e.set_kind(mapcraft_map::ROOT, NodeKind::World(world)).unwrap();
+        s.map.apply(e.finish());
+        let mut imported = mapcraft_map::Entity::new("worldspawn");
+        imported.set("message", "Theirs");
+        imported.set("_sunlight", "300");
+        let mut frags = block(32.0);
+        frags.push(Fragment { kind: NodeKind::Entity(imported), children: Vec::new() });
+        let layer = s.import_layer("map", frags).unwrap();
+        let world = s.map.get(mapcraft_map::ROOT).unwrap().kind.entity().unwrap();
+        assert_eq!((world.get("message"), world.get("_sunlight")), (Some("Mine"), Some("300")));
+        assert_eq!(s.map.get(layer).unwrap().children.len(), 1, "the world's keys are not placed as an entity");
+        s.undo();
+        assert!(s.map.get(mapcraft_map::ROOT).unwrap().kind.entity().unwrap().get("_sunlight").is_none(), "one undo takes them back");
     }
 
     #[test]

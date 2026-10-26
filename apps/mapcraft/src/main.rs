@@ -23,8 +23,9 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([800.0, 500.0])
         .with_app_id("mapcraft")
-        // A screenshot run must not take the user's keyboard focus.
-        .with_active(options.screenshot.is_none());
+        // A screenshot run must not take the user's keyboard focus or fill their screen.
+        .with_active(options.screenshot.is_none())
+        .with_maximized(options.screenshot.is_none());
     match eframe::icon_data::from_png_bytes(ICON) {
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("window icon: {e}"),

@@ -5,6 +5,7 @@
 mod export;
 mod import;
 mod map;
+mod model;
 mod wad;
 
 use mapcraft::plugin::host;
@@ -37,6 +38,7 @@ impl Guest for Quake {
             importers: vec![ImporterSpec { id: "map".into(), label: "Quake map".into(), extensions: vec!["map".into()] }],
             exporters: vec![ExporterSpec { id: "map".into(), label: "Quake map (Valve220)".into(), extensions: vec!["map".into()] }],
             validates: false,
+            models: vec!["mdl".into(), "bsp".into()],
         }
     }
 
@@ -81,6 +83,33 @@ impl Guest for Quake {
         }
         Ok(pictures.into_iter().map(|(name, p)| import::material(name, p)).collect())
     }
+    fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
+        let library = wad::Library::open(&HostFiles, "");
+        let wanted = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        let (mut pictures, failed) = library.pictures(&HostFiles, Some(&wanted));
+        for line in failed.iter().take(10) {
+            host::log(&format!("Quake textures: {line}"));
+        }
+        names.iter().map(|n| pictures.remove(&n.to_ascii_lowercase()).map(|p| Image { width: p.width, height: p.height, rgba: p.rgba })).collect()
+    }
+
+    fn load_model(path: String) -> Result<Model, String> {
+        use mapcraft::plugin::types::{ModelPart, Vec3};
+        let m = model::load(&HostFiles, &path)?;
+        let textures = m.textures.into_iter().map(|p| Image { width: p.width, height: p.height, rgba: p.rgba }).collect();
+        let parts = m
+            .parts
+            .into_iter()
+            .map(|p| ModelPart {
+                texture: Some(p.texture as u32),
+                positions: p.positions.into_iter().map(|[x, y, z]| Vec3 { x, y, z }).collect(),
+                uvs: p.uvs.into_iter().map(|[u, v]| (u, v)).collect(),
+                indices: p.indices,
+            })
+            .collect();
+        Ok(Model { parts, textures })
+    }
+
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
     }

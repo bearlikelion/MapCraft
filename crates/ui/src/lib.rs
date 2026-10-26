@@ -5,8 +5,10 @@
 mod app;
 mod chrome;
 mod context_menu;
+mod control;
 mod curves;
 mod dialogs;
+mod drop;
 mod measure;
 mod models;
 mod panels;

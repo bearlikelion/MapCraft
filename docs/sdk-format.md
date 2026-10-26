@@ -17,6 +17,7 @@ my-game/
 
 File > SDK Manager… lists every SDK MapCraft found, checks them, installs more from registries and makes new ones from a template.
 `mapcraft-cli sdk new <dir> --id <id> --name <name>` writes the same template.
+`mapcraft-cli sdk import-trenchbroom <folder>` makes an SDK from a TrenchBroom game or a Godot project using func_godot, as described in [`trenchbroom-import.md`](trenchbroom-import.md).
 Publishing an SDK to a registry is described in [`sdk-registry.md`](sdk-registry.md).
 
 ## Example
@@ -77,6 +78,8 @@ steps = [
 | `textures.extensions` | File types that count as materials |
 | `textures.default` | Material for new brushes |
 | `textures.scale` | Texture scale for new faces |
+| `textures.pixelated` | `true` draws textures without smoothing when magnified, as Quake and other early 3D games do; off by default |
+| `textures.sky` | Material name prefixes, such as `["sky"]` for Quake, whose pictures hold a far layer on the right half and a near layer on the left with clear pixels; faces with them show the sky projected from the view direction, as Quake draws it |
 | `models.roots` | Folders glTF model paths are relative to; empty uses `textures.roots` |
 | `models.class` | Point entity class the Models tab places models with; unset, models can be previewed but not placed |
 | `models.key` | The key that holds a model's path, `model` by default |

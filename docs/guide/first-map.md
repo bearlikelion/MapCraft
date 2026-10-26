@@ -1,115 +1,144 @@
 # Your first map
 
-This walkthrough builds a small surf course with the SurfsUp SDK, saves it and sends it to the game.
-Keys are the MapCraft preset's defaults; see [Keyboard shortcuts](shortcuts.md).
+Build a small surf course with the SurfsUp SDK, save it, and play it in the game.
+Every step has a picture; the orange numbers on each picture match the numbered steps.
 
-## Start a map
+## 1. Start a new map
 
 1. Choose **File > New Map** (`Ctrl+N`).
-2. Pick **SurfsUp** in the SDK list and click **Create**.
+2. Pick **SurfsUp** in the SDK list.
+3. Click **Create**.
 
-If the current map has unsaved changes, MapCraft asks whether to save them first.
+If your current map has unsaved changes, MapCraft asks whether to save them first.
 When MapCraft starts without a file, it opens a new map with the SDK you used last.
 
-## SDK Settings opens by itself
+![The New Map window with the SDK list open: None, Counter-Strike: Source, Quake and SurfsUp](img/first-new-map.webp)
 
-The SurfsUp SDK reads its materials from the `Assets/Textures` folder of your SurfsUp Godot project, so it cannot list any until it knows where that project is.
-While such a path is unset, **SDK Settings** opens on its own and the status bar says which path to set.
+## 2. Tell it where your game is
+
+The SurfsUp SDK takes its materials from your SurfsUp Godot project.
+Until it knows where that is, **SDK Settings** opens by itself.
 
 1. Click **Browse** next to **SurfsUp Godot project folder** and pick the project folder.
-2. Click **Apply**, or just close the window: closing applies the change too.
+2. Click **Apply**, or just close the window.
 
-A path that does not exist shows in red.
-The other paths (Godot editor, game, Maps folder, Counter-Strike: Source folder) only matter for the Run menu and for BSP import, so you can set them later with **File > SDK Settings** (`Ctrl+Shift+Comma`).
-See [SDKs and plugins](sdks-and-plugins.md#sdk-settings) for what each one is for.
+A path that does not exist turns red.
+The other folders are only needed to play the map and to import BSP maps, so you can fill them in later with **File > SDK Settings** (`Ctrl+Shift+Comma`).
 
-## Draw a block
+![SurfsUp SDK Settings with five empty paths, a Browse button marked 1 next to the project folder and Apply marked 2](img/first-sdk-settings.webp)
+
+## 3. Draw a block
 
 1. Press `B` for the Block tool.
 2. Drag a rectangle in the Top view.
 
-The new block takes the depth of the last brush you drew (64 units at first) and the material shown in the top bar.
-In the 3D view you can drag on the ground or on any face instead, holding `Shift` to drag the height.
-Pick another material in the Materials tab (`Ctrl+3`), and double-click one to put it on the selection.
-See [Tools](tools.md), [Views and navigation](views.md) and [Materials](materials.md) for the details.
+The first block is 64 units deep; later blocks match the depth of the last one you drew.
+It gets the material shown in the top bar.
+In the 3D view you can drag on the ground or on any face instead; hold `Shift` while dragging to set the height.
 
-## Place a surf ramp
+> [!TIP]
+> To change the material, open the Materials tab (`Ctrl+3`) and click one: the selected block gets it right away. See [Materials](materials.md).
 
-With the Block tool active, the top bar lists the plain shapes followed by the SDK's generators: **Surf Ramp**, **Bhop Platforms**, **Surf Window** and **Surf Stage**.
+![The Block tool marked 1 and a new orange block drawn in the Top view, marked 2, also shown in the 3D view](img/first-block.webp)
 
-1. Click **Surf Ramp**.
-   Its parameters appear in the inspector and a ghost of the ramp follows the pointer.
+## 4. Place a surf ramp
+
+With the Block tool on, the top bar lists the shapes, then **Surf Ramp** and **Bhop Platforms**.
+
+1. Click **Surf Ramp**. A yellow ghost of the ramp follows the pointer.
 2. Set **Turn**, or click **90°** for a quarter turn.
-3. Click in a view to place it: on the ground or a face in the 3D view, or at the last brush's depth in a 2D view.
+3. Click in a view to place it.
 
-The placed ramp is a group that remembers its parameters.
-Press `Q` for the Select tool, click the ramp (in the default **Groups** selection mode) and change any parameter in the inspector: the ramp is rebuilt as you type.
-[Surf mapping](../surf-mapping.md) explains each parameter and the angles that keep a ramp surfable.
+![Surf Ramp picked in the top bar (1), the 90° turn button (2) and the yellow ghost of the ramp in the Top view (3), with the ramp's settings in the inspector](img/first-ramp.webp)
 
-**Surf Stage** is a quick way to start a course: it makes start and end platforms with their zones, an arrival point and a kill zone under the stage.
+### Change it later
 
-## Add a spawn
+The ramp remembers its settings.
+Press `Q` for the Select tool, click the ramp, and change anything in the inspector: the ramp rebuilds as you type.
+[Surf ramps and bhop](surf.md) explains each setting.
 
-1. Press `N` for the Entity tool.
-   It places `info_player_start` until you pick another class in the Entities tab.
+![A placed surf ramp selected, with its Surf Ramp parameters outlined in the inspector](img/first-ramp-edit.webp)
+
+## 5. Add a spawn
+
+1. Press `N` for the Entity tool. It places `info_player_start`, the spawn point.
 2. Click on top of your start platform in the 3D view.
 
-The spawn becomes the game's spawn point.
-See [Entities and zones](entities.md) for the inspector and the other classes.
+To place something else, click its class in the Entities tab first. See [Entities and zones](entities.md).
 
-## Add zones
+![The Entity tool marked 1 and a new info_player_start box on top of a platform, marked 2, with "Where the player spawns" in the inspector](img/first-spawn.webp)
+
+## 6. Add start and finish zones
 
 1. Open the Entities tab (`Ctrl+4`) and click `zone_start`.
 2. Select the start platform.
 3. Choose **Tools > Zone from Selection**.
 
 The zone covers the platform's top and stands 256 units tall.
-Do the same with `zone_finish` on the last platform.
+Do the same with `zone_finish` on your last platform.
 
+![zone_start clicked in the Entities tab (1), a platform with a red see-through zone on top of it (2), and the Tools menu (3)](img/first-zone.webp)
 
-## Save
+## 7. Save
 
 Press `Ctrl+S`.
-The first save asks where to put the map; MapCraft maps are `.mcmap` files.
+The first save asks where to put the map; maps are `.mcmap` files.
 **File > Save As** (`Ctrl+Shift+S`) saves a copy under a new name.
 The window title starts with `*` while there are unsaved changes.
 
-## Autosave and crash recovery
+### Open it again
 
-- Every 5 minutes, while there are unsaved changes, MapCraft writes `<map name>.autosave.mcmap` (`untitled` for a new map) into the `autosave` folder of its data folder: `~/.local/share/mapcraft/autosave` on Linux.
-- Change the interval with **Autosave every** in **Edit > Preferences** (`Ctrl+Comma`); 0 turns autosave off.
-- Saving the map, or quitting normally, deletes its autosave.
+- **File > Open** (`Ctrl+O`) opens a map, and **File > Open Recent** lists the last ones you opened.
+- Drag a `.mcmap` file from your file manager onto the MapCraft window to open it.
+- Drop any file a loaded plugin imports, such as a Quake `.map` or a Hammer `.vmf`, and it goes into a new layer of the open map, as **File > Import** does.
 
-If MapCraft did not close cleanly, the next start shows **Recover unsaved work?** with the autosaves it found, newest first.
+While you drag a file over the window, it dims and says what dropping will do.
+A file MapCraft cannot open leaves the map as it is and says so in the status bar.
+If the open map has unsaved changes, MapCraft asks whether to save them first.
 
-- **Open** loads one as an untitled map with unsaved changes, so the next save asks for a name.
-- **Delete autosaves** removes them all.
-- **Not now** closes the prompt and leaves the files where they are.
+### Autosave and crash recovery
 
-## Check for problems
+MapCraft saves a backup every 5 minutes while you have unsaved changes.
+If it ever closes without saving, the next start asks **Recover unsaved work?**:
 
-Press `Alt+P`, choose **Tools > Check for Problems**, or click **Check** at the right of the top bar.
-The Issues tab opens below the views with errors in red and warnings in yellow.
+- **Open** loads the backup as an unsaved map.
+- **Delete autosaves** throws the backups away.
+- **Not now** keeps them for later.
 
-- Click an issue to select the object and focus the views on it.
-- **Fix** repairs one issue and **Fix all** repairs every fixable one, as one undo step.
+Change the interval with **Autosave every** in **Edit > Preferences**; 0 turns autosave off.
+Saving the map, or quitting normally, deletes its backup.
+Backups live in the `autosave` folder of MapCraft's data folder: `~/.local/share/mapcraft/autosave` on Linux, `%LOCALAPPDATA%\mapcraft\autosave` on Windows.
+
+## 8. Check for problems
+
+Press `Alt+P`, or click **Check** at the right of the top bar.
+The Issues tab opens below the views: errors in red, warnings in yellow.
+
+- Click an issue to select the object and look at it.
+- **Fix** repairs one issue, and **Fix all** repairs every one it can, as one undo step.
 - **Check again** runs the checks once more.
 
-## Run it
+![The Check button marked 1, and the Issues tab below the views listing two yellow warnings about zones shorter than 256 units](img/first-check.webp)
 
-The **Run** menu, and the **Run** button at the right of the top bar, list the SDK's compile profiles.
-The SurfsUp SDK has **Import into Godot**, **Build map pack** and **Build and play**.
+## 9. Play it
 
-- Running a profile saves the map first.
-- The first time you run anything from an SDK, MapCraft asks **Run this SDK's programs?**; click **Allow** if you trust the SDK, and MapCraft remembers it.
-- Progress shows in the Output panel.
-- `F9` runs the last profile again, `Shift+F9` cancels a running one.
+Open the **Run** menu, or click **Run** at the right of the top bar, and pick a profile:
 
-The SurfsUp profiles need the MapCraft addon in your Godot project and a few paths in SDK Settings: see [The Godot workflow](godot.md).
+- **Play in SurfsUp project** runs the map in your SurfsUp Godot project.
+- **Play in SurfsUp** runs it in the installed game.
+
+Running saves the map first.
+The first time, MapCraft asks **Run this SDK's programs?**; click **Allow** if you trust the SDK.
+Progress shows in the Output panel.
+`F9` runs the last profile again, and `Shift+F9` stops it.
+
+Both profiles need the MapCraft addon in the game and a few more folders in SDK Settings: see [Play it in Godot](godot.md).
+
+![The Run menu open with Play in SurfsUp project and Play in SurfsUp outlined, then Run Last Profile and Cancel](img/first-run.webp)
 
 ## Where next
 
-- [Organizing](organizing.md): groups, layers, the scene tree, tags and cordons.
-- [Mirror groups](mirror-groups.md): build half a map and get the other half for free.
-- [Prefabs](prefabs.md): reuse pieces across maps.
-- [Importing BSP maps](importing-bsp.md): zone an existing Counter-Strike: Source surf map.
+- [Getting around](views.md): fly the 3D camera, maximize a view, set the grid.
+- [Surf ramps and bhop](surf.md): curves, spirals and bhop platforms.
+- [Organizing](organizing.md): groups, layers and the scene tree.
+- [Import a BSP map](importing-bsp.md): zone an existing Counter-Strike: Source surf map.

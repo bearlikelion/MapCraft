@@ -34,6 +34,7 @@ impl Guest for SourceBsp {
             importers: vec![ImporterSpec { id: "bsp".into(), label: "Source BSP".into(), extensions: vec!["bsp".into()] }],
             exporters: Vec::new(),
             validates: false,
+            models: Vec::new(),
         }
     }
 
@@ -68,6 +69,14 @@ impl Guest for SourceBsp {
     fn export_file(exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
         Err(format!("unknown exporter {exporter}"))
     }
+    fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
+        names.iter().map(|_| None).collect()
+    }
+
+    fn load_model(path: String) -> Result<Model, String> {
+        Err(format!("this plugin reads no models: {path}"))
+    }
+
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
     }

@@ -212,6 +212,7 @@ impl MapCraftApp {
         let mode = match (mods.command, mods.alt) {
             (true, true) => ExtrudeMode::Stamp,
             (true, false) => ExtrudeMode::Split,
+            _ if self.extrude_along_normal => ExtrudeMode::AlongNormal,
             _ => ExtrudeMode::Resize,
         };
         let faces = hover.faces.iter().filter_map(|(id, f)| Some((*id, self.session.map.get(*id)?.kind.brush()?.clone(), *f))).collect();

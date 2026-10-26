@@ -1,11 +1,12 @@
 //! The SDK manager's headless half: finding installed SDKs, registries, installing and removing,
-//! packaging, new SDKs from the template, and checks.
+//! packaging, new SDKs from the template or a TrenchBroom game, and checks.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod check;
 mod install;
 mod registry;
+mod trenchbroom;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use mapcraft_sdk::{Sdk, SdkError};
 pub use check::{Item, Level, check, samples, worst};
 pub use install::{create, extract, install, install_archive, package, sha256_hex, uninstall};
 pub use registry::{DEFAULT_REGISTRY, Entry, FORMAT, Registry, VERSION, fetch, fetch_registry};
+pub use trenchbroom::TrenchBroomImport;
 
 /// This MapCraft's version, compared with an entry's `min_mapcraft`.
 pub const MAPCRAFT_VERSION: &str = env!("CARGO_PKG_VERSION");

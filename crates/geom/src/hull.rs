@@ -70,7 +70,8 @@ pub fn convex_hull(points: &[DVec3]) -> Option<Vec<[DVec3; 3]>> {
         faces.extend(horizon.into_iter().map(|(a, e)| [a, e, i]));
     }
 
-    // Merge coplanar triangles into one plane each.
+    // Merge coplanar triangles into one plane each, judged by their corners: far from the origin a
+    // tiny tilt moves a plane's distance by more than the tolerance.
     let mut out: Vec<(Plane, [DVec3; 3])> = Vec::new();
     for f in &faces {
         let (n, dist) = plane(f, &pts);
@@ -78,7 +79,7 @@ pub fn convex_hull(points: &[DVec3]) -> Option<Vec<[DVec3; 3]>> {
             continue;
         }
         let p = Plane { normal: n, dist };
-        if out.iter().any(|(q, _)| q.approx_eq(&p, EPSILON)) {
+        if out.iter().any(|(q, _)| q.normal.dot(n) > 1.0 - EPSILON && f.iter().all(|&k| q.distance(pts[k]).abs() <= EPSILON)) {
             continue;
         }
         // Reversed so the points run clockwise seen from outside.
@@ -107,6 +108,23 @@ mod tests {
     fn volume(planes: &[[DVec3; 3]]) -> f64 {
         let planes: Vec<Plane> = planes.iter().map(|p| Plane::from_points(p[0], p[1], p[2]).unwrap()).collect();
         Solid::from_planes(&planes).unwrap().volume()
+    }
+
+    /// A barely twisted side far from the origin splits into two triangles whose planes differ in
+    /// distance by more than the tolerance; they still make one face.
+    #[test]
+    fn far_twisted_prism_has_volume() {
+        let pts = [
+            DVec3::new(-11.0236, 5012.839155456906, -1156.1988059226474),
+            DVec3::new(11.0236, 5012.839155456906, -1156.1988059226474),
+            DVec3::new(0.0, 5015.469276057457, -1139.8739194364705),
+            DVec3::new(-11.0236, 5148.055643845252, -1176.6054358167867),
+            DVec3::new(11.0236, 5148.055643845252, -1176.6054358167867),
+            DVec3::new(0.0, 5150.363721539663, -1160.2319135776177),
+        ];
+        let hull = convex_hull(&pts).unwrap();
+        assert_eq!(hull.len(), 5);
+        assert!(volume(&hull) > 20_000.0);
     }
 
     #[test]

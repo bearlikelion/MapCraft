@@ -62,6 +62,11 @@ pub enum Drag {
     Clip {
         view: usize,
     },
+    /// Moving one of `clip_points`.
+    ClipPoint {
+        view: usize,
+        point: usize,
+    },
     /// A sculpt stroke; flatten levels toward `level`, where it began.
     Sculpt {
         view: usize,
@@ -350,6 +355,58 @@ impl MapCraftApp {
         }
     }
 
+    /// Keeps the bigger part of the selected brushes, since a fresh cut usually trims a corner off.
+    fn choose_clip_side(&mut self) {
+        use mapcraft_engine::ClipKeep as K;
+        let Some(plane) = self.clip_plane() else { return };
+        let volume = |b: Option<mapcraft_map::Brush>| b.and_then(|b| b.solid().ok()).map_or(0.0, |s| s.volume());
+        let (mut front, mut back) = (0.0, 0.0);
+        for id in self.session.selected_brushes().into_iter().take(64) {
+            let Some(b) = self.session.map.get(id).and_then(|n| n.kind.brush()) else { continue };
+            let Ok((f, k)) = b.split(plane, &self.session.tex) else { continue };
+            front += volume(f);
+            back += volume(k);
+        }
+        self.clip_keep = if front >= back { K::Front } else { K::Back };
+    }
+
+    /// The clip point drawn under the pointer in view `index`, if any.
+    fn clip_handle_at(&self, index: usize, rect: Rect, pos: Pos2) -> Option<usize> {
+        let cam = self.panes.get(index)?.camera;
+        let size = dvec(rect.size());
+        let screen = |p: DVec3| cam.project(p, size).map(|q| rect.min + Vec2::new(q.x as f32, q.y as f32));
+        self.clip_points
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| Some((i, screen(*p)?.distance(pos))))
+            .filter(|(_, d)| *d <= 8.0)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// The clip points as square handles, with their coordinates in the 2D views.
+    fn draw_clip_points(&self, ui: &egui::Ui, index: usize, rect: Rect) {
+        let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|_| self.tool == Tool::Clip) else { return };
+        let painter = ui.painter_at(rect);
+        let (r, u, _) = cam.view.axes();
+        let (ri, ui_) = (r.abs().max_position(), u.abs().max_position());
+        for p in &self.clip_points {
+            let Some(q) = cam.project(*p, dvec(rect.size())) else { continue };
+            let c = rect.min + Vec2::new(q.x as f32, q.y as f32);
+            painter.rect(
+                Rect::from_center_size(c, Vec2::splat(8.0)),
+                1.0,
+                Color32::from_rgb(255, 255, 51),
+                Stroke::new(1.0, Color32::BLACK),
+                egui::StrokeKind::Middle,
+            );
+            if cam.is_2d() {
+                let text = format!("{} {}", crate::measure::units(p[ri]), crate::measure::units(p[ui_]));
+                crate::measure::label(&painter, c + Vec2::new(8.0, -8.0), egui::Align2::LEFT_BOTTOM, text);
+            }
+        }
+    }
+
     pub(crate) fn apply_clip(&mut self) {
         let Some(points) = self.clip_plane() else { return };
         if let Err(e) = self.session.clip(points, self.clip_keep) {
@@ -359,14 +416,31 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    fn overlay_lines(&self) -> Vec<LineVertex> {
+    /// The block being dragged out, drawn as the shape it will make inside a faint box.
+    fn shape_ghost(&self, out: &mut Vec<LineVertex>, b: Aabb) {
+        if self.shape == mapcraft_engine::Shape::Block {
+            box_lines(out, b.min, b.max, PREVIEW);
+            return;
+        }
+        box_lines(out, b.min, b.max, [PREVIEW[0], PREVIEW[1], PREVIEW[2], 0.3]);
+        for brush in self.shape.brushes(b, &self.session.tex).unwrap_or_default() {
+            let Ok(solid) = brush.solid() else { continue };
+            for w in solid.faces.iter().flatten() {
+                for (i, p) in w.0.iter().enumerate() {
+                    out.push(LineVertex::new(*p, PREVIEW));
+                    out.push(LineVertex::new(w.0[(i + 1) % w.0.len()], PREVIEW));
+                }
+            }
+        }
+    }
+
+    fn overlay_lines(&self, flat: bool) -> Vec<LineVertex> {
         let mut out = Vec::new();
         if let Drag::Block { start, end, .. } = &self.drag {
-            let b = self.block_box(*start, *end);
-            box_lines(&mut out, b.min, b.max, PREVIEW);
+            self.shape_ghost(&mut out, self.block_box(*start, *end));
         }
         if let Some(b) = self.block_3d_box() {
-            box_lines(&mut out, b.min, b.max, PREVIEW);
+            self.shape_ghost(&mut out, b);
         }
         if let (Tool::Clip, [a, b, c]) = (self.tool, &self.clip_points[..]) {
             out.extend([a, b, b, c, c, a].map(|p| LineVertex::new(*p, PREVIEW)));
@@ -391,7 +465,7 @@ impl MapCraftApp {
                 let Ok((front, back)) = brush.split(plane, &self.session.tex) else { continue };
                 for (part, kept) in [(front, self.clip_keep != K::Back), (back, self.clip_keep != K::Front)] {
                     let Some(solid) = part.and_then(|p| p.solid().ok()) else { continue };
-                    let color = if kept { PREVIEW } else { [0.45, 0.05, 0.05, 1.0] };
+                    let color = if kept { PREVIEW } else { [0.95, 0.22, 0.18, 1.0] };
                     for w in solid.faces.iter().flatten() {
                         for (i, p) in w.0.iter().enumerate() {
                             out.push(LineVertex::new(*p, color));
@@ -422,7 +496,7 @@ impl MapCraftApp {
         for c in self.session.map.cordons.iter().filter(|c| c.active) {
             box_lines(&mut out, c.bounds.min, c.bounds.max, [0.3, 0.6, 1.0, 1.0]);
         }
-        if let Some((low, high)) = self.project.game.map_size.filter(|(low, high)| low < high) {
+        if let Some((low, high)) = self.project.game.map_size.filter(|(low, high)| flat && low < high) {
             box_lines(&mut out, DVec3::splat(low as f64), DVec3::splat(high as f64), [0.7, 0.25, 0.25, 1.0]);
         }
         if let Some(h) = &self.extrude_hover {
@@ -609,7 +683,7 @@ impl MapCraftApp {
         }
         let ppp = ui.ctx().pixels_per_point();
         let px = [(rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32];
-        let overlay = self.overlay_lines();
+        let overlay = self.overlay_lines(self.panes.get(index).is_some_and(|p| p.camera.is_2d()));
         let grid = self.view_grid(index);
         let mode = self.render_mode;
         if let (Some(gpu), Some(pane)) = (&mut self.gpu, self.panes.get_mut(index)) {
@@ -659,6 +733,7 @@ impl MapCraftApp {
         }
         self.draw_transform_gizmos(ui, index, rect);
         self.draw_measurements(ui, index, rect);
+        self.draw_clip_points(ui, index, rect);
         self.draw_snap_mark(ui, index, rect);
     }
 
@@ -962,6 +1037,7 @@ impl MapCraftApp {
                         self.clip_view_axis = Some(t);
                     }
                     self.clip_points.push(p);
+                    self.choose_clip_side();
                 }
             }
             Tool::Path => {}
@@ -985,6 +1061,10 @@ impl MapCraftApp {
             return;
         }
         if self.tool == Tool::Clip {
+            if let Some(point) = self.clip_handle_at(index, rect, pos) {
+                self.drag = Drag::ClipPoint { view: index, point };
+                return;
+            }
             if let Some((p, t)) = self.clip_point(index, rect, pos) {
                 self.clip_points = vec![p, p];
                 self.clip_view_axis = Some(t);
@@ -1082,6 +1162,24 @@ impl MapCraftApp {
                     && let Some(end) = self.clip_points.get_mut(1)
                 {
                     *end = p;
+                    self.choose_clip_side();
+                }
+            }
+            Drag::ClipPoint { view, point } if view == index => {
+                let old = self.clip_points.get(point).copied();
+                let moved = if cam.is_2d() {
+                    // Points keep their depth, so a point placed in another view stays put along this one.
+                    let depth = cam.view.axes().2.abs().max_position();
+                    self.snapped_plane_point(index, pos, rect).zip(old).map(|(mut p, old)| {
+                        p[depth] = old[depth];
+                        p
+                    })
+                } else {
+                    self.clip_point(index, rect, pos).map(|(p, _)| p)
+                };
+                if let (Some(p), Some(slot)) = (moved, self.clip_points.get_mut(point)) {
+                    *slot = p;
+                    self.choose_clip_side();
                 }
             }
             Drag::Rotate { view, .. } if view == index => self.update_rotate(index, rect, pos),
@@ -1270,7 +1368,9 @@ impl MapCraftApp {
                 d -= u * g;
             }
         });
-        if d != DVec3::ZERO && !self.session.selection.is_empty() {
+        if d != DVec3::ZERO && self.tool == Tool::Vertex && !self.vertex.selected.is_empty() {
+            self.nudge_components(d);
+        } else if d != DVec3::ZERO && !self.session.selection.is_empty() {
             if let Err(e) = self.session.translate_selection(d, Some("nudge")) {
                 self.status = e.to_string();
             }
@@ -1309,13 +1409,22 @@ impl MapCraftApp {
             let (r, up) = (cam.right(), cam.right().cross(cam.forward()));
             cam.position += (-r * f64::from(d.x) + up * f64::from(d.y)) * 2.0;
         }
-        if response.hovered() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                cam.position += cam.forward() * f64::from(scroll) * 2.0;
-            }
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        // Shift turns the wheel into a sideways scroll, and Shift is held for flying fast.
+        let fly_scroll = ui.input(|i| if i.smooth_scroll_delta.y != 0.0 { i.smooth_scroll_delta.y } else { i.smooth_scroll_delta.x });
+        if fly_scroll != 0.0 && looking {
+            let speed = fly_speed_scrolled(speed, fly_scroll);
+            self.prefs.update(|p| p.view.fly_speed = speed);
+            self.status = format!("Fly speed {speed:.0} units/s");
+        } else if scroll != 0.0 && response.hovered() {
+            cam.position += cam.forward() * f64::from(scroll) * 2.0;
         }
     }
+}
+
+/// The fly speed after scrolling while flying, as Godot's freelook does; the range matches Preferences.
+fn fly_speed_scrolled(speed: f64, scroll: f32) -> f64 {
+    (speed * (f64::from(scroll) / 250.0).exp()).clamp(16.0, 8192.0)
 }
 
 /// Maps box `from` onto box `to`.
@@ -1331,4 +1440,17 @@ pub(crate) fn box_transform(from: &Aabb, to: &Aabb) -> DMat4 {
 
 fn wgpu_filter() -> eframe::wgpu::FilterMode {
     eframe::wgpu::FilterMode::Linear
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrolling_while_flying_scales_the_speed_within_range() {
+        assert!(fly_speed_scrolled(512.0, 50.0) > 512.0);
+        assert!(fly_speed_scrolled(512.0, -50.0) < 512.0);
+        assert_eq!(fly_speed_scrolled(8000.0, 5000.0), 8192.0);
+        assert_eq!(fly_speed_scrolled(20.0, -5000.0), 16.0);
+    }
 }

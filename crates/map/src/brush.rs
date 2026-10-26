@@ -425,6 +425,26 @@ impl Brush {
         (solid.faces.iter().all(Option::is_some) && solid.volume() > EPSILON).then_some(b)
     }
 
+    /// Face `id` pushed `distance` along its normal keeping its shape: outward the brush gains the
+    /// volume the face sweeps through, with new sides square to it; inward it is cut at the moved face.
+    pub fn sweep_face(&self, id: FaceId, distance: f64) -> Option<Self> {
+        if distance <= 0.0 {
+            return self.extrude_face(id, distance);
+        }
+        let solid = self.solid().ok()?;
+        let i = self.faces.iter().position(|f| f.id == id)?;
+        let face = self.faces.get(i)?;
+        let n = face.plane()?.normal;
+        let mut pts: Vec<DVec3> = solid.vertices().collect();
+        pts.extend(solid.faces.get(i)?.as_ref()?.0.iter().map(|p| *p + n * distance));
+        let tex = TexDefaults { material: face.material.clone(), scale: face.u.scale };
+        let mut b = Self::from_vertices(&pts, &self.faces, &tex).ok()?;
+        let moved = b.faces.iter_mut().find(|f| f.plane().is_some_and(|p| p.normal.dot(n) > 1.0 - 1e-9))?;
+        *moved = Face { points: moved.points, ..face.clone() };
+        let solid = b.solid().ok()?;
+        (solid.volume() > EPSILON).then_some(b)
+    }
+
     /// A new brush between face `id` and a copy of it moved `distance` along its normal
     /// (TrenchBroom's stamp); faces keep the textures of the planes they share with this brush.
     pub fn stamp_face(&self, id: FaceId, distance: f64) -> Option<Self> {
@@ -819,6 +839,26 @@ mod tests {
         assert!(w.extrude_face(bottom, 16.0).is_some());
         let stamp = b.stamp_face(top, 16.0).unwrap();
         assert_eq!(stamp.bounds().unwrap(), Aabb::new(DVec3::new(0.0, 0.0, 64.0), DVec3::new(64.0, 64.0, 80.0)));
+    }
+
+    /// TrenchBroom's face drag: the sloped face of a wedge moves out keeping its shape, and the
+    /// wedge grows by the slab it sweeps instead of stretching its other faces.
+    #[test]
+    fn sweep_keeps_the_face_shape() {
+        let mut w = Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap();
+        for (i, f) in w.faces.iter_mut().enumerate() {
+            f.id = FaceId(i as u64 + 1);
+            f.u.offset = 7.0;
+        }
+        let slope = w.faces.iter().find(|f| f.plane().is_some_and(|p| p.normal.x > 0.1 && p.normal.z > 0.1)).unwrap().clone();
+        let area = 64.0 * 64.0 * 2f64.sqrt();
+        let swept = w.sweep_face(slope.id, 16.0).unwrap();
+        assert_eq!(swept.vertices().unwrap().len(), 10, "a wedge with a slab on its slope has five sides");
+        let gain = swept.solid().unwrap().volume() - w.solid().unwrap().volume();
+        assert!((gain - area * 16.0).abs() < 1e-6, "it grows by the face's area times the distance");
+        let moved = swept.faces.iter().find(|f| f.id == slope.id).unwrap();
+        assert_eq!((moved.u.offset, moved.material.as_str()), (7.0, slope.material.as_str()), "the moved face keeps its texture");
+        assert_eq!(w.sweep_face(slope.id, -8.0), w.extrude_face(slope.id, -8.0), "inward it cuts like a plain face drag");
     }
 
     #[test]

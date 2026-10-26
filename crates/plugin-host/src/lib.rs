@@ -76,6 +76,22 @@ pub struct Picture {
     pub rgba: Vec<u8>,
 }
 
+/// A model a plugin read, in map units around the entity's origin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PluginModel {
+    pub parts: Vec<PluginModelPart>,
+    pub textures: Vec<Picture>,
+}
+
+/// Triangles sharing one texture; `indices` are checked to stay within `positions`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PluginModelPart {
+    pub texture: Option<usize>,
+    pub positions: Vec<mapcraft_geom::DVec3>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+}
+
 mod bindings {
     wasmtime::component::bindgen!({ path: "../../wit", world: "plugin" });
 }
@@ -286,6 +302,38 @@ impl Plugin {
                 let materials = convert::images(std::mem::take(&mut out.materials));
                 Ok(Imported { nodes: convert::output(out, ctx), materials })
             }
+            Ok(Err(message)) => Err(self.failed(message)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Full-size pictures of materials the plugin listed smaller, in the order of `names`; `None`
+    /// for one it could not read.
+    pub fn load_materials(&mut self, names: &[String]) -> Result<Vec<Option<Picture>>, PluginError> {
+        if !self.manifest.materials || names.is_empty() {
+            return Ok(vec![None; names.len()]);
+        }
+        self.begin()?;
+        self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
+        match self.bindings.call_load_materials(&mut self.store, names) {
+            Ok(list) => Ok(names.iter().enumerate().map(|(i, _)| list.get(i).cloned().flatten().and_then(convert::picture)).collect()),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Whether `path` has a model extension this plugin reads.
+    pub fn reads_model(&self, path: &str) -> bool {
+        path.rsplit_once('.').is_some_and(|(_, ext)| self.manifest.models.iter().any(|m| m.eq_ignore_ascii_case(ext)))
+    }
+
+    /// Reads the model at `path` for the views.
+    pub fn load_model(&mut self, path: &str) -> Result<PluginModel, PluginError> {
+        if !self.reads_model(path) {
+            return Err(PluginError::UnknownCommand(self.manifest.id.clone(), path.into()));
+        }
+        self.begin()?;
+        match self.bindings.call_load_model(&mut self.store, path) {
+            Ok(Ok(m)) => Ok(convert::model(m)),
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),
         }

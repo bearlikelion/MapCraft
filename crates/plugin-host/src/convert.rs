@@ -20,6 +20,8 @@ pub struct Manifest {
     pub importers: Vec<ImporterSpec>,
     pub exporters: Vec<ImporterSpec>,
     pub validates: bool,
+    /// Lowercase model file extensions the plugin reads.
+    pub models: Vec<String>,
 }
 
 /// A file format the plugin imports or exports.
@@ -124,7 +126,8 @@ pub(crate) fn manifest(m: t::Manifest) -> Manifest {
         .collect();
     let importers = m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
     let exporters = m.exporters.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
-    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters, validates: m.validates }
+    let models = m.models.into_iter().map(|e| e.trim_start_matches('.').to_ascii_lowercase()).filter(|e| !e.is_empty()).collect();
+    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters, validates: m.validates, models }
 }
 
 /// Stored parameter values as the plugin expects them; missing or wrong values fall back to the
@@ -298,6 +301,33 @@ pub(crate) fn output(out: t::Output, ctx: &Context) -> Vec<Fragment> {
         }
     }
     frags
+}
+
+/// A plugin's model with parts that do not add up dropped: indices past their positions, a UV
+/// count that differs, or a texture that is not there.
+pub(crate) fn model(m: t::Model) -> crate::PluginModel {
+    const MAX_TRIANGLES: usize = 1 << 20;
+    let textures: Vec<Option<crate::Picture>> = m.textures.into_iter().take(256).map(picture).collect();
+    let mut triangles = 0usize;
+    let parts = m
+        .parts
+        .into_iter()
+        .filter(|p| p.uvs.len() == p.positions.len() && p.indices.len() % 3 == 0 && p.indices.iter().all(|i| (*i as usize) < p.positions.len()))
+        .filter(|p| p.positions.iter().all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite()))
+        .filter(|p| p.texture.is_none_or(|t| textures.get(t as usize).is_some_and(Option::is_some)))
+        .take_while(|p| {
+            triangles = triangles.saturating_add(p.indices.len() / 3);
+            triangles <= MAX_TRIANGLES
+        })
+        .map(|p| crate::PluginModelPart {
+            texture: p.texture.map(|t| t as usize),
+            positions: p.positions.iter().map(vec3).collect(),
+            uvs: p.uvs.into_iter().map(|(u, v)| [if u.is_finite() { u } else { 0.0 }, if v.is_finite() { v } else { 0.0 }]).collect(),
+            indices: p.indices,
+        })
+        .collect();
+    let textures = textures.into_iter().map(|t| t.unwrap_or(crate::Picture { width: 1, height: 1, rgba: vec![255; 4] })).collect();
+    crate::PluginModel { parts, textures }
 }
 
 /// A picture whose size and pixel count agree, up to 8192 on a side.

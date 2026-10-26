@@ -4,6 +4,7 @@ use egui::{Event, Modifiers, PointerButton, Pos2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use mapcraft_ui::{MapCraftApp, Options};
+use serde_json::{Value, json};
 
 fn drag(h: &mut Harness<MapCraftApp>, a: Pos2, b: Pos2) {
     h.hover_at(a);
@@ -229,6 +230,20 @@ fn scene_tree_rows_drag_to_reorder() {
 }
 
 #[test]
+fn scene_tree_scrolls_to_the_selection() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let last =
+        (0..400).map(|i| s.create_brush(Aabb::new(DVec3::splat(f64::from(i) * 64.0), DVec3::splat(f64::from(i) * 64.0 + 32.0))).unwrap()).last().unwrap();
+    s.selection = std::collections::BTreeSet::from([last]);
+    s.group_selection().unwrap();
+    h.run_steps(3);
+    let row = h.get_all_by_label("Group").map(|n| n.rect()).find(|r| r.right() < 320.0 && r.width() > 200.0);
+    assert!(row.is_some_and(|r| r.bottom() < 1000.0), "the selected group's row is scrolled into view");
+}
+
+#[test]
 fn face_tool_takes_over_the_selection() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();
@@ -254,7 +269,7 @@ fn clip_tool_cuts_the_selected_brush() {
     h.run_steps(2);
     h.state_mut().run_command_for_test("tool.clip");
     let top = 1;
-    for p in [DVec3::new(64.0, -32.0, 0.0), DVec3::new(64.0, 96.0, 0.0)] {
+    for p in [DVec3::new(96.0, -32.0, 0.0), DVec3::new(96.0, 96.0, 0.0)] {
         let at = h.state().screen_for_test(top, p);
         h.hover_at(at);
         h.run_steps(1);
@@ -265,7 +280,36 @@ fn clip_tool_cuts_the_selected_brush() {
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert!(h.state_mut().session_for_test().map.get(id).is_none(), "the clipped brush is replaced");
-    assert_eq!(h.state().node_count_for_test(), 3, "by its two halves");
+    assert_eq!(h.state().node_count_for_test(), 2, "by its bigger part");
+    let kept = h.state_mut().session_for_test().selected_brushes()[0];
+    assert_eq!(bounds(&mut h, kept).max.x, 96.0);
+}
+
+#[test]
+fn clip_points_move_and_escape_clears_them() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 64.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.clip");
+    let top = 1;
+    let at = |h: &Harness<MapCraftApp>, x: f64, y: f64| h.state().screen_for_test(top, DVec3::new(x, y, 0.0));
+    let (a, b, moved, c) = (at(&h, 96.0, -32.0), at(&h, 96.0, 96.0), at(&h, 0.0, -32.0), at(&h, 64.0, -32.0));
+    click(&mut h, a);
+    click(&mut h, b);
+    drag_with(&mut h, a, moved, Modifiers::NONE);
+    assert_eq!(h.state().clip_points_for_test(), 2, "dragging a point moves it instead of starting a new line");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let kept = h.state_mut().session_for_test().selected_brushes()[0];
+    assert!((bounds(&mut h, kept).min.x - 24.0).abs() < 1e-6, "the slanted cut keeps the bigger part");
+
+    click(&mut h, c);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().clip_points_for_test(), 0, "Esc clears the points");
+    click(&mut h, c);
+    assert_eq!(h.state().clip_points_for_test(), 1, "and the Clip tool stays active");
 }
 
 #[test]
@@ -278,6 +322,8 @@ fn clip_lines_drag_in_2d_and_on_faces_in_3d() {
         h.state_mut().run_command_for_test("tool.clip");
         let (from, to) = (h.state().screen_for_test(view, a), h.state().screen_for_test(view, b));
         drag_with(&mut h, from, to, Modifiers::NONE);
+        h.get_by_label("Both").click();
+        h.run_steps(2);
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
         let s = h.state_mut().session_for_test();
@@ -479,4 +525,168 @@ fn vertex_tool_bevels_edges_and_merges_corners() {
     let merged = brush(&mut h).vertices().unwrap();
     assert_eq!(merged.len(), 5, "a box with its top merged is a pyramid");
     assert!(merged.iter().any(|v| v.distance(DVec3::new(32.0, 32.0, 64.0)) < 1e-6));
+}
+
+/// Flying fast holds Shift, which turns the wheel into a sideways scroll; it still sets the fly speed.
+#[test]
+fn shift_scroll_while_flying_changes_the_fly_speed() {
+    let (mut h, _settings) = editor();
+    let at = Pos2::new(560.0, 300.0);
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::SHIFT });
+    for k in 1..4 {
+        h.hover_at(at + egui::vec2(k as f32 * 4.0, 0.0));
+        h.run_steps(1);
+    }
+    let before = h.state().fly_speed_for_test();
+    h.event(Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 120.0), modifiers: Modifiers::SHIFT, phase: egui::TouchPhase::Move });
+    h.run_steps(8);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::SHIFT });
+    h.run_steps(1);
+    assert!(h.state().fly_speed_for_test() > before, "Shift and the wheel speed up the flight");
+}
+
+#[test]
+fn arrow_keys_nudge_picked_corners() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.key_press(egui::Key::Num1);
+    h.run_steps(2);
+    let side = 3;
+    let at = h.state().screen_for_test(side, DVec3::new(64.0, 32.0, 64.0));
+    click(&mut h, at);
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(2);
+    let b = bounds(&mut h, id);
+    assert_eq!((b.min.x, b.max.x), (0.0, 80.0), "the picked corners move one grid step and the rest of the brush stays");
+    assert!(h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().vertices().unwrap().iter().any(|v| *v == DVec3::new(80.0, 0.0, 64.0)));
+}
+
+/// Connects to the editor's control channel the way `mapcraft-cli mcp` does, sending `token` or the real one.
+fn connect(settings: &std::path::Path, token: Option<&str>) -> (std::io::BufReader<std::net::TcpStream>, std::net::TcpStream) {
+    use std::io::Write;
+    let file: Value = serde_json::from_slice(&std::fs::read(settings.join("data/control.json")).unwrap()).unwrap();
+    let stream = std::net::TcpStream::connect(("127.0.0.1", file["port"].as_u64().unwrap() as u16)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+    let mut out = stream.try_clone().unwrap();
+    writeln!(out, "{}", json!({"token": token.map_or(file["token"].clone(), |t| json!(t))})).unwrap();
+    (std::io::BufReader::new(stream), out)
+}
+
+/// Runs `script` on a thread as an agent would while the editor runs frames, and returns what it returns.
+fn drive<T: Send + 'static>(
+    h: &mut Harness<MapCraftApp>,
+    settings: &std::path::Path,
+    script: impl FnOnce(&mut dyn FnMut(&str, Value) -> Value) -> T + Send + 'static,
+) -> T {
+    use std::io::{BufRead, Write};
+    let (mut reader, mut out) = connect(settings, None);
+    let client = std::thread::spawn(move || {
+        let mut ask = |name: &str, args: Value| {
+            writeln!(out, "{}", json!({"name": name, "arguments": args})).unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            let text = reply["content"][0]["text"].as_str().map(|t| serde_json::from_str(t).unwrap_or(json!(t)));
+            if reply["isError"] == true { json!({"error": text}) } else { text.unwrap_or(reply) }
+        };
+        script(&mut ask)
+    });
+    for _ in 0..2000 {
+        if client.is_finished() {
+            break;
+        }
+        h.run_steps(1);
+    }
+    client.join().unwrap()
+}
+
+#[test]
+fn agents_drive_the_editor_over_the_control_channel() {
+    use std::io::{BufRead, Write};
+
+    use base64::Engine as _;
+
+    let (mut h, settings) = editor();
+    let (mut intruder, mut out) = connect(settings.path(), Some("guess"));
+    let _ = writeln!(out, "{}", json!({"name": "info"}));
+    assert_eq!(intruder.read_line(&mut String::new()).unwrap_or(0), 0, "a wrong token is hung up on");
+
+    let (made, shot, missing) = drive(&mut h, settings.path(), |ask| {
+        let made = ask(
+            "batch",
+            json!({"calls": [
+                {"tool": "create_brush", "arguments": {"min": [-256, -256, 0], "max": [256, 256, 192]}},
+                {"tool": "hollow", "arguments": {"thickness": 16}},
+                {"tool": "create_entity", "arguments": {"classname": "info_player_start", "origin": [0, 0, 32]}},
+            ]}),
+        );
+        (made, ask("screenshot", json!({"width": 640, "height": 480})), ask("select", json!({"ids": [999]})))
+    });
+    assert!(made.get("error").is_none(), "{made}");
+    assert_eq!(h.state().node_count_for_test(), 8, "a hollowed room and a player start");
+    assert!(missing.get("error").is_some());
+
+    let data = shot["content"][0]["data"].as_str().unwrap();
+    let png = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+    if let Some(p) = std::env::var_os("MAPCRAFT_SHOT") {
+        std::fs::write(p, &png).unwrap();
+    }
+    let img = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(img.dimensions(), (640, 480));
+    let first = img.get_pixel(0, 0);
+    assert!(img.pixels().any(|p| p != first), "the views show something");
+}
+
+#[test]
+fn agents_build_with_the_maps_sdk() {
+    let settings = tempfile::tempdir().unwrap();
+    let sample = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(sample.into()), ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let new_map = settings.path().join("course.mcmap");
+    let path = new_map.to_str().unwrap().to_string();
+
+    let r = drive(&mut h, settings.path(), move |ask| {
+        let mut r = serde_json::Map::new();
+        r.insert("info".into(), ask("info", json!({})));
+        r.insert("zones".into(), ask("entity_classes", json!({"filter": "zone_"})));
+        r.insert("start".into(), ask("entity_class", json!({"name": "zone_start"})));
+        r.insert("plugins".into(), ask("plugin_commands", json!({})));
+        r.insert("new".into(), ask("new", json!({"path": path})));
+        r.insert("ramp".into(), ask("run_plugin", json!({"plugin": "surfsup", "command": "surf_ramp", "origin": [0, 0, 0], "yaw": 90})));
+        r.insert("bad_param".into(), ask("run_plugin", json!({"plugin": "surfsup", "command": "surf_ramp", "params": {"nope": 1}})));
+        r.insert(
+            "zone".into(),
+            ask(
+                "batch",
+                json!({"calls": [
+                    {"tool": "create_brush", "arguments": {"min": [-128, -128, 0], "max": [128, 128, 128]}},
+                    {"tool": "tie_to_entity", "arguments": {"classname": "zone_start"}},
+                ]}),
+            ),
+        );
+        r.insert("validate".into(), ask("validate", json!({})));
+        r.insert("save".into(), ask("save", json!({})));
+        Value::Object(r)
+    });
+    assert_eq!(r["info"]["sdk"], "surfsup", "{}", r["info"]);
+    assert_eq!(r["info"]["sdk_loaded"], true);
+    assert!(r["zones"].as_array().unwrap().iter().any(|c| c["name"] == "zone_start" && c["kind"] == "solid"), "{}", r["zones"]);
+    assert!(r["start"]["keys"].is_array(), "{}", r["start"]);
+    let surfsup = r["plugins"].as_array().unwrap().iter().find(|p| p["plugin"] == "surfsup").unwrap();
+    assert!(surfsup["commands"].as_array().unwrap().iter().any(|c| c["command"] == "surf_ramp" && c["generator"] == true));
+    assert_eq!(r["new"]["sdk"], "surfsup", "a new map keeps the open map's SDK");
+    assert!(r["ramp"].get("error").is_none(), "{}", r["ramp"]);
+    assert!(r["bad_param"]["error"].as_str().unwrap().contains("no parameter `nope`"));
+    assert!(r["zone"].get("error").is_none(), "{}", r["zone"]);
+    assert!(r["validate"].is_array(), "{}", r["validate"]);
+    let saved = mapcraft_format::load(&new_map).unwrap();
+    assert!(saved.map.nodes().any(|(_, n)| n.kind.entity().is_some_and(|e| e.classname == "zone_start")));
+    assert!(saved.map.nodes().any(|(_, n)| matches!(&n.kind, mapcraft_map::NodeKind::Group(g) if g.generator.is_some())));
 }

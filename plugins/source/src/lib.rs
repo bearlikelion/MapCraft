@@ -7,7 +7,7 @@ mod vmf;
 use std::collections::BTreeSet;
 
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{ExporterSpec, Image, ImporterSpec};
+use mapcraft::plugin::types::{ExporterSpec, ImporterSpec};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -61,6 +61,7 @@ impl Guest for Source {
             importers: vec![ImporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
             exporters: vec![ExporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
             validates: false,
+            models: Vec::new(),
         }
     }
 
@@ -99,6 +100,14 @@ impl Guest for Source {
         let missing = list.iter().filter(|m| m.pixels.is_none()).count();
         host::log(&format!("Source materials: {} listed, {missing} without a picture", list.len()));
         Ok(list)
+    }
+
+    fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
+        names.iter().map(|_| None).collect()
+    }
+
+    fn load_model(path: String) -> Result<Model, String> {
+        Err(format!("this plugin reads no models: {path}"))
     }
 
     fn validate(_map: MapData) -> Vec<Issue> {

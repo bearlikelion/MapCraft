@@ -6,7 +6,6 @@ on:
     paths:
       - site/**
       - docs/**
-      - ROADMAP.md
       - godot/README.md
       # The shortcut tables are generated from these.
       - crates/ui/src/shortcuts.rs

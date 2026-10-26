@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3};
-use mapcraft_map::{Brush, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
+use mapcraft_map::{Brush, BrushError, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
 
 use crate::{EngineError, Session};
 
@@ -23,11 +23,41 @@ pub enum Shape {
     },
 }
 
+impl Shape {
+    /// The brushes this shape makes filling `bounds`, without adding them to a map.
+    pub fn brushes(self, bounds: Aabb, tex: &TexDefaults) -> Result<Vec<Brush>, BrushError> {
+        Ok(match self {
+            Shape::Block => vec![Brush::cuboid(bounds, tex)],
+            Shape::Wedge => vec![Brush::wedge(bounds, tex)?],
+            Shape::Cylinder(n) => vec![Brush::cylinder(bounds, n, tex)?],
+            Shape::Spike(n) => vec![Brush::spike(bounds, n, tex)?],
+            Shape::Sphere(n) => vec![Brush::sphere(bounds, n, tex)?],
+            Shape::Arch { sides, arc, start, thickness } => Brush::arch(bounds, sides, arc, start, thickness, tex)?,
+        })
+    }
+}
+
+/// Whether the brushes fill `hull`; overlaps count once per pair, so triple overlaps can only refuse a fine merge.
+fn fills(brushes: &[Brush], hull: &Brush) -> Result<bool, BrushError> {
+    let volume = |b: &Brush| b.solid().map(|s| s.volume());
+    let mut covered = 0.0;
+    for (i, a) in brushes.iter().enumerate() {
+        covered += volume(a)?;
+        for b in &brushes[i + 1..] {
+            covered -= a.intersect(b).map_or(Ok(0.0), |both| volume(&both))?;
+        }
+    }
+    let total = volume(hull)?;
+    Ok(total - covered <= total * 1e-6 + 1.0)
+}
+
 /// What dragging a face does (TrenchBroom's extrude tool).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtrudeMode {
-    /// Move the face, resizing its brush.
+    /// Move the face's plane, stretching the faces around it.
     Resize,
+    /// Push the face along its normal keeping its shape, adding sides square to it.
+    AlongNormal,
     /// Leave the brush and add a new one in the dragged volume, or split it when dragged inward.
     Split,
     /// Add a new brush between the face and a moved copy of it.
@@ -169,14 +199,7 @@ impl Session {
 
     /// Creates the brushes of `shape` filling `bounds` and selects them.
     pub fn create_shape(&mut self, shape: Shape, bounds: Aabb) -> Result<Vec<NodeId>, EngineError> {
-        let brushes = match shape {
-            Shape::Block => vec![Brush::cuboid(bounds, &self.tex)],
-            Shape::Wedge => vec![Brush::wedge(bounds, &self.tex)?],
-            Shape::Cylinder(n) => vec![Brush::cylinder(bounds, n, &self.tex)?],
-            Shape::Spike(n) => vec![Brush::spike(bounds, n, &self.tex)?],
-            Shape::Sphere(n) => vec![Brush::sphere(bounds, n, &self.tex)?],
-            Shape::Arch { sides, arc, start, thickness } => Brush::arch(bounds, sides, arc, start, thickness, &self.tex)?,
-        };
+        let brushes = shape.brushes(bounds, &self.tex)?;
         let mut e = self.map.edit();
         let mut ids = Vec::new();
         for b in brushes {
@@ -247,6 +270,9 @@ impl Session {
             return Err(EngineError::NothingSelected);
         }
         let merged = Brush::merge(&brushes)?;
+        if !fills(&brushes, &merged)? {
+            return Err(EngineError::Refused("those brushes don't make one convex shape, so merging would fill in the gaps; group them instead"));
+        }
         let parent = ids.first().and_then(|id| self.map.get(*id)?.parent).unwrap_or(ROOT);
         let mut e = self.map.edit();
         for id in &ids {
@@ -311,6 +337,10 @@ impl Session {
                     e.set_kind(*id, NodeKind::Brush(orig.extrude_face(*face_id, distance).ok_or(EngineError::Refused("that would remove a face"))?))?;
                     None
                 }
+                ExtrudeMode::AlongNormal => {
+                    e.set_kind(*id, NodeKind::Brush(orig.sweep_face(*face_id, distance).ok_or(EngineError::Refused("that would remove a face"))?))?;
+                    None
+                }
                 _ if distance.abs() < 1e-9 => {
                     e.set_kind(*id, NodeKind::Brush(orig.clone()))?;
                     None
@@ -334,7 +364,7 @@ impl Session {
         }
         let c = e.finish();
         let label = match mode {
-            ExtrudeMode::Resize => "Extrude",
+            ExtrudeMode::Resize | ExtrudeMode::AlongNormal => "Extrude",
             ExtrudeMode::Split => "Split",
             ExtrudeMode::Stamp => "Stamp",
         };
@@ -912,6 +942,20 @@ mod tests {
         let mut s = Session::default();
         s.tex = TexDefaults { material: "dev/grid".into(), scale: 0.25 };
         s
+    }
+
+    #[test]
+    fn merge_refuses_shapes_that_are_not_convex() {
+        let mut s = session();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 32.0, 32.0))).unwrap();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(32.0, 64.0, 32.0))).unwrap();
+        s.selection = BTreeSet::from([a, b]);
+        assert!(matches!(s.merge_selection(), Err(EngineError::Refused(_))), "an L shape is not one brush");
+        assert_eq!(s.map.len(), 3);
+        let c = s.create_brush(Aabb::new(DVec3::new(16.0, 0.0, 0.0), DVec3::new(48.0, 32.0, 32.0))).unwrap();
+        s.selection = BTreeSet::from([a, c]);
+        s.merge_selection().unwrap();
+        assert!((volume(&s) - (64.0 * 32.0 * 32.0 + 32.0 * 64.0 * 32.0)).abs() < 1e-6, "overlapping boxes inside one box merge");
     }
 
     #[test]

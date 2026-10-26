@@ -126,8 +126,8 @@ impl MapCraftApp {
                 scroll = scroll.vertical_scroll_offset((y - height / 3.0).max(0.0));
             }
         }
+        ui.spacing_mut().item_spacing.y = 0.0;
         let out = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
-            ui.spacing_mut().item_spacing.y = 0.0;
             for &(id, depth) in rows.get(range).unwrap_or_default() {
                 let Some(n) = self.session.map.get(id) else { continue };
                 let label = n.kind.label();

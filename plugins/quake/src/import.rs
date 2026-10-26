@@ -67,7 +67,7 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
     let parsed = map::parse(text)?;
     let mut log = Vec::new();
     let mut world = Vec::new();
-    let mut world_keys = Vec::new();
+    let mut world_keys: Vec<(String, String)> = Vec::new();
     let mut wad_key = String::new();
     let mut containers: Vec<Container> = Vec::new();
     let mut entities: Vec<(Option<(bool, String)>, Entity)> = Vec::new();
@@ -78,7 +78,8 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
         if classname == "worldspawn" {
             world.extend(brushes(&mut e));
             wad_key = e.key("wad").unwrap_or_default().to_string();
-            world_keys.extend(e.properties.into_iter().map(|(k, _)| k).filter(|k| k != "classname" && !k.starts_with("_tb_")));
+            // The export writes its own `wad` and `mapversion`, and the `wad` paths are the author's own disk.
+            world_keys.extend(e.properties.into_iter().filter(|(k, _)| !matches!(k.as_str(), "classname" | "wad" | "mapversion") && !k.starts_with("_tb_")));
         } else if let Some(kind) = tb_type.filter(|t| t == "_tb_layer" || t == "_tb_group") {
             let layer = kind == "_tb_layer";
             let id = e.key("_tb_id").unwrap_or_default().to_string();
@@ -129,9 +130,6 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
     if unnamed > 0 {
         log.push(format!("left out {unnamed} entities with no classname"));
     }
-    if !world_keys.is_empty() {
-        log.push(format!("worldspawn keys MapCraft cannot take from an import yet: {}", world_keys.join(", ")));
-    }
 
     let library = Library::open(files, &wad_key);
     log.extend(library.problems.iter().cloned());
@@ -154,6 +152,9 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
     }
     log.extend(failed.into_iter().take(10).map(|f| format!("texture {f}")));
     let materials = pictures.into_iter().map(|(name, p)| material(name, p)).collect();
+    if !world_keys.is_empty() {
+        top.push(Entity { classname: "worldspawn".into(), properties: world_keys, brushes: Vec::new() });
+    }
     Ok(Import { output: Output { brushes: world, entities: top, groups, materials }, log })
 }
 
@@ -215,7 +216,7 @@ mod tests {
         let out = &import.output;
         assert_eq!(out.brushes.len(), 1);
         let top: Vec<&str> = out.entities.iter().map(|e| e.classname.as_str()).collect();
-        assert_eq!(top, ["info_player_deathmatch", "light", "func_group"]);
+        assert_eq!(top, ["info_player_deathmatch", "light", "func_group", "worldspawn"]);
         let groups: Vec<(&str, usize, Vec<&str>)> =
             out.groups.iter().map(|g| (g.name.as_str(), g.brushes.len(), g.entities.iter().map(|e| e.classname.as_str()).collect())).collect();
         assert_eq!(
@@ -231,7 +232,8 @@ mod tests {
         let door = &out.groups[3].entities[0];
         assert_eq!(door.properties, [("speed".to_string(), "50".to_string())]);
         assert_eq!(door.brushes.len(), 1);
-        assert!(import.log.iter().any(|l| l.contains("worldspawn keys") && l.contains("message") && !l.contains("_tb_")), "{:?}", import.log);
+        let world = import.output.entities.iter().find(|e| e.classname == "worldspawn").unwrap();
+        assert_eq!(world.properties, [("message".to_string(), "Hi".to_string())], "the world's keys come along, without TrenchBroom's own");
         assert!(import.log.iter().any(|l| l.contains("1 entities with no classname")));
     }
 
@@ -250,7 +252,7 @@ mod tests {
         let import = import(&text, &files).unwrap();
         let sizes: Vec<(&str, u32, u32)> =
             import.output.materials.iter().map(|m| (m.name.as_str(), m.pixels.as_ref().unwrap().width, m.pixels.as_ref().unwrap().height)).collect();
-        assert_eq!(sizes, [("brick", 32, 32), ("sky1", 16, 16), ("{fence", 16, 16)]);
+        assert_eq!(sizes, [("brick", 32, 32), ("sky1", 32, 16), ("{fence", 16, 16)]);
         let fence = import.output.materials[2].pixels.as_ref().unwrap();
         assert_eq!((fence.rgba[3], fence.rgba[7]), (0, 255));
         assert!(import.log.iter().any(|l| l == "not in any WAD: missing"), "{:?}", import.log);
@@ -285,9 +287,9 @@ mod tests {
                 out.materials.iter().map(|m| (m.name.as_str(), m.pixels.as_ref().unwrap().width, m.pixels.as_ref().unwrap().height)).collect();
             eprintln!("{roots:?}: {elapsed:?}, {} brushes, {} entities, textures {sizes:?}", out.brushes.len(), out.entities.len());
             eprintln!("{:#?}", import.log);
-            assert_eq!((out.brushes.len(), out.entities.len()), (67, 7));
+            assert_eq!((out.brushes.len(), out.entities.len()), (67, 8), "seven entities and the world's keys");
             assert_eq!(sizes.len(), 6, "{:?}", import.log);
-            assert!(sizes.contains(&("skyik2", 128, 128)), "{sizes:?}");
+            assert!(sizes.contains(&("skyik2", 256, 128)), "{sizes:?}");
         }
     }
 }

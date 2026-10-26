@@ -92,11 +92,17 @@ pub struct Textures {
     pub default: Option<String>,
     #[serde(default = "default_scale")]
     pub scale: f64,
+    /// Textures are magnified without smoothing, as the game draws them.
+    #[serde(default)]
+    pub pixelated: bool,
+    /// Material name prefixes that are skies in Quake's two-layer layout.
+    #[serde(default)]
+    pub sky: Vec<String>,
 }
 
 impl Default for Textures {
     fn default() -> Self {
-        Self { roots: Vec::new(), extensions: default_extensions(), default: None, scale: default_scale() }
+        Self { roots: Vec::new(), extensions: default_extensions(), default: None, scale: default_scale(), pixelated: false, sky: Vec::new() }
     }
 }
 

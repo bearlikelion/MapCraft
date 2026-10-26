@@ -1,71 +1,91 @@
-# The Godot workflow
+# Play it in Godot
 
-The MapCraft addon for Godot 4.4 and newer turns `.mcmap` files into Godot scenes.
-The [addon's README](../../godot/README.md) has the full details.
+The MapCraft addon lets games made with Godot 4.4 and newer load `.mcmap` maps.
+With SurfsUp, one click in the **Run** menu copies your map into the game and starts it.
 
 ## Install the addon
 
-1. Put the addon in your project as `addons/mapcraft`: unzip `MapCraft-godot-addon.zip` from a MapCraft release (see [Installing](installing.md)) into the project's root folder, or copy `godot/addons/mapcraft` from the MapCraft source tree after building it with `./build.sh`.
-2. Open the project in the Godot editor once, so Godot registers the extension.
+1. Download `MapCraft-godot-addon.zip` from the [latest MapCraft release](https://github.com/bearlikelion/MapCraft/releases/latest).
+2. Unzip it into your Godot project's folder, so the addon lands in `addons/mapcraft`.
+3. Open the project in the Godot editor once, so Godot registers the addon.
 
-The second step matters for the Run menu: it imports with a headless Godot, and Godot 4.7.2 crashes on exit when a headless import meets an extension it has not seen before.
+Building the addon yourself instead is covered in [Godot addon](../../godot/README.md#building).
+
+## Point MapCraft at your game
+
+Open **File > SDK Settings** and fill in the paths for the way you want to play:
+
+1. **Play in the SurfsUp project**: the SurfsUp Godot project folder and the Godot editor executable.
+2. **Play in the SurfsUp game**: the SurfsUp game executable and the folder SurfsUp loads maps from (the `Maps` folder next to the game).
+
+![SurfsUp SDK Settings with the project folder and Godot editor marked 1, and the game executable and Maps folder marked 2](img/godot-sdk-settings.webp#wide)
+
+## Play your map
+
+Open the **Run** menu, or click the **Run** button at the top right, and pick a profile:
+
+| Profile | What it does | Needs |
+|---|---|---|
+| **Play in SurfsUp project** | Copies the map into the project's `Maps` folder and runs the project in Godot | Project folder, Godot editor |
+| **Play in SurfsUp** | Copies the map into the game's `Maps` folder and starts the game | Maps folder, SurfsUp game executable |
+
+SurfsUp loads `.mcmap` files straight from its `Maps` folder and starts the map with `+map <map name>`, so there is no import or pack step.
+`F9` plays the same way again.
+See [Compile profiles](sdks-and-plugins.md#compile-profiles) for the Output panel and the trust prompt.
+
+![The Run button's list with Play in SurfsUp project marked 1 and Play in SurfsUp marked 2](img/godot-run-button.webp)
+
+## Before you play
+
+> [!WARNING]
+> - The project or game needs the MapCraft addon: a game exported before the addon was added cannot load `.mcmap` files.
+> - Materials, textures and prop models are paths into the game, so the game must have them at the same paths.
+> - Only the map file is copied, so make prefabs local first; see [Prefabs](prefabs.md#prefabs-in-godot).
+> - Turn cordons off first, or the game only gets what touches them.
 
 ## Maps as scenes
 
-Every `.mcmap` file in the project imports as a scene, so you can instance it, open it or load it like a `.tscn`.
-The scene uses only built-in nodes, so the game needs neither the extension nor any script to load it.
+This part is for people making their own Godot game.
+Every `.mcmap` file in a project imports as a scene, so you can instance it, open it or load it like a `.tscn`.
+The scene uses only Godot's built-in nodes, so the game needs neither the addon nor any script to load it.
 
-- World brushes merge into one `WorldMesh` with a surface per material, and one `WorldCollision` body.
+- World brushes become one mesh, with a surface per material, and one collision body.
 - Faces with `tools/` materials (`tools/nodraw`, `tools/clip`, `tools/trigger`) collide but are not drawn.
-- Point entities become `Marker3D` nodes, and brush entities `Area3D` nodes, unless the entity map says otherwise.
-- Key values become metadata on the nodes.
-- Prefab instances load the prefab's `.mcmap` as a scene instance; see [Prefabs](prefabs.md#prefabs-in-godot).
-- Props (classes the entity map sets to `model`, such as SurfsUp's `prop_static`) instance the scene Godot imported from the `.glb` or `.gltf` their `model` key names, as `res://<path>`, turned by their `angles` and scaled by `scale` or `modelscale`; see [Models](entities.md#models).
+- Point entities become `Marker3D` nodes and brush entities `Area3D` nodes, unless the entity map says otherwise, and their key values become metadata.
+- Props such as SurfsUp's `prop_static` place the model their `model` key names; see [Models](entities.md#models).
+- Prefab instances load the prefab's `.mcmap` as a scene instance.
 - Everything outside an active [cordon](organizing.md#cordons) is left out.
 
-A face's material is looked up under the material root by its name: first `<name>.tres`, `.res` or `.material`, then an image (`png`, `jpg`, `webp`, `tga`, `bmp`).
+A face's material is found by its name under the material root: first `<name>.tres`, `.res` or `.material`, then an image (`png`, `jpg`, `webp`, `tga`, `bmp`).
 
 ## Import options
 
-Select the `.mcmap` in the FileSystem dock and change these in the Import dock, then click **Reimport**:
+Select the `.mcmap` in Godot's FileSystem dock, change these in the Import dock, then click **Reimport**:
 
 | Option | Default | Effect |
 |---|---|---|
 | **Units Per Meter** | 39.37 | Map units per Godot meter |
 | **Material Root** | `res://Assets/Textures` | Where material names are looked up |
-| **Entity Map** | empty | A `MapCraftEntityMap` saying what each entity class becomes; empty uses the addon's `sdks/<sdk>.tres` for the map's SDK when there is one |
+| **Entity Map** | empty | What each entity class becomes; empty uses the addon's map for the map's SDK, such as `sdks/surfsup.tres` |
 | **Collision** | on | Builds collision |
-| **Trimesh Collision** | off | The whole world collides as one triangle mesh instead of one convex shape per brush |
+| **Trimesh Collision** | off | The whole world collides as one triangle mesh instead of one shape per brush |
 
-Turn on Trimesh Collision for surf maps: seams between the pieces of a curved ramp can catch players when each brush collides on its own.
+> [!TIP]
+> Use Trimesh Collision for surf maps: seams between the pieces of a curved ramp can catch players when each brush collides on its own.
+> The SurfsUp entity map turns it on for every SurfsUp map.
 
-Faces hidden between touching world brushes, such as the joins between ramp pieces, are left out of the meshes and of trimesh collision, so they cost nothing to draw and leave no seams; per-brush collision still uses whole brushes.
+Faces hidden between touching brushes, such as the joins between ramp pieces, are left out of the meshes and of trimesh collision, so they cost nothing to draw and leave no seams; collision per brush still uses whole brushes.
 
-The addon ships `sdks/surfsup.tres`, so SurfsUp maps get the SurfsUp entity map without setting anything: the player start becomes a root `SpawnPoint` marker, zones become `Area3D` nodes tagged with `sdk_zone`, `func_detail` merges into the world, and `prop_static` instances its model.
+The addon ships the SurfsUp entity map, so SurfsUp maps need no setup: the player start becomes the `SpawnPoint`, zones become `Area3D` nodes tagged `sdk_zone`, `func_detail` merges into the world, and `prop_static` places its model.
 Props get no collision of their own; give the model collision in its Godot import settings when players should hit it.
 
-## Building at runtime
+## Load maps while the game runs
 
-A `MapCraftMap` node (a `Node3D`) builds a map while the game runs, for maps loaded from user folders or downloads.
+Games can also load maps from user folders or downloads, with no import step:
 
-- Set **Map File** and call `build()`, or leave **Build On Ready** on.
+- A `MapCraftMap` node builds a map while the game runs: set **Map File** and call `build()`, or leave **Build On Ready** on.
   Building first removes the node's children, and `clear()` does only that.
-- It has the same **Entity Map**, **Units Per Meter**, **Material Root**, **Collision** and **Trimesh Collision** settings as the importer.
-- It emits `entity_built(node, classname, properties)` for each entity, so the game can finish it off.
+  It has the importer's settings and emits `entity_built(node, classname, properties)` for each entity, so the game can finish it off.
+- `load()` turns any `.mcmap` path, inside or outside the project, into a scene the same way the importer does.
 
-## The SurfsUp Run menu
-
-The SurfsUp SDK's compile profiles drive Godot for you.
-Each one first copies the map to `<project>/maps/<map>/<map>.mcmap`, where `<project>` is the SurfsUp Godot project folder and `<map>` the map's file name.
-
-| Profile | What it does | SDK Settings it needs |
-|---|---|---|
-| **Import into Godot** | Runs a headless Godot import of the project, which turns the map into a scene | Project folder, Godot editor |
-| **Build map pack** | Also packs `res://maps/<map>/<map>.scn` into `<map>.pck` in the map pack folder, with the addon's `tools/pack_map.gd` | Project folder, Godot editor, map pack folder |
-| **Build and play** | Also starts the game with `+map <map>` | All of the above, and the SurfsUp game executable |
-
-- The map pack holds only the map's scene; materials, textures and prop models stay paths into the game, so the game must have them at the same paths.
-- Only the map file is copied, so make prefabs local before building (see [Prefabs](prefabs.md#prefabs-in-godot)).
-- Turn off cordons first, or the scene only holds what touches them.
-
-See [SDKs and plugins](sdks-and-plugins.md#compile-profiles) for running profiles and the trust prompt.
+Entity maps, the sky and sun entity, metadata types and the rest are in the technical [Godot addon](../../godot/README.md) page.

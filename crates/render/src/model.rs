@@ -304,6 +304,90 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
     Ok(model)
 }
 
+/// Triangles for [`mesh_model`]: an index into its textures (none is plain white), positions in
+/// map units, one UV per position and three indices per triangle.
+pub struct MeshPart {
+    pub texture: Option<usize>,
+    pub positions: Vec<DVec3>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+}
+
+/// A model from triangles a plugin read. Corners in the same place share their normal where the
+/// faces meet at less than 60 degrees, so curved meshes look smooth and boxes keep their edges.
+pub fn mesh_model(name: &str, parts: Vec<MeshPart>, mut textures: Vec<Picture>) -> Result<Model, String> {
+    let mut model = Model { name: name.to_string(), ..Model::default() };
+    let mut white = None;
+    let mut triangles = 0usize;
+    for p in parts {
+        let n = p.positions.len();
+        let tris: Vec<[u32; 3]> = p.indices.as_chunks::<3>().0.iter().filter(|t| t.iter().all(|i| (*i as usize) < n)).copied().collect();
+        triangles += tris.len();
+        if triangles > MAX_TRIANGLES {
+            return Err(format!("more than {MAX_TRIANGLES} triangles"));
+        }
+        let texture = match p.texture.filter(|t| *t < textures.len()) {
+            Some(t) => t,
+            None => *white.get_or_insert_with(|| {
+                textures.push(Picture { width: 1, height: 1, rgba: vec![255; 4] });
+                textures.len() - 1
+            }),
+        };
+        let mut edges: Vec<[u32; 2]> = tris.iter().flat_map(|&[a, b, c]| [[a, b], [b, c], [c, a]]).map(|[a, b]| [a.min(b), a.max(b)]).collect();
+        edges.sort_unstable();
+        edges.dedup();
+        model.parts.push(ModelPart {
+            texture,
+            color: [1.0; 4],
+            normals: creased_normals(&p.positions, &tris),
+            positions: p.positions.iter().map(|v| v.as_vec3().to_array()).collect(),
+            uvs: if p.uvs.len() == n { p.uvs } else { vec![[0.0; 2]; n] },
+            indices: tris.into_iter().flatten().collect(),
+            edges,
+        });
+    }
+    model.textures = textures;
+    let used = model.parts.iter().flat_map(|p| p.indices.iter().filter_map(|i| p.positions.get(*i as usize)));
+    let (min, max) = used.fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), p| {
+        let p = DVec3::from_array(p.map(f64::from));
+        (lo.min(p), hi.max(p))
+    });
+    if !min.is_finite() || !max.is_finite() {
+        return Err("no triangles".into());
+    }
+    (model.min, model.max) = (min, max);
+    Ok(model)
+}
+
+/// Normals for corners that may each belong to one triangle: corners in the same place average
+/// the faces that meet theirs at less than 60 degrees.
+fn creased_normals(positions: &[DVec3], tris: &[[u32; 3]]) -> Vec<[f32; 3]> {
+    let key = |p: DVec3| (p * 64.0).round().as_i64vec3().to_array();
+    let face = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(|k| positions.get(k as usize).copied().unwrap_or_default());
+        (b - a).cross(c - a)
+    };
+    let mut at: std::collections::HashMap<[i64; 3], Vec<DVec3>> = std::collections::HashMap::new();
+    for t in tris {
+        let n = face(t);
+        for k in t {
+            at.entry(key(positions.get(*k as usize).copied().unwrap_or_default())).or_default().push(n);
+        }
+    }
+    let mut out = vec![[0.0, 0.0, 1.0]; positions.len()];
+    for t in tris {
+        let own = face(t).normalize_or_zero();
+        for k in t {
+            let Some(p) = positions.get(*k as usize) else { continue };
+            let sum: DVec3 = at.get(&key(*p)).into_iter().flatten().filter(|n| n.normalize_or_zero().dot(own) > 0.5).sum();
+            if let Some(slot) = out.get_mut(*k as usize) {
+                *slot = sum.normalize_or(own).as_vec3().to_array();
+            }
+        }
+    }
+    out
+}
+
 /// One normal per vertex from the triangles that use it, for meshes saved without normals.
 fn flat_normals(positions: &[DVec3], tris: &[[u32; 3]]) -> Vec<[f32; 3]> {
     let mut sum = vec![DVec3::ZERO; positions.len()];

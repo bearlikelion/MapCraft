@@ -8,6 +8,8 @@ godot="${GODOT:-godot}"
 ln -sfn ../addons "$here/test/addons"
 # Listing the extension up front avoids a Godot 4.7 crash when --import finds a new one mid-run.
 mkdir -p "$here/test/.godot"
+# A cached import would hide changes to what the importer makes.
+rm -rf "$here/test/.godot/imported"
 echo "res://addons/mapcraft/mapcraft.gdextension" > "$here/test/.godot/extension_list.cfg"
 "$godot" --headless --path "$here/test" --import
 tmp="$(mktemp -d)"

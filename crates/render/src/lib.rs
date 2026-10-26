@@ -12,9 +12,9 @@ use mapcraft_geom::{DVec2, DVec3, DVec4};
 use wgpu::util::DeviceExt;
 
 pub use camera::{Camera, View};
-pub use model::{MAX_MODEL_BYTES, Model, ModelPart, Picture, entity_transform, load_gltf, placed_bounds};
+pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
 pub use scene::{
-    EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, WORLD_EDGE, box_lines, build_scene, entity_bounds, is_tool_material,
+    EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, WORLD_EDGE, box_lines, build_scene, entity_bounds, is_tool_material,
 };
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -29,6 +29,8 @@ const MIN_AMBIENT: f32 = 0.08;
 const RIG_SUNS: [([f32; 3], [f32; 3]); 2] = [([0.3, 0.5, 0.8], [0.7, 0.66, 0.6]), ([-0.5, -0.8, 0.5], [0.2, 0.22, 0.26])];
 const RIG_SKY: [f32; 3] = [0.4, 0.43, 0.48];
 const RIG_GROUND: [f32; 3] = [0.14, 0.12, 0.1];
+/// Share of the sky's top color in the light Godot's procedural sky casts straight down, its curve averaged over the dome.
+const SKY_TOP_SHARE: f32 = 0.93;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RenderMode {
@@ -50,6 +52,13 @@ struct Globals {
     /// The Lit mode's ambient color from below.
     ground: [f32; 4],
     eye: [f32; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    /// The Lit mode's sky colors; `sky_top.w` is 1 while a sky is drawn and tonemapped.
+    sky_top: [f32; 4],
+    sky_horizon: [f32; 4],
+    sky_ground: [f32; 4],
+    /// The lowest lightmap brightness Quake lights add up to.
+    minlight: [f32; 4],
     lights: [Light; MAX_LIGHTS],
 }
 
@@ -92,15 +101,25 @@ pub struct Renderer {
     translucent_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
+    sky_face_pipeline: wgpu::RenderPipeline,
     materials: HashMap<String, Material>,
     white: wgpu::BindGroup,
     missing: wgpu::BindGroup,
+    white_albedo: wgpu::TextureView,
+    missing_albedo: wgpu::TextureView,
+    /// Textures are magnified without smoothing, as retro games draw them.
+    pixelated: bool,
+    /// Materials uploaded as skies.
+    skies: std::collections::HashSet<String>,
     batches: Vec<Batch>,
     edges: Option<(wgpu::Buffer, u32)>,
     selected_edges: Option<(wgpu::Buffer, u32)>,
     translucent: Option<(wgpu::Buffer, u32)>,
     lights: Vec<Light>,
     ambient: [f32; 3],
+    minlight: [f32; 3],
+    sky: Option<Sky>,
 }
 
 fn vertex_layout<'a>(stride: usize, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -146,14 +165,7 @@ impl Renderer {
                 image(3),
             ],
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("material"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let sampler = material_sampler(device, false);
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh"),
             bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout)],
@@ -183,7 +195,8 @@ impl Renderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(depth.0),
-                    depth_compare: Some(if depth.1 { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Always }),
+                    // Depth is reversed: 1 at the near plane, 0 far away, which keeps distant surfaces apart.
+                    depth_compare: Some(if depth.1 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always }),
                     stencil: Default::default(),
                     bias,
                 }),
@@ -208,23 +221,31 @@ impl Renderer {
         let mesh_pipeline = pipeline("mesh", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
         let lit_pipeline = pipeline("lit", &mesh_layout, "vs_mesh", "fs_lit", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
         // Pulled toward the camera so a trigger lying on a floor never fights it.
-        let pull = wgpu::DepthBiasState { constant: -8, slope_scale: -2.0, clamp: 0.0 };
+        let pull = wgpu::DepthBiasState { constant: 8, slope_scale: 2.0, clamp: 0.0 };
         let translucent_pipeline =
             pipeline("translucent", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (false, true), pull);
         let line_pipeline = pipeline("line", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (true, true), none);
         let overlay_pipeline = pipeline("overlay", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (false, false), none);
+        let sky_pipeline = pipeline("sky", &line_layout, "vs_sky", "fs_sky", &[], wgpu::PrimitiveTopology::TriangleList, (false, false), none);
+        let sky_face_pipeline =
+            pipeline("sky faces", &mesh_layout, "vs_mesh", "fs_sky_face", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
 
         let flat = texture(device, queue, 1, 1, &[128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
         let rough = texture(device, queue, 1, 1, &[255, 255, 0, 255], wgpu::TextureFormat::Rgba8Unorm);
         let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough);
-        let white = bind(&texture(device, queue, 1, 1, &[255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb));
+        let white_albedo = texture(device, queue, 1, 1, &[255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb);
         let checker: Vec<u8> = (0..64u32).flat_map(|i| if (i % 8 < 4) ^ (i / 8 < 4) { [255, 0, 255, 255] } else { [0, 0, 0, 255] }).collect();
-        let missing = bind(&texture(device, queue, 8, 8, &checker, wgpu::TextureFormat::Rgba8UnormSrgb));
+        let missing_albedo = texture(device, queue, 8, 8, &checker, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let (white, missing) = (bind(&white_albedo), bind(&missing_albedo));
         Self {
             device: device.clone(),
             queue: queue.clone(),
             white,
             missing,
+            white_albedo,
+            missing_albedo,
+            pixelated: false,
+            skies: std::collections::HashSet::new(),
             globals_layout,
             texture_layout,
             sampler,
@@ -235,6 +256,8 @@ impl Renderer {
             translucent_pipeline,
             line_pipeline,
             overlay_pipeline,
+            sky_pipeline,
+            sky_face_pipeline,
             materials: HashMap::new(),
             batches: Vec::new(),
             edges: None,
@@ -242,6 +265,8 @@ impl Renderer {
             translucent: None,
             lights: Vec::new(),
             ambient: [0.0; 3],
+            minlight: [0.0; 3],
+            sky: None,
         }
     }
 
@@ -261,6 +286,29 @@ impl Renderer {
         true
     }
 
+    /// Uploads a sky in Quake's layout: the far layer on the right half, the near layer on the left
+    /// with clear pixels. Faces with it show the sky by the direction they are seen from, not their UVs.
+    pub fn upload_sky(&mut self, name: &str, w: u32, h: u32, rgba: &[u8]) -> bool {
+        let half = w / 2;
+        if half == 0 || !self.fits(w, h, rgba) {
+            return false;
+        }
+        let layer = |from: u32| -> Vec<u8> {
+            (0..h as usize)
+                .flat_map(|y| {
+                    let row = (y * w as usize + from as usize) * 4;
+                    rgba.get(row..row + half as usize * 4).unwrap_or_default().iter().copied()
+                })
+                .collect()
+        };
+        let far = texture(&self.device, &self.queue, half, h, &layer(half), wgpu::TextureFormat::Rgba8UnormSrgb);
+        let near = texture(&self.device, &self.queue, half, h, &layer(0), wgpu::TextureFormat::Rgba8UnormSrgb);
+        let bind_group = material_bind_group(&self.device, &self.texture_layout, &self.sampler, &far, &near, &self.rough);
+        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo: far });
+        self.skies.insert(name.to_string());
+        true
+    }
+
     /// Gives an uploaded material Lit's maps: a normal map with green up, and occlusion, roughness and metallic in RGB.
     pub fn set_material_maps(&mut self, name: &str, normal: (u32, u32, &[u8]), orm: (u32, u32, &[u8])) -> bool {
         if !self.fits(normal.0, normal.1, normal.2) || !self.fits(orm.0, orm.1, orm.2) {
@@ -275,6 +323,21 @@ impl Renderer {
     /// Drops every uploaded material, so the next scene uploads them again from a new listing.
     pub fn forget_materials(&mut self) {
         self.materials.clear();
+        self.skies.clear();
+    }
+
+    /// Switches texture magnification between smooth and pixelated; uploaded materials are dropped
+    /// to be uploaded again with the new sampler.
+    pub fn set_pixelated(&mut self, on: bool) {
+        if on == self.pixelated {
+            return;
+        }
+        self.pixelated = on;
+        self.sampler = material_sampler(&self.device, on);
+        let bind = |albedo: &wgpu::TextureView| material_bind_group(&self.device, &self.texture_layout, &self.sampler, albedo, &self.flat, &self.rough);
+        (self.white, self.missing) = (bind(&self.white_albedo), bind(&self.missing_albedo));
+        self.materials.clear();
+        self.skies.clear();
     }
 
     /// Makes texture coordinates count `size` texels for a material uploaded as a smaller picture.
@@ -309,6 +372,8 @@ impl Renderer {
             (!scene.translucent.is_empty()).then(|| (buffer("translucent", bytemuck::cast_slice(&scene.translucent)), scene.translucent.len() as u32));
         self.lights = scene.lights.clone();
         self.ambient = scene.ambient;
+        self.minlight = scene.minlight;
+        self.sky = scene.sky;
     }
 
     pub fn target(&self, size: [u32; 2]) -> Target {
@@ -346,17 +411,52 @@ impl Renderer {
         Target { size, msaa, depth, texture, view, display, globals, globals_bind }
     }
 
+    /// Copies a rendered target back as tightly packed RGBA rows, waiting for the GPU.
+    pub fn read_rgba(&self, target: &Target) -> Option<Vec<u8>> {
+        let [w, h] = target.size;
+        let row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(row) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            target.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        let data = buf.slice(..).get_mapped_range().ok()?;
+        let (row, packed) = (row as usize, w as usize * 4);
+        let mut out = Vec::with_capacity(packed * h as usize);
+        for y in 0..h as usize {
+            out.extend_from_slice(data.get(y * row..y * row + packed)?);
+        }
+        Some(out)
+    }
+
     /// Draws the scene into `target`; `grid` is the 2D grid spacing, `overlay` lines draw on top.
     pub fn render(&self, target: &Target, camera: &Camera, mode: RenderMode, grid: Option<f64>, overlay: &[LineVertex]) {
         let size = DVec2::new(f64::from(target.size[0]), f64::from(target.size[1]));
         let light = DVec3::new(0.3, 0.5, 0.8).normalize().as_vec3();
         let lit = mode == RenderMode::Lit;
+        let sky = self.sky.filter(|_| lit && !camera.is_2d());
+        let view_proj = camera.view_proj(size);
         let mut globals = Globals {
-            view_proj: camera.view_proj(size).as_mat4().to_cols_array_2d(),
+            view_proj: view_proj.as_mat4().to_cols_array_2d(),
             light_dir: [light.x, light.y, light.z, 0.0],
             ambient: [0.0; 4],
             ground: [0.0; 4],
             eye: camera.position.as_vec3().extend(1.0).to_array(),
+            inv_view_proj: view_proj.inverse().as_mat4().to_cols_array_2d(),
+            sky_top: [0.0; 4],
+            sky_horizon: [0.0; 4],
+            sky_ground: [0.0; 4],
+            minlight: [0.0; 4],
             lights: [Light::default(); MAX_LIGHTS],
         };
         if lit && self.lights.is_empty() {
@@ -376,9 +476,21 @@ impl Renderer {
             near.sort_by(|a, b| d(a).total_cmp(&d(b)));
             let n = near.len().min(MAX_LIGHTS);
             globals.lights[..n].copy_from_slice(&near[..n]);
-            let [r, g, b] = self.ambient.map(|c| c.max(MIN_AMBIENT));
+            // Quake maps get the readability floor as a minimum light level, the way Quake's minlight works.
+            let quake = self.lights.iter().any(|l| l.cone[3] > 0.0);
+            let [r, g, b] = self.ambient.map(|c| c.max(if quake { 0.0 } else { MIN_AMBIENT }));
             globals.ambient = [r, g, b, n as f32];
             globals.ground = [r, g, b, 0.0];
+            let [r, g, b] = self.minlight.map(|c| c.max(if quake { MIN_AMBIENT.powf(1.0 / 2.2) } else { 0.0 }));
+            globals.minlight = [r, g, b, 0.0];
+            if let Some(s) = sky {
+                let up: [f32; 3] = std::array::from_fn(|i| (s.horizon[i] + (s.top[i] - s.horizon[i]) * SKY_TOP_SHARE) * s.ambient);
+                globals.ambient = [up[0], up[1], up[2], n as f32];
+                globals.ground = [s.ground[0] * s.ambient, s.ground[1] * s.ambient, s.ground[2] * s.ambient, 0.0];
+                globals.sky_top = [s.top[0], s.top[1], s.top[2], 1.0];
+                globals.sky_horizon = [s.horizon[0], s.horizon[1], s.horizon[2], 0.0];
+                globals.sky_ground = [s.ground[0], s.ground[1], s.ground[2], 0.0];
+            }
         }
         self.queue.write_buffer(&target.globals, 0, bytemuck::bytes_of(&globals));
 
@@ -414,7 +526,7 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -422,6 +534,10 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &target.globals_bind, &[]);
+            if sky.is_some() {
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
+            }
             if let Some(b) = &grid_buf {
                 pass.set_pipeline(&self.overlay_pipeline);
                 pass.set_vertex_buffer(0, b.slice(..));
@@ -430,7 +546,13 @@ impl Renderer {
             if !camera.is_2d() && mode != RenderMode::Wireframe {
                 for batch in &self.batches {
                     // Entity boxes stay unlit, or a light's own box would be dark.
-                    pass.set_pipeline(if lit && !batch.material.is_empty() { &self.lit_pipeline } else { &self.mesh_pipeline });
+                    pass.set_pipeline(if mode != RenderMode::Flat && self.skies.contains(&batch.material) {
+                        &self.sky_face_pipeline
+                    } else if lit && !batch.material.is_empty() {
+                        &self.lit_pipeline
+                    } else {
+                        &self.mesh_pipeline
+                    });
                     let bind = match (mode, batch.material.as_str()) {
                         (RenderMode::Flat, _) | (_, "") => &self.white,
                         (_, m) => self.materials.get(m).map_or(&self.missing, |t| &t.bind_group),
@@ -463,14 +585,62 @@ impl Renderer {
     }
 }
 
+/// Repeating texture sampling with mipmaps; `pixelated` magnifies without smoothing.
+fn material_sampler(device: &wgpu::Device, pixelated: bool) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("material"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        mag_filter: if pixelated { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear },
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        // Anisotropy needs every filter linear.
+        anisotropy_clamp: if pixelated { 1 } else { 16 },
+        ..Default::default()
+    })
+}
+
+/// `rgba` followed by each smaller mip level down to 1 by 1, averaged in linear light for sRGB
+/// textures; and how many levels that is.
+fn mip_chain(w: u32, h: u32, rgba: &[u8], srgb: bool) -> (u32, Vec<u8>) {
+    let to_linear: Vec<f32> = (0..256).map(|i| if srgb { (i as f32 / 255.0).powf(2.2) } else { i as f32 / 255.0 }).collect();
+    let to_byte = |v: f32| (if srgb { v.max(0.0).powf(1.0 / 2.2) } else { v } * 255.0).round().clamp(0.0, 255.0) as u8;
+    let mut out = rgba.to_vec();
+    let (mut level, mut cw, mut ch, mut levels) = (rgba.to_vec(), w as usize, h as usize, 1u32);
+    while cw > 1 || ch > 1 {
+        let (nw, nh) = ((cw / 2).max(1), (ch / 2).max(1));
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let mut sum = 0.0;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let (sx, sy) = ((x * 2 + dx).min(cw - 1), (y * 2 + dy).min(ch - 1));
+                        let byte = level.get((sy * cw + sx) * 4 + c).copied().unwrap_or(0);
+                        // Alpha is always linear.
+                        sum += if c == 3 { f32::from(byte) / 255.0 } else { to_linear.get(usize::from(byte)).copied().unwrap_or(0.0) };
+                    }
+                    if let Some(slot) = next.get_mut((y * nw + x) * 4 + c) {
+                        *slot = if c == 3 { (sum / 4.0 * 255.0).round() as u8 } else { to_byte(sum / 4.0) };
+                    }
+                }
+            }
+        }
+        out.extend_from_slice(&next);
+        (level, cw, ch, levels) = (next, nw, nh, levels + 1);
+    }
+    (levels, out)
+}
+
 fn texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], format: wgpu::TextureFormat) -> wgpu::TextureView {
+    let (levels, data) = mip_chain(w, h, rgba, format.is_srgb());
     device
         .create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some("material"),
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
+                mip_level_count: levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
@@ -478,7 +648,7 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            rgba,
+            &data,
         )
         .create_view(&Default::default())
 }

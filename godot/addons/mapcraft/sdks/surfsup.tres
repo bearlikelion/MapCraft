@@ -3,10 +3,15 @@
 [resource]
 classes = {
 "bhop_zone": {
-"node": "area"
+"collision_layer": 0,
+"collision_mask": 2,
+"meta": {
+"sdk_zone": "checkpoint"
+}
 },
 "finish_line": {
-"node": "marker"
+"node": "scene",
+"scene": "res://Levels/Utilities/landing_platform.tscn"
 },
 "func_detail": {
 "node": "world"
@@ -21,60 +26,85 @@ classes = {
 "properties": false
 },
 "kill_box": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "kill"
 },
 "name": "KillBox"
 },
+"light_environment": {
+"node": "environment"
+},
 "prop_static": {
 "node": "model"
 },
 "starting_platform": {
-"node": "marker"
+"node": "scene",
+"scene": "res://Levels/Utilities/starting_platform.tscn"
 },
 "teleport_destination": {
 "node": "marker"
 },
 "teleport_zone": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "teleport"
-}
+},
+"strings": ["filter_name"]
 },
 "zone_booster": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "booster"
 }
 },
 "zone_checkpoint": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "checkpoint"
 }
 },
 "zone_finish": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "finish"
 },
 "name": "FinishZone"
 },
 "zone_point_tp": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "point_tp"
 }
 },
 "zone_respawn": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "respawn"
 }
 },
 "zone_split": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "split"
 }
 },
 "zone_start": {
+"collision_layer": 0,
+"collision_mask": 2,
 "meta": {
 "sdk_zone": "start"
 },
 "name": "StartZone"
 }
 }
+default_environment = true
+trimesh_collision = true

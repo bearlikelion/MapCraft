@@ -339,7 +339,7 @@ impl MapCraftApp {
             Drag::None => {}
             Drag::Extrude { distance, mode, .. } => {
                 let what = match mode {
-                    mapcraft_engine::ExtrudeMode::Resize => "Extruding",
+                    mapcraft_engine::ExtrudeMode::Resize | mapcraft_engine::ExtrudeMode::AlongNormal => "Extruding",
                     mapcraft_engine::ExtrudeMode::Split => "Splitting",
                     mapcraft_engine::ExtrudeMode::Stamp => "Stamping",
                 };
@@ -361,13 +361,16 @@ impl MapCraftApp {
             Tool::Entity => format!("Click in a view to place {}; pick the class in the Entities tab", self.entity_class),
             Tool::Clip if self.session.selected_brushes().is_empty() => "Select the brushes to clip first".into(),
             Tool::Clip if self.clip_points.len() == 2 => format!(
-                "Enter clips, Esc cancels; yellow stays, red goes; {} picks which side to keep; click a third point in the 3D view to tilt the cut",
+                "Enter clips, Esc clears the points; yellow stays, red goes; {} picks the side to keep; drag a point to move it, or click a third in the 3D view to tilt the cut",
                 self.chord("clip.next_side")
             ),
             Tool::Clip if self.clip_points.len() == 3 => {
-                format!("Enter clips through the three points, Esc cancels; {} picks which side to keep", self.chord("clip.next_side"))
+                format!(
+                    "Enter clips through the three points, Esc clears them; {} picks the side to keep; drag a point to move it",
+                    self.chord("clip.next_side")
+                )
             }
-            Tool::Clip => "Drag a line, or click two points, in any view; in the 3D view the cut runs straight into the face".into(),
+            Tool::Clip => "Click two points, or drag a line, in any view; in the 3D view the cut runs straight into the face".into(),
             Tool::Vertex => format!(
                 "Click or box select corners, edges or faces ({} {} {}), Shift adds; drag to move them, Shift drags up and down in the 3D view; {} merges, {} bevels",
                 self.chord("vertex.mode_vertex"),
@@ -593,14 +596,10 @@ impl MapCraftApp {
                 return;
             }
             match &mut self.shape {
-                S::Cylinder(n) | S::Spike(n) => {
-                    ui.add(egui::DragValue::new(n).range(3..=64).prefix("sides "));
-                }
-                S::Sphere(n) => {
-                    ui.add(egui::DragValue::new(n).range(4..=32).prefix("sides "));
-                }
+                S::Cylinder(n) | S::Spike(n) => sides_stepper(ui, n, 3, 64),
+                S::Sphere(n) => sides_stepper(ui, n, 4, 32),
                 S::Arch { sides, arc, start, thickness } => {
-                    ui.add(egui::DragValue::new(sides).range(1..=64).prefix("sides "));
+                    sides_stepper(ui, sides, 1, 64);
                     ui.add(egui::DragValue::new(arc).range(1.0..=360.0).prefix("arc ").suffix("°"));
                     ui.add(egui::DragValue::new(start).range(0.0..=360.0).prefix("start ").suffix("°"));
                     ui.add(egui::DragValue::new(thickness).range(1.0..=4096.0).prefix("wall "));
@@ -632,6 +631,14 @@ impl MapCraftApp {
         }
         if self.tool == Tool::Vertex {
             self.vertex_options(ui);
+        }
+        if self.tool == Tool::Extrude {
+            ui.separator();
+            let modes = [
+                (true, "Along normal", "Push the face out keeping its shape; new sides stand square to it"),
+                (false, "Stretch", "Slide the face's plane; the faces around it stretch to meet it"),
+            ];
+            Self::segmented(ui, &mut self.extrude_along_normal, &modes);
         }
         if self.tool == Tool::Clip {
             ui.separator();
@@ -832,7 +839,13 @@ impl MapCraftApp {
             item(ui, "Grid", format!("{}", self.session.grid));
             item(ui, "Mode", format!("{:?}", self.session.select_mode).to_lowercase());
             item(ui, "Texture lock", if self.session.texture_lock { "on".into() } else { "off".into() });
-            item(ui, "SDK", self.project.sdk.as_ref().map_or("none".to_string(), |s| s.manifest.name.clone()));
+            ui.label(RichText::new("SDK").color(TEXT_WEAK));
+            let name = self.project.sdk.as_ref().map(|s| s.manifest.name.clone()).or_else(|| self.session.sdk.clone()).unwrap_or("none".into());
+            ui.menu_button(RichText::new(format!("{name} ⏷")).color(TEXT), |ui| {
+                self.sdk_choices(ui);
+            })
+            .response
+            .on_hover_text("Switch the map's SDK");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.selectable_label(self.show_bottom, "Output").on_hover_text(self.chord("panel.output")).clicked() {
                     self.run_action("panel.output");
@@ -864,6 +877,19 @@ pub(crate) fn next_shape(shape: mapcraft_engine::Shape) -> mapcraft_engine::Shap
         S::Spike(_) => S::Sphere(8),
         S::Sphere(_) => S::Arch { sides: 8, arc: 180.0, start: 0.0, thickness: 16.0 },
         S::Arch { .. } => S::Block,
+    }
+}
+
+/// A shape's side count as a labelled `- n +` stepper like the grid's; the number still drags.
+fn sides_stepper(ui: &mut egui::Ui, n: &mut usize, min: usize, max: usize) {
+    ui.separator();
+    ui.label(RichText::new("Sides").color(TEXT_WEAK));
+    if ui.add_enabled(*n > min, egui::Button::new("-").small()).on_hover_text("Fewer sides").clicked() {
+        *n -= 1;
+    }
+    ui.add(egui::DragValue::new(n).range(min..=max).speed(0.1));
+    if ui.add_enabled(*n < max, egui::Button::new("+").small()).on_hover_text("More sides").clicked() {
+        *n += 1;
     }
 }
 

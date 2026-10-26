@@ -1,18 +1,25 @@
 #include <gdextension_interface.h>
 #include <godot_cpp/classes/editor_plugin_registration.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/godot.hpp>
 
 #include "mapcraft_entity_map.h"
 #include "mapcraft_import_plugin.h"
+#include "mapcraft_loader.h"
 #include "mapcraft_map.h"
 
 using namespace godot;
+
+static Ref<MapCraftLoader> loader;
 
 static void initialize_mapcraft(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		GDREGISTER_CLASS(MapCraftEntityMap);
 		GDREGISTER_CLASS(MapCraftMap);
+		GDREGISTER_CLASS(MapCraftLoader);
+		loader.instantiate();
+		ResourceLoader::get_singleton()->add_resource_format_loader(loader);
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(MapCraftImportPlugin);
 		GDREGISTER_CLASS(MapCraftEditorPlugin);
@@ -23,6 +30,9 @@ static void initialize_mapcraft(ModuleInitializationLevel p_level) {
 static void uninitialize_mapcraft(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		EditorPlugins::remove_by_type<MapCraftEditorPlugin>();
+	} else if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE && loader.is_valid()) {
+		ResourceLoader::get_singleton()->remove_resource_format_loader(loader);
+		loader.unref();
 	}
 }
 

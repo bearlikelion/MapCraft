@@ -90,7 +90,7 @@ impl MapCraftApp {
     }
 
     /// Runs a command of a loaded plugin, passing its log lines on to the Output panel.
-    fn run_plugin(&mut self, plugin: &str, command: &str, params: &Value) -> Result<Vec<mapcraft_format::Fragment>, String> {
+    pub(crate) fn run_plugin(&mut self, plugin: &str, command: &str, params: &Value) -> Result<Vec<mapcraft_format::Fragment>, String> {
         let ctx = self.plugin_context();
         let p = self.project.plugin(plugin).ok_or_else(|| format!("plugin `{plugin}` is not loaded; is it in this SDK's plugins folder?"))?;
         let result = p.run(command, params, &ctx).map_err(|e| e.to_string());
@@ -250,9 +250,24 @@ impl MapCraftApp {
 
     /// Picks a file for `importer` and puts what it reads in a new layer.
     fn import_file(&mut self, plugin: &str, importer: &mapcraft_plugin_host::ImporterSpec) {
-        let Some(path) = rfd::FileDialog::new().add_filter(&importer.label, &importer.extensions).pick_file() else { return };
+        if let Some(path) = rfd::FileDialog::new().add_filter(&importer.label, &importer.extensions).pick_file() {
+            self.import_path(plugin, importer, &path);
+        }
+    }
+
+    /// The loaded plugin and importer that read files with `path`'s extension.
+    pub(crate) fn importer_for(&self, path: &std::path::Path) -> Option<(String, mapcraft_plugin_host::ImporterSpec)> {
+        let ext = path.extension()?.to_str()?;
+        self.project.plugins.iter().find_map(|p| {
+            let reads = |i: &&mapcraft_plugin_host::ImporterSpec| i.extensions.iter().any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(ext));
+            Some((p.manifest.id.clone(), p.manifest.importers.iter().find(reads)?.clone()))
+        })
+    }
+
+    /// Reads `path` with `importer` into a new layer.
+    pub(crate) fn import_path(&mut self, plugin: &str, importer: &mapcraft_plugin_host::ImporterSpec, path: &std::path::Path) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let data = match std::fs::read(&path) {
+        let data = match std::fs::read(path) {
             Ok(d) => d,
             Err(e) => {
                 self.status = format!("cannot read {}: {e}", path.display());

@@ -1,56 +1,50 @@
-# Installing
+# Install MapCraft
 
-MapCraft runs on Linux and Windows.
-It draws with wgpu, so it needs a graphics driver with Vulkan, DirectX 12 or OpenGL.
+MapCraft runs on Linux and Windows, on any graphics driver with Vulkan, DirectX 12 or OpenGL.
+Download it, start it, and open the sample map to check that everything works.
 
 ## Linux
 
-1. Download `MapCraft-x86_64.AppImage` from the latest release on GitHub.
-2. Make it executable: `chmod +x MapCraft-x86_64.AppImage`.
-3. Run it.
+1. Download `MapCraft-x86_64.AppImage` from the [latest release](https://github.com/bearlikelion/MapCraft/releases/latest).
+2. Make it executable: in your file manager's **Properties**, allow running it as a program, or run `chmod +x MapCraft-x86_64.AppImage`.
+3. Double click it.
 
-The AppImage carries the first-party SDKs and their plugins, so there is nothing else to install.
-If it does not start because your system lacks FUSE, run it with `--appimage-extract-and-run`.
+The AppImage already holds the SDKs MapCraft ships with (SurfsUp, Counter-Strike: Source and Quake) and their plugins, so there is nothing else to install.
+
+> [!TIP]
+> If it does not start because your system lacks FUSE, run it with `--appimage-extract-and-run`.
 
 ## Windows
 
-1. Download `MapCraft-windows-x86_64.zip` from the latest release on GitHub.
+1. Download `MapCraft-windows-x86_64.zip` from the [latest release](https://github.com/bearlikelion/MapCraft/releases/latest).
 2. Unzip it anywhere, for example into your Documents folder.
-3. Run `MapCraft.exe`.
+3. Double click `MapCraft.exe`.
 
-Keep the `sdks` folder next to `MapCraft.exe`: that is where MapCraft finds its SDKs and plugins.
-Windows may warn that the app comes from an unknown publisher; choose **More info > Run anyway**.
+If Windows warns that the app comes from an unknown publisher, choose **More info**, then **Run anyway**.
 
-## The Godot addon
+> [!WARNING]
+> Keep the `sdks` folder next to `MapCraft.exe`.
+> That is where MapCraft finds its SDKs and their plugins.
 
-To load maps in a Godot project, download `MapCraft-godot-addon.zip` from the same release and unzip it into the project's root folder.
-See [The Godot workflow](godot.md).
+## Check that it works
 
-## Build from source
+1. Choose **File > SDK Manager**.
+2. Click **Test** next to SurfsUp.
 
-You need Rust 1.95 or newer and the WebAssembly target for the plugins.
+The SurfsUp sample map opens: a curved surf ramp with a start and a finish.
+If **SDK Settings** opens too, MapCraft is asking where your SurfsUp project is; [Your first map](first-map.md) walks you through it.
 
-```sh
-git clone --recursive https://github.com/bearlikelion/MapCraft.git
-cd MapCraft
-rustup target add wasm32-wasip2
-cargo xtask plugins
-cargo run --release -p mapcraft
-```
+![The SDK Manager listing Counter-Strike: Source, Quake and SurfsUp, with the Test button next to SurfsUp highlighted](img/install-sdk-manager.webp)
 
-`sdks/` is the [MapCraftSDKs](https://github.com/bearlikelion/MapCraftSDKs) repository as a git submodule; in a clone made without `--recursive`, run `git submodule update --init` first.
-`cargo xtask plugins` builds the plugins in `plugins/` and copies each into the SDKs that use it.
-A build run from the source tree finds the SDKs in `sdks/` by itself.
+![The SurfsUp sample map open in MapCraft: a curved orange ramp over a lava floor in the 3D view, and the course from above in the Top view](img/install-sample.webp)
 
-On Debian and Ubuntu, install the windowing headers first:
+## Add the Godot addon
 
-```sh
-sudo apt-get install pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-```
+To play your maps in a Godot game such as SurfsUp, also download `MapCraft-godot-addon.zip` from the same release and unzip it into your Godot project's folder.
+[Play it in Godot](godot.md) has the rest.
 
-To make the release packages yourself, run `packaging/appimage.sh` or `packaging/windows-zip.sh`; they write to `dist/`.
+## Other ways to get it
 
-## More SDKs
-
-MapCraft also looks for SDKs in the folders listed under `MAPCRAFT_SDK_PATH` and in the extra folders you add in **Edit > Preferences**.
-See [SDKs and plugins](sdks-and-plugins.md).
+- There is no macOS download yet.
+- To build MapCraft yourself, see [Building from source](../building.md).
+- For more games, open **File > SDK Manager** or add folders of SDKs in **Edit > Preferences**; see [SDKs and plugins](sdks-and-plugins.md#where-mapcraft-looks-for-sdks).

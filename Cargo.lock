@@ -2531,6 +2531,7 @@ dependencies = [
  "mapcraft-sdk",
  "mapcraft-sdk-manager",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2648,6 +2649,7 @@ dependencies = [
 name = "mapcraft-ui"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "craft-docpath",
  "craft-settings",
  "craft-ui",

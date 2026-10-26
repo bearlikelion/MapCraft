@@ -12,8 +12,6 @@ namespace godot {
 
 namespace {
 
-const char *ENTITY_MAP_FOLDER = "res://addons/mapcraft/sdks";
-
 Dictionary option(const String &p_name, const Variant &p_default, PropertyHint p_hint = PROPERTY_HINT_NONE, const String &p_hint_string = "") {
 	Dictionary d;
 	d["name"] = p_name;
@@ -78,6 +76,11 @@ int32_t MapCraftImportPlugin::_get_import_order() const {
 	return IMPORT_ORDER_SCENE + 1;
 }
 
+// Bump when imported scenes change, so projects reimport maps made by an older build.
+int32_t MapCraftImportPlugin::_get_format_version() const {
+	return 3;
+}
+
 Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,
 		const TypedArray<String> &p_platform_variants, const TypedArray<String> &p_gen_files) const {
 	Variant parsed = JSON::parse_string(FileAccess::get_file_as_string(p_source_file));
@@ -94,32 +97,15 @@ Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p
 	options.trimesh_collision = p_options.get("trimesh_collision", false);
 	options.source_path = p_source_file;
 	String map_path = p_options.get("entity_map", "");
-	if (map_path.is_empty()) {
-		// Maps name their SDK; an addon entity map with that name is used when none is set.
-		String sdk = doc.get("sdk", "");
-		String candidate = String(ENTITY_MAP_FOLDER).path_join(sdk + ".tres");
-		if (!sdk.is_empty() && ResourceLoader::get_singleton()->exists(candidate)) {
-			map_path = candidate;
-		}
-	}
 	if (!map_path.is_empty()) {
 		options.entity_map = ResourceLoader::get_singleton()->load(map_path);
 	}
 
-	Node3D *root = memnew(Node3D);
-	root->set_name(p_source_file.get_file().get_basename().validate_node_name());
-	String error;
-	Error err = mapcraft_build(doc, root, options, error);
-	if (err != OK) {
-		memdelete(root);
-		ERR_PRINT(String("MapCraft: ") + p_source_file + String(": ") + error);
-		return err;
-	}
 	Ref<PackedScene> scene;
-	scene.instantiate();
-	err = scene->pack(root);
-	memdelete(root);
+	String error;
+	Error err = mapcraft_pack(doc, p_source_file.get_file().get_basename(), options, scene, error);
 	if (err != OK) {
+		ERR_PRINT(String("MapCraft: ") + p_source_file + String(": ") + error);
 		return err;
 	}
 	return ResourceSaver::get_singleton()->save(scene, p_save_path + String(".") + _get_save_extension());

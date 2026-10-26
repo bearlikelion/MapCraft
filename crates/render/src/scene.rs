@@ -30,11 +30,11 @@ pub struct LineVertex {
 pub struct Light {
     /// Position with w 1, or for a sun the direction toward it with w 0.
     pub pos: [f32; 4],
-    /// Linear color times brightness; w is the falloff, numbered like Quake's `delay` key.
+    /// Linear color times brightness, or for a Quake light its lightmap brightness; w is the falloff, numbered like Quake's `delay` key.
     pub color: [f32; 4],
     /// Spot direction, zero for an omni light; w is the falloff distance.
     pub spot: [f32; 4],
-    /// Cosines of the spot's outer and inner half angles.
+    /// Cosines of the spot's outer and inner half angles; w is 1 for a Quake light, with z its angle scale.
     pub cone: [f32; 4],
 }
 
@@ -113,6 +113,19 @@ pub struct SceneData {
     pub lights: Vec<Light>,
     /// Linear ambient color a light entity's `_ambient` asks for.
     pub ambient: [f32; 3],
+    /// Quake's minimum lightmap brightness from worldspawn.
+    pub minlight: [f32; 3],
+    pub sky: Option<Sky>,
+}
+
+/// Godot's procedural sky for the Lit mode, in linear color, as the MapCraft addon builds it from a `light_environment`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sky {
+    pub top: [f32; 3],
+    pub horizon: [f32; 3],
+    pub ground: [f32; 3],
+    /// Scales the light the sky casts on surfaces.
+    pub ambient: f32,
 }
 
 /// Hammer's convention: `tools/...` materials mark invisible brushes such as triggers and clips.
@@ -258,9 +271,14 @@ pub fn build_scene(
                     push_box(scene.batches.entry(String::new()).or_default(), min, max, if selected { SELECTED_TINT } else { color });
                     box_lines(if selected { &mut scene.selected_edges } else { &mut scene.edges }, min, max, edge);
                 }
-                scene.lights.extend(read_light(e, origin));
+                if let Some((sun, sky)) = read_environment(e) {
+                    scene.lights.push(sun);
+                    scene.sky = Some(sky);
+                } else {
+                    scene.lights.extend(read_light(e, origin));
+                }
                 if let &[r, g, b, v, ..] = numbers(e.get("_ambient").unwrap_or_default()).as_slice() {
-                    scene.ambient = (DVec3::from_array(light_color(&[r, g, b])) * v / 255.0).as_vec3().to_array();
+                    scene.ambient = (light_color(&[r, g, b]).powf(2.2) * v / 255.0).as_vec3().to_array();
                 }
             }
             NodeKind::Entity(e) => {
@@ -270,6 +288,7 @@ pub fn build_scene(
         }
         stack.extend(node.children.iter().map(|c| (*c, selected, child_color)));
     }
+    read_quake_world(map.world(), &mut scene);
     scene
 }
 
@@ -277,17 +296,44 @@ fn numbers(s: &str) -> Vec<f64> {
     s.split_whitespace().take(4).map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite())).collect::<Option<Vec<_>>>().unwrap_or_default()
 }
 
-/// Linear color from "r g b" in 0 to 255, or in 0 to 1 as some Quake tools write it.
-fn light_color(v: &[f64]) -> [f64; 3] {
-    let &[r, g, b, ..] = v else { return [1.0; 3] };
+/// Gamma encoded color from "r g b" in 0 to 255, or in 0 to 1 as some Quake tools write it.
+fn light_color(v: &[f64]) -> DVec3 {
+    let &[r, g, b, ..] = v else { return DVec3::ONE };
     let scale = if r.max(g).max(b) > 1.0 { 255.0 } else { 1.0 };
-    [r, g, b].map(|c| (c / scale).clamp(0.0, 1.0).powf(2.2))
+    (DVec3::new(r, g, b) / scale).clamp(DVec3::ZERO, DVec3::ONE)
 }
 
 /// Unit vector for a yaw and pitch in degrees; lights point straight down at pitch -90.
 fn aim(yaw: f64, pitch: f64) -> DVec3 {
     let (y, p) = (yaw.to_radians(), pitch.to_radians());
     DVec3::new(p.cos() * y.cos(), p.cos() * y.sin(), p.sin())
+}
+
+/// A `light_environment` without Source's `_light`, read with the Godot addon's keys and defaults.
+fn read_environment(e: &Entity) -> Option<(Light, Sky)> {
+    if e.classname != "light_environment" || e.get("_light").is_some() {
+        return None;
+    }
+    let number = |k: &str, default: f64| e.get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(default);
+    let color = |k: &str, default: [f64; 3]| {
+        let v = numbers(e.get(k).unwrap_or_default());
+        let c = if let &[r, g, b, ..] = v.as_slice() { [r, g, b].map(|c| c / 255.0) } else { default };
+        c.map(|c| c.clamp(0.0, 1.0).powf(2.2) as f32)
+    };
+    let (pitch, yaw) = match numbers(e.get("angles").unwrap_or_default()).as_slice() {
+        &[p, y, ..] => (p, y),
+        _ => (50.0, 135.0),
+    };
+    let sun = DVec3::from_array(color("sun_color", [1.0, 0.96, 0.9]).map(f64::from)) * number("sun_energy", 1.0);
+    // Positive pitch tips the sunlight below the horizon, as it does a marker's facing.
+    let light = Light { pos: (-aim(yaw, -pitch)).extend(0.0).as_vec4().to_array(), color: sun.extend(3.0).as_vec4().to_array(), ..Light::default() };
+    let sky = Sky {
+        top: color("sky_top_color", [0.3, 0.48, 0.75]),
+        horizon: color("sky_horizon_color", [0.72, 0.8, 0.88]),
+        ground: color("ground_color", [0.2, 0.21, 0.23]),
+        ambient: number("ambient_energy", 1.0) as f32,
+    };
+    Some((light, sky))
 }
 
 /// Reads a light from Source or Quake style key values.
@@ -302,9 +348,11 @@ fn read_light(e: &Entity, origin: DVec3) -> Option<Light> {
     // Source writes "r g b brightness" there; Quake tools take a lone brightness.
     let quake = source.len() < 3;
     let brightness = if quake { source.first().copied().or_else(|| first("light")).unwrap_or(300.0) } else { source.get(3).copied().unwrap_or(200.0) };
-    let color = DVec3::from_array(light_color(&if quake { num("_color") } else { source })) * brightness / 255.0;
+    // The light compiler stores half a Quake light's value, and engines show a lightmap of 128 as the texture itself.
+    let color = if quake { light_color(&num("_color")) } else { light_color(&source).powf(2.2) } * brightness / 255.0;
     let wait = first("wait").filter(|w| *w > 0.0).unwrap_or(1.0);
-    let falloff = if quake { first("delay").filter(|d| (0.0..=3.0).contains(d)).map_or(0.0, f64::floor) } else { 2.0 };
+    let falloff = if quake { first("delay").map(f64::floor).filter(|d| [1.0, 2.0, 3.0, 5.0].contains(d)).unwrap_or(0.0) } else { 2.0 };
+    let angle_scale = if quake { first("_anglescale").or_else(|| first("_anglesense")).unwrap_or(0.5).clamp(0.0, 1.0) } else { 0.0 };
     // Quake's linear falloff ends at `light / wait`; its inverse falloffs reach 1 at 128 units, Source's at 100.
     let distance = if !quake {
         100.0
@@ -331,8 +379,31 @@ fn read_light(e: &Entity, origin: DVec3) -> Option<Light> {
         color: color.extend(falloff).as_vec4().to_array(),
         spot: dir.extend(distance.max(1.0)).as_vec4().to_array(),
         // Kept apart so the shader's smoothstep never divides by zero.
-        cone: [cos(outer) as f32, cos(inner).max(cos(outer) + 1e-3) as f32, 0.0, 0.0],
+        cone: [cos(outer) as f32, cos(inner).max(cos(outer) + 1e-3) as f32, angle_scale as f32, if quake { 1.0 } else { 0.0 }],
     })
+}
+
+/// Quake's worldspawn lighting, as ericw-tools reads it: the minimum light level and the sun.
+fn read_quake_world(world: &Entity, scene: &mut SceneData) {
+    let num = |k: &str| world.get(k).map(numbers).unwrap_or_default();
+    let either = |a: &str, b: &str| Some(num(a)).filter(|v| !v.is_empty()).unwrap_or_else(|| num(b));
+    if let Some(&min) = either("_minlight", "light").first() {
+        scene.minlight = (light_color(&either("_minlight_color", "_mincolor")) * min / 255.0).as_vec3().to_array();
+    }
+    let sun = num("_sunlight").first().copied().unwrap_or(0.0);
+    if sun != 0.0 {
+        let (yaw, pitch) = match either("_sunlight_mangle", "_sun_mangle").as_slice() {
+            &[yaw, pitch, ..] => (yaw, pitch),
+            _ => (0.0, -90.0),
+        };
+        let angle_scale = either("_anglescale", "_anglesense").first().copied().unwrap_or(0.5).clamp(0.0, 1.0);
+        scene.lights.push(Light {
+            pos: (-aim(yaw, pitch)).extend(0.0).as_vec4().to_array(),
+            color: (light_color(&num("_sunlight_color")) * sun / 255.0).extend(3.0).as_vec4().to_array(),
+            cone: [0.0, 0.0, angle_scale as f32, 1.0],
+            ..Light::default()
+        });
+    }
 }
 
 /// Adds a placed model's triangles to the batches of its textures, and its wireframe.
@@ -443,10 +514,12 @@ mod tests {
         assert!(close(quake.color[0], 200.0 / 255.0) && quake.color[1] == 0.0);
         assert!(close(quake.spot[3], 100.0), "linear falloff ends at light / wait");
         assert_eq!(&quake.spot[..3], &[0.0; 3], "an omni light");
+        assert_eq!(quake.cone[2..], [0.5, 1.0], "shades like a lightmap, with ericw-tools' default angle scale");
 
         let spot = *scene.lights.iter().find(|l| l.pos[3] == 1.0 && l.spot[2] < -0.99).unwrap();
         assert!(close(spot.color[1], 400.0 / 255.0) && spot.color[3] == 2.0);
         assert!(close(spot.cone[0], 0.5));
+        assert_eq!(spot.cone[3], 0.0, "a Source light shades physically");
 
         let sun = find(0.0, 3.0);
         assert!(close(sun.pos[2], 1.0), "points toward the sun");
@@ -455,6 +528,57 @@ mod tests {
         let aimed = *scene.lights.iter().find(|l| l.spot[1] > 0.99).unwrap();
         assert!(close(aimed.color[0], 300.0 / 255.0) && aimed.color[3] == 2.0, "bad brightness falls back to 300");
         assert_eq!(scene.lights.len(), 4);
+        assert!(scene.sky.is_none(), "a Source sun brings no sky");
+    }
+
+    #[test]
+    fn reads_quake_lightmap_keys() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let mut world = Entity::new("worldspawn");
+        for (k, v) in [("light", "64"), ("_minlight_color", "255 128 0"), ("_sunlight", "150"), ("_sun_mangle", "90 -45 0"), ("_sunlight_color", "0.5 0.5 1")] {
+            world.set(k, v);
+        }
+        e.set_kind(ROOT, NodeKind::World(world)).unwrap();
+        let mut torch = Entity::new("light_torch_small_walltorch");
+        for (k, v) in [("_color", "128 128 128"), ("delay", "5"), ("wait", "2"), ("_anglescale", "3")] {
+            torch.set(k, v);
+        }
+        e.insert(ROOT, NodeKind::Entity(torch)).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+
+        let torch = scene.lights.iter().find(|l| l.pos[3] == 1.0).unwrap();
+        assert!(close(torch.color[0], 128.0 / 255.0 * 300.0 / 255.0), "Quake colors stay gamma encoded, as the lightmap is");
+        assert!(torch.color[3] == 5.0 && close(torch.spot[3], 64.0), "delay 5 falls off over 128 units / wait");
+        assert_eq!(torch.cone[2], 1.0, "the angle scale is at most 1");
+
+        assert!(close(scene.minlight[0], 64.0 / 255.0) && close(scene.minlight[1], 128.0 / 255.0 * 64.0 / 255.0) && scene.minlight[2] == 0.0);
+        let sun = scene.lights.iter().find(|l| l.pos[3] == 0.0).unwrap();
+        assert!(close(sun.pos[1], -0.70710677) && close(sun.pos[2], 0.70710677), "points back up along the sunlight");
+        assert!(close(sun.color[0], 0.5 * 150.0 / 255.0) && close(sun.color[2], 150.0 / 255.0) && sun.color[3] == 3.0);
+        assert_eq!(sun.cone[2..], [0.5, 1.0]);
+    }
+
+    #[test]
+    fn reads_the_godot_environment() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let mut ent = Entity::default();
+        ent.set("classname", "light_environment");
+        ent.set("angles", "90 0 0");
+        ent.set("sun_energy", "2");
+        ent.set("sky_top_color", "255 0 0");
+        e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let sun = scene.lights[0];
+        assert!(sun.pos[3] == 0.0 && (sun.pos[2] - 1.0).abs() < 1e-4, "pitch 90 shines straight down");
+        assert!((sun.color[0] - 2.0).abs() < 1e-4, "the default white sun at energy 2");
+        let sky = scene.sky.unwrap();
+        assert_eq!(sky.top, [1.0, 0.0, 0.0]);
+        assert!((sky.horizon[0] - 0.72f32.powf(2.2)).abs() < 1e-4 && sky.ambient == 1.0, "unset keys take the addon's defaults");
     }
 
     struct Props(Arc<Model>);

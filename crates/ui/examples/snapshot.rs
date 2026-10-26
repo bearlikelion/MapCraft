@@ -3,7 +3,8 @@
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
 //! `--drag x,y x,y`, `--hold x,y x,y`, `--hover x,y`, `--scroll <lines>`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path
-//! and `--registry <url|path>` replaces the SDK Manager's registries.
+//! and `--registry <url|path>` replaces the SDK Manager's registries; `--settings <dir>` keeps the
+//! settings and data folder there instead of a throwaway one.
 
 use std::path::PathBuf;
 
@@ -29,6 +30,7 @@ fn main() {
     };
     let settings = std::env::temp_dir().join(format!("mapcraft-snapshot-{}", std::process::id()));
     let mut options = Options { settings_dir: Some(settings.clone()), ..Options::default() };
+    let mut keep = false;
     let mut steps: Vec<(String, Vec<String>)> = Vec::new();
     let mut registries = Vec::new();
     let mut it = args.iter().skip(1).peekable();
@@ -42,6 +44,7 @@ fn main() {
                 }
             }
             "--registry" => registries.extend(it.next().cloned()),
+            "--settings" => keep = it.next().map(PathBuf::from).inspect(|d| options.settings_dir = Some(d.clone())).is_some(),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
             "--command" | "--click" | "--click-at" | "--alt-click-at" | "--right-click-at" | "--key" | "--wait" | "--hover" | "--scroll" => {
                 steps.push((a.clone(), take(1, &mut it)))
@@ -126,5 +129,7 @@ fn main() {
         }
         Err(e) => eprintln!("render failed: {e}"),
     }
-    let _ = std::fs::remove_dir_all(settings);
+    if !keep {
+        let _ = std::fs::remove_dir_all(settings);
+    }
 }

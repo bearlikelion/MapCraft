@@ -129,7 +129,8 @@ fn embedded_palette(miptex: &[u8]) -> Option<&[u8]> {
     miptex.get(at.checked_add(2)?..at.checked_add(2 + count * 3)?)
 }
 
-/// Decodes one mip of a MIPTEX. A sky shows its left half, its front layer; `{` textures make index 255 clear.
+/// Decodes one mip of a MIPTEX. A sky keeps both layers, the far one on the right and the near one
+/// on the left, whose index 0 is clear; `{` textures make index 255 clear.
 pub fn decode(miptex: &[u8], palette: &[u8], mip: u32, sky: bool, fence: bool) -> Result<Picture, String> {
     let (width, height) = (u32_at(miptex, 16), u32_at(miptex, 20));
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
@@ -139,17 +140,16 @@ pub fn decode(miptex: &[u8], palette: &[u8], mip: u32, sky: bool, fence: bool) -
     let (w, h) = ((width >> mip).max(1) as usize, (height >> mip).max(1) as usize);
     let at = u32_at(miptex, 24 + 4 * mip as usize) as usize;
     let indexes = miptex.get(at..at.saturating_add(w * h)).ok_or("is truncated")?;
-    let shown = if sky { (w / 2).max(1) } else { w };
-    let mut rgba = Vec::with_capacity(shown * h * 4);
+    let mut rgba = Vec::with_capacity(w * h * 4);
     for row in indexes.chunks_exact(w) {
-        for &i in row.get(..shown).unwrap_or_default() {
+        for (x, &i) in row.iter().enumerate() {
             let at = usize::from(i) * 3;
             let [r, g, b]: [u8; 3] = palette.get(at..at + 3).and_then(|c| c.try_into().ok()).unwrap_or_default();
-            rgba.extend(if fence && i == 255 { [0, 0, 0, 0] } else { [r, g, b, 255] });
+            let clear = (fence && i == 255) || (sky && i == 0 && x < w / 2);
+            rgba.extend(if clear { [0, 0, 0, 0] } else { [r, g, b, 255] });
         }
     }
-    let full = (if sky { (width / 2).max(1) } else { width }, height);
-    Ok(Picture { width: shown as u32, height: h as u32, rgba, full })
+    Ok(Picture { width: w as u32, height: h as u32, rgba, full: (width, height) })
 }
 
 /// A file inside a PAK archive, by its path there, ignoring case.
@@ -388,8 +388,9 @@ pub(crate) mod tests {
         let small = decode(&tex, &palette, 2, false, false).unwrap();
         assert_eq!((small.width, small.height, &small.rgba[..4]), (8, 4, &[2, 253, 1, 255][..]));
         let sky = decode(&tex, &palette, 0, true, false).unwrap();
-        assert_eq!((sky.width, sky.height), (16, 16));
-        assert_eq!(&sky.rgba[16 * 4..17 * 4], &full.rgba[32 * 4..33 * 4]);
+        assert_eq!((sky.width, sky.height), (32, 16), "a sky keeps both layers");
+        assert_eq!(&sky.rgba[..4], &[0, 0, 0, 0], "index 0 of the near layer is clear");
+        assert_eq!(&sky.rgba[16 * 4..17 * 4], &full.rgba[16 * 4..17 * 4], "the far layer is solid");
         let mut fence = miptex("{grate", 16, 16, None);
         fence[40] = 255;
         let p = decode(&fence, &palette, 0, false, true).unwrap();
@@ -410,7 +411,7 @@ pub(crate) mod tests {
         assert_eq!(a.lumps.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["brick", "sky1"]);
         let palette = test_palette();
         assert!(a.picture(&files, &a.lumps[0], None, 0).is_err());
-        assert_eq!(a.picture(&files, &a.lumps[1], Some(&palette), 0).unwrap().width, 16);
+        assert_eq!(a.picture(&files, &a.lumps[1], Some(&palette), 0).unwrap().width, 32, "a sky keeps both layers");
         let b = Wad::open(&files, "hl/b.WAD").unwrap();
         let fence = b.picture(&files, &b.lumps[0], None, 0).unwrap();
         assert_eq!((&fence.rgba[..4], &fence.rgba[4..8]), (&[255, 0, 7, 255][..], &[254, 1, 7, 255][..]));
@@ -507,7 +508,7 @@ pub(crate) mod tests {
                 let (width, height) = (u32_at(&data, 16), u32_at(&data, 20));
                 let p = wad.picture(&files, lump, Some(palette), 0).unwrap_or_else(|e| panic!("{} in {}: {e}", lump.name, wad.path));
                 let sky = !wad.half_life && lump.name.starts_with("sky");
-                assert_eq!((p.width, p.height), (if sky { width / 2 } else { width }, height), "{}", lump.name);
+                assert_eq!((p.width, p.height), (width, height), "{}", lump.name);
                 assert_eq!(p.rgba.len(), (p.width * p.height * 4) as usize);
                 if lump.name.starts_with('{') {
                     assert!(p.rgba.as_chunks::<4>().0.iter().any(|c| c[3] == 0), "{} has no clear pixels", lump.name);

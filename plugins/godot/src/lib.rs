@@ -191,6 +191,7 @@ impl Guest for Godot {
             importers: Vec::new(),
             exporters: Vec::new(),
             validates: false,
+            models: Vec::new(),
         }
     }
 
@@ -247,6 +248,14 @@ impl Guest for Godot {
         }
         Ok(out)
     }
+    fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
+        names.iter().map(|_| None).collect()
+    }
+
+    fn load_model(path: String) -> Result<Model, String> {
+        Err(format!("this plugin reads no models: {path}"))
+    }
+
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
     }

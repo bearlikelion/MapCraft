@@ -7,16 +7,21 @@
 #include <godot_cpp/classes/collision_shape3d.hpp>
 #include <godot_cpp/classes/concave_polygon_shape3d.hpp>
 #include <godot_cpp/classes/convex_polygon_shape3d.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/environment.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/marker3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
+#include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/sky.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
 #include <godot_cpp/classes/surface_tool.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -67,6 +72,20 @@ Basis map_angles(const Vector3 &p_degrees) {
 
 Basis godot_basis(const Basis &p_map) {
 	return TO_GODOT * p_map * TO_GODOT.transposed();
+}
+
+// Colors are "R G B" from 0 to 255, as FGD color255 keys store them.
+Color color_key(const Dictionary &p_properties, const String &p_key, const Color &p_default) {
+	Vector3 rgb;
+	if (!parse_vec3(p_properties.get(p_key, ""), rgb)) {
+		return p_default;
+	}
+	return Color(rgb.x / 255.0, rgb.y / 255.0, rgb.z / 255.0);
+}
+
+double number_key(const Dictionary &p_properties, const String &p_key, double p_default) {
+	String text = String(p_properties.get(p_key, "")).strip_edges();
+	return text.is_valid_float() ? text.to_float() : p_default;
 }
 
 // Vectors named like directions are turned into Godot axes.
@@ -136,6 +155,7 @@ class Builder {
 	Vector<Shape> world_hulls;
 	PackedVector3Array world_triangles;
 	int brush_count = 0;
+	bool has_environment = false;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
 		return TO_GODOT.xform(p_map) * scale;
@@ -160,6 +180,7 @@ class Builder {
 	void walk(const Dictionary &p_node, int p_depth);
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
+	void add_environment(const Dictionary &p_properties);
 	MeshInstance3D *make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset);
 	void add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset);
 	void add(Node *p_parent, Node *p_child, bool p_readable_name);
@@ -277,7 +298,7 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 }
 
 bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world) {
-	const bool trimesh = p_world && options.trimesh_collision;
+	const bool trimesh = p_world && (options.trimesh_collision || (options.entity_map.is_valid() && options.entity_map->get_trimesh_collision()));
 	Array faces = p_brush.get("faces", Array());
 	bool displaced = false;
 	for (int i = 0; i < faces.size(); i++) {
@@ -479,6 +500,10 @@ void Builder::add_entity(const Dictionary &p_entity) {
 		}
 		return;
 	}
+	if (kind == "environment") {
+		add_environment(properties);
+		return;
+	}
 
 	Node3D *node = nullptr;
 	if (kind == "scene" || kind == "model") {
@@ -509,6 +534,15 @@ void Builder::add_entity(const Dictionary &p_entity) {
 			node = memnew(Node3D);
 		} else {
 			node = memnew(Marker3D);
+		}
+	}
+
+	if (CollisionObject3D *body = Object::cast_to<CollisionObject3D>(node)) {
+		if (config.has("collision_layer")) {
+			body->set_collision_layer(int64_t(config["collision_layer"]));
+		}
+		if (config.has("collision_mask")) {
+			body->set_collision_mask(int64_t(config["collision_mask"]));
 		}
 	}
 
@@ -569,13 +603,15 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	}
 
 	if (bool(config.get("properties", true))) {
+		Array strings = config.get("strings", Array());
 		Array keys = properties.keys();
 		for (int i = 0; i < keys.size(); i++) {
 			String key = keys[i];
 			if (key == "origin" || key == "angles" || key == "angle" || key == "classname") {
 				continue;
 			}
-			node->set_meta(meta_name(key), typed_value(key, properties[key]));
+			Variant value = strings.has(key) ? Variant(properties[key]) : typed_value(key, properties[key]);
+			node->set_meta(meta_name(key), value);
 		}
 	}
 	Dictionary meta = config.get("meta", Dictionary());
@@ -609,6 +645,51 @@ void Builder::add_prefab(const Dictionary &p_prefab) {
 	add(root, instance, true);
 }
 
+void Builder::add_environment(const Dictionary &p_properties) {
+	has_environment = true;
+	Color horizon = color_key(p_properties, "sky_horizon_color", Color(0.72, 0.8, 0.88));
+	Ref<ProceduralSkyMaterial> sky_material;
+	sky_material.instantiate();
+	sky_material->set_sky_top_color(color_key(p_properties, "sky_top_color", Color(0.3, 0.48, 0.75)));
+	sky_material->set_sky_horizon_color(horizon);
+	sky_material->set_ground_horizon_color(horizon);
+	sky_material->set_ground_bottom_color(color_key(p_properties, "ground_color", Color(0.2, 0.21, 0.23)));
+	Ref<Sky> sky;
+	sky.instantiate();
+	sky->set_material(sky_material);
+
+	Ref<Environment> environment;
+	environment.instantiate();
+	environment->set_background(Environment::BG_SKY);
+	environment->set_sky(sky);
+	environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+	environment->set_ambient_light_energy(number_key(p_properties, "ambient_energy", 1.0));
+	environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
+	environment->set_tonemapper(Environment::TONE_MAPPER_FILMIC);
+	double fog = number_key(p_properties, "fog_density", 0.0);
+	if (fog > 0.0) {
+		environment->set_fog_enabled(true);
+		environment->set_fog_density(fog);
+		environment->set_fog_light_color(color_key(p_properties, "fog_color", horizon));
+	}
+	WorldEnvironment *world = memnew(WorldEnvironment);
+	world->set_name("WorldEnvironment");
+	world->set_environment(environment);
+	add(root, world, false);
+
+	DirectionalLight3D *sun = memnew(DirectionalLight3D);
+	sun->set_name("Sun");
+	Vector3 angles(50.0, 135.0, 0.0);
+	parse_vec3(p_properties.get("angles", ""), angles);
+	// The sun shines down its -Z, which points along the entity's facing like a marker's.
+	sun->set_transform(Transform3D(godot_basis(map_angles(angles)) * Basis(Vector3(0, 1, 0), -Math_PI / 2.0), Vector3()));
+	sun->set_color(color_key(p_properties, "sun_color", Color(1.0, 0.96, 0.9)));
+	sun->set_param(Light3D::PARAM_ENERGY, number_key(p_properties, "sun_energy", 1.0));
+	sun->set_shadow(number_key(p_properties, "shadows", 1.0) != 0.0);
+	sun->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 1000.0);
+	add(root, sun, false);
+}
+
 Error Builder::build(const Dictionary &p_doc, String &r_error) {
 	if (String(p_doc.get("format", "")) != "mapcraft.map") {
 		r_error = "not a MapCraft map";
@@ -625,6 +706,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		}
 	}
 	walk(map.get("root", Dictionary()), 0);
+	if (!has_environment && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
+		add_environment(Dictionary());
+	}
 
 	if (!world_surfaces.is_empty()) {
 		MeshInstance3D *mesh = make_mesh(world_surfaces, Vector3());
@@ -654,6 +738,27 @@ Error mapcraft_build(const Dictionary &p_doc, Node3D *p_root, const MapCraftBuil
 	ERR_FAIL_NULL_V(p_root, ERR_INVALID_PARAMETER);
 	Builder builder(p_root, p_options);
 	return builder.build(p_doc, r_error);
+}
+
+Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraftBuildOptions &p_options, Ref<PackedScene> &r_scene, String &r_error) {
+	MapCraftBuildOptions options = p_options;
+	if (options.entity_map.is_null()) {
+		// Maps name their SDK; an addon entity map with that name is used when none is set.
+		String sdk = p_doc.get("sdk", "");
+		String candidate = String("res://addons/mapcraft/sdks").path_join(sdk + ".tres");
+		if (!sdk.is_empty() && ResourceLoader::get_singleton()->exists(candidate)) {
+			options.entity_map = ResourceLoader::get_singleton()->load(candidate);
+		}
+	}
+	Node3D *root = memnew(Node3D);
+	root->set_name(p_name.validate_node_name());
+	Error err = mapcraft_build(p_doc, root, options, r_error);
+	if (err == OK) {
+		r_scene.instantiate();
+		err = r_scene->pack(root);
+	}
+	memdelete(root);
+	return err;
 }
 
 Error mapcraft_build_file(const String &p_path, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error) {

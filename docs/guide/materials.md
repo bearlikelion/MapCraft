@@ -1,94 +1,117 @@
 # Materials
 
-Keys on this page are the MapCraft preset's defaults.
-Every shortcut can be rebound, and the Hammer and TrenchBroom presets change some of them: see [Keyboard shortcuts](shortcuts.md).
+Pick a texture, put it on brushes, and line it up so it looks right.
+Keys here are the MapCraft preset's defaults; see [Keyboard shortcuts](shortcuts.md) for the Hammer and TrenchBroom presets.
 
 ## The current material
 
-The current material is the one new brushes get and the one the apply commands use.
-The **Material** chip on the top bar shows its picture and name; click it to open the Materials panel.
-When the map's SDK names a default material and texture scale, they become current as the SDK loads (see [SDK manifests](../sdk-format.md)).
+The current material is the one new brushes get.
+It is also the one the apply commands use.
+The **Material** chip on the top bar shows it; click the chip to open the Materials panel.
+
+When the SDK names a default material and texture scale, they become current as the SDK loads.
+
+![The top bar with the Material chip highlighted, showing the current material ramps-orange1](img/materials-current.webp)
 
 ## The Materials panel
 
-Open the **Materials** tab of the left panel (`Ctrl+3`).
-It lists the materials of the map's SDK; without an SDK it asks you to pick one with **File > New Map**.
+Open the **Materials** tab on the left (`Ctrl+3`).
+It lists every material of the map's SDK.
 
-- Type in **Search materials** to filter by name.
-- **Previews** switches between pictures and a plain list of names.
-- Click a material to make it current; it is highlighted.
-  With brushes selected or faces picked, the click also applies it to them, as in TrenchBroom.
-- **Apply to selection** gives the current material to the picked faces, else to every face of the selected brushes.
+1. Type in **Search materials** to filter by name.
+2. **Previews** switches between pictures and a plain list of names.
+3. Click a material to make it current.
+   With brushes selected or faces picked, the click also puts it on them, as in TrenchBroom.
+4. **Apply to selection** gives the current material to the picked faces, or else to every face of the selected brushes.
 
-To only make a clicked material current, turn off **Clicking a material applies it to the selection** in **Edit > Preferences**; a double click then applies it.
+Without an SDK the panel asks you to pick one with **File > New Map**.
+
+![The Materials panel with numbered markers on the search box, the Previews toggle, a material picture and Apply to selection](img/materials-panel.webp)
+
+> [!TIP]
+> Want a click to only make a material current? Turn off **Clicking a material applies it to the selection** in **Edit > Preferences**. A double click then applies it.
 
 ## Applying a material
 
-| Do this | Applies the current material to |
+| Do this | Puts the current material on |
 |---|---|
-| `Shift+T` (**Tools > Apply Current Material**) | The picked faces in the Face tool, else every face of the selected brushes |
+| `Shift+T` (**Tools > Apply Current Material**) | The picked faces, or else every face of the selected brushes |
 | **Apply current material** in the inspector | The same |
-| Clicking a material in the Materials panel | The same, unless turned off in Preferences |
-| Alt+right click a face in the 3D view | That one face |
+| Click a material in the Materials panel | The same, unless you turned that off |
+| Alt+right click a face in the 3D view | Just that face |
 
-Alt+right click works with any tool, so you can paint faces without leaving the one you are using.
+Alt+right click works in any tool, so you can paint faces without switching tools.
 
 ## Picking a material
 
 Alt+click a face in the 3D view to make its material current.
-The status bar shows **Picked** and the name, and MapCraft also remembers that face's alignment for wrapping.
+The status bar shows **Picked** and the material's name.
+MapCraft also remembers that face's alignment, for [wrapping](#wrapping-alignment).
+
+![Alt+clicking the side of a ramp makes MetalWalkway011 the current material on the top bar](img/materials-pick.webp)
 
 ## Copying and pasting faces
 
-In the Face tool, `Ctrl+C` copies the active face (the one last clicked) and `Ctrl+V` pastes it on every picked face as one undo step.
-A paste gives the material, the alignment and face attributes such as lightmap scale, and turns the texture across shared edges as wrapping does, so it runs on around corners.
+1. Press `Shift+F` for the Face tool and click the face that looks right.
+2. Press `Ctrl+C` to copy it.
+3. Pick the faces to change and press `Ctrl+V`.
+
+A paste copies the material, the alignment and settings such as lightmap scale.
+It turns the texture across shared edges, so it runs on around corners.
 **Paste face** in the face panel does the same, and Alt+click also copies the face it picks.
 
 ## Wrapping alignment
 
-Alt+Shift+right click a face in the 3D view to give it the material and alignment of the face you last Alt+clicked.
-The texture is turned across the edge where the two faces meet, so it runs on around a corner without a seam.
-Until you have Alt+clicked a face, Alt+Shift+right click just applies the current material.
-
-To texture a run of faces:
+Wrapping carries a texture around a corner without a seam.
 
 1. Alt+click a face that already looks right.
-2. Alt+Shift+right click the next face along, then the next.
+2. Alt+Shift+right click the next face along.
+3. Keep going, face after face.
+
+Each face gets the material and alignment of the face you Alt+clicked, turned across the edge where they meet.
+Until you have Alt+clicked a face, Alt+Shift+right click just applies the current material.
 
 ## The face panel
 
-Press `Shift+F` for the Face tool and pick faces (see [Tools](tools.md#face)); the inspector then shows the face panel.
-It shows the values of the first picked face, and every change applies to all picked faces.
+Press `Shift+F` for the Face tool and pick faces (see [Tools](tools.md#face)).
+The inspector shows the face panel.
+It shows the first picked face's values, and every change applies to all picked faces.
 
 | Control | Does |
 |---|---|
 | **Apply current material** | Gives the picked faces the current material |
-| **Paste alignment** | Gives the picked faces the material and alignment of the face you last Alt+clicked, wrapped across shared edges |
+| **Paste face** | Gives them the material and alignment of the face you last copied (`Ctrl+C` or Alt+click), wrapped across shared edges |
 | **Offset** U and V | Slides the texture, in texels |
-| **Scale** U and V | Map units per texel; larger values stretch the texture |
-| **Rotation** | Turns the texture on each picked face by the amount you change it |
-| **Justify Fit** | Stretches the texture so one copy covers the face exactly |
-| **Justify L**, **R**, **T**, **B** | Lines the texture's left, right, top or bottom edge up with the face's |
+| **Scale** U and V | Map units per texel; bigger stretches the texture (0 is ignored) |
+| **Rotation** | Turns the texture by the amount you change it |
+| **Justify Fit** | Stretches the texture so one copy covers the face |
+| **Justify L, R, T, B** | Lines up the texture's left, right, top or bottom edge with the face's |
 | **Justify C** | Centers the texture on the face |
 | **Align to world** | Projects the texture straight from the nearest world axis and clears the rotation |
 | **Align to face** | Lays the texture on the face with V pointing downhill; floors and ceilings get world alignment |
 | **Lightmap scale** | Sets the face's lightmap scale; clear it to remove the setting |
 
-Offset and scale set every picked face to the numbers shown, and a scale of 0 is ignored.
-The **Displacement** section below these controls is covered in [Displacements](displacements.md).
+The **Displacement** section below is covered in [Terrain](displacements.md).
+
+![The Face tool with a ramp's faces picked in cyan, and the face panel in the inspector](img/materials-face-panel.webp#wide)
 
 ## The UV editor
 
-The UV editor shows the picked faces laid out over their texture, as Blender's UV Editor does.
-Click a view's name in its header and pick **UV Editor** to turn that view into one; pick 3D, Top, Front or Side to turn it back.
+The UV editor lays the picked faces out flat over their texture, like Blender's UV Editor.
 
-- The texture of the active face, the face you picked last, is tiled in every direction, with the first tile outlined in orange and a faint texel grid on top.
-- Each picked face is drawn on it as its outline, filled with the color of its island: faces that share an edge and a material form an island.
-- The active face has a white outline; the other faces of the same brushes are thin gray outlines, so you can pick them too.
-- Faces with another material are scaled so their texture lines up with the one shown.
-- The header shows the material, its size in texels and the zoom.
+1. Pick faces with the Face tool.
+2. Click a view's name in its header.
+3. Choose **UV Editor**.
+   Pick 3D, Top, Front or Side there to turn it back.
 
-Picks are shared with the Face tool: faces picked in the 3D view show here, and faces picked here are outlined in the 3D view.
+![A view's header menu open on UV Editor](img/materials-uv-menu.webp)
+
+In the UV editor:
+
+- The active face's texture repeats in every direction, with the first tile outlined in orange.
+- Each picked face is drawn on it, filled with the color of its island (faces that share an edge and a material).
+- The active face, the one you picked last, has a white outline.
+- Picks are shared with the Face tool: pick here or in the 3D view, and both show it.
 
 | Do this | To |
 |---|---|
@@ -96,72 +119,81 @@ Picks are shared with the Face tool: faces picked in the 3D view show here, and 
 | Middle or right drag | Pan |
 | Double click | Fit the picked faces in the view |
 | Click a face | Pick just that face; Ctrl+click or Shift+click adds or removes it |
-| Drag a box | Pick the faces whose middle lies inside it; with Ctrl or Shift it adds them |
+| Drag a box | Pick the faces whose middle is inside it; with Ctrl or Shift it adds them |
 | Right click | Open the unwrap commands |
+
+![The UV editor in the Top view's place, showing a ramp's faces laid out over the metal walkway texture](img/materials-uv-editor.webp)
 
 ### Grab, rotate and scale
 
 With the pointer over a UV editor, press `G` to grab, `R` to rotate or `S` to scale the picked faces' textures.
-The textures follow the pointer, in the 3D view too, until you apply or cancel:
+The textures follow the pointer, in the 3D view too, until you finish.
 
 | Key | Does |
 |---|---|
-| `X` or `Y` | Locks a grab or scale to U or to V; press it again to unlock |
-| Hold `Ctrl` | Snaps a grab to whole texels, a rotation to 15 degree steps and a scale to tenths |
+| `X` or `Y` | Locks a grab or scale to U or to V; press again to unlock |
+| Hold `Ctrl` | Snaps a grab to whole texels, a rotation to 15 degrees and a scale to tenths |
 | Click or `Enter` | Applies the change |
 | `Escape` or right click | Puts everything back |
 
-Rotate and scale turn and stretch around the middle of the picked faces.
-Every picked face moves by the same amount, so an island stays whole and its texture stays continuous across the edges inside it.
-The whole change is one undo step, and the view's top left corner shows how far it has gone.
-While a change runs, the editor's other keys and clicks wait for it.
-
-These keys only work over a UV editor, where they win over the same keys elsewhere: `R` still picks the Rotate tool in the other views.
+Every picked face moves by the same amount, so an island stays whole.
+The whole change is one undo step.
+These keys only work over a UV editor: `R` still picks the Rotate tool in the other views.
 
 ### Unwrapping
 
-**Tools > UV** and the UV editor's right click menu hold four commands for the picked faces:
+Right click in the UV editor, or open **Tools > UV**, for four commands on the picked faces:
 
 | Command | Does |
 |---|---|
-| **Unwrap** (`U` over a UV editor) | Lays each island out from one face so the texture runs on across its shared edges without a seam; that face, the active one when the island holds it, keeps its mapping |
-| **Project from View** | Projects one texture onto every picked face along the 3D view's line of sight, upright as the view sees it, at the active face's scale |
+| **Unwrap** (`U` over a UV editor) | Lays each island out so the texture runs on across its shared edges without a seam |
+| **Project from View** | Projects one texture onto every picked face, the way the 3D view sees it |
 | **Cube Projection** | Projects each face's texture from the nearest world axis, like **Align to world** |
-| **Reset** | Gives each face the mapping a new face gets: world aligned, no offset or rotation, at the SDK's texture scale |
+| **Reset** | Gives each face the mapping a new face gets |
 
-Unwrap does what [wrapping alignment](#wrapping-alignment) does by hand, for every face of an island at once, much like Blender's Follow Active Quads.
-A closed shape such as a box still has a seam where the faces come around to meet again.
-Displaced faces take part like any other face, and their sculpted surface follows the new mapping.
+Unwrap does what [wrapping](#wrapping-alignment) does by hand, for every face of an island at once.
+A closed shape such as a box still has one seam where the faces meet again.
+
+![The UV editor's right click menu: Unwrap, Project from View, Cube Projection and Reset](img/materials-unwrap.webp)
+
+> [!TIP]
+> The right click menu in any view has a **UV** submenu that works straight from selected brushes: right click a ramp and choose **UV > Unwrap**.
 
 ## Texturing whole brushes
 
-With brushes selected (and the Face tool off), the inspector offers:
+Select brushes with the Select tool and the inspector offers:
 
 - **Apply current material** for every face.
 - **Align to world** and **Align to face** for every face.
-- **Texture scale** with **Set**, which gives every face that U and V scale.
-- Four arrow buttons that slide every face's texture 16 texels left, right, up or down.
+- **Texture scale** with **Set**, which gives every face that scale.
+- Four arrow buttons that slide every face's texture 16 texels.
+
+![The inspector's buttons for whole brushes: Apply current material, Align to world, Align to face, Texture scale and the arrow buttons](img/materials-brushes.webp)
 
 ## Texture lock
 
 Texture lock is on by default.
-Toggle it with `Shift+L`, the **Texture lock** button on the top bar, or **Tools > Texture Lock**; the status bar shows whether it is on.
+Toggle it with `Shift+L`, the **Texture lock** button on the top bar, or **Tools > Texture Lock**.
 
-- On: textures stay fixed to brushes as you move, rotate, scale, flip, duplicate or paste them.
-- Off: textures stay put in the world and the brushes slide under them.
+- **On:** textures stick to brushes as you move, rotate, scale, flip, duplicate or paste them.
+- **Off:** textures stay put in the world and the brushes slide under them.
 
-Mirror groups have a texture lock setting of their own; see [Mirror groups](mirror-groups.md).
+Mirror groups have their own texture lock; see [Mirror groups](mirror-groups.md).
+
+![The Texture lock button on the top bar, switched on](img/materials-texture-lock.webp)
 
 ## Replace Materials
 
 **Tools > Replace Materials** swaps one material for another on many faces at once.
-It has no key by default; you can bind one in **Edit > Preferences**.
 
-1. Type the material to find in **Find** and the new one in **Replace with**.
-   The window opens with **Find** set to a material of the selected brushes and **Replace with** set to the current material.
-2. Choose **Selection** or **Whole map**; it starts on **Selection** when something is selected.
-3. Click **Replace**.
+1. **Find** starts as a material of the selected brushes; type another to change it.
+2. **Replace with** starts as the current material.
+3. Choose **Selection** or **Whole map**.
+4. Click **Replace**.
 
-Normally only faces whose whole material name matches **Find**, ignoring case, change.
-Tick **Replace text inside names** to replace that text wherever it appears in a name, matching case, for example "dev/" with "concrete/" to move a set of materials to another folder.
-The status bar reports how many faces changed, and one `Ctrl+Z` undoes the lot.
+Only faces whose whole material name matches **Find** change, ignoring case.
+Tick **Replace text inside names** to swap a piece of text in every name instead (matching case), for example `dev/` with `concrete/` to move a set of materials to another folder.
+The status bar says how many faces changed, and one `Ctrl+Z` undoes it all.
+It has no key by default; bind one in **Edit > Preferences**.
+
+![The Replace Materials window with numbered Find, Replace with, Selection and Replace](img/materials-replace.webp)

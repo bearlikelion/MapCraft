@@ -105,6 +105,8 @@ pub struct MapCraftApp {
     pub(crate) last_box: Aabb,
     pub(crate) clip_points: Vec<DVec3>,
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
+    /// Face drags keep the face's shape and push it along its normal, instead of stretching its neighbors.
+    pub(crate) extrude_along_normal: bool,
     pub(crate) clip_view_axis: Option<DVec3>,
     pub(crate) cursor_world: Option<DVec3>,
     /// The map with prefab instances and mirror halves expanded, and the real node each added node belongs to.
@@ -169,7 +171,7 @@ pub struct MapCraftApp {
     pub(crate) sdk_settings_for: Option<Sdk>,
     pub(crate) sdk_manager: crate::sdk_manager::SdkManager,
     pending: Option<Pending>,
-    confirm_tools: Option<usize>,
+    pub(crate) confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
     /// Plugin materials still being listed on a worker thread.
     pub(crate) material_list: Option<mpsc::Receiver<crate::project::Listed>>,
@@ -179,6 +181,8 @@ pub struct MapCraftApp {
     frame_pending: bool,
     frame: u64,
     quit_confirmed: bool,
+    /// Calls from agents through `mapcraft-cli mcp`.
+    pub(crate) control: Option<crate::control::Channel>,
 }
 
 impl MapCraftApp {
@@ -236,6 +240,7 @@ impl MapCraftApp {
             last_box: Aabb::new(DVec3::ZERO, DVec3::splat(64.0)),
             clip_points: Vec::new(),
             clip_keep: mapcraft_engine::ClipKeep::Both,
+            extrude_along_normal: true,
             clip_view_axis: None,
             cursor_world: None,
             display: None,
@@ -286,9 +291,13 @@ impl MapCraftApp {
             frame_pending: false,
             frame: 0,
             quit_confirmed: false,
+            control: None,
         };
         app.session.grid = grid;
         app.rescan_sdks();
+        if app.screenshot.is_none() {
+            app.control = app.data_dir.as_deref().and_then(|d| crate::control::start(d, &cc.egui_ctx));
+        }
         match options.open {
             Some(path) => app.open_now(&path),
             None => {
@@ -339,8 +348,10 @@ impl MapCraftApp {
             self.project.add_cached_materials(&dir);
         }
         self.thumbs.clear();
+        let pixelated = self.project.sdk.as_ref().is_some_and(|s| s.manifest.textures.pixelated);
         if let Some(gpu) = &mut self.gpu {
             gpu.renderer.forget_materials();
+            gpu.renderer.set_pixelated(pixelated);
         }
         for p in &self.project.problems {
             self.output.push(p.clone());
@@ -354,7 +365,48 @@ impl MapCraftApp {
         self.scene_dirty = true;
     }
 
-    fn new_now(&mut self, sdk: Option<String>) {
+    /// Gives the open map another SDK and reloads the project for it; not an undo step.
+    pub(crate) fn switch_sdk(&mut self, sdk: Option<String>) {
+        if sdk == self.session.sdk {
+            return;
+        }
+        self.session.sdk = sdk.clone();
+        self.session.mark_unsaved();
+        self.prefs.update(|p| p.last_sdk = sdk.clone());
+        self.status.clear();
+        self.load_project(sdk);
+        let name = self.project.sdk.as_ref().map_or("no SDK".to_string(), |s| s.manifest.name.clone());
+        let entities = self.session.map.nodes().filter_map(|(_, n)| n.kind.entity()).map(|e| e.classname.as_str());
+        let unknown: BTreeSet<&str> = entities.filter(|c| self.project.sdk.is_some() && !c.is_empty() && self.project.game.class(c).is_none()).collect();
+        let switched = if unknown.is_empty() {
+            format!("Switched the map to {name}")
+        } else {
+            format!("Switched the map to {name}, which does not define {}; Check for Problems lists them", Vec::from_iter(unknown).join(", "))
+        };
+        // load_project's own warning, such as folders left to set, matters more.
+        if self.status.is_empty() {
+            self.status = switched;
+        } else {
+            self.output.push(switched);
+        }
+    }
+
+    /// None and every installed SDK, as selectable rows; clicking one switches the map to it.
+    pub(crate) fn sdk_choices(&mut self, ui: &mut egui::Ui) -> bool {
+        let current = self.session.sdk.clone();
+        let mut pick = ui.selectable_label(current.is_none(), "None").clicked().then_some(None);
+        for s in self.sdks.iter().filter_map(|i| i.sdk.as_ref().ok()) {
+            let on = current.as_deref() == Some(s.manifest.id.as_str());
+            if ui.selectable_label(on, &s.manifest.name).on_hover_text(&s.manifest.description).clicked() {
+                pick = Some(Some(s.manifest.id.clone()));
+            }
+        }
+        let Some(sdk) = pick else { return false };
+        self.switch_sdk(sdk);
+        true
+    }
+
+    pub(crate) fn new_now(&mut self, sdk: Option<String>) {
         self.session = Session::default();
         self.session.grid = self.prefs.get().view.grid;
         self.session.sdk = sdk.clone();
@@ -364,20 +416,23 @@ impl MapCraftApp {
     }
 
     pub(crate) fn open_now(&mut self, path: &Path) {
-        match Session::open(path) {
-            Ok(mut s) => {
-                s.grid = self.prefs.get().view.grid;
-                let sdk = s.sdk.clone();
-                // Layers are the map's outline, so the tree opens with them unfolded.
-                self.expanded = s.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).map(|(id, _)| id).chain([mapcraft_map::ROOT]).collect();
-                self.session = s;
-                self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
-                self.status = format!("Opened {}", path.display());
-                self.load_project(sdk);
-                self.frame_pending = true;
-            }
-            Err(e) => self.status = format!("Cannot open {}: {e}", path.display()),
+        if let Err(e) = self.open_file(path) {
+            self.status = format!("Cannot open {}: {e}", path.display());
         }
+    }
+
+    pub(crate) fn open_file(&mut self, path: &Path) -> Result<(), mapcraft_engine::EngineError> {
+        let mut s = Session::open(path)?;
+        s.grid = self.prefs.get().view.grid;
+        let sdk = s.sdk.clone();
+        // Layers are the map's outline, so the tree opens with them unfolded.
+        self.expanded = s.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).map(|(id, _)| id).chain([mapcraft_map::ROOT]).collect();
+        self.session = s;
+        self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
+        self.status = format!("Opened {}", path.display());
+        self.load_project(sdk);
+        self.frame_pending = true;
+        Ok(())
     }
 
     pub(crate) fn save(&mut self, save_as: bool) -> bool {
@@ -388,21 +443,25 @@ impl MapCraftApp {
                 None => return false,
             },
         };
-        let old_autosave = self.autosave_path();
-        match self.session.save_as(&path) {
-            Ok(()) => {
-                if let Some(a) = old_autosave {
-                    let _ = std::fs::remove_file(a);
-                }
-                self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
-                self.status = format!("Saved {}", path.display());
-                true
-            }
+        match self.save_to(&path) {
+            Ok(()) => true,
             Err(e) => {
                 self.status = format!("Save failed: {e}");
                 false
             }
         }
+    }
+
+    /// Saves to `path`, which becomes the map's path, and drops the old autosave.
+    pub(crate) fn save_to(&mut self, path: &Path) -> Result<(), mapcraft_engine::EngineError> {
+        let old_autosave = self.autosave_path();
+        self.session.save_as(path)?;
+        if let Some(a) = old_autosave {
+            let _ = std::fs::remove_file(a);
+        }
+        self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
+        self.status = format!("Saved {}", path.display());
+        Ok(())
     }
 
     fn request(&mut self, action: Pending) {
@@ -423,26 +482,17 @@ impl MapCraftApp {
 
     /// Centers every view on the map's bounds.
     pub(crate) fn frame_all(&mut self) {
-        let bounds = self.view_map().nodes().filter_map(|(id, _)| self.leaf_bounds(id)).reduce(|a, b| a.union(&b));
-        self.frame_bounds(bounds.unwrap_or(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0))));
+        self.frame_bounds(self.map_bounds().unwrap_or(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0))));
+    }
+
+    pub(crate) fn map_bounds(&self) -> Option<Aabb> {
+        self.view_map().nodes().filter_map(|(id, _)| self.leaf_bounds(id)).reduce(|a, b| a.union(&b))
     }
 
     pub(crate) fn frame_bounds(&mut self, b: Aabb) {
-        let c = b.center();
-        let extent = b.size().max_element().max(64.0);
         for pane in &mut self.panes {
-            let cam = &mut pane.camera;
-            if cam.is_2d() {
-                let (r, u, _) = cam.view.axes();
-                cam.center = mapcraft_geom::DVec2::new(c.dot(r), c.dot(u));
-                let size = pane.rect.size();
-                let px = f64::from(size.x.min(size.y).max(100.0));
-                cam.zoom = (px / (extent * 1.3)).clamp(1.0 / 256.0, 64.0);
-            } else {
-                // Backs off until the box's bounding sphere fits the field of view.
-                let radius = b.size().length().max(64.0) * 0.5;
-                cam.position = c - cam.forward() * radius / (cam.fov_y.to_radians() * 0.5).sin().max(0.1);
-            }
+            let size = pane.rect.size();
+            frame_camera(&mut pane.camera, &b, f64::from(size.x.min(size.y)));
         }
     }
 
@@ -485,13 +535,13 @@ impl MapCraftApp {
         self.display.as_ref().and_then(|(_, o)| o.get(&id).copied()).unwrap_or(id)
     }
 
-    fn rebuild_scene(&mut self) {
+    pub(crate) fn rebuild_scene(&mut self) {
         self.update_display();
         let Some(gpu) = &mut self.gpu else { return };
         let map = self.display.as_ref().map_or(&self.session.map, |(m, _)| m);
         let names: BTreeSet<String> = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
         self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
-        self.project.prepare_models(map, &mut gpu.renderer);
+        self.project.prepare_models(map, &mut gpu.renderer, &mut self.output);
         let renderer = &gpu.renderer;
         let colorize = self.prefs.get().view.colorize;
         let scene = build_scene(map, &self.session.selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, colorize);
@@ -526,6 +576,16 @@ impl MapCraftApp {
         self.sdk_manager.check_results(dir).cloned()
     }
 
+    /// The status bar message, for tests.
+    pub fn status_for_test(&self) -> &str {
+        &self.status
+    }
+
+    /// The id of the SDK the editor loaded for the map, for tests.
+    pub fn project_sdk_for_test(&self) -> Option<&str> {
+        self.project.id()
+    }
+
     /// Ids of the SDKs found, in search order, for tests.
     pub fn sdk_ids_for_test(&self) -> Vec<String> {
         self.sdks.iter().filter_map(|i| Some(i.sdk.as_ref().ok()?.manifest.id.clone())).collect()
@@ -555,6 +615,14 @@ impl MapCraftApp {
     }
 
     /// Runs an action or engine command by id, as a menu item would.
+    pub fn fly_speed_for_test(&self) -> f64 {
+        self.prefs.get().view.fly_speed
+    }
+
+    pub fn clip_points_for_test(&self) -> usize {
+        self.clip_points.len()
+    }
+
     pub fn run_command_for_test(&mut self, id: &str) {
         self.run_action(id);
     }
@@ -595,7 +663,11 @@ impl MapCraftApp {
         }
         self.clipboard(ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.set_tool(Tool::Select);
+            if self.tool == Tool::Clip && !self.clip_points.is_empty() {
+                self.clip_points.clear();
+            } else {
+                self.set_tool(Tool::Select);
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() >= 2 {
             self.apply_clip();
@@ -722,6 +794,7 @@ impl MapCraftApp {
                 self.show_sdk_dialog = true;
             }
             "file.sdk_manager" => self.sdk_manager.open = true,
+            "file.switch_sdk" => self.dialogs.switch_sdk = true,
             "file.quit" => self.quit_requested = true,
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
             "tools.check_problems" => self.check_problems(),
@@ -948,6 +1021,7 @@ impl MapCraftApp {
                 self.import_menu(ui);
                 self.export_menu(ui);
                 ui.separator();
+                self.action_button(ui, "file.switch_sdk", "Switch SDK…", true);
                 self.action_button(ui, "file.sdk_settings", "SDK Settings…", true);
                 self.action_button(ui, "file.sdk_manager", "SDK Manager…", true);
                 ui.separator();
@@ -1462,6 +1536,20 @@ impl MapCraftApp {
     }
 }
 
+/// Centers `cam` on `b`; a 2D view zooms so the box fills `px`, in the units of its zoom.
+pub(crate) fn frame_camera(cam: &mut Camera, b: &Aabb, px: f64) {
+    let c = b.center();
+    if cam.is_2d() {
+        let (r, u, _) = cam.view.axes();
+        cam.center = mapcraft_geom::DVec2::new(c.dot(r), c.dot(u));
+        cam.zoom = (px.max(100.0) / (b.size().max_element().max(64.0) * 1.3)).clamp(1.0 / 256.0, 64.0);
+    } else {
+        // Backs off until the box's bounding sphere fits the field of view.
+        let radius = b.size().length().max(64.0) * 0.5;
+        cam.position = c - cam.forward() * radius / (cam.fov_y.to_radians() * 0.5).sin().max(0.1);
+    }
+}
+
 /// Loads prefabs by the path stored in an instance, relative to the map at `doc`, once each.
 pub(crate) fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Option<PathBuf>) -> impl FnMut(&str) -> Option<Map> + '_ {
     move |stored| {
@@ -1486,6 +1574,7 @@ impl eframe::App for MapCraftApp {
         self.poll_compile(ctx);
         self.poll_materials(ctx);
         self.poll_models(ctx);
+        self.poll_control();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1520,6 +1609,7 @@ impl eframe::App for MapCraftApp {
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
         self.bevel_window(&ctx);
+        self.handle_drops(&ctx);
         self.thumbs.poll(&ctx);
         self.uv_images.poll(&ctx);
         if self.frame_pending && self.panes.iter().all(|p| p.rect.is_positive()) {
@@ -1537,6 +1627,9 @@ impl eframe::App for MapCraftApp {
         }
         if let Some(d) = &self.data_dir {
             crate::dialogs::end_session(d);
+        }
+        if let Some(c) = &self.control {
+            c.stop();
         }
         let grid = self.session.grid;
         self.prefs.update(|p| p.view.grid = grid);
