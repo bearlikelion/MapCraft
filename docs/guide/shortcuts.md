@@ -2,6 +2,8 @@
 
 Press `F1` in MapCraft for the full list, with a search box.
 Every menu item, panel, tool and toggle has a shortcut you can change, and no two actions share one in any preset.
+The UV editor's keys work only with the pointer over a UV editor, where they win over the same keys elsewhere.
+The Vertex tool's keys (select modes, Merge and Bevel) work only in the Vertex tool, where they win the same way.
 
 ## Change a shortcut
 
@@ -42,6 +44,7 @@ The tables are generated from the editor's code, so they match the version the s
 | Redo | `Ctrl+Shift+Z` |
 | Delete | `Delete` |
 | Duplicate | `Ctrl+D` |
+| Duplicate Linked | `Alt+D` |
 | Select All | `Ctrl+A` |
 | Select None | `Ctrl+Shift+A` |
 | Select Groups | `Alt+1` |
@@ -63,6 +66,7 @@ The tables are generated from the editor's code, so they match the version the s
 | Vertex Tool | `V` |
 | Face Tool | `Shift+F` |
 | Sculpt Tool | `D` |
+| Path Tool | `P` |
 
 ### Tool options
 
@@ -77,9 +81,12 @@ The tables are generated from the editor's code, so they match the version the s
 | Action | Shortcut |
 |---|---|
 | Transform | `Ctrl+M` |
+| Array | `Ctrl+Shift+D` |
 | Replace Materials | *none* |
 | Check for Problems | `Alt+P` |
 | New Layer | `Ctrl+Shift+N` |
+| Edit Linked Copy Here | *none* |
+| Make Linked Copy Real | *none* |
 | Carve | `Ctrl+Shift+C` |
 | Hollow | `Ctrl+H` |
 | Zone from Selection | *none* |
@@ -88,6 +95,10 @@ The tables are generated from the editor's code, so they match the version the s
 | Ungroup | `Ctrl+U` |
 | Make Mirror Group | `Ctrl+Shift+M` |
 | Make Mirror Real | *none* |
+| Sweep Along Path | `Ctrl+Alt+S` |
+| Spin | `Ctrl+Alt+N` |
+| Array Along Path | `Ctrl+Alt+D` |
+| Make Curve Real | *none* |
 | Tie to Entity | `Ctrl+T` |
 | Move to World | `Ctrl+Shift+W` |
 | Rotate 90° Clockwise | `Ctrl+R` |
@@ -118,8 +129,11 @@ The tables are generated from the editor's code, so they match the version the s
 | Textured | `Ctrl+Alt+1` |
 | Flat Shaded | `Ctrl+Alt+2` |
 | Wireframe | `Ctrl+Alt+3` |
+| Lit | `Ctrl+Alt+4` |
 | Color Brushes by Object | `Ctrl+Alt+C` |
 | Frame All | `Home` |
+| Go to Origin | `Shift+Home` |
+| One View Layout | `Shift+Space` |
 | Focus Selection | `F` |
 | Find Entities | `Ctrl+F` |
 | Snap to Grid | `Shift+W` |
@@ -140,6 +154,7 @@ The tables are generated from the editor's code, so they match the version the s
 | Tags Panel | `Ctrl+2` |
 | Materials Panel | `Ctrl+3` |
 | Entities Panel | `Ctrl+4` |
+| Models Panel | `Ctrl+6` |
 | Output Panel | `Ctrl+5` |
 
 ### Run
@@ -154,6 +169,28 @@ The tables are generated from the editor's code, so they match the version the s
 | Action | Shortcut |
 |---|---|
 | Keyboard Shortcuts | `F1` |
+
+### UV editor
+
+| Action | Shortcut |
+|---|---|
+| UV Grab | `G` |
+| UV Rotate | `R` |
+| UV Scale | `S` |
+| Unwrap | `U` |
+| Project from View | *none* |
+| Cube Projection | *none* |
+| Reset UVs | *none* |
+
+### Vertex tool
+
+| Action | Shortcut |
+|---|---|
+| Vertex Select Mode | `1` |
+| Edge Select Mode | `2` |
+| Face Select Mode | `3` |
+| Merge Vertices | `M` |
+| Bevel Edges | `Ctrl+B` |
 
 ### Other
 
@@ -171,9 +208,9 @@ These cannot be rebound.
 
 | Action | Keys |
 |---|---|
-| Copy | `Ctrl+C` |
+| Copy, or copy the active face in the Face tool | `Ctrl+C` |
 | Cut | `Ctrl+X` |
-| Paste | `Ctrl+V` |
+| Paste, or paste a face on the picked faces in the Face tool | `Ctrl+V` |
 | Cancel the current drag or tool step | `Escape` |
 | Apply the clip | `Enter` |
 | Extrude a face | `Shift+Drag` |
@@ -182,6 +219,15 @@ These cannot be rebound.
 | Pick a face's material | `Alt+Click` |
 | Apply or wrap the picked material | `Alt+Right Click, Alt+Shift+Right Click` |
 | Fly the 3D camera | `Right Drag + WASD` |
+| Lock a UV grab or scale to U or V | `X, Y` |
+| Snap a UV grab, rotate or scale | `Ctrl` |
+| Apply a UV grab, rotate or scale | `Click, Enter` |
+| Cancel a UV grab, rotate or scale | `Escape, Right Click` |
+| Change a bevel's segments while sizing it | `Scroll` |
+| Apply a bevel being sized | `Click, Enter` |
+| Cancel a bevel being sized | `Escape, Right Click` |
+| Move a 3D vertex handle up and down | `Shift+Drag` |
+| Add a third clip point that tilts the cut | `Click in the 3D view` |
 
 ### Hammer and TrenchBroom presets
 

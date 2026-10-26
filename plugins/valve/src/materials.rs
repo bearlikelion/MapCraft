@@ -2,10 +2,9 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::bsp::{lzma, u16_at, u32_at};
-use crate::vtf;
+use crate::{lzma, u16_at, u32_at, vtf};
 
 /// Game files the plugin may read: the host in the editor, the disk in tests.
 pub trait Files {
@@ -118,16 +117,18 @@ impl Vpk {
         Some(Vpk { name, dir, data_start, entries })
     }
 
-    fn read(&self, path: &str, files: &dyn Files) -> Option<Vec<u8>> {
+    /// The entry's bytes, stopping after `limit` of them.
+    fn read(&self, path: &str, files: &dyn Files, limit: usize) -> Option<Vec<u8>> {
         let e = self.entries.get(path)?;
         let mut out = self.dir.get(e.preload.0..e.preload.0 + e.preload.1)?.to_vec();
-        if e.length > 0 {
+        let length = (e.length as usize).min(limit.saturating_sub(out.len()));
+        if length > 0 {
             let rest = if e.archive == 0x7fff {
                 let at = self.data_start.checked_add(e.offset as usize)?;
-                self.dir.get(at..at.checked_add(e.length as usize)?)?.to_vec()
+                self.dir.get(at..at.checked_add(length)?)?.to_vec()
             } else {
                 let archive = self.name.strip_suffix("dir.vpk")?;
-                files.read_range(&format!("{archive}{:03}.vpk", e.archive), u64::from(e.offset), u64::from(e.length))?
+                files.read_range(&format!("{archive}{:03}.vpk", e.archive), u64::from(e.offset), length as u64)?
             };
             out.extend(rest);
         }
@@ -142,7 +143,7 @@ pub struct Library<'a> {
     vpks: Vec<Vpk>,
     files: &'a dyn Files,
     /// Decoded textures by path, since VBSP's patched copies of a material share one.
-    decoded: RefCell<HashMap<String, Option<(vtf::Picture, Origin)>>>,
+    decoded: RefCell<HashMap<String, Option<Found>>>,
 }
 
 impl<'a> Library<'a> {
@@ -155,12 +156,17 @@ impl<'a> Library<'a> {
         !self.vpks.is_empty()
     }
 
+    /// The materials in the game's packages, such as `concrete/concretefloor001a`.
+    pub fn materials(&self) -> BTreeSet<&str> {
+        self.vpks.iter().flat_map(|v| v.entries.keys()).filter_map(|p| p.strip_prefix("materials/")?.strip_suffix(".vmt")).collect()
+    }
+
     /// The file's bytes, at least its first `limit` of them, and where it was found.
     fn find(&self, path: &str, limit: usize) -> Option<(Cow<'a, [u8]>, Origin)> {
         if let Some(data) = self.pak_entries.get(path).and_then(|e| zip_read(self.pak, e, limit)) {
             return Some((data, Origin::Map));
         }
-        let packed = self.vpks.iter().find_map(|v| v.read(path, self.files));
+        let packed = self.vpks.iter().find_map(|v| v.read(path, self.files, limit));
         packed.or_else(|| self.files.read(path)).or_else(|| self.files.read(&format!("download/{path}"))).map(|d| (Cow::Owned(d), Origin::Game))
     }
 
@@ -184,8 +190,9 @@ impl<'a> Library<'a> {
         Vec::new()
     }
 
-    /// The material's picture, no wider or taller than `max`, and where its texture was found.
-    pub fn picture(&self, material: &str, max: usize) -> Option<(vtf::Picture, Origin)> {
+    /// The material's picture, no wider or taller than `max`, where its texture was found, and
+    /// the texture's full size.
+    pub fn picture(&self, material: &str, max: usize) -> Option<Found> {
         self.textures(material).iter().find_map(|texture| {
             let path = format!("materials/{texture}.vtf");
             if let Some(known) = self.decoded.borrow().get(&path) {
@@ -195,7 +202,7 @@ impl<'a> Library<'a> {
             let picture = self.find(&path, HEADER).and_then(|(head, origin)| {
                 let need = vtf::needed(&head, max)?;
                 let data = if need <= head.len() { head } else { self.find(&path, need)?.0 };
-                vtf::decode(&data, max).ok().map(|p| (p, origin))
+                vtf::decode(&data, max).ok().map(|p| (p, origin, vtf::full_size(&data)))
             });
             self.decoded.borrow_mut().insert(path, picture.clone());
             picture
@@ -203,8 +210,19 @@ impl<'a> Library<'a> {
     }
 }
 
+/// A material's picture, where its texture was found, and the texture's full size.
+pub type Found = (vtf::Picture, Origin, (u32, u32));
+
+/// A KeyValues token; a quoted brace is text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Token<'a> {
+    Text(&'a str),
+    Open,
+    Close,
+}
+
 /// KeyValues tokens: quoted or bare strings and braces, without `//` comments.
-fn tokens(text: &str) -> Vec<&str> {
+pub fn tokens(text: &str) -> Vec<Token<'_>> {
     let mut out = Vec::new();
     let mut rest = text;
     loop {
@@ -214,30 +232,33 @@ fn tokens(text: &str) -> Vec<&str> {
         }
         if rest.starts_with("//") {
             rest = rest.split_once('\n').map_or("", |(_, r)| r);
+        } else if let Some(after) = rest.strip_prefix('{') {
+            out.push(Token::Open);
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix('}') {
+            out.push(Token::Close);
+            rest = after;
         } else if let Some(quoted) = rest.strip_prefix('"') {
             let (token, after) = quoted.split_once('"').unwrap_or((quoted, ""));
-            out.push(token);
+            out.push(Token::Text(token));
             rest = after;
         } else {
-            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '{' || c == '}').unwrap_or(rest.len()).max(1);
-            let (token, after) = rest.split_at(rest.ceil_char_boundary(end));
-            out.push(token);
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '{' || c == '}').unwrap_or(rest.len());
+            let (token, after) = rest.split_at_checked(end).unwrap_or((rest, ""));
+            out.push(Token::Text(token));
             rest = after;
         }
     }
 }
 
 /// The first value of `key` at any depth; a string followed by a brace names a block instead.
-fn value<'t>(tokens: &[&'t str], key: &str) -> Option<&'t str> {
-    let brace = |t: &str| t == "{" || t == "}";
+pub fn value<'t>(tokens: &[Token<'t>], key: &str) -> Option<&'t str> {
     let mut i = 0;
-    while let (Some(&k), Some(&v)) = (tokens.get(i), tokens.get(i + 1)) {
-        if brace(k) || brace(v) {
-            i += 1;
-        } else if k.eq_ignore_ascii_case(key) {
-            return Some(v);
-        } else {
-            i += 2;
+    while let (Some(k), Some(v)) = (tokens.get(i), tokens.get(i + 1)) {
+        match (k, v) {
+            (Token::Text(k), Token::Text(v)) if k.eq_ignore_ascii_case(key) => return Some(v),
+            (Token::Text(_), Token::Text(_)) => i += 2,
+            _ => i += 1,
         }
     }
     None
@@ -257,7 +278,8 @@ mod tests {
         let patch = tokens("patch { include \"materials/a/b.vmt\" insert { \"$envmap\" \"c\" } }");
         assert_eq!(value(&patch, "include"), Some("materials/a/b.vmt"));
         assert_eq!(value(&patch, "$basetexture"), None);
-        assert_eq!(tokens("{\"unterminated"), vec!["{", "unterminated"]);
+        assert_eq!(tokens("{\"unterminated"), [Token::Open, Token::Text("unterminated")]);
+        assert_eq!(tokens("k \"{\" a}"), [Token::Text("k"), Token::Text("{"), Token::Text("a"), Token::Close]);
     }
 
     #[test]

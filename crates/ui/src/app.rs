@@ -8,7 +8,7 @@ use std::time::Instant;
 use craft_settings::{Location, SettingsStore};
 use eframe::egui_wgpu;
 use egui::{Pos2, Rect, Vec2};
-use mapcraft_engine::{Issue, Session};
+use mapcraft_engine::{Issue, SelectMode, Session};
 use mapcraft_geom::{Aabb, DVec3};
 use mapcraft_map::{Map, NodeId, NodeKind};
 use mapcraft_render::{Camera, RenderMode, Renderer, Target, View, build_scene};
@@ -35,6 +35,8 @@ pub(crate) struct Pane {
     pub target: Option<Target>,
     pub texture: Option<egui::TextureId>,
     pub rect: Rect,
+    /// Set while the pane shows the UV editor instead of its camera.
+    pub uv: Option<crate::uv::UvCamera>,
 }
 
 pub(crate) struct Gpu {
@@ -48,6 +50,7 @@ pub(crate) enum LeftTab {
     Tags,
     Materials,
     Entities,
+    Models,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,6 +118,11 @@ pub struct MapCraftApp {
     /// Face whose material and alignment Alt+Shift+right click applies.
     pub(crate) picked_face: Option<mapcraft_map::Face>,
     pub(crate) thumbs: crate::thumbs::Thumbs,
+    /// Larger pictures of materials for UV views.
+    pub(crate) uv_images: crate::thumbs::Thumbs,
+    pub(crate) uv_modal: Option<crate::uv::UvModal>,
+    /// A UV transform ran as this frame began, so views ignore the clicks that end it.
+    pub(crate) uv_busy: bool,
     pub(crate) find: crate::panels::FindState,
     pub(crate) tag_name: String,
     pub(crate) show_thumbs: bool,
@@ -145,6 +153,7 @@ pub struct MapCraftApp {
     pub(crate) hovered_pane: Option<usize>,
     /// The face an extrude drag would take, shown highlighted.
     pub(crate) extrude_hover: Option<crate::transform::ExtrudeHover>,
+    pub(crate) vertex: crate::vertex::VertexState,
     /// The compile profile Run Last Profile repeats.
     last_compile: Option<usize>,
     /// Quit was asked for from a menu or shortcut.
@@ -162,6 +171,8 @@ pub struct MapCraftApp {
     pending: Option<Pending>,
     confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
+    /// Plugin materials still being listed on a worker thread.
+    pub(crate) material_list: Option<mpsc::Receiver<crate::project::Listed>>,
     last_autosave: Instant,
     screenshot: Option<PathBuf>,
     sdk_var_overrides: Vec<(String, String)>,
@@ -186,8 +197,15 @@ impl MapCraftApp {
             None => craft_settings::paths::data_dir("mapcraft"),
         };
         let recovery = data_dir.as_deref().map(crate::dialogs::start_session).unwrap_or_default();
+        let cached = data_dir.as_deref().map(|d| mapcraft_plugin_host::Host::with_cache(&d.join("plugin-cache")));
+        let plugin_host = match cached {
+            Some(Ok(host)) => Ok(host),
+            _ => mapcraft_plugin_host::Host::new(),
+        }
+        .map_err(|e| log::error!("plugins disabled: {e}"))
+        .ok();
         let gpu = cc.wgpu_render_state.as_ref().map(|state| Gpu { renderer: Renderer::new(&state.device, &state.queue), state: state.clone() });
-        let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING };
+        let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING, uv: None };
         let mut app = Self {
             session: Session::default(),
             prefs,
@@ -227,10 +245,13 @@ impl MapCraftApp {
             last_click: None,
             picked_face: None,
             thumbs: crate::thumbs::Thumbs::new(),
+            uv_images: crate::thumbs::Thumbs::sized(1024),
+            uv_modal: None,
+            uv_busy: false,
             find: crate::panels::FindState::default(),
             tag_name: String::new(),
             show_thumbs: true,
-            plugin_host: mapcraft_plugin_host::Host::new().map_err(|e| log::error!("plugins disabled: {e}")).ok(),
+            plugin_host,
             plugin_dialog: None,
             plugin_shape: None,
             plugin_params: BTreeMap::new(),
@@ -245,6 +266,7 @@ impl MapCraftApp {
             snap_mark: None,
             hovered_pane: None,
             extrude_hover: None,
+            vertex: crate::vertex::VertexState::default(),
             last_compile: None,
             quit_requested: false,
             sdk_paths_changed: false,
@@ -257,6 +279,7 @@ impl MapCraftApp {
             pending: None,
             confirm_tools: None,
             compile: None,
+            material_list: None,
             last_autosave: Instant::now(),
             screenshot: options.screenshot,
             sdk_var_overrides: options.sdk_vars,
@@ -311,10 +334,14 @@ impl MapCraftApp {
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        self.material_list = self.plugin_host.as_ref().and_then(|h| self.project.list_materials_later(h));
         if let Some(dir) = self.material_cache() {
             self.project.add_cached_materials(&dir);
         }
         self.thumbs.clear();
+        if let Some(gpu) = &mut self.gpu {
+            gpu.renderer.forget_materials();
+        }
         for p in &self.project.problems {
             self.output.push(p.clone());
         }
@@ -397,8 +424,7 @@ impl MapCraftApp {
     /// Centers every view on the map's bounds.
     pub(crate) fn frame_all(&mut self) {
         let bounds = self.view_map().nodes().filter_map(|(id, _)| self.leaf_bounds(id)).reduce(|a, b| a.union(&b));
-        let Some(b) = bounds else { return };
-        self.frame_bounds(b);
+        self.frame_bounds(bounds.unwrap_or(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0))));
     }
 
     pub(crate) fn frame_bounds(&mut self, b: Aabb) {
@@ -413,7 +439,9 @@ impl MapCraftApp {
                 let px = f64::from(size.x.min(size.y).max(100.0));
                 cam.zoom = (px / (extent * 1.3)).clamp(1.0 / 256.0, 64.0);
             } else {
-                cam.position = c - cam.forward() * extent * 0.85;
+                // Backs off until the box's bounding sphere fits the field of view.
+                let radius = b.size().length().max(64.0) * 0.5;
+                cam.position = c - cam.forward() * radius / (cam.fov_y.to_radians() * 0.5).sin().max(0.1);
             }
         }
     }
@@ -429,7 +457,12 @@ impl MapCraftApp {
     }
 
     fn update_display(&mut self) {
-        let derived = |n: &mapcraft_map::Node| matches!(&n.kind, NodeKind::Prefab(_) | NodeKind::Group(mapcraft_map::Group { mirror: Some(_), .. }));
+        let derived = |n: &mapcraft_map::Node| {
+            matches!(
+                &n.kind,
+                NodeKind::Prefab(_) | NodeKind::Group(mapcraft_map::Group { mirror: Some(_), .. }) | NodeKind::Group(mapcraft_map::Group { link: Some(_), .. })
+            )
+        };
         if !self.session.map.nodes().any(|(_, n)| derived(n)) {
             self.display = None;
             return;
@@ -458,6 +491,7 @@ impl MapCraftApp {
         let map = self.display.as_ref().map_or(&self.session.map, |(m, _)| m);
         let names: BTreeSet<String> = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
         self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
+        self.project.prepare_models(map, &mut gpu.renderer);
         let renderer = &gpu.renderer;
         let colorize = self.prefs.get().view.colorize;
         let scene = build_scene(map, &self.session.selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, colorize);
@@ -533,14 +567,26 @@ impl MapCraftApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.uv_modal.is_some() {
+            self.uv_modal_input(ctx);
+            return;
+        }
+        if self.vertex.bevel.is_some() {
+            self.bevel_modal_input(ctx);
+            return;
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
         // WASD and friends fly the 3D camera while the right button is down.
         let flying = ctx.input(|i| i.pointer.secondary_down());
+        let over_uv = self.hovered_pane.and_then(|i| self.panes.get(i)).is_some_and(|p| p.uv.is_some());
         let prefs = self.prefs.get();
         for (sc, id) in crate::shortcuts::bindings(prefs.keymap, &prefs.shortcuts) {
-            if flying && !sc.modifiers.command {
+            if (flying && !sc.modifiers.command)
+                || (!over_uv && crate::shortcuts::uv_only(id))
+                || (self.tool != Tool::Vertex && crate::shortcuts::vertex_only(id))
+            {
                 continue;
             }
             if ctx.input_mut(|i| i.consume_shortcut(&sc)) {
@@ -551,8 +597,12 @@ impl MapCraftApp {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.set_tool(Tool::Select);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() == 2 {
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() >= 2 {
             self.apply_clip();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Path {
+            self.session.select_none();
+            self.mark_changed();
         }
     }
 
@@ -562,13 +612,17 @@ impl MapCraftApp {
         self.drag = Drag::None;
         if t == Tool::Face && self.tool != Tool::Face {
             let map = &self.session.map;
-            let faces: BTreeSet<_> = self
-                .session
-                .selected_brushes()
-                .into_iter()
-                .filter_map(|id| Some(map.get(id)?.kind.brush()?.faces.iter().map(move |f| (id, f.id)).collect::<Vec<_>>()))
+            let brushes: BTreeSet<NodeId> = self.session.selected_brushes().into_iter().collect();
+            let covered = mapcraft_map::covered_faces(map, Some(&brushes));
+            let faces: BTreeSet<_> = brushes
+                .iter()
+                .filter_map(|id| Some(map.get(*id)?.kind.brush()?.faces.iter().map(move |f| (*id, f.id)).collect::<Vec<_>>()))
                 .flatten()
+                .filter(|f| !covered.contains(f))
                 .collect();
+            if !covered.is_empty() {
+                self.status = format!("Picked {} faces; left out {} hidden between touching brushes", faces.len(), covered.len());
+            }
             self.session.face_selection = faces;
             self.session.selection.clear();
         } else if !matches!(t, Tool::Face | Tool::Sculpt) {
@@ -580,6 +634,10 @@ impl MapCraftApp {
 
     /// Runs a bindable action: the shell's own, or an engine command.
     pub(crate) fn run_action(&mut self, id: &str) {
+        if crate::shortcuts::vertex_only(id) {
+            self.vertex_action(id);
+            return;
+        }
         let tool = match id {
             "tool.select" => Some(Tool::Select),
             "tool.move" => Some(Tool::Move),
@@ -592,6 +650,7 @@ impl MapCraftApp {
             "tool.vertex" => Some(Tool::Vertex),
             "tool.face" => Some(Tool::Face),
             "tool.sculpt" => Some(Tool::Sculpt),
+            "tool.path" => Some(Tool::Path),
             _ => None,
         };
         if let Some(t) = tool {
@@ -628,6 +687,8 @@ impl MapCraftApp {
             }
             "edit.preferences" => self.dialogs.preferences = true,
             "tools.transform" => self.dialogs.transform.open = true,
+            "tools.array" => self.open_array(),
+            "tools.sweep" | "tools.spin" => self.run_curve(id),
             "tools.replace_materials" => self.open_replace_materials(),
             "view.snap_grid" => {
                 self.prefs.update(|p| p.view.snap_grid = !p.view.snap_grid);
@@ -638,9 +699,20 @@ impl MapCraftApp {
             "view.link_zoom" => {
                 self.prefs.update(|p| p.view.link_zoom = !p.view.link_zoom);
             }
+            "view.maximize" if self.prefs.get().view.single_view => {
+                let next = self.maximized.map_or(0, |m| (m + 1) % self.panes.len().max(1));
+                self.maximized = Some(next);
+                self.status = format!("Showing {}; Space shows the next view", self.panes.get(next).map_or("", |p| p.camera.view.label()));
+            }
             "view.maximize" => {
                 self.maximized = if self.maximized.is_some() { None } else { self.hovered_pane };
             }
+            "view.single" => {
+                let on = !self.prefs.get().view.single_view;
+                self.prefs.update(|p| p.view.single_view = on);
+                self.maximized = on.then(|| self.hovered_pane.unwrap_or(0));
+            }
+            "view.origin" => self.frame_bounds(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0))),
             "prefab.make_local" => self.make_local(),
             "prefab.save" => self.save_prefab(),
             "prefab.insert" => self.insert_prefab(),
@@ -664,12 +736,14 @@ impl MapCraftApp {
                 self.render_mode = match self.render_mode {
                     RenderMode::Textured => RenderMode::Flat,
                     RenderMode::Flat => RenderMode::Wireframe,
-                    RenderMode::Wireframe => RenderMode::Textured,
+                    RenderMode::Wireframe => RenderMode::Lit,
+                    RenderMode::Lit => RenderMode::Textured,
                 };
             }
             "view.render_textured" => self.render_mode = RenderMode::Textured,
             "view.render_flat" => self.render_mode = RenderMode::Flat,
             "view.render_wireframe" => self.render_mode = RenderMode::Wireframe,
+            "view.render_lit" => self.render_mode = RenderMode::Lit,
             "view.colorize" => {
                 self.prefs.update(|p| p.view.colorize = !p.view.colorize);
                 self.mark_changed();
@@ -685,6 +759,7 @@ impl MapCraftApp {
             "panel.tags" => self.left_tab = LeftTab::Tags,
             "panel.materials" => self.left_tab = LeftTab::Materials,
             "panel.entities" => self.left_tab = LeftTab::Entities,
+            "panel.models" => self.left_tab = LeftTab::Models,
             "panel.output" => self.show_bottom = !self.show_bottom,
             "inspector.smart_edit" => self.smart_edit = !self.smart_edit,
             "shape.next" => {
@@ -708,6 +783,9 @@ impl MapCraftApp {
                 }
             }
             "run.cancel" => self.cancel_compile(),
+            "uv.grab" => self.begin_uv_modal(crate::uv::UvMode::Grab),
+            "uv.rotate" => self.begin_uv_modal(crate::uv::UvMode::Rotate),
+            "uv.scale" => self.begin_uv_modal(crate::uv::UvMode::Scale),
             _ => self.run_command(id),
         }
     }
@@ -754,6 +832,27 @@ impl MapCraftApp {
         let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
         for ev in events {
             match ev {
+                egui::Event::Copy if self.tool == Tool::Face => {
+                    let face = self.session.active_pick().and_then(|(id, f)| self.session.map.get(id)?.kind.brush()?.faces.iter().find(|x| x.id == f).cloned());
+                    match face {
+                        Some(f) => {
+                            self.status = format!("Copied the face's material and alignment ({}); Ctrl+V pastes them on picked faces", f.material);
+                            self.session.tex.material = f.material.clone();
+                            self.picked_face = Some(f);
+                        }
+                        None => self.status = "Pick a face to copy first".into(),
+                    }
+                }
+                egui::Event::Paste(_) if self.tool == Tool::Face => {
+                    let result = match self.picked_face.clone() {
+                        Some(src) => self.session.paste_face(&src).map_err(|e| e.to_string()),
+                        None => Err("Copy a face first: Ctrl+C on a picked face, or Alt+click a face".into()),
+                    };
+                    if let Err(e) = result {
+                        self.status = e;
+                    }
+                    self.mark_changed();
+                }
                 egui::Event::Copy | egui::Event::Cut => match self.session.copy_selection() {
                     Ok(text) => {
                         ctx.copy_text(text);
@@ -807,6 +906,24 @@ impl MapCraftApp {
         }
     }
 
+    /// A menu item for an engine command; selection modes show which one is on.
+    pub(crate) fn command_item(&mut self, ui: &mut egui::Ui, c: &mapcraft_engine::CommandSpec) {
+        let label = c.menu.rsplit('/').next().unwrap_or(c.label);
+        let mode = match c.id {
+            "edit.select_groups" => Some(SelectMode::Groups),
+            "edit.select_objects" => Some(SelectMode::Objects),
+            "edit.select_solids" => Some(SelectMode::Solids),
+            _ => None,
+        };
+        match mode {
+            Some(m) => self.action_toggle(ui, c.id, label, self.session.select_mode == m),
+            None => {
+                let enabled = (c.enabled)(&self.session);
+                self.action_button(ui, c.id, label, enabled);
+            }
+        }
+    }
+
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -837,6 +954,7 @@ impl MapCraftApp {
                         self.action_button(ui, "tools.check_problems", "Check for Problems", true);
                         let any = !self.session.selection.is_empty();
                         self.action_button(ui, "tools.transform", "Transform…", any);
+                        self.action_button(ui, "tools.array", "Array…", any);
                         self.action_button(ui, "tools.replace_materials", "Replace Materials…", true);
                         ui.separator();
                         self.prefab_menu(ui);
@@ -847,6 +965,7 @@ impl MapCraftApp {
                         self.action_toggle(ui, "view.render_textured", "Textured", mode == RenderMode::Textured);
                         self.action_toggle(ui, "view.render_flat", "Flat Shaded", mode == RenderMode::Flat);
                         self.action_toggle(ui, "view.render_wireframe", "Wireframe", mode == RenderMode::Wireframe);
+                        self.action_toggle(ui, "view.render_lit", "Lit", mode == RenderMode::Lit);
                         self.action_button(ui, "view.render_cycle", "Next Render Mode", true);
                         ui.separator();
                         let view = self.prefs.get().view.clone();
@@ -857,7 +976,9 @@ impl MapCraftApp {
                         ui.separator();
                         self.action_button(ui, "view.frame_all", "Frame All", true);
                         self.action_button(ui, "view.frame_selection", "Focus Selection", true);
-                        self.action_button(ui, "view.maximize", "Maximize View Under Pointer", true);
+                        self.action_button(ui, "view.origin", "Go to Origin", true);
+                        self.action_button(ui, "view.maximize", if view.single_view { "Next View" } else { "Maximize View Under Pointer" }, true);
+                        self.action_toggle(ui, "view.single", "One View Layout", view.single_view);
                         self.action_button(ui, "view.find_entities", "Find Entities", true);
                         ui.menu_button("Panels", |ui| {
                             for (id, label) in [
@@ -865,6 +986,7 @@ impl MapCraftApp {
                                 ("panel.tags", "Tags"),
                                 ("panel.materials", "Materials"),
                                 ("panel.entities", "Entities"),
+                                ("panel.models", "Models"),
                                 ("panel.output", "Output"),
                             ] {
                                 self.action_button(ui, id, label, true);
@@ -872,10 +994,21 @@ impl MapCraftApp {
                         });
                         ui.separator();
                     }
-                    for c in mapcraft_engine::commands().iter().filter(|c| c.menu.split('/').next() == Some(top)) {
-                        let label = c.menu.rsplit('/').next().unwrap_or(c.label);
-                        let enabled = (c.enabled)(&self.session);
-                        self.action_button(ui, c.id, label, enabled);
+                    let in_menu = |c: &&mapcraft_engine::CommandSpec, menu: &str| c.menu.rsplit_once('/').is_some_and(|(m, _)| m == menu);
+                    let mut submenus: Vec<&str> = Vec::new();
+                    for c in mapcraft_engine::commands().iter().filter(|c| c.menu.starts_with(&format!("{top}/"))) {
+                        match c.menu.split('/').nth(1).filter(|_| c.menu.matches('/').count() == 2) {
+                            Some(sub) if !submenus.contains(&sub) => {
+                                submenus.push(sub);
+                                ui.menu_button(sub, |ui| {
+                                    for c in mapcraft_engine::commands().iter().filter(|c| in_menu(c, &format!("{top}/{sub}"))) {
+                                        self.command_item(ui, c);
+                                    }
+                                });
+                            }
+                            Some(_) => {}
+                            None => self.command_item(ui, c),
+                        }
                     }
                     if top == "Edit" {
                         ui.separator();
@@ -906,6 +1039,21 @@ impl MapCraftApp {
 
     pub(crate) fn check_problems(&mut self) {
         self.issues = mapcraft_engine::validate(&self.session.map, self.project.sdk.as_ref().map(|_| &self.project.game));
+        let map = self.view_map().clone();
+        let name = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
+        let mut found = Vec::new();
+        for plugin in self.project.plugins.iter_mut().filter(|p| p.manifest.validates) {
+            match plugin.validate(&map, &name) {
+                Ok(list) => found.extend(list),
+                Err(e) => self.output.push(e.to_string()),
+            }
+            self.output.extend(plugin.take_log());
+        }
+        for i in found {
+            let node = i.node.map_or(mapcraft_map::ROOT, |n| self.owner(n));
+            let severity = if i.error { mapcraft_engine::Severity::Error } else { mapcraft_engine::Severity::Warning };
+            self.issues.push(mapcraft_engine::Issue { node, face: None, severity, message: i.message, fix: None });
+        }
         self.bottom_tab = BottomTab::Issues;
         self.show_bottom = true;
     }
@@ -1155,6 +1303,27 @@ impl MapCraftApp {
         self.bottom_tab = BottomTab::Output;
     }
 
+    fn poll_materials(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.material_list else { return };
+        match rx.try_recv() {
+            Ok(listed) => {
+                self.material_list = None;
+                let problems = self.project.take_listed(listed);
+                self.output.extend(problems);
+                if let Some(dir) = self.material_cache() {
+                    self.project.add_cached_materials(&dir);
+                }
+                self.thumbs.clear();
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.renderer.forget_materials();
+                }
+                self.scene_dirty = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+            Err(mpsc::TryRecvError::Disconnected) => self.material_list = None,
+        }
+    }
+
     fn poll_compile(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.compile else { return };
         self.output.extend(job.rx.try_iter());
@@ -1191,6 +1360,9 @@ impl MapCraftApp {
         let full = ui.available_rect_before_wrap();
         self.hovered_pane = None;
         ui.painter().rect_filled(full, 0.0, crate::chrome::BG);
+        if self.prefs.get().view.single_view && self.maximized.is_none() {
+            self.maximized = Some(0);
+        }
         if let Some(m) = self.maximized {
             self.pane_ui(ui, m, full);
             return;
@@ -1233,9 +1405,13 @@ impl MapCraftApp {
             self.hovered_pane = Some(index);
         }
         self.pane_header(ui, index, header, active);
-        self.viewport(ui, index, body);
-        if self.panes.get(index).is_some_and(|p| !p.camera.is_2d()) {
-            self.axis_widget(ui, index, body);
+        if self.panes.get(index).is_some_and(|p| p.uv.is_some()) {
+            self.uv_view(ui, index, body);
+        } else {
+            self.viewport(ui, index, body);
+            if self.panes.get(index).is_some_and(|p| !p.camera.is_2d()) {
+                self.axis_widget(ui, index, body);
+            }
         }
         if active {
             ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, crate::chrome::ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Inside);
@@ -1303,12 +1479,19 @@ impl eframe::App for MapCraftApp {
         self.prefs.tick(Instant::now());
         self.autosave();
         self.poll_compile(ctx);
+        self.poll_materials(ctx);
+        self.poll_models(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_screenshot(&ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        self.uv_busy = self.uv_modal.is_some() || self.vertex.bevel.is_some();
+        let views = || self.panes.iter().filter(|p| p.uv.is_none());
+        if let Some(p) = views().find(|p| !p.camera.is_2d()).or_else(|| views().next()) {
+            self.session.view_dir = if p.camera.is_2d() { -p.camera.view.axes().2 } else { p.camera.forward() };
+        }
         self.handle_shortcuts(&ctx);
         if self.scene_dirty {
             self.rebuild_scene();
@@ -1331,7 +1514,9 @@ impl eframe::App for MapCraftApp {
         self.extra_dialogs(&ctx);
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
+        self.bevel_window(&ctx);
         self.thumbs.poll(&ctx);
+        self.uv_images.poll(&ctx);
         if self.frame_pending && self.panes.iter().all(|p| p.rect.is_positive()) {
             self.frame_pending = false;
             self.frame_all();

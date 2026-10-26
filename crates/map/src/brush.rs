@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use mapcraft_geom::{Aabb, DMat3, DMat4, DVec2, DVec3, EPSILON, Plane, Side, Solid, SolidError, convex_hull};
+use mapcraft_geom::{Aabb, DAffine2, DMat3, DMat4, DVec2, DVec3, EPSILON, Plane, Side, Solid, SolidError, convex_hull};
 use serde::{Deserialize, Serialize};
 
 use crate::disp::{Displacement, ray_triangle};
@@ -90,11 +90,35 @@ impl Face {
         Plane::from_points(self.points[0], self.points[1], self.points[2])
     }
 
+    /// Texture coordinates of a point in texels.
+    pub fn texel(&self, p: DVec3) -> DVec2 {
+        let texel = |a: &TexAxis| if a.scale != 0.0 { p.dot(a.axis) / a.scale + a.offset } else { a.offset };
+        DVec2::new(texel(&self.u), texel(&self.v))
+    }
+
     /// Normalized texture coordinates of a point for a texture of `size` texels.
     pub fn uv(&self, p: DVec3, size: DVec2) -> DVec2 {
-        let texel = |a: &TexAxis| if a.scale != 0.0 { p.dot(a.axis) / a.scale + a.offset } else { a.offset };
-        let size = size.max(DVec2::ONE);
-        DVec2::new(texel(&self.u) / size.x, texel(&self.v) / size.y)
+        self.texel(p) / size.max(DVec2::ONE)
+    }
+
+    /// Remaps the texture so every point's texel coordinates become `m` of what they were; false,
+    /// leaving the face alone, when that would flatten an axis.
+    pub fn transform_texels(&mut self, m: DAffine2) -> bool {
+        let grad = |a: &TexAxis| if a.scale != 0.0 { a.axis / a.scale } else { DVec3::ZERO };
+        let (gu, gv, ou, ov) = (grad(&self.u), grad(&self.v), self.u.offset, self.v.offset);
+        let axis = |row: DVec2, shift: f64| {
+            let w = gu * row.x + gv * row.y;
+            let len = w.length();
+            (len > 1e-12 && len.is_finite()).then(|| TexAxis { axis: w / len, offset: row.x * ou + row.y * ov + shift, scale: 1.0 / len })
+        };
+        let rows = m.matrix2.transpose();
+        let (Some(u), Some(v)) = (axis(rows.x_axis, m.translation.x), axis(rows.y_axis, m.translation.y)) else { return false };
+        // The rotation field follows rotate_texture, which turns texel space the other way when u x v points out of the face.
+        let flipped = self.plane().is_some_and(|p| self.u.axis.cross(self.v.axis).dot(p.normal) > 0.0);
+        let turn = m.matrix2.x_axis.y.atan2(m.matrix2.x_axis.x).to_degrees();
+        self.rotation = (self.rotation + if flipped { -turn } else { turn }).rem_euclid(360.0);
+        (self.u, self.v) = (u, v);
+        true
     }
 
     pub fn align_to_world(&mut self) {
@@ -225,6 +249,30 @@ pub enum BrushError {
     Solid(#[from] SolidError),
     #[error("the transform cannot be inverted")]
     SingularTransform,
+    #[error("cannot bevel: {0}")]
+    Bevel(&'static str),
+}
+
+/// Blender's bevel: the faces beside an edge are cut back `width` and `segments` faces span the
+/// gap along a curve set by `profile` (0.5 round, 0.25 or less a flat chamfer, toward 1 boxier).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bevel {
+    pub width: f64,
+    pub segments: usize,
+    pub profile: f64,
+}
+
+impl Default for Bevel {
+    fn default() -> Self {
+        Self { width: 16.0, segments: 1, profile: 0.5 }
+    }
+}
+
+/// A bevel strip face: `src`'s material and attributes, its texture turned on from `prev`.
+fn strip_face(src: &Face, prev: &Face, points: [DVec3; 3]) -> Face {
+    let mut f = Face { id: FaceId(0), points, disp: None, ..src.clone() };
+    f.wrap_from(prev);
+    f
 }
 
 /// A convex solid stored as its faces.
@@ -553,6 +601,88 @@ impl Brush {
         Self::pruned(faces).ok().map(Self::with_new_ids)
     }
 
+    /// The brush with each edge `(a, b)` beveled; refused when one is not an edge between two
+    /// faces, the cut is wider than a face beside it, or two edges' bevels overlap.
+    pub fn bevel(&self, edges: &[(DVec3, DVec3)], bevel: &Bevel) -> Result<Self, BrushError> {
+        let solid = self.solid()?;
+        let w = bevel.width;
+        if !(w.is_finite() && w > EPSILON) {
+            return Err(BrushError::Bevel("the width must be above zero"));
+        }
+        let n = bevel.segments.clamp(1, 64);
+        // Superellipse exponent: 2 is a circle; under 1 would dent the brush, so it stops at a flat chamfer.
+        let r = 2f64.powf(4.0 * bevel.profile.clamp(0.0, 1.0) - 1.0).max(1.0);
+        let near = |p: DVec3, q: DVec3| p.distance_squared(q) < 1e-6;
+        let mut faces = self.faces.clone();
+        let mut chamfers: Vec<Plane> = Vec::new();
+        let mut done: Vec<(DVec3, DVec3)> = Vec::new();
+        for &(a, b) in edges {
+            if done.iter().any(|&(p, q)| (near(p, a) && near(q, b)) || (near(p, b) && near(q, a))) {
+                continue;
+            }
+            done.push((a, b));
+            let sides: Vec<usize> = (0..self.faces.len())
+                .filter(|i| solid.faces.get(*i).and_then(Option::as_ref).is_some_and(|w| w.0.iter().any(|p| near(*p, a)) && w.0.iter().any(|p| near(*p, b))))
+                .collect();
+            let not_edge = BrushError::Bevel("pick edges between two faces of the brush");
+            let &[i, j] = sides.as_slice() else { return Err(not_edge) };
+            let (Some(fa), Some(fb), Some(Some(wa)), Some(Some(wb))) = (self.faces.get(i), self.faces.get(j), solid.faces.get(i), solid.faces.get(j)) else {
+                return Err(not_edge);
+            };
+            let (Some(na), Some(nb)) = (fa.plane().map(|p| p.normal), fb.plane().map(|p| p.normal)) else { return Err(not_edge) };
+            let e = (b - a).normalize_or_zero();
+            // Along each face, away from the edge.
+            let into = |n: DVec3, other: DVec3| {
+                let d = e.cross(n);
+                if d.dot(other) > 0.0 { -d } else { d }
+            };
+            let (da, db) = (into(na, nb), into(nb, na));
+            let reach = |w: &mapcraft_geom::Winding, d: DVec3| w.0.iter().map(|p| (*p - a).dot(d)).fold(0.0, f64::max);
+            if w > reach(wa, da) + EPSILON || w > reach(wb, db) + EPSILON {
+                return Err(BrushError::Bevel("the width is more than a face beside the edge"));
+            }
+            let profile: Vec<DVec3> = (0..=n)
+                .map(|k| {
+                    let t = std::f64::consts::FRAC_PI_2 * k as f64 / n as f64;
+                    let (x, y) = (t.cos().max(0.0).powf(2.0 / r), t.sin().max(0.0).powf(2.0 / r));
+                    a + da * w * (1.0 - y) + db * w * (1.0 - x)
+                })
+                .collect();
+            let outward = |p: [DVec3; 3]| match Plane::from_points(p[0], p[1], p[2]) {
+                Some(plane) if plane.normal.dot(na + nb) < 0.0 => [p[2], p[1], p[0]],
+                _ => p,
+            };
+            let strip: Vec<Option<[DVec3; 3]>> =
+                profile.windows(2).map(|q| (q[0].distance(q[1]) > EPSILON).then(|| outward([q[0] + (b - a), q[0], q[1]]))).collect();
+            let (Some(&pa), Some(&pb)) = (profile.first(), profile.last()) else { return Err(not_edge) };
+            let chamfer = outward([pa + (b - a), pa, pb]);
+            chamfers.extend(Plane::from_points(chamfer[0], chamfer[1], chamfer[2]));
+            // Each half's texture runs on from the face it starts at.
+            let (first, second) = strip.split_at(n.div_ceil(2).min(strip.len()));
+            let from_a: Vec<[DVec3; 3]> = first.iter().flatten().copied().collect();
+            let from_b: Vec<[DVec3; 3]> = second.iter().rev().flatten().copied().collect();
+            for (src, part) in [(fa, from_a), (fb, from_b)] {
+                let mut prev = src.clone();
+                for p in part {
+                    let f = strip_face(src, &prev, p);
+                    faces.push(f.clone());
+                    prev = f;
+                }
+            }
+        }
+        let planes = self.planes()?;
+        for (k, c) in chamfers.iter().enumerate() {
+            for d in chamfers.iter().skip(k + 1) {
+                let mut both = planes.clone();
+                both.extend([c.flipped(), d.flipped()]);
+                if Solid::from_planes(&both).is_ok() {
+                    return Err(BrushError::Bevel("the bevels of two edges overlap"));
+                }
+            }
+        }
+        Self::pruned(faces)
+    }
+
     /// Walls of the given thickness around a hollow interior.
     pub fn hollow(&self, thickness: f64) -> Result<Vec<Self>, BrushError> {
         let mut inner = self.clone();
@@ -722,6 +852,86 @@ mod tests {
         assert!(side.u.axis.dot(n).abs() < 1e-9 && side.v.axis.dot(n).abs() < 1e-9);
     }
 
+    fn numbered(mut b: Brush) -> Brush {
+        for (i, f) in b.faces.iter_mut().enumerate() {
+            f.id = FaceId(i as u64 + 1);
+        }
+        b
+    }
+
+    const TOP_FRONT: (DVec3, DVec3) = (DVec3::new(0.0, 64.0, 64.0), DVec3::new(64.0, 64.0, 64.0));
+
+    #[test]
+    fn bevel_chamfer_round_and_profiles() {
+        let b = numbered(cube(0.0, 64.0));
+        let full = 64.0f64.powi(3);
+        let chamfer = b.bevel(&[TOP_FRONT], &Bevel { width: 16.0, segments: 1, profile: 0.5 }).unwrap();
+        assert_eq!(chamfer.faces.len(), 7);
+        assert!((volume(std::slice::from_ref(&chamfer)) - (full - 0.5 * 16.0 * 16.0 * 64.0)).abs() < 1e-6);
+
+        let round = b.bevel(&[TOP_FRONT], &Bevel { width: 16.0, segments: 4, profile: 0.5 }).unwrap();
+        assert_eq!(round.faces.len(), 10);
+        assert_eq!(round.faces.iter().filter(|f| f.id != FaceId(0)).count(), 6, "the cut back faces keep their ids");
+        let s = round.solid().unwrap();
+        for v in s.vertices().filter(|v| v.y > 48.0 + 1e-6 && v.z > 48.0 + 1e-6) {
+            assert!(((v.y - 48.0).hypot(v.z - 48.0) - 16.0).abs() < 1e-6, "{v:?} is off the round");
+        }
+        let closure: DVec3 = s.faces.iter().flatten().map(|w| w.area_vector()).sum();
+        assert!(closure.length() < 1e-6);
+        let planes = round.planes().unwrap();
+        assert!(s.vertices().all(|p| planes.iter().all(|q| q.distance(p) < 1e-6)), "convex");
+        let rounded = volume(std::slice::from_ref(&round));
+        assert!(rounded > volume(&[chamfer]) && rounded < full);
+
+        let flat = b.bevel(&[TOP_FRONT], &Bevel { width: 16.0, segments: 4, profile: 0.0 }).unwrap();
+        assert_eq!(flat.faces.len(), 7, "a profile at 0 collapses to a chamfer");
+        let boxy = b.bevel(&[TOP_FRONT], &Bevel { width: 16.0, segments: 4, profile: 1.0 }).unwrap();
+        assert!(volume(&[boxy]) > rounded);
+    }
+
+    #[test]
+    fn bevel_pairs_and_refusals() {
+        let b = cube(0.0, 64.0);
+        let bev = Bevel { width: 16.0, segments: 2, profile: 0.5 };
+        let top_back = (DVec3::new(0.0, 0.0, 64.0), DVec3::new(64.0, 0.0, 64.0));
+        let top_side = (DVec3::new(64.0, 0.0, 64.0), DVec3::new(64.0, 64.0, 64.0));
+        assert!(b.bevel(&[top_back, TOP_FRONT], &bev).is_ok());
+        let meet = b.bevel(&[top_back, TOP_FRONT], &Bevel { width: 32.0, ..bev }).unwrap();
+        assert!(meet.faces.iter().all(|f| f.plane().unwrap().normal.z < 0.99), "the top is rounded away");
+        assert!(matches!(b.bevel(&[TOP_FRONT, top_side], &bev), Err(BrushError::Bevel(_))), "bevels sharing a corner overlap");
+        assert!(b.bevel(&[TOP_FRONT], &Bevel { width: 80.0, ..bev }).is_err());
+        assert!(b.bevel(&[TOP_FRONT], &Bevel { width: 0.0, ..bev }).is_err());
+        assert!(b.bevel(&[(DVec3::new(0.0, 0.0, 64.0), DVec3::splat(64.0))], &bev).is_err(), "a diagonal is not an edge");
+    }
+
+    #[test]
+    fn bevel_textures_run_on() {
+        let mut b = numbered(cube(0.0, 64.0));
+        b.faces[4].material = "top".into();
+        b.faces[4].rotate_texture(30.0);
+        b.faces[4].u.offset = 5.0;
+        b.faces[2].material = "side".into();
+        let round = b.bevel(&[TOP_FRONT], &Bevel { width: 16.0, segments: 4, profile: 0.5 }).unwrap();
+        assert!(round.faces.iter().filter(|f| f.id == FaceId(0)).all(|f| f.material == "top" || f.material == "side"));
+        let s = round.solid().unwrap();
+        let size = DVec2::splat(64.0);
+        let mut seams = 0;
+        for (i, (f, w)) in round.faces.iter().zip(&s.faces).enumerate() {
+            for (g, x) in round.faces.iter().zip(&s.faces).skip(i + 1) {
+                let (Some(w), Some(x)) = (w, x) else { continue };
+                let shared: Vec<DVec3> = w.0.iter().filter(|p| x.0.iter().any(|q| q.distance(**p) < 1e-6)).copied().collect();
+                if shared.len() < 2 || f.material != g.material || (f.id != FaceId(0) && g.id != FaceId(0)) {
+                    continue;
+                }
+                for p in &shared {
+                    assert!(f.uv(*p, size).abs_diff_eq(g.uv(*p, size), 1e-9), "{} and {} part at {p:?}", f.material, g.material);
+                }
+                seams += 1;
+            }
+        }
+        assert_eq!(seams, 4);
+    }
+
     #[test]
     fn justify_and_rotate() {
         let b = cube(0.0, 64.0);
@@ -737,6 +947,39 @@ mod tests {
         let n = f.plane().unwrap().normal;
         f.rotate_texture(90.0);
         assert!(f.u.axis.dot(n).abs() < 1e-9 && (f.rotation - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn texel_transforms_round_trip() {
+        let b = cube(0.0, 64.0);
+        let solid = b.solid().unwrap();
+        let m = DAffine2::from_cols_array(&[1.3, 0.4, -0.2, 0.7, 9.0, -4.5]);
+        for i in [1, 4] {
+            let poly = solid.faces[i].as_ref().unwrap().0.clone();
+            let mut f = b.faces[i].clone();
+            (f.u.offset, f.v.offset, f.v.scale) = (5.0, -3.0, 0.5);
+            f.rotate_texture(20.0);
+            let before: Vec<DVec2> = poly.iter().map(|p| f.texel(*p)).collect();
+            let mut g = f.clone();
+            assert!(g.transform_texels(m));
+            for (p, t) in poly.iter().zip(&before) {
+                assert!(g.texel(*p).abs_diff_eq(m.transform_point2(*t), 1e-9), "{:?} {:?}", g.texel(*p), m.transform_point2(*t));
+            }
+            assert!(!g.transform_texels(DAffine2::from_scale(DVec2::new(1.0, 0.0))), "flattening an axis is refused");
+
+            let mut turned = b.faces[i].clone();
+            (turned.u.offset, turned.v.offset) = (5.0, -3.0);
+            let mut same = turned.clone();
+            turned.rotate_texture(30.0);
+            let o = DVec2::new(5.0, -3.0);
+            let n = b.faces[i].plane().unwrap().normal;
+            let sign = if b.faces[i].u.axis.cross(b.faces[i].v.axis).dot(n) > 0.0 { -1.0 } else { 1.0 };
+            same.transform_texels(DAffine2::from_translation(o) * DAffine2::from_angle(sign * 30f64.to_radians()) * DAffine2::from_translation(-o));
+            for p in &poly {
+                assert!(same.texel(*p).abs_diff_eq(turned.texel(*p), 1e-9));
+            }
+            assert!((same.rotation - turned.rotation).abs() < 1e-9, "face {i}: {} {}", same.rotation, turned.rotation);
+        }
     }
 
     #[test]

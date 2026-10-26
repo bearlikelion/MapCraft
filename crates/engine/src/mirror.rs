@@ -24,7 +24,7 @@ impl Session {
             self.set_kind(id, kind, "Make mirror group", None)?;
             return Ok(id);
         }
-        self.wrap_selection(Group { name: "Mirror".into(), generator: None, mirror }, "Make mirror group")
+        self.wrap_selection(Group { name: "Mirror".into(), mirror, ..Group::default() }, "Make mirror group")
     }
 
     /// Turns the selected mirror groups' derived halves into ordinary nodes and stops mirroring.

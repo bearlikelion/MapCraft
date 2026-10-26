@@ -50,7 +50,7 @@ fn new_map(args: &[String]) -> Result<(), String> {
 
 fn info(path: &str) -> Result<(), String> {
     let file = mapcraft_format::load(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-    let (mut layers, mut groups, mut point, mut solid, mut brushes, mut faces, mut prefabs) = (0, 0, 0, 0, 0, 0, 0);
+    let (mut layers, mut groups, mut point, mut solid, mut brushes, mut faces, mut prefabs, mut paths) = (0, 0, 0, 0, 0, 0, 0, 0);
     let mut bounds: Option<Aabb> = None;
     for (_, n) in file.map.nodes() {
         match &n.kind {
@@ -59,6 +59,7 @@ fn info(path: &str) -> Result<(), String> {
             NodeKind::Entity(_) if n.children.is_empty() => point += 1,
             NodeKind::Entity(_) => solid += 1,
             NodeKind::Prefab(_) => prefabs += 1,
+            NodeKind::Path(_) => paths += 1,
             NodeKind::Brush(b) => {
                 brushes += 1;
                 faces += b.faces.len();
@@ -74,8 +75,10 @@ fn info(path: &str) -> Result<(), String> {
     println!("  layers:    {layers}");
     println!("  groups:    {groups}");
     println!("  entities:  {point} point, {solid} brush");
-    println!("  brushes:   {brushes} ({faces} faces)");
+    let covered = mapcraft_map::covered_faces(&file.map, None).len();
+    println!("  brushes:   {brushes} ({faces} faces, {covered} hidden between brushes)");
     println!("  prefabs:   {prefabs}");
+    println!("  paths:     {paths}");
     if let Some(b) = bounds {
         println!("  bounds:    {:?} to {:?}", b.min.to_array(), b.max.to_array());
     }

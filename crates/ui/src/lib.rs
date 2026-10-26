@@ -4,7 +4,10 @@
 
 mod app;
 mod chrome;
+mod curves;
 mod dialogs;
+mod measure;
+mod models;
 mod panels;
 mod plugins;
 mod prefs;
@@ -13,6 +16,8 @@ mod sdk_manager;
 mod shortcuts;
 mod thumbs;
 mod transform;
+mod uv;
+mod vertex;
 mod viewport;
 
 pub use app::{MapCraftApp, Options};

@@ -168,6 +168,19 @@ pub mod icons {
         p.circle_stroke(at(r, 8.0, 3.0), r.width().min(r.height()) / 26.0 * 2.2, Stroke::new(1.4, c));
     }
 
+    pub fn path(p: &Painter, r: Rect, c: Color32) {
+        let k = [(2.0, 13.0), (14.0, 13.0), (2.0, 3.0), (14.0, 3.0)];
+        let bez = |t: f32| {
+            let w = [(1.0 - t).powi(3), 3.0 * (1.0 - t).powi(2) * t, 3.0 * (1.0 - t) * t * t, t.powi(3)];
+            k.iter().zip(w).fold((0.0, 0.0), |(x, y), ((kx, ky), w)| (x + kx * w, y + ky * w))
+        };
+        let curve: Vec<Pos2> = (0..=16).map(|i| bez(i as f32 / 16.0)).map(|(x, y)| at(r, x, y)).collect();
+        line(p, &curve, c);
+        for (x, y) in [k[0], k[3]] {
+            p.rect_filled(Rect::from_center_size(at(r, x, y), Vec2::splat(3.5)), 0.0, c);
+        }
+    }
+
     pub fn face(p: &Painter, r: Rect, c: Color32) {
         let q = |x: f32, y: f32| at(r, 2.0 + x * 12.0 - y * 2.0, 3.0 + y * 10.0);
         for i in 0..3 {
@@ -254,7 +267,13 @@ pub mod icons {
                 }
             }
             K::Group(g) => {
-                let c = if g.generator.is_some() { ACCENT } else { Color32::from_rgb(200, 180, 120) };
+                let c = if g.generator.is_some() {
+                    ACCENT
+                } else if g.curve.is_some() {
+                    crate::curves::PATH_COLOR
+                } else {
+                    Color32::from_rgb(200, 180, 120)
+                };
                 p.rect_stroke(Rect::from_center_size(m + vec2(0.0, 1.0), vec2(10.0, 7.0)), 1.0, stroke(c), egui::StrokeKind::Middle);
                 p.line_segment([m + vec2(-5.0, -3.5), m + vec2(-1.0, -3.5)], stroke(c));
                 if g.mirror.is_some() {
@@ -272,6 +291,10 @@ pub mod icons {
             K::Prefab(_) => {
                 p.circle_stroke(m + vec2(-2.0, 0.0), 3.0, stroke(Color32::from_rgb(120, 200, 230)));
                 p.circle_stroke(m + vec2(2.5, 0.0), 3.0, stroke(Color32::from_rgb(120, 200, 230)));
+            }
+            K::Path(_) => {
+                let pts = vec![m + vec2(-5.0, 4.0), m + vec2(-2.0, -4.0), m + vec2(2.0, 4.0), m + vec2(5.0, -4.0)];
+                p.add(Shape::line(pts, stroke(crate::curves::PATH_COLOR)));
             }
         }
     }
@@ -306,6 +329,12 @@ fn view_axes(view: View) -> Option<(usize, usize)> {
 
 impl MapCraftApp {
     pub(crate) fn tool_hint(&self) -> String {
+        if let Some(m) = &self.uv_modal {
+            return m.hint();
+        }
+        if let Some(m) = &self.vertex.bevel {
+            return m.hint();
+        }
         match &self.drag {
             Drag::None => {}
             Drag::Extrude { distance, mode, .. } => {
@@ -331,13 +360,30 @@ impl MapCraftApp {
             Tool::Block => format!("Drag in a 2D view to draw a {}; its depth matches the last brush", shape_name(self.shape)),
             Tool::Entity => format!("Click in a view to place {}; pick the class in the Entities tab", self.entity_class),
             Tool::Clip if self.session.selected_brushes().is_empty() => "Select the brushes to clip first".into(),
-            Tool::Clip if self.clip_points.len() == 2 => {
-                format!("Enter clips, Esc cancels; yellow stays, red goes; {} picks which side to keep", self.chord("clip.next_side"))
+            Tool::Clip if self.clip_points.len() == 2 => format!(
+                "Enter clips, Esc cancels; yellow stays, red goes; {} picks which side to keep; click a third point in the 3D view to tilt the cut",
+                self.chord("clip.next_side")
+            ),
+            Tool::Clip if self.clip_points.len() == 3 => {
+                format!("Enter clips through the three points, Esc cancels; {} picks which side to keep", self.chord("clip.next_side"))
             }
             Tool::Clip => "Drag a line, or click two points, in any view; in the 3D view the cut runs straight into the face".into(),
-            Tool::Vertex => "Drag yellow corners, blue edge midpoints or green face centers in a 2D view".into(),
+            Tool::Vertex => format!(
+                "Click or box select corners, edges or faces ({} {} {}), Shift adds; drag to move them, Shift drags up and down in the 3D view; {} merges, {} bevels",
+                self.chord("vertex.mode_vertex"),
+                self.chord("vertex.mode_edge"),
+                self.chord("vertex.mode_face"),
+                self.chord("vertex.merge"),
+                self.chord("vertex.bevel")
+            ),
             Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
-            Tool::Face => "Click faces in the 3D view; Alt+click picks a material, Alt+right click applies it, with Shift it wraps the alignment".into(),
+            Tool::Face => {
+                "Click faces in the 3D view; Ctrl+C copies a face and Ctrl+V pastes it on the picked faces; Alt+click picks, Alt+right click applies".into()
+            }
+            Tool::Path => format!(
+                "Click to add path points, drag to pull out handles; click the first point to close, Enter starts a new path; pick faces and {} sweeps them along it",
+                self.chord("tools.sweep")
+            ),
         }
     }
 
@@ -345,7 +391,7 @@ impl MapCraftApp {
         let style = tool_style();
         ui.add_space(4.0);
         type Icon = fn(&Painter, Rect, Color32);
-        let tools: [(Tool, &str, &str, Icon); 11] = [
+        let tools: [(Tool, &str, &str, Icon); 12] = [
             (Tool::Select, "Select", "tool.select", icons::select),
             (Tool::Move, "Move", "tool.move", icons::move_arrows),
             (Tool::Extrude, "Extrude", "tool.extrude", icons::extrude),
@@ -357,13 +403,50 @@ impl MapCraftApp {
             (Tool::Vertex, "Vertex", "tool.vertex", icons::vertex),
             (Tool::Face, "Face", "tool.face", icons::face),
             (Tool::Sculpt, "Sculpt", "tool.sculpt", icons::sculpt),
+            (Tool::Path, "Path", "tool.path", icons::path),
         ];
         ui.vertical_centered(|ui| {
             for (tool, label, id, icon) in tools {
                 let chord = self.chord(id);
                 let tip = if chord.is_empty() { label.to_string() } else { format!("{label}  ({chord})") };
-                let r = IconButton::new(label, Vec2::splat(32.0), &style).selected(self.tool == tool).show(ui, |ui, rect, c| icon(ui.painter(), rect, c));
-                if r.on_hover_text(tip).clicked() {
+                let block = tool == Tool::Block;
+                let tip = if block { format!("{tip}; right click for shapes") } else { tip };
+                let r = IconButton::new(label, Vec2::splat(32.0), &style).selected(self.tool == tool).show(ui, |ui, rect, c| {
+                    icon(ui.painter(), rect, c);
+                    if block {
+                        let corner = rect.right_bottom() - Vec2::splat(3.0);
+                        ui.painter().add(Shape::convex_polygon(vec![corner, corner - Vec2::new(5.0, 0.0), corner - Vec2::new(0.0, 5.0)], c, Stroke::NONE));
+                    }
+                });
+                let r = r.on_hover_text(tip);
+                let mut pick = None;
+                if block {
+                    r.context_menu(|ui| {
+                        for (shape, label) in block_shapes() {
+                            if ui.button(label).clicked() {
+                                pick = Some((Some(shape), None));
+                            }
+                        }
+                        let generators = self.generator_shapes();
+                        if !generators.is_empty() {
+                            ui.separator();
+                        }
+                        for (plugin, command) in generators {
+                            if ui.button(&command.label).clicked() {
+                                pick = Some((None, Some((plugin, command))));
+                            }
+                        }
+                    });
+                }
+                if let Some((shape, generator)) = pick {
+                    if let Some(shape) = shape {
+                        self.shape = shape;
+                    }
+                    self.pick_plugin_shape(generator);
+                    if self.tool != Tool::Block {
+                        self.run_action(id);
+                    }
+                } else if r.clicked() {
                     self.run_action(id);
                 }
                 if tool == Tool::Scale {
@@ -489,9 +572,7 @@ impl MapCraftApp {
         if self.tool == Tool::Block {
             ui.separator();
             use mapcraft_engine::Shape as S;
-            let arch = S::Arch { sides: 8, arc: 180.0, start: 0.0, thickness: 16.0 };
-            let shapes =
-                [(S::Block, "Box"), (S::Wedge, "Wedge"), (S::Cylinder(8), "Cylinder"), (S::Spike(4), "Spike"), (S::Sphere(8), "Sphere"), (arch, "Arch")];
+            let shapes = block_shapes();
             ui.label(RichText::new(self.chord("shape.next")).color(TEXT_WEAK).small()).on_hover_text("Next shape");
             let generators = self.generator_shapes();
             ui.scope(|ui| {
@@ -555,6 +636,9 @@ impl MapCraftApp {
             ui.add(egui::DragValue::new(&mut self.sculpt.1).range(8.0..=4096.0).speed(4.0).prefix("radius "));
             ui.add(egui::DragValue::new(&mut self.sculpt.2).range(1.0..=4096.0).speed(4.0).prefix("strength "));
         }
+        if self.tool == Tool::Vertex {
+            self.vertex_options(ui);
+        }
         if self.tool == Tool::Clip {
             ui.separator();
             use mapcraft_engine::ClipKeep as K;
@@ -592,20 +676,32 @@ impl MapCraftApp {
         let mut header_ui =
             ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(4.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let style = tool_style();
-        let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
+        let Some((cam, uv)) = self.panes.get(index).map(|p| (p.camera, p.uv)) else { return };
         let ui = &mut header_ui;
-        let title = RichText::new(short_label(cam.view)).color(if active { ACCENT } else { TEXT }).strong();
+        let title = RichText::new(if uv.is_some() { "UV" } else { short_label(cam.view) }).color(if active { ACCENT } else { TEXT }).strong();
         ui.menu_button(title, |ui| {
             for v in View::ALL {
-                if ui.selectable_label(cam.view == v, v.label()).clicked()
+                if ui.selectable_label(uv.is_none() && cam.view == v, v.label()).clicked()
                     && let Some(p) = self.panes.get_mut(index)
                 {
                     p.camera = Camera { view: v, ..p.camera };
+                    p.uv = None;
                 }
             }
+            if ui.selectable_label(uv.is_some(), "UV Editor").on_hover_text("The picked faces laid out over their texture").clicked()
+                && let Some(p) = self.panes.get_mut(index)
+            {
+                p.uv = Some(crate::uv::UvCamera::default());
+            }
         });
-        match view_axes(cam.view) {
-            Some((a, b)) => {
+        match (uv, view_axes(cam.view)) {
+            (Some(c), _) => {
+                if let Some((material, size)) = self.uv_reference() {
+                    ui.label(RichText::new(format!("{material}  {}x{}", size.x, size.y)).color(TEXT_WEAK).monospace());
+                }
+                ui.label(RichText::new(format!("{:.2} px/texel", c.zoom)).color(TEXT_WEAK).monospace()).on_hover_text("Screen pixels per texel");
+            }
+            (None, Some((a, b))) => {
                 for axis in [a, b] {
                     ui.label(RichText::new(["x", "y", "z"][axis]).color(AXIS[axis]).monospace());
                 }
@@ -616,15 +712,18 @@ impl MapCraftApp {
                     ui.label(RichText::new(format!("grid {step}")).color(ACCENT).monospace()).on_hover_text(tip);
                 }
             }
-            None => {
+            (None, None) => {
                 let mode = self.render_mode;
                 let label = match mode {
                     RenderMode::Textured => "Textured",
                     RenderMode::Flat => "Flat",
                     RenderMode::Wireframe => "Wireframe",
+                    RenderMode::Lit => "Lit",
                 };
                 ui.menu_button(RichText::new(label).color(TEXT_WEAK), |ui| {
-                    for (m, l) in [(RenderMode::Textured, "Textured"), (RenderMode::Flat, "Flat"), (RenderMode::Wireframe, "Wireframe")] {
+                    for (m, l) in
+                        [(RenderMode::Textured, "Textured"), (RenderMode::Flat, "Flat"), (RenderMode::Wireframe, "Wireframe"), (RenderMode::Lit, "Lit")]
+                    {
                         if ui.selectable_label(mode == m, l).clicked() {
                             self.render_mode = m;
                         }
@@ -640,8 +739,11 @@ impl MapCraftApp {
                 .show(ui, |ui, r, c| if maximized { icons::restore(ui.painter(), r, c) } else { icons::maximize(ui.painter(), r, c) });
             if r.on_hover_text(format!("{label}  ({})", self.chord("view.maximize"))).clicked() {
                 self.maximized = if maximized { None } else { Some(index) };
+                if maximized {
+                    self.prefs.update(|p| p.view.single_view = false);
+                }
             }
-            if cam.is_2d() {
+            if cam.is_2d() && uv.is_none() {
                 let r = IconButton::new("Link zoom", Vec2::splat(18.0), &style).selected(linked).show(ui, |ui, r, c| icons::link(ui.painter(), r, c));
                 let tip = if linked { "2D views zoom together; click to zoom each on its own" } else { "Click to zoom all 2D views together" };
                 if r.on_hover_text(tip).clicked() {
@@ -781,4 +883,11 @@ fn shape_name(shape: mapcraft_engine::Shape) -> &'static str {
         S::Sphere(_) => "sphere",
         S::Arch { .. } => "arch",
     }
+}
+
+/// The Block tool's built-in shapes with their default settings.
+fn block_shapes() -> [(mapcraft_engine::Shape, &'static str); 6] {
+    use mapcraft_engine::Shape as S;
+    let arch = S::Arch { sides: 8, arc: 180.0, start: 0.0, thickness: 16.0 };
+    [(S::Block, "Box"), (S::Wedge, "Wedge"), (S::Cylinder(8), "Cylinder"), (S::Spike(4), "Spike"), (S::Sphere(8), "Sphere"), (arch, "Arch")]
 }

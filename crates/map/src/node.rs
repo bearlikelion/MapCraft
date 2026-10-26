@@ -28,6 +28,7 @@ pub enum NodeKind {
     Entity(Entity),
     Brush(Brush),
     Prefab(Prefab),
+    Path(crate::Path),
 }
 
 impl NodeKind {
@@ -37,7 +38,7 @@ impl NodeKind {
             K::World(_) => !matches!(child, K::World(_)),
             K::Layer(_) | K::Group(_) => !matches!(child, K::World(_) | K::Layer(_)),
             K::Entity(_) => matches!(child, K::Brush(_)),
-            K::Brush(_) | K::Prefab(_) => false,
+            K::Brush(_) | K::Prefab(_) | K::Path(_) => false,
         }
     }
 
@@ -59,6 +60,7 @@ impl NodeKind {
         match self {
             NodeKind::World(_) => "World".into(),
             NodeKind::Layer(l) => l.name.clone(),
+            NodeKind::Group(g) if g.link.as_ref().is_some_and(|l| l.source.is_some()) => format!("{} (linked copy)", g.name),
             NodeKind::Group(g) => g.name.clone(),
             NodeKind::Entity(e) => match e.get("targetname") {
                 Some(name) if !name.is_empty() => format!("{name} ({})", e.classname),
@@ -66,6 +68,7 @@ impl NodeKind {
             },
             NodeKind::Brush(_) => "Brush".into(),
             NodeKind::Prefab(p) => p.path.clone(),
+            NodeKind::Path(_) => "Path".into(),
         }
     }
 }
@@ -89,6 +92,12 @@ pub struct Group {
     /// When set, the children are copied across this plane; see [`crate::mirror`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<crate::Mirror>,
+    /// Linked copies; see [`crate::link`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Box<crate::Link>>,
+    /// When set, the children are built from other nodes; see [`crate::curve`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Box<crate::CurveOp>>,
 }
 
 /// A plugin command whose output fills a group, placed by `origin` and `angles` (pitch, yaw,

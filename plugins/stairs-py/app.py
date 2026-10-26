@@ -52,7 +52,7 @@ def box(x0, y0, z0, x1, y1, z1, material):
 
 class WitWorld(wit_world.WitWorld):
     def manifest(self):
-        return Manifest("stairs", "Stairs (Python example)", "0.1.0", [STAIRS], False, [], [])
+        return Manifest("stairs", "Stairs (Python example)", "0.1.0", [STAIRS], False, [], [], False)
 
     def run_command(self, id, params, context):
         if id != "stairs":
@@ -71,3 +71,6 @@ class WitWorld(wit_world.WitWorld):
 
     def export_file(self, exporter, map, context):
         raise Err("this plugin exports no files")
+
+    def validate(self, map):
+        return []

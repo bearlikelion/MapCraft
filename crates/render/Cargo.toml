@@ -9,12 +9,14 @@ rust-version.workspace = true
 [dependencies]
 mapcraft-geom = { workspace = true }
 mapcraft-map = { workspace = true }
+base64 = { workspace = true }
 bytemuck = { workspace = true }
+gltf-json = { workspace = true }
+image = { workspace = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
-image = { workspace = true }
 mapcraft-format = { workspace = true }
 
 [lints]

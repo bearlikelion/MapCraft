@@ -82,6 +82,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.save_as", "Save As", "Ctrl+Shift+S"),
     ("edit.preferences", "Preferences", "Ctrl+Comma"),
     ("tools.transform", "Transform", "Ctrl+M"),
+    ("tools.array", "Array", "Ctrl+Shift+D"),
     ("tools.replace_materials", "Replace Materials", ""),
     ("file.sdk_settings", "SDK Settings", "Ctrl+Shift+Comma"),
     ("file.sdk_manager", "SDK Manager", ""),
@@ -99,14 +100,18 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("view.render_textured", "Textured", "Ctrl+Alt+1"),
     ("view.render_flat", "Flat Shaded", "Ctrl+Alt+2"),
     ("view.render_wireframe", "Wireframe", "Ctrl+Alt+3"),
+    ("view.render_lit", "Lit", "Ctrl+Alt+4"),
     ("view.colorize", "Color Brushes by Object", "Ctrl+Alt+C"),
     ("view.frame_all", "Frame All", "Home"),
+    ("view.origin", "Go to Origin", "Shift+Home"),
+    ("view.single", "One View Layout", "Shift+Space"),
     ("view.frame_selection", "Focus Selection", "F"),
     ("view.find_entities", "Find Entities", "Ctrl+F"),
     ("panel.scene", "Scene Panel", "Ctrl+1"),
     ("panel.tags", "Tags Panel", "Ctrl+2"),
     ("panel.materials", "Materials Panel", "Ctrl+3"),
     ("panel.entities", "Entities Panel", "Ctrl+4"),
+    ("panel.models", "Models Panel", "Ctrl+6"),
     ("panel.output", "Output Panel", "Ctrl+5"),
     ("inspector.smart_edit", "Smart Edit", "Ctrl+Alt+E"),
     ("shape.next", "Next Block Shape", "Alt+B"),
@@ -126,12 +131,31 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("tool.vertex", "Vertex Tool", "V"),
     ("tool.face", "Face Tool", "Shift+F"),
     ("tool.sculpt", "Sculpt Tool", "D"),
+    ("tool.path", "Path Tool", "P"),
     ("sculpt.raise", "Sculpt: Raise", "1"),
     ("sculpt.lower", "Sculpt: Lower", "2"),
     ("sculpt.smooth", "Sculpt: Smooth", "3"),
     ("sculpt.flatten", "Sculpt: Flatten", "4"),
     ("sculpt.noise", "Sculpt: Noise", "5"),
+    ("vertex.mode_vertex", "Vertex Select Mode", "1"),
+    ("vertex.mode_edge", "Edge Select Mode", "2"),
+    ("vertex.mode_face", "Face Select Mode", "3"),
+    ("vertex.merge", "Merge Vertices", "M"),
+    ("vertex.bevel", "Bevel Edges", "Ctrl+B"),
+    ("uv.grab", "UV Grab", "G"),
+    ("uv.rotate", "UV Rotate", "R"),
+    ("uv.scale", "UV Scale", "S"),
 ];
+
+/// Actions whose keys work only over a UV view, where they win over other actions' keys.
+pub fn uv_only(id: &str) -> bool {
+    id.starts_with("uv.")
+}
+
+/// Actions whose keys work only in the Vertex tool, where they win over other actions' keys.
+pub fn vertex_only(id: &str) -> bool {
+    id.starts_with("vertex.")
+}
 
 /// The chord bound to `id`: the user's own, else the preset's, else the default.
 pub fn chord(id: &str, preset: Preset, custom: &BTreeMap<String, String>) -> Option<String> {
@@ -149,10 +173,13 @@ pub fn actions() -> impl Iterator<Item = (&'static str, &'static str)> {
     UI_ACTIONS.iter().map(|a| (a.0, a.1)).chain(mapcraft_engine::commands().iter().map(|c| (c.id, c.label)))
 }
 
-/// Parsed bindings, chords with more modifiers first so Ctrl+Shift+S is not taken by Ctrl+S.
+/// Parsed bindings, chords with more modifiers first so Ctrl+Shift+S is not taken by Ctrl+S, and
+/// UV view and Vertex tool actions before others on the same chord.
 pub fn bindings(preset: Preset, custom: &BTreeMap<String, String>) -> Vec<(KeyboardShortcut, &'static str)> {
     let mut out: Vec<_> = actions().filter_map(|(id, _)| Some((parse(&chord(id, preset, custom)?)?, id))).collect();
-    out.sort_by_key(|(sc, _)| std::cmp::Reverse(sc.modifiers.shift as u8 + sc.modifiers.command as u8 + sc.modifiers.alt as u8));
+    out.sort_by_key(|(sc, id)| {
+        (std::cmp::Reverse(sc.modifiers.shift as u8 + sc.modifiers.command as u8 + sc.modifiers.alt as u8), !(uv_only(id) || vertex_only(id)))
+    });
     out
 }
 
@@ -178,7 +205,8 @@ mod tests {
         for preset in Preset::ALL {
             let mut seen: Vec<(KeyboardShortcut, &str)> = Vec::new();
             for (sc, id) in bindings(preset, &none) {
-                if let Some((_, other)) = seen.iter().find(|(s, _)| *s == sc) {
+                let scope = |a: &str| (uv_only(a), vertex_only(a));
+                if let Some((_, other)) = seen.iter().find(|(s, other)| *s == sc && scope(other) == scope(id)) {
                     panic!("{preset:?}: {id} and {other} share {sc:?}");
                 }
                 seen.push((sc, id));

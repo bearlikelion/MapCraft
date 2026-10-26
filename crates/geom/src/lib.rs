@@ -3,13 +3,14 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod aabb;
+pub mod curve;
 mod hull;
 mod plane;
 mod solid;
 mod winding;
 
 pub use aabb::Aabb;
-pub use glam::{DMat3, DMat4, DQuat, DVec2, DVec3, DVec4};
+pub use glam::{DAffine2, DMat2, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4};
 pub use hull::convex_hull;
 pub use plane::{Plane, Side};
 pub use solid::{Solid, SolidError, ray_hit};

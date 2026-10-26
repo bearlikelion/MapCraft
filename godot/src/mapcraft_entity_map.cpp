@@ -13,7 +13,7 @@ void MapCraftEntityMap::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_solid_default"), &MapCraftEntityMap::get_solid_default);
 	ClassDB::bind_method(D_METHOD("entity_config", "classname", "solid"), &MapCraftEntityMap::entity_config);
 
-	const String kinds = "marker,node,area,static,world,scene,skip";
+	const String kinds = "marker,node,area,static,world,scene,model,skip";
 	ADD_PROPERTY(PropertyInfo(Variant::DICTIONARY, "classes"), "set_classes", "get_classes");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "point_default", PROPERTY_HINT_ENUM, kinds), "set_point_default", "get_point_default");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "solid_default", PROPERTY_HINT_ENUM, kinds), "set_solid_default", "get_solid_default");

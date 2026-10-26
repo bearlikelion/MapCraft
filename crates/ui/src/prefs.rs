@@ -50,11 +50,25 @@ pub struct ViewPrefs {
     pub snap_vertices: bool,
     /// Zooming one 2D view zooms them all.
     pub link_zoom: bool,
+    /// Clicking a material in the browser applies it to the selected brushes or picked faces.
+    pub apply_on_click: bool,
+    /// One view fills the window and Space shows the next one, as in TrenchBroom.
+    pub single_view: bool,
 }
 
 impl Default for ViewPrefs {
     fn default() -> Self {
-        Self { grid: 16.0, autosave_minutes: 5, fly_speed: 512.0, colorize: true, snap_grid: true, snap_vertices: true, link_zoom: true }
+        Self {
+            grid: 16.0,
+            autosave_minutes: 5,
+            fly_speed: 512.0,
+            colorize: true,
+            snap_grid: true,
+            snap_vertices: true,
+            link_zoom: true,
+            apply_on_click: true,
+            single_view: false,
+        }
     }
 }
 

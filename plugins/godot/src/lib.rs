@@ -2,9 +2,10 @@
 //! albedo texture or color, plus images no material uses. Material names are paths under the
 //! SDK's texture folder without the extension, which is how the Godot extension finds them again.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mapcraft::plugin::host;
+use mapcraft::plugin::types::{Channel, ChannelMap, Pbr};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -34,15 +35,57 @@ const MAPS: &[&str] = &[
     "mask",
 ];
 
+/// Endings of a loose set's color picture, longest first so `base_color` is not read as `color`.
+const COLORS: &[&str] = &["base color", "base_color", "basecolor", "albedo", "diffuse", "color", "diff", "col"];
+const NORMAL_GL: &[&str] = &["normalgl", "normal", "nrm"];
+const NORMAL_DX: &[&str] = &["normaldx"];
+const ROUGH: &[&str] = &["roughness", "rough"];
+const METAL: &[&str] = &["metalness", "metallic"];
+const AO: &[&str] = &["ambientocclusion", "ao"];
+/// Occlusion, roughness and metallic in red, green and blue.
+const PACKED: &[&str] = &["orm", "arm"];
+
 fn folder(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(d, _)| d)
 }
 
+fn stem(path: &str) -> String {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.rsplit_once('.').map_or(file, |(s, _)| s).to_ascii_lowercase()
+}
+
+/// The lowercased file stem without the first of `ends` it ends with after `_`, ` ` or `-`.
+fn split_end(path: &str, ends: &[&str]) -> Option<String> {
+    let stem = stem(path);
+    ends.iter().find_map(|e| {
+        let rest = stem.strip_suffix(e)?;
+        (rest.is_empty() || rest.ends_with(['_', ' ', '-'])).then(|| rest.trim_end_matches(['_', ' ', '-']).to_string())
+    })
+}
+
 /// Whether an image looks like a normal, roughness or other non-color map.
 fn is_map(path: &str) -> bool {
-    let file = path.rsplit('/').next().unwrap_or(path);
-    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s).to_ascii_lowercase();
-    MAPS.iter().any(|m| stem == *m || ['_', ' ', '-'].iter().any(|sep| stem.ends_with(&format!("{sep}{m}"))))
+    split_end(path, MAPS).is_some()
+}
+
+/// The Lit view's maps among one loose set's pictures, named as ambientCG names them.
+fn loose_pbr(maps: &[&String]) -> Option<Pbr> {
+    let find = |ends: &[&str]| maps.iter().find(|p| split_end(p, ends).is_some()).map(|p| p.to_string());
+    let (gl, dx, packed) = (find(NORMAL_GL), find(NORMAL_DX), find(PACKED));
+    let map = |ends: &[&str], channel| {
+        find(ends).map(|path| ChannelMap { path, channel: Channel::Red }).or_else(|| Some(ChannelMap { path: packed.clone()?, channel }))
+    };
+    let metallic = map(METAL, Channel::Blue);
+    let pbr = Pbr {
+        normal_dx: gl.is_none() && dx.is_some(),
+        normal: gl.or(dx),
+        roughness: map(ROUGH, Channel::Green),
+        roughness_value: 1.0,
+        metallic_value: if metallic.is_some() { 1.0 } else { 0.0 },
+        metallic,
+        ao: map(AO, Channel::Red),
+    };
+    (pbr.normal.is_some() || pbr.roughness.is_some() || pbr.metallic.is_some() || pbr.ao.is_some()).then_some(pbr)
 }
 
 struct Godot;
@@ -57,11 +100,23 @@ fn attr<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// What a material resource shows: every texture it references by `res://` path, the one used as
-/// its albedo (else the first), and its albedo or base color.
+/// its albedo (else the first), its albedo or base color, and its maps by `res://` path.
 struct Resource {
     textures: Vec<String>,
     albedo: Option<String>,
     color: Option<(u8, u8, u8)>,
+    pbr: Pbr,
+}
+
+/// Godot's texture channel numbers: red, green, blue, alpha, then grayscale.
+fn channel(v: Option<&str>) -> Channel {
+    match v.and_then(|v| v.parse::<u8>().ok()) {
+        Some(1) => Channel::Green,
+        Some(2) => Channel::Blue,
+        Some(3) => Channel::Alpha,
+        Some(4) => Channel::Gray,
+        _ => Channel::Red,
+    }
 }
 
 /// The text inside the first parentheses of a value such as `ExtResource("1_a")` or `Color(1, 0, 0, 1)`.
@@ -71,6 +126,7 @@ fn call_args(v: &str) -> Option<&str> {
 
 fn parse(text: &str) -> Resource {
     let mut textures: Vec<(String, String)> = Vec::new();
+    let mut props: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut albedo_id, mut color) = (None, None);
     for line in text.lines().map(str::trim) {
         if line.starts_with("[ext_resource") && attr(line, "type").is_some_and(|t| t.contains("Texture")) {
@@ -80,6 +136,7 @@ fn parse(text: &str) -> Resource {
             continue;
         }
         let Some((key, value)) = line.split_once('=').map(|(k, v)| (k.trim(), v.trim())) else { continue };
+        props.insert(key, value);
         if key == "albedo_texture" || key.ends_with("albedo") || key.ends_with("albedo_texture") {
             // ExtResource("1_abc") in Godot 4, ExtResource( 1 ) in Godot 3.
             albedo_id = call_args(value).map(|i| i.trim_matches('"').to_string());
@@ -91,8 +148,25 @@ fn parse(text: &str) -> Resource {
             }
         }
     }
+    let prop = |key: &str| props.get(key).copied();
+    let texture = |key: &str| {
+        let id = call_args(prop(key)?)?.trim_matches('"');
+        textures.iter().find(|(i, _)| i == id).map(|(_, p)| p.clone())
+    };
+    let on = |key: &str| prop(key) == Some("true");
+    let number = |key: &str, default: f32| prop(key).and_then(|v| v.parse().ok()).unwrap_or(default);
+    let map = |name: &str| Some(ChannelMap { path: texture(&format!("{name}_texture"))?, channel: channel(prop(&format!("{name}_texture_channel"))) });
+    let pbr = Pbr {
+        normal: texture("normal_texture").filter(|_| on("normal_enabled")),
+        normal_dx: false,
+        roughness: map("roughness"),
+        roughness_value: number("roughness", 1.0),
+        metallic: map("metallic"),
+        metallic_value: number("metallic", 0.0),
+        ao: map("ao").filter(|_| on("ao_enabled")),
+    };
     let found = albedo_id.and_then(|id| textures.iter().find(|(i, _)| *i == id)).or(textures.first());
-    Resource { albedo: found.map(|(_, p)| p.clone()), textures: textures.into_iter().map(|(_, p)| p).collect(), color }
+    Resource { albedo: found.map(|(_, p)| p.clone()), textures: textures.iter().map(|(_, p)| p.clone()).collect(), color, pbr }
 }
 
 /// The asset-folder path of a `res://` file: the longest tail of it that exists in `files`.
@@ -116,6 +190,7 @@ impl Guest for Godot {
             materials: true,
             importers: Vec::new(),
             exporters: Vec::new(),
+            validates: false,
         }
     }
 
@@ -145,21 +220,35 @@ impl Guest for Godot {
             let res = parse(&text);
             used.extend(res.textures.iter().filter_map(|t| locate(t, &images)));
             let name = path.strip_suffix(".tres").unwrap_or(&path).to_string();
-            out.push(MaterialInfo { name, image: res.albedo.and_then(|t| locate(&t, &images)), color: res.color, pixels: None });
+            let at = |m: Option<ChannelMap>| m.and_then(|m| Some(ChannelMap { path: locate(&m.path, &images)?, channel: m.channel }));
+            let p = res.pbr;
+            let pbr = Pbr { normal: p.normal.and_then(|n| locate(&n, &images)), roughness: at(p.roughness), metallic: at(p.metallic), ao: at(p.ao), ..p };
+            out.push(MaterialInfo { name, image: res.albedo.and_then(|t| locate(&t, &images)), color: res.color, pixels: None, size: None, pbr: Some(pbr) });
         }
         // Images no material uses are materials of their own, except the extra maps of a folder
         // that already has a material or a color image.
         let loose: Vec<&String> = images.difference(&used).collect();
         let covered: BTreeSet<String> =
             out.iter().map(|m| folder(&m.name).to_string()).chain(loose.iter().filter(|i| !is_map(i)).map(|i| folder(i).to_string())).collect();
+        let mut sets: BTreeMap<(&str, String), Vec<&String>> = BTreeMap::new();
+        for img in &loose {
+            if let Some(s) = split_end(img, MAPS) {
+                sets.entry((folder(img), s)).or_default().push(img);
+            }
+        }
         for img in loose {
-            if is_map(img) && covered.contains(folder(img)) {
+            let map = is_map(img);
+            if map && covered.contains(folder(img)) {
                 continue;
             }
+            let set = if map { None } else { sets.get(&(folder(img), split_end(img, COLORS).unwrap_or_else(|| stem(img)))) };
             let name = img.rsplit_once('.').map_or(img.as_str(), |(n, _)| n).to_string();
-            out.push(MaterialInfo { name, image: Some(img.clone()), color: None, pixels: None });
+            out.push(MaterialInfo { name, image: Some(img.clone()), color: None, pixels: None, size: None, pbr: set.and_then(|s| loose_pbr(s)) });
         }
         Ok(out)
+    }
+    fn validate(_map: MapData) -> Vec<Issue> {
+        Vec::new()
     }
 }
 
@@ -184,5 +273,36 @@ mod tests {
         assert_eq!(locate("res://Other/x.jpg", &files), None);
         assert!(is_map("Brick/BrickWall (10)_Normal.png") && is_map("b/Bricks064_1K-JPG_AmbientOcclusion.jpg"));
         assert!(!is_map("Brick/BrickWall (10)_BaseColor.png") && !is_map("aurora.png") && is_map("Grass/Normal.png"));
+    }
+
+    #[test]
+    fn reads_material_maps() {
+        let tres = "[gd_resource type=\"StandardMaterial3D\" format=3]\n[ext_resource type=\"Texture2D\" path=\"res://n.png\" id=\"1_n\"]\n[ext_resource type=\"Texture2D\" path=\"res://r.png\" id=\"2_r\"]\n[ext_resource type=\"Texture2D\" path=\"res://ao.png\" id=\"3_a\"]\n[resource]\nmetallic = 0.88\nroughness_texture = ExtResource(\"2_r\")\nroughness_texture_channel = 1\nnormal_enabled = true\nnormal_texture = ExtResource(\"1_n\")\nao_texture = ExtResource(\"3_a\")\n";
+        let p = parse(tres).pbr;
+        assert_eq!(p.normal.as_deref(), Some("res://n.png"));
+        let r = p.roughness.unwrap();
+        assert_eq!((r.path.as_str(), r.channel), ("res://r.png", Channel::Green));
+        assert_eq!((p.roughness_value, p.metallic_value), (1.0, 0.88), "unstated values keep Godot's defaults");
+        assert!(p.metallic.is_none() && p.ao.is_none(), "ao_texture needs ao_enabled");
+        assert!(parse(&tres.replace("normal_enabled = true\n", "")).pbr.normal.is_none(), "normal_texture needs normal_enabled");
+    }
+
+    #[test]
+    fn pairs_loose_sets_by_stem() {
+        let files = ["B/Bricks_1K_NormalDX.jpg", "B/Bricks_1K_NormalGL.jpg", "B/Bricks_1K_Roughness.jpg", "B/Bricks_1K_AmbientOcclusion.jpg"].map(String::from);
+        let set: Vec<&String> = files.iter().collect();
+        assert_eq!(split_end("B/Bricks_1K_Color.jpg", COLORS).as_deref(), Some("bricks_1k"));
+        assert_eq!(split_end("G/Gold_Base Color.jpg", COLORS).as_deref(), Some("gold"));
+        let p = loose_pbr(&set).unwrap();
+        assert_eq!((p.normal.as_deref(), p.normal_dx), (Some("B/Bricks_1K_NormalGL.jpg"), false), "GL wins over DX");
+        assert_eq!(p.roughness.unwrap().path, "B/Bricks_1K_Roughness.jpg");
+        assert_eq!((p.metallic.is_none(), p.metallic_value), (true, 0.0));
+        let p = loose_pbr(&set[..1]).unwrap();
+        assert_eq!((p.normal.as_deref(), p.normal_dx), (Some("B/Bricks_1K_NormalDX.jpg"), true));
+        let arm = "M/Metal_ARM.png".to_string();
+        let p = loose_pbr(&[&arm]).unwrap();
+        let channels = [p.ao, p.roughness, p.metallic].map(|m| m.map(|m| m.channel));
+        assert_eq!(channels, [Some(Channel::Red), Some(Channel::Green), Some(Channel::Blue)]);
+        assert_eq!(p.metallic_value, 1.0);
     }
 }

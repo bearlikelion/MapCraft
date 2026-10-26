@@ -3,23 +3,28 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod commands;
+mod curves;
 mod generate;
 mod issues;
+mod link;
 mod mirror;
 mod ops;
 mod organize;
 mod prefab;
 mod session;
 mod terrain;
+mod uv;
+mod vertex;
 
 pub use commands::{CommandSpec, commands, execute, find};
 pub use generate::generator_transform;
 pub use issues::{Fix, Issue, Severity, validate};
 pub use ops::{ClipKeep, ExtrudeMode, Shape};
-pub use organize::find_entities;
+pub use organize::{entities_of, find_entities};
 pub use prefab::{expand_instance, flatten, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
 pub use terrain::{Sculpt, SculptMode};
+pub use uv::{FacePick, face_polygons, uv_islands};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

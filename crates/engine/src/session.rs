@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use mapcraft_geom::DVec3;
 use mapcraft_map::{Changes, FaceId, Map, NodeId, NodeKind, ROOT, TexDefaults};
 use serde_json::Value;
 
@@ -49,6 +50,10 @@ pub struct Session {
     pub selection: BTreeSet<NodeId>,
     /// Faces picked for texturing (Hammer's face edit mode).
     pub face_selection: BTreeSet<(NodeId, FaceId)>,
+    /// The face picked last, which Unwrap lays the others out from.
+    pub active_face: Option<(NodeId, FaceId)>,
+    /// Where the 3D view looks, for Project from View.
+    pub view_dir: DVec3,
     pub select_mode: SelectMode,
     /// Material and scale given to new faces (Hammer's current texture).
     pub tex: TexDefaults,
@@ -78,6 +83,8 @@ impl Session {
             view: Value::Null,
             selection: BTreeSet::new(),
             face_selection: BTreeSet::new(),
+            active_face: None,
+            view_dir: DVec3::new(1.0, 1.0, -0.5),
             select_mode: SelectMode::default(),
             tex: TexDefaults::default(),
             texture_lock: true,
@@ -152,7 +159,16 @@ impl Session {
             return;
         }
         let before = self.selection.clone();
+        let mut touched: BTreeSet<NodeId> = changes.nodes.keys().copied().collect();
         let mut inverse = self.map.apply(changes);
+        // Curve groups follow their sources in the same step; a few rounds let one feed another.
+        for _ in 0..4 {
+            let Some(rebuilt) = crate::curves::follow(&self.map, &touched) else { break };
+            touched = rebuilt.nodes.keys().copied().collect();
+            let mut both = self.map.apply(rebuilt);
+            both.merge(inverse);
+            inverse = both;
+        }
         self.redo.clear();
         if let (Some(key), Some(top)) = (key, self.undo.last_mut())
             && top.coalesce.as_deref() == Some(key)

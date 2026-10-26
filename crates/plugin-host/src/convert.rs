@@ -19,6 +19,7 @@ pub struct Manifest {
     pub materials: bool,
     pub importers: Vec<ImporterSpec>,
     pub exporters: Vec<ImporterSpec>,
+    pub validates: bool,
 }
 
 /// A file format the plugin imports or exports.
@@ -123,7 +124,7 @@ pub(crate) fn manifest(m: t::Manifest) -> Manifest {
         .collect();
     let importers = m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
     let exporters = m.exporters.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
-    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters }
+    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters, validates: m.validates }
 }
 
 /// Stored parameter values as the plugin expects them; missing or wrong values fall back to the
@@ -212,6 +213,11 @@ fn solid(b: &Brush) -> t::Solid {
 /// The map as an exporter sees it, parents first: layers left out of exports, and anything outside
 /// every active cordon, are dropped. `map` should already have prefabs and mirrors resolved.
 pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> t::MapData {
+    map_data_with_ids(map, name).0
+}
+
+/// [`map_data`] and the node id behind each entry of its `nodes`.
+pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapData, Vec<mapcraft_map::NodeId>) {
     use mapcraft_geom::Aabb;
     let world = map.get(mapcraft_map::ROOT).and_then(|n| n.kind.entity()).map(|e| e.properties.clone()).unwrap_or_default();
     let cordons: Vec<Aabb> = map.cordons.iter().filter(|c| c.active).map(|c| c.bounds).collect();
@@ -220,6 +226,7 @@ pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> t::MapData {
     let roots = map.get(mapcraft_map::ROOT).map(|n| n.children.clone()).unwrap_or_default();
     let mut stack: Vec<(mapcraft_map::NodeId, Option<u32>)> = roots.into_iter().rev().map(|c| (c, None)).collect();
     let mut nodes = Vec::new();
+    let mut ids = Vec::new();
     while let Some((id, parent)) = stack.pop() {
         let Some(n) = map.get(id) else { continue };
         let kind = match &n.kind {
@@ -238,9 +245,10 @@ pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> t::MapData {
         };
         let index = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
         nodes.push(t::MapNode { parent, kind });
+        ids.push(id);
         stack.extend(n.children.iter().rev().map(|c| (*c, Some(index))));
     }
-    t::MapData { name: name.to_string(), world, nodes }
+    (t::MapData { name: name.to_string(), world, nodes }, ids)
 }
 
 /// A texture axis, or `None` when it would divide by zero or is not a number.
@@ -298,18 +306,45 @@ pub(crate) fn picture(p: t::Image) -> Option<crate::Picture> {
     ok.then_some(crate::Picture { width: p.width, height: p.height, rgba: p.rgba })
 }
 
+/// A plugin's maps with values outside 0 to 1 clamped and non-numbers replaced by Godot's defaults.
+pub(crate) fn pbr(p: t::Pbr) -> crate::Pbr {
+    let unit = |v: f32, default: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { default };
+    let map = |m: Option<t::ChannelMap>| {
+        m.map(|m| crate::ChannelMap {
+            path: m.path,
+            channel: match m.channel {
+                t::Channel::Red => crate::Channel::Red,
+                t::Channel::Green => crate::Channel::Green,
+                t::Channel::Blue => crate::Channel::Blue,
+                t::Channel::Alpha => crate::Channel::Alpha,
+                t::Channel::Gray => crate::Channel::Gray,
+            },
+        })
+    };
+    crate::Pbr {
+        normal: p.normal,
+        normal_dx: p.normal_dx,
+        roughness: map(p.roughness),
+        roughness_value: unit(p.roughness_value, 1.0),
+        metallic: map(p.metallic),
+        metallic_value: unit(p.metallic_value, 0.0),
+        ao: map(p.ao),
+    }
+}
+
 /// The pictures among `materials` whose size and pixel count agree, up to 8192 on a side, and
 /// flat swatches for those that only give a color.
 pub(crate) fn images(materials: Vec<t::MaterialInfo>) -> Vec<crate::ImportedMaterial> {
     materials
         .into_iter()
         .filter_map(|m| {
+            let size = m.size.map(|(w, h)| [w, h]);
             let Some(p) = m.pixels else {
                 let (r, g, b) = m.color?;
-                return Some(crate::ImportedMaterial { name: m.name, width: 16, height: 16, rgba: [r, g, b, 255].repeat(16 * 16) });
+                return Some(crate::ImportedMaterial { name: m.name, width: 16, height: 16, rgba: [r, g, b, 255].repeat(16 * 16), size });
             };
             let p = picture(p)?;
-            Some(crate::ImportedMaterial { name: m.name, width: p.width, height: p.height, rgba: p.rgba })
+            Some(crate::ImportedMaterial { name: m.name, width: p.width, height: p.height, rgba: p.rgba, size })
         })
         .collect()
 }

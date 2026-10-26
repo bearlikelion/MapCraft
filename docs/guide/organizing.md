@@ -6,7 +6,7 @@ This page covers selecting within that tree and keeping a large map tidy.
 ## Selection modes
 
 The selection mode decides what a click in a view selects.
-Switch it with the **Groups**, **Objects** and **Solids** buttons on the top bar, the same items in the Edit menu, or the keys below.
+Switch it with the **Groups**, **Objects** and **Solids** buttons on the top bar, **Edit > Selection Mode** (which marks the current one), or the keys below.
 
 | Mode | Key | A click selects |
 |---|---|---|
@@ -30,6 +30,23 @@ Keep clicking to cycle through everything under the pointer.
 
 Rename a group in the inspector.
 Ungrouping a generator group keeps its brushes but drops its parameters, and ungrouping a [mirror group](mirror-groups.md) drops its mirrored half.
+
+## Linked copies
+
+A linked copy shows another group's contents and keeps showing them as they change, like Blender's linked duplicates: build a light fixture once, place copies of it all over the map, and change them all by changing one.
+
+- **Edit > Duplicate Linked** (`Alt+D`) adds a linked copy of the selection one grid step away and selects it.
+  A selection that is not a single group is grouped first; that group becomes the original.
+  Duplicating a copy, with `Alt+D` or `Ctrl+D`, adds another copy of the same original.
+- Each copy has its own place: move, turn, flip or scale it like any object, and a flipped copy is a mirrored one.
+  Moving the original group moves only the original; its copies stay where they are.
+- Edit what is inside the original (switch to **Objects** or **Solids** selection mode to reach it) and every copy changes with it.
+- To edit through a copy instead, select it and choose **Tools > Edit Linked Copy Here** (or **Edit here** in the inspector): that copy becomes the original, and the old original and every other copy follow it from then on.
+- **Tools > Make Linked Copy Real** (or **Make real**) turns a copy into an ordinary group with its own contents, which no longer follow anything.
+
+The scene tree marks copies as **(linked copy)**, and the inspector has **Select original** for a copy and **Select copies** for an original.
+A copy whose original is deleted shows nothing, and Check for Problems reports it.
+Saved maps hold each copy's contents too, so the Godot importer and exporters need nothing new.
 
 ## Where new objects go
 
@@ -112,6 +129,17 @@ Each tag's row has:
 - **Select**, which selects them;
 - **+** and **−**, which add the selection to the tag or take it out;
 - a button that deletes the tag (the objects stay).
+
+### Auto tags
+
+When the SDK's FGD defines `@AutoVisGroup` sets, they appear under **Auto tags**, grouped under their parent name, like Hammer's auto visgroups.
+Each set gathers the entities of the classes it lists; hover its name to see them.
+
+- The checkbox shows or hides every entity in the set.
+- **Select** selects them.
+
+Auto tags are not stored in the map: membership follows the entity classes, and hiding one hides its entities as the scene tree's eye does.
+Sets with no entities in the map are left out.
 
 ## Cordons
 

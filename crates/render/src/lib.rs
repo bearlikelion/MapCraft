@@ -3,20 +3,32 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod camera;
+mod model;
 mod scene;
 
 use std::collections::HashMap;
 
-use mapcraft_geom::{DVec2, DVec3};
+use mapcraft_geom::{DVec2, DVec3, DVec4};
 use wgpu::util::DeviceExt;
 
 pub use camera::{Camera, View};
-pub use scene::{EntityStyle, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, WORLD_EDGE, box_lines, build_scene, is_tool_material};
+pub use model::{MAX_MODEL_BYTES, Model, ModelPart, Picture, entity_transform, load_gltf, placed_bounds};
+pub use scene::{
+    EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, WORLD_EDGE, box_lines, build_scene, entity_bounds, is_tool_material,
+};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SAMPLES: u32 = 4;
+/// Lights nearest the camera that the Lit mode shades with; the shader loops over each per pixel.
+const MAX_LIGHTS: usize = 64;
+/// Linear light every face gets in the Lit mode, so unlit corners stay readable.
+const MIN_AMBIENT: f32 = 0.08;
+/// Lit's stand-in rig for maps without lights: a warm key sun, a cool fill sun opposite it, and a sky and ground.
+const RIG_SUNS: [([f32; 3], [f32; 3]); 2] = [([0.3, 0.5, 0.8], [0.7, 0.66, 0.6]), ([-0.5, -0.8, 0.5], [0.2, 0.22, 0.26])];
+const RIG_SKY: [f32; 3] = [0.4, 0.43, 0.48];
+const RIG_GROUND: [f32; 3] = [0.14, 0.12, 0.1];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RenderMode {
@@ -24,6 +36,8 @@ pub enum RenderMode {
     Textured,
     Flat,
     Wireframe,
+    /// Textured with physically based shading from the map's light entities, or a default rig without any.
+    Lit,
 }
 
 #[repr(C)]
@@ -31,11 +45,18 @@ pub enum RenderMode {
 struct Globals {
     view_proj: [[f32; 4]; 4],
     light_dir: [f32; 4],
+    /// The Lit mode's ambient color from above; w counts the lights in use.
+    ambient: [f32; 4],
+    /// The Lit mode's ambient color from below.
+    ground: [f32; 4],
+    eye: [f32; 4],
+    lights: [Light; MAX_LIGHTS],
 }
 
 struct Material {
     bind_group: wgpu::BindGroup,
     size: [u32; 2],
+    albedo: wgpu::TextureView,
 }
 
 struct Batch {
@@ -63,7 +84,11 @@ pub struct Renderer {
     globals_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// 1x1 maps for materials without their own: a flat normal, and fully rough, unoccluded and not metallic.
+    flat: wgpu::TextureView,
+    rough: wgpu::TextureView,
     mesh_pipeline: wgpu::RenderPipeline,
+    lit_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
@@ -74,6 +99,8 @@ pub struct Renderer {
     edges: Option<(wgpu::Buffer, u32)>,
     selected_edges: Option<(wgpu::Buffer, u32)>,
     translucent: Option<(wgpu::Buffer, u32)>,
+    lights: Vec<Light>,
+    ambient: [f32; 3],
 }
 
 fn vertex_layout<'a>(stride: usize, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -95,25 +122,28 @@ impl Renderer {
                 count: None,
             }],
         });
+        let image = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                image(0),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                image(2),
+                image(3),
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -134,7 +164,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&globals_layout)],
             immediate_size: 0,
         });
-        let mesh_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
+        let mesh_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4];
         let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         // `depth` is (write, test): overlays skip the test, see-through faces skip the write.
         let pipeline = |label: &str,
@@ -176,6 +206,7 @@ impl Renderer {
         let line_buffers = [Some(vertex_layout(std::mem::size_of::<LineVertex>(), &line_attrs))];
         let none = wgpu::DepthBiasState::default();
         let mesh_pipeline = pipeline("mesh", &mesh_layout, "vs_mesh", "fs_mesh", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
+        let lit_pipeline = pipeline("lit", &mesh_layout, "vs_mesh", "fs_lit", &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none);
         // Pulled toward the camera so a trigger lying on a floor never fights it.
         let pull = wgpu::DepthBiasState { constant: -8, slope_scale: -2.0, clamp: 0.0 };
         let translucent_pipeline =
@@ -183,9 +214,12 @@ impl Renderer {
         let line_pipeline = pipeline("line", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (true, true), none);
         let overlay_pipeline = pipeline("overlay", &line_layout, "vs_line", "fs_line", &line_buffers, wgpu::PrimitiveTopology::LineList, (false, false), none);
 
-        let white = texture_bind_group(device, queue, &texture_layout, &sampler, 1, 1, &[255, 255, 255, 255]);
+        let flat = texture(device, queue, 1, 1, &[128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
+        let rough = texture(device, queue, 1, 1, &[255, 255, 0, 255], wgpu::TextureFormat::Rgba8Unorm);
+        let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough);
+        let white = bind(&texture(device, queue, 1, 1, &[255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb));
         let checker: Vec<u8> = (0..64u32).flat_map(|i| if (i % 8 < 4) ^ (i / 8 < 4) { [255, 0, 255, 255] } else { [0, 0, 0, 255] }).collect();
-        let missing = texture_bind_group(device, queue, &texture_layout, &sampler, 8, 8, &checker);
+        let missing = bind(&texture(device, queue, 8, 8, &checker, wgpu::TextureFormat::Rgba8UnormSrgb));
         Self {
             device: device.clone(),
             queue: queue.clone(),
@@ -194,7 +228,10 @@ impl Renderer {
             globals_layout,
             texture_layout,
             sampler,
+            flat,
+            rough,
             mesh_pipeline,
+            lit_pipeline,
             translucent_pipeline,
             line_pipeline,
             overlay_pipeline,
@@ -203,19 +240,48 @@ impl Renderer {
             edges: None,
             selected_edges: None,
             translucent: None,
+            lights: Vec::new(),
+            ambient: [0.0; 3],
         }
+    }
+
+    fn fits(&self, w: u32, h: u32, rgba: &[u8]) -> bool {
+        let max = self.device.limits().max_texture_dimension_2d;
+        w > 0 && h > 0 && w <= max && h <= max && rgba.len() as u64 == u64::from(w) * u64::from(h) * 4
     }
 
     /// Uploads a material's RGBA8 pixels; a size that does not match the data is ignored.
     pub fn upload_material(&mut self, name: &str, w: u32, h: u32, rgba: &[u8]) -> bool {
-        let max = self.device.limits().max_texture_dimension_2d;
-        let expected = u64::from(w) * u64::from(h) * 4;
-        if w == 0 || h == 0 || w > max || h > max || rgba.len() as u64 != expected {
+        if !self.fits(w, h, rgba) {
             return false;
         }
-        let bind_group = texture_bind_group(&self.device, &self.queue, &self.texture_layout, &self.sampler, w, h, rgba);
-        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h] });
+        let albedo = texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let bind_group = material_bind_group(&self.device, &self.texture_layout, &self.sampler, &albedo, &self.flat, &self.rough);
+        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo });
         true
+    }
+
+    /// Gives an uploaded material Lit's maps: a normal map with green up, and occlusion, roughness and metallic in RGB.
+    pub fn set_material_maps(&mut self, name: &str, normal: (u32, u32, &[u8]), orm: (u32, u32, &[u8])) -> bool {
+        if !self.fits(normal.0, normal.1, normal.2) || !self.fits(orm.0, orm.1, orm.2) {
+            return false;
+        }
+        let Some(m) = self.materials.get_mut(name) else { return false };
+        let linear = |(w, h, rgba)| texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8Unorm);
+        m.bind_group = material_bind_group(&self.device, &self.texture_layout, &self.sampler, &m.albedo, &linear(normal), &linear(orm));
+        true
+    }
+
+    /// Drops every uploaded material, so the next scene uploads them again from a new listing.
+    pub fn forget_materials(&mut self) {
+        self.materials.clear();
+    }
+
+    /// Makes texture coordinates count `size` texels for a material uploaded as a smaller picture.
+    pub fn set_material_size(&mut self, name: &str, size: [u32; 2]) {
+        if let Some(m) = self.materials.get_mut(name).filter(|_| size[0] > 0 && size[1] > 0) {
+            m.size = size;
+        }
     }
 
     pub fn material_size(&self, name: &str) -> Option<[u32; 2]> {
@@ -241,6 +307,8 @@ impl Renderer {
         self.selected_edges = lines(&scene.selected_edges);
         self.translucent =
             (!scene.translucent.is_empty()).then(|| (buffer("translucent", bytemuck::cast_slice(&scene.translucent)), scene.translucent.len() as u32));
+        self.lights = scene.lights.clone();
+        self.ambient = scene.ambient;
     }
 
     pub fn target(&self, size: [u32; 2]) -> Target {
@@ -282,7 +350,36 @@ impl Renderer {
     pub fn render(&self, target: &Target, camera: &Camera, mode: RenderMode, grid: Option<f64>, overlay: &[LineVertex]) {
         let size = DVec2::new(f64::from(target.size[0]), f64::from(target.size[1]));
         let light = DVec3::new(0.3, 0.5, 0.8).normalize().as_vec3();
-        let globals = Globals { view_proj: camera.view_proj(size).as_mat4().to_cols_array_2d(), light_dir: [light.x, light.y, light.z, 0.0] };
+        let lit = mode == RenderMode::Lit;
+        let mut globals = Globals {
+            view_proj: camera.view_proj(size).as_mat4().to_cols_array_2d(),
+            light_dir: [light.x, light.y, light.z, 0.0],
+            ambient: [0.0; 4],
+            ground: [0.0; 4],
+            eye: camera.position.as_vec3().extend(1.0).to_array(),
+            lights: [Light::default(); MAX_LIGHTS],
+        };
+        if lit && self.lights.is_empty() {
+            for (l, (dir, [r, g, b])) in globals.lights.iter_mut().zip(RIG_SUNS) {
+                *l = Light {
+                    pos: DVec3::from_array(dir.map(f64::from)).normalize().as_vec3().extend(0.0).to_array(),
+                    color: [r, g, b, 3.0],
+                    ..Light::default()
+                };
+            }
+            globals.ambient = [RIG_SKY[0], RIG_SKY[1], RIG_SKY[2], RIG_SUNS.len() as f32];
+            globals.ground = [RIG_GROUND[0], RIG_GROUND[1], RIG_GROUND[2], 0.0];
+        } else if lit {
+            let mut near = self.lights.clone();
+            // Suns have w 0, so they always come first.
+            let d = |l: &Light| f64::from(l.pos[3]) * camera.position.distance_squared(DVec4::from_array(l.pos.map(f64::from)).truncate());
+            near.sort_by(|a, b| d(a).total_cmp(&d(b)));
+            let n = near.len().min(MAX_LIGHTS);
+            globals.lights[..n].copy_from_slice(&near[..n]);
+            let [r, g, b] = self.ambient.map(|c| c.max(MIN_AMBIENT));
+            globals.ambient = [r, g, b, n as f32];
+            globals.ground = [r, g, b, 0.0];
+        }
         self.queue.write_buffer(&target.globals, 0, bytemuck::bytes_of(&globals));
 
         let mut extra = Vec::new();
@@ -331,8 +428,9 @@ impl Renderer {
                 pass.draw(0..extra.len() as u32, 0..1);
             }
             if !camera.is_2d() && mode != RenderMode::Wireframe {
-                pass.set_pipeline(&self.mesh_pipeline);
                 for batch in &self.batches {
+                    // Entity boxes stay unlit, or a light's own box would be dark.
+                    pass.set_pipeline(if lit && !batch.material.is_empty() { &self.lit_pipeline } else { &self.mesh_pipeline });
                     let bind = match (mode, batch.material.as_str()) {
                         (RenderMode::Flat, _) | (_, "") => &self.white,
                         (_, m) => self.materials.get(m).map_or(&self.missing, |t| &t.bind_group),
@@ -365,37 +463,42 @@ impl Renderer {
     }
 }
 
-fn texture_bind_group(
+fn texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], format: wgpu::TextureFormat) -> wgpu::TextureView {
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("material"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            rgba,
+        )
+        .create_view(&Default::default())
+}
+
+fn material_bind_group(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
-    w: u32,
-    h: u32,
-    rgba: &[u8],
+    albedo: &wgpu::TextureView,
+    normal: &wgpu::TextureView,
+    orm: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    let texture = device.create_texture_with_data(
-        queue,
-        &wgpu::TextureDescriptor {
-            label: Some("material"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        },
-        wgpu::util::TextureDataOrder::LayerMajor,
-        rgba,
-    );
-    let view = texture.create_view(&Default::default());
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(albedo) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(normal) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(orm) },
         ],
     })
 }

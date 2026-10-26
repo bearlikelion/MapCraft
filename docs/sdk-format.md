@@ -39,6 +39,10 @@ extensions = ["png", "jpg"]
 default = "ramps-orange1"
 scale = 1.0
 
+[models]
+roots = ["${project}"]
+class = "prop_static"
+
 [paths.project]
 prompt = "SurfsUp Godot project folder"
 
@@ -67,11 +71,15 @@ steps = [
 | `homepage` | Where to read more or report problems |
 | `plugins` | Ids of the WebAssembly plugins the SDK needs |
 | `units_per_meter` | Map units per meter, 39.37 by default |
+| `map_size` | The lowest and highest coordinate maps may use on every axis, such as `[-4096, 4096]` for Quake; unset, an FGD's `@mapsize` gives it, and without either maps are unbounded |
 | `fgd` | Entity definition files, merged in order; later classes replace earlier ones |
 | `textures.roots` | Folders searched for materials, first match wins |
 | `textures.extensions` | File types that count as materials |
 | `textures.default` | Material for new brushes |
 | `textures.scale` | Texture scale for new faces |
+| `models.roots` | Folders glTF model paths are relative to; empty uses `textures.roots` |
+| `models.class` | Point entity class the Models tab places models with; unset, models can be previewed but not placed |
+| `models.key` | The key that holds a model's path, `model` by default |
 | `files.roots` | More folders plugins may read, such as a game install; ones whose paths are unset are skipped |
 | `paths.<name>` | A folder or program the user picks once; available as `${name}` |
 | `compile` | Compile profiles shown in the Run menu |
@@ -81,7 +89,7 @@ Unknown keys are an error, so typos are caught when the SDK loads.
 
 ## Variables
 
-Any string in `fgd`, `textures.roots` and compile steps can use `${name}`.
+Any string in `fgd`, `textures.roots`, `models.roots` and compile steps can use `${name}`.
 Besides the `paths` the user set, these are always available:
 
 | Variable | Value |

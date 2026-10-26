@@ -25,6 +25,47 @@ pub struct MaterialInfo {
     pub color: Option<[u8; 3]>,
     /// The picture itself, for materials from files outside the SDK's asset folders.
     pub pixels: Option<std::sync::Arc<Picture>>,
+    /// The texture's own size when the preview is smaller.
+    pub size: Option<[u32; 2]>,
+    pub pbr: Option<Pbr>,
+}
+
+/// Metallic-roughness maps for the Lit view, as asset paths the editor reads when a map uses the material.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pbr {
+    /// Green points up the picture (OpenGL) unless `normal_dx`.
+    pub normal: Option<String>,
+    pub normal_dx: bool,
+    /// The map's channel times the value, or the value alone; values are in 0 to 1.
+    pub roughness: Option<ChannelMap>,
+    pub roughness_value: f32,
+    pub metallic: Option<ChannelMap>,
+    pub metallic_value: f32,
+    pub ao: Option<ChannelMap>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelMap {
+    pub path: String,
+    pub channel: Channel,
+}
+
+/// Which channel of a picture holds a value; `Gray` averages red, green and blue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Red,
+    Green,
+    Blue,
+    Alpha,
+    Gray,
+}
+
+/// A problem a plugin's `validate` found; `node` is the node at fault, when there is one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginIssue {
+    pub error: bool,
+    pub message: String,
+    pub node: Option<mapcraft_map::NodeId>,
 }
 
 /// An RGBA8 picture, rows top to bottom.
@@ -65,6 +106,8 @@ pub struct ImportedMaterial {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The texture's own size when the picture is smaller.
+    pub size: Option<[u32; 2]>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -123,6 +166,7 @@ impl host::Host for State {
 }
 
 /// Compiles plugins; one is shared by every plugin the editor loads.
+#[derive(Clone)]
 pub struct Host {
     engine: Engine,
     linker: Linker<State>,
@@ -130,7 +174,19 @@ pub struct Host {
 
 impl Host {
     pub fn new() -> Result<Self, PluginError> {
+        Self::with_config(Config::new())
+    }
+
+    /// Like [`Host::new`], keeping compiled plugins in `dir` so later launches skip compiling them.
+    pub fn with_cache(dir: &Path) -> Result<Self, PluginError> {
+        let mut cache = wasmtime::CacheConfig::new();
+        cache.with_directory(dir);
         let mut config = Config::new();
+        config.cache(Some(wasmtime::Cache::new(cache).map_err(wasm_err)?));
+        Self::with_config(config)
+    }
+
+    fn with_config(mut config: Config) -> Result<Self, PluginError> {
         config.consume_fuel(true);
         let engine = Engine::new(&config).map_err(wasm_err)?;
         let mut linker = Linker::new(&engine);
@@ -251,6 +307,27 @@ impl Plugin {
         }
     }
 
+    /// The game's own checks on `map`, which should have prefabs and mirrors resolved.
+    pub fn validate(&mut self, map: &mapcraft_map::Map, name: &str) -> Result<Vec<PluginIssue>, PluginError> {
+        if !self.manifest.validates {
+            return Ok(Vec::new());
+        }
+        let (data, ids) = convert::map_data_with_ids(map, name);
+        self.begin()?;
+        match self.bindings.call_validate(&mut self.store, &data) {
+            Ok(list) => Ok(list
+                .into_iter()
+                .take(10_000)
+                .map(|i| PluginIssue {
+                    error: matches!(i.severity, types::Severity::Error),
+                    message: i.message,
+                    node: i.node.and_then(|n| ids.get(n as usize).copied()),
+                })
+                .collect()),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
     /// The materials the plugin lists.
     pub fn materials(&mut self) -> Result<Vec<MaterialInfo>, PluginError> {
         self.begin()?;
@@ -262,6 +339,8 @@ impl Plugin {
                     name: m.name,
                     image: m.image,
                     color: m.color.map(|(r, g, b)| [r, g, b]),
+                    size: m.size.map(|(w, h)| [w, h]),
+                    pbr: m.pbr.map(convert::pbr),
                 })
                 .collect()),
             Ok(Err(message)) => Err(self.failed(message)),

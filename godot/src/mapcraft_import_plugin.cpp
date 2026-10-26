@@ -73,8 +73,9 @@ float MapCraftImportPlugin::_get_priority() const {
 	return 1.0;
 }
 
+// After the scene importer, so models that props instance are imported first.
 int32_t MapCraftImportPlugin::_get_import_order() const {
-	return IMPORT_ORDER_SCENE;
+	return IMPORT_ORDER_SCENE + 1;
 }
 
 Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,

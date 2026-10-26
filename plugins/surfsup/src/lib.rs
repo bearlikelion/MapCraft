@@ -2,6 +2,7 @@
 
 mod bhop;
 mod ramp;
+mod validate;
 mod zon;
 
 use glam::DVec3;
@@ -404,6 +405,7 @@ impl Guest for SurfsUp {
             materials: false,
             importers: Vec::new(),
             exporters: vec![ExporterSpec { id: "zon".into(), label: "SurfsUp zones (.zon)".into(), extensions: vec!["zon".into()] }],
+            validates: true,
         }
     }
 
@@ -435,6 +437,9 @@ impl Guest for SurfsUp {
             host::log(&format!("{}.zon: {line}", map.name));
         }
         Ok(written.text.into_bytes())
+    }
+    fn validate(map: MapData) -> Vec<Issue> {
+        validate::check(&map)
     }
 }
 

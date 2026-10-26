@@ -36,6 +36,7 @@ impl Guest for Quake {
             materials: true,
             importers: vec![ImporterSpec { id: "map".into(), label: "Quake map".into(), extensions: vec!["map".into()] }],
             exporters: vec![ExporterSpec { id: "map".into(), label: "Quake map (Valve220)".into(), extensions: vec!["map".into()] }],
+            validates: false,
         }
     }
 
@@ -79,6 +80,9 @@ impl Guest for Quake {
             host::log("Quake textures: the palette was not found; set the SDK's Quake folder (the one holding id1)");
         }
         Ok(pictures.into_iter().map(|(name, p)| import::material(name, p)).collect())
+    }
+    fn validate(_map: MapData) -> Vec<Issue> {
+        Vec::new()
     }
 }
 

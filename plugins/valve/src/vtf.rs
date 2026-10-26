@@ -186,6 +186,11 @@ fn layout(vtf: &[u8], max: usize) -> Result<Layout, String> {
     Ok(Layout { at, len, w, h, format })
 }
 
+/// The full width and height a VTF header gives, whatever mip is decoded.
+pub fn full_size(header: &[u8]) -> (u32, u32) {
+    (u16_at(header, 16) as u32, u16_at(header, 18) as u32)
+}
+
 /// How many leading bytes of the file `decode` reads, worked out from its header.
 pub fn needed(header: &[u8], max: usize) -> Option<usize> {
     layout(header, max).ok().map(|l| l.at.saturating_add(l.len))

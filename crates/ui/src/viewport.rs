@@ -28,6 +28,8 @@ pub enum Tool {
     Sculpt,
     /// Drag brush corners.
     Vertex,
+    /// Click to add path points, drag to pull their handles.
+    Path,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,12 +68,28 @@ pub enum Drag {
         level: DVec3,
         last: std::time::Instant,
     },
+    /// Dragging the Vertex tool's selection; `originals` are each brush's corners as they began.
     Vertex {
         view: usize,
-        originals: Vec<DVec3>,
+        originals: Vec<(NodeId, Vec<DVec3>)>,
         start: DVec3,
         anchor: DVec3,
         applied: DVec3,
+    },
+    /// Dragging the Vertex tool's selection in the 3D view across the grabbed handle's level
+    /// plane, or up and down with Shift.
+    Vertex3d {
+        view: usize,
+        originals: Vec<(NodeId, Vec<DVec3>)>,
+        anchor: DVec3,
+        applied: DVec3,
+    },
+    /// A box selecting Vertex tool handles; Shift adds to the selection and Ctrl takes away.
+    ComponentBox {
+        view: usize,
+        start: Pos2,
+        add: bool,
+        remove: bool,
     },
     /// Dragging faces of `faces` (the brushes as they were) along `normal`; `created` are the
     /// brushes a split or stamp added so far.
@@ -95,10 +113,11 @@ pub enum Drag {
         turned: f64,
         applied: f64,
     },
-    /// Stretching the selection's bounds along one axis in the 3D view.
+    /// Stretching the selection along one axis in the 3D view, from its low side when `low` is set.
     Scale {
         view: usize,
         axis: usize,
+        low: bool,
         bounds: Aabb,
         start: f64,
         applied: Aabb,
@@ -114,6 +133,11 @@ pub enum Drag {
         end: DVec3,
         height: f64,
     },
+    /// Dragging a path point or handle.
+    Path {
+        view: usize,
+        grab: Box<crate::curves::PathDrag>,
+    },
     /// Moving the selection along one gizmo arrow in the 3D view.
     Axis {
         view: usize,
@@ -124,14 +148,6 @@ pub enum Drag {
         base: f64,
         applied: f64,
     },
-}
-
-/// What a vertex tool handle drags.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HandleKind {
-    Vertex,
-    Edge,
-    Face,
 }
 
 pub(crate) const AXES: [(DVec3, Color32); 3] =
@@ -162,9 +178,8 @@ pub(crate) fn dvec(v: Vec2) -> DVec2 {
 
 impl MapCraftApp {
     fn point_box(&self, e: &mapcraft_map::Entity) -> Aabb {
-        let o = e.origin().unwrap_or_default();
-        let (min, max) = mapcraft_render::EntityStyle::size(&self.project, &e.classname).unwrap_or((DVec3::splat(-8.0), DVec3::splat(8.0)));
-        Aabb::new(o + min, o + max)
+        let (min, max) = mapcraft_render::entity_bounds(&self.project, e);
+        Aabb::new(min, max)
     }
 
     /// Bounds of a brush or point entity.
@@ -173,6 +188,7 @@ impl MapCraftApp {
         match &n.kind {
             NodeKind::Brush(b) => b.bounds().ok(),
             NodeKind::Entity(e) if n.children.is_empty() => Some(self.point_box(e)),
+            NodeKind::Path(p) => p.bounds(),
             _ => None,
         }
     }
@@ -228,29 +244,6 @@ impl MapCraftApp {
             }
         }
         best
-    }
-
-    /// Vertex tool handles of the selected brushes: corners, edge midpoints and face centers,
-    /// each with the corners it drags.
-    fn vertex_handles(&self) -> Vec<(HandleKind, DVec3, Vec<DVec3>)> {
-        let mut out: Vec<(HandleKind, DVec3, Vec<DVec3>)> = Vec::new();
-        let mut add = |kind, at: DVec3, verts: Vec<DVec3>| {
-            if !out.iter().any(|(k, p, _)| *k == kind && p.distance_squared(at) < 1e-6) {
-                out.push((kind, at, verts));
-            }
-        };
-        for id in self.session.selected_brushes() {
-            let Some(Ok(solid)) = self.session.map.get(id).and_then(|n| n.kind.brush()).map(|b| b.solid()) else { continue };
-            for w in solid.faces.iter().flatten() {
-                for (i, a) in w.0.iter().enumerate() {
-                    let b = w.0[(i + 1) % w.0.len()];
-                    add(HandleKind::Vertex, *a, vec![*a]);
-                    add(HandleKind::Edge, (*a + b) / 2.0, vec![*a, b]);
-                }
-                add(HandleKind::Face, w.center(), w.0.clone());
-            }
-        }
-        out
     }
 
     /// The displaced surface under the pointer in the 3D view, and its face's normal.
@@ -345,11 +338,21 @@ impl MapCraftApp {
         q
     }
 
+    /// The clip plane: the line plus the direction of the view or face it was drawn on, or three clicked points.
+    fn clip_plane(&self) -> Option<[DVec3; 3]> {
+        match self.clip_points[..] {
+            [a, b, c] if (b - a).cross(c - a).length() > 1e-6 => Some([a, b, c]),
+            [a, b, ..] if a.distance(b) > 1e-6 => {
+                let view = self.panes.iter().find(|p| p.camera.is_2d()).map_or(DVec3::Z, |p| p.camera.view.axes().2);
+                Some([a, b, b + self.clip_view_axis.unwrap_or(view) * 64.0])
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn apply_clip(&mut self) {
-        let (Some(a), Some(b)) = (self.clip_points.first().copied(), self.clip_points.get(1).copied()) else { return };
-        let view = self.panes.iter().find(|p| p.camera.is_2d()).map_or(DVec3::Z, |p| p.camera.view.axes().2);
-        let toward = self.clip_view_axis.unwrap_or(view);
-        if let Err(e) = self.session.clip([a, b, b + toward * 64.0], self.clip_keep) {
+        let Some(points) = self.clip_plane() else { return };
+        if let Err(e) = self.session.clip(points, self.clip_keep) {
             self.status = e.to_string();
         }
         self.clip_points.clear();
@@ -365,7 +368,9 @@ impl MapCraftApp {
         if let Some(b) = self.block_3d_box() {
             box_lines(&mut out, b.min, b.max, PREVIEW);
         }
-        if self.tool == Tool::Clip
+        if let (Tool::Clip, [a, b, c]) = (self.tool, &self.clip_points[..]) {
+            out.extend([a, b, b, c, c, a].map(|p| LineVertex::new(*p, PREVIEW)));
+        } else if self.tool == Tool::Clip
             && let (Some(a), Some(b), Some(t)) = (self.clip_points.first(), self.clip_points.get(1), self.clip_view_axis)
         {
             let dir = (*b - *a).normalize_or_zero();
@@ -378,13 +383,12 @@ impl MapCraftApp {
             out.push(LineVertex::new(b, PREVIEW));
         }
         if self.tool == Tool::Clip
-            && let (&[a, b], Some(t)) = (self.clip_points.as_slice(), self.clip_view_axis)
-            && a.distance(b) > 1e-6
+            && let Some(plane) = self.clip_plane()
         {
             use mapcraft_engine::ClipKeep as K;
             for id in self.session.selected_brushes().into_iter().take(64) {
                 let Some(brush) = self.session.map.get(id).and_then(|n| n.kind.brush()) else { continue };
-                let Ok((front, back)) = brush.split([a, b, b + t * 64.0], &self.session.tex) else { continue };
+                let Ok((front, back)) = brush.split(plane, &self.session.tex) else { continue };
                 for (part, kept) in [(front, self.clip_keep != K::Back), (back, self.clip_keep != K::Front)] {
                     let Some(solid) = part.and_then(|p| p.solid().ok()) else { continue };
                     let color = if kept { PREVIEW } else { [0.45, 0.05, 0.05, 1.0] };
@@ -414,8 +418,12 @@ impl MapCraftApp {
         }
         self.link_lines(&mut out);
         self.mirror_lines(&mut out);
+        self.path_lines(&mut out);
         for c in self.session.map.cordons.iter().filter(|c| c.active) {
             box_lines(&mut out, c.bounds.min, c.bounds.max, [0.3, 0.6, 1.0, 1.0]);
+        }
+        if let Some((low, high)) = self.project.game.map_size.filter(|(low, high)| low < high) {
+            box_lines(&mut out, DVec3::splat(low as f64), DVec3::splat(high as f64), [0.7, 0.25, 0.25, 1.0]);
         }
         if let Some(h) = &self.extrude_hover {
             for poly in &h.polygons {
@@ -495,7 +503,7 @@ impl MapCraftApp {
     }
 
     /// The box a block drag makes: the dragged rectangle, with the depth of the last box made.
-    fn block_box(&self, start: DVec3, end: DVec3) -> Aabb {
+    pub(crate) fn block_box(&self, start: DVec3, end: DVec3) -> Aabb {
         let mut b = Aabb::new(start, end);
         for axis in 0..3 {
             if (b.max[axis] - b.min[axis]).abs() < 1e-9 {
@@ -516,6 +524,7 @@ impl MapCraftApp {
                 match &n.kind {
                     NodeKind::Brush(b) => pts.extend(b.vertices().unwrap_or_default().into_iter().map(|v| (self.owner(id), v))),
                     NodeKind::Entity(e) if n.children.is_empty() => pts.extend(e.origin().map(|o| (self.owner(id), o))),
+                    NodeKind::Path(p) => pts.extend(p.points.iter().map(|q| (self.owner(id), q.pos))),
                     _ => {}
                 }
             }
@@ -640,27 +649,16 @@ impl MapCraftApp {
         if matches!(self.tool, Tool::Select | Tool::Move | Tool::Scale) {
             self.draw_handles(ui, index, rect);
         }
-        if self.tool == Tool::Vertex
-            && let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| c.is_2d())
-        {
-            for (kind, at, _) in self.vertex_handles().into_iter().rev() {
-                let Some(p) = cam.project(at, dvec(rect.size())) else { continue };
-                let c = rect.min + Vec2::new(p.x as f32, p.y as f32);
-                if !rect.contains(c) {
-                    continue;
-                }
-                match kind {
-                    HandleKind::Vertex => ui.painter_at(rect).rect_filled(Rect::from_center_size(c, Vec2::splat(6.0)), 0.0, Color32::from_rgb(255, 220, 60)),
-                    HandleKind::Edge => ui.painter_at(rect).rect_filled(Rect::from_center_size(c, Vec2::splat(5.0)), 0.0, Color32::from_rgb(80, 220, 240)),
-                    HandleKind::Face => ui.painter_at(rect).circle_filled(c, 3.0, Color32::from_rgb(120, 240, 120)),
-                };
-            }
+        if self.tool == Tool::Vertex {
+            self.draw_components(ui, index, rect);
         }
+        self.draw_path_handles(ui, index, rect);
         for (_, a, b, color) in self.gizmo(index, rect) {
             ui.painter_at(rect).line_segment([a, b], Stroke::new(3.0, color));
             ui.painter_at(rect).circle_filled(b, 5.0, color);
         }
         self.draw_transform_gizmos(ui, index, rect);
+        self.draw_measurements(ui, index, rect);
         self.draw_snap_mark(ui, index, rect);
     }
 
@@ -717,7 +715,7 @@ impl MapCraftApp {
     }
 
     fn viewport_input(&mut self, ui: &egui::Ui, index: usize, rect: Rect, response: &egui::Response) {
-        let Some(pane) = self.panes.get(index) else { return };
+        let Some(pane) = self.panes.get(index).filter(|_| !self.uv_busy) else { return };
         let cam = pane.camera;
         let size = dvec(rect.size());
         let ctx = ui.ctx();
@@ -750,10 +748,10 @@ impl MapCraftApp {
                 self.ghost_at = self.placement_at(index, rect, h).map(|p| (index, p)).or(self.ghost_at);
             }
             match hover {
-                Some(h) if cam.is_2d() && matches!(self.tool, Tool::Block | Tool::Clip | Tool::Entity) => {
+                Some(h) if cam.is_2d() && matches!(self.tool, Tool::Block | Tool::Clip | Tool::Entity | Tool::Path) => {
                     self.snapped_plane_point(index, h, rect);
                 }
-                Some(h) if self.tool == Tool::Block => {
+                Some(h) if matches!(self.tool, Tool::Block | Tool::Path) => {
                     self.snap_mark = self.block_base(index, rect, h).map(|(_, _, p)| (index, p, false));
                 }
                 _ if self.snap_mark.is_some_and(|(v, ..)| v == index) => self.snap_mark = None,
@@ -856,7 +854,7 @@ impl MapCraftApp {
 
     /// Where a click places something: on the view plane at the last brush's depth in 2D, on the
     /// ground or the face under the pointer in 3D.
-    fn placement_at(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
+    pub(crate) fn placement_at(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
         let cam = self.panes.get(index)?.camera;
         if !cam.is_2d() {
             return self.block_base(index, rect, pos).map(|(_, _, p)| p);
@@ -872,6 +870,13 @@ impl MapCraftApp {
             if let Some(p) = self.placement_at(index, rect, pos) {
                 self.place_plugin_shape(p);
             }
+            return;
+        }
+        if self.path_click(index, rect, pos, additive) {
+            return;
+        }
+        if self.tool == Tool::Vertex && self.vertex_click(index, rect, pos, additive) {
+            self.mark_changed();
             return;
         }
         let size = dvec(rect.size());
@@ -916,6 +921,7 @@ impl MapCraftApp {
                     && !self.session.face_selection.remove(&h)
                 {
                     self.session.face_selection.insert(h);
+                    self.session.active_face = Some(h);
                 }
                 self.mark_changed();
             }
@@ -938,13 +944,13 @@ impl MapCraftApp {
                     .class(&class)
                     .map(|c| c.properties.iter().filter(|p| p.name != "origin").filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect())
                     .unwrap_or_default();
-                if let Err(e) = self.session.create_point_entity(&class, point, defaults) {
+                if let Err(e) = self.session.create_point_entity(&class, point, self.project.with_model(&class, defaults)) {
                     self.status = e.to_string();
                 }
                 self.mark_changed();
             }
             Tool::Clip => {
-                if self.clip_points.len() >= 2 {
+                if self.clip_points.len() >= 3 || (self.clip_points.len() == 2 && cam.is_2d()) {
                     self.clip_points.clear();
                 }
                 if let Some((p, t)) = self.clip_point(index, rect, pos) {
@@ -954,12 +960,16 @@ impl MapCraftApp {
                     self.clip_points.push(p);
                 }
             }
+            Tool::Path => {}
         }
     }
 
     fn begin_drag(&mut self, index: usize, rect: Rect, pos: Pos2, mods: egui::Modifiers) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let size = dvec(rect.size());
+        if self.begin_path_drag(index, rect, pos, mods) {
+            return;
+        }
         if self.extrude_wanted(mods.shift) && self.begin_extrude(index, rect, pos, mods) {
             return;
         }
@@ -987,6 +997,10 @@ impl MapCraftApp {
                 }
                 None => self.status = self.nothing_to_sculpt(),
             }
+            return;
+        }
+        if self.tool == Tool::Vertex {
+            self.begin_vertex_drag(index, rect, pos, mods);
             return;
         }
         if !cam.is_2d() {
@@ -1046,34 +1060,7 @@ impl MapCraftApp {
                     self.drag = Drag::Block { view: index, start: p, end: p };
                 }
             }
-            Tool::Vertex => {
-                // Everything under the cursor moves together, so in a 2D view a corner takes the
-                // corners stacked behind it and an edge midpoint can take a whole side.
-                let handles = self.vertex_handles();
-                let under = |kind| -> Vec<(DVec3, &Vec<DVec3>)> {
-                    handles
-                        .iter()
-                        .filter(|(k, at, _)| *k == kind && cam.project(*at, size).is_some_and(|p| (p - dvec(pos - rect.min)).length() < 6.0))
-                        .map(|(_, at, v)| (*at, v))
-                        .collect()
-                };
-                let mut hit = under(HandleKind::Vertex);
-                if hit.is_empty() {
-                    hit = under(HandleKind::Edge);
-                }
-                if hit.is_empty() {
-                    hit = under(HandleKind::Face);
-                }
-                let mut near: Vec<DVec3> = hit.iter().flat_map(|(_, v)| v.iter().copied()).collect();
-                near.dedup_by(|a, b| a.distance_squared(*b) < 1e-6);
-                if let Some((anchor, _)) = hit.first() {
-                    let start = cam.plane_point(dvec(pos - rect.min), size);
-                    let (_, _, d) = cam.view.axes();
-                    let anchor = *anchor - d * (*anchor - start).dot(d);
-                    self.drag = Drag::Vertex { view: index, originals: near, start, anchor, applied: DVec3::ZERO };
-                }
-            }
-            Tool::Entity | Tool::Clip | Tool::Face | Tool::Extrude | Tool::Rotate | Tool::Sculpt => {}
+            Tool::Entity | Tool::Clip | Tool::Face | Tool::Extrude | Tool::Rotate | Tool::Sculpt | Tool::Vertex | Tool::Path => {}
         }
     }
 
@@ -1094,6 +1081,7 @@ impl MapCraftApp {
                 }
             }
             Drag::Rotate { view, .. } if view == index => self.update_rotate(index, rect, pos),
+            Drag::Path { view, .. } if view == index => self.update_path_drag(index, rect, pos, shift),
             Drag::Scale { view, .. } if view == index => self.update_scale(index, rect, pos),
             Drag::Move { view, start, anchor, applied } if view == index => {
                 let moving = self.moving_nodes();
@@ -1133,17 +1121,34 @@ impl MapCraftApp {
                 }
             }
             Drag::Vertex { view, originals, start, anchor, applied } if view == index => {
-                let dragged: Vec<DVec3> = originals.iter().map(|o| *o + applied).collect();
+                let dragged: Vec<DVec3> = originals.iter().flat_map(|(_, c)| c.iter().map(|o| *o + applied)).collect();
                 let (snapped, caught) = self.snap_point(index, rect, anchor + (cursor - start), &BTreeSet::new(), &dragged);
                 self.snap_mark = Some((index, snapped, caught));
                 let total = snapped - anchor;
-                if (total - applied).length_squared() > 1e-12 {
-                    let moves: Vec<(DVec3, DVec3)> = originals.iter().map(|o| (*o + applied, *o + total)).collect();
-                    match self.session.move_vertices(&moves, Some("drag-vertex")) {
-                        Ok(()) => self.drag = Drag::Vertex { view, originals, start, anchor, applied: total },
-                        Err(e) => self.status = format!("Cannot move there: {e}"),
+                if (total - applied).length_squared() > 1e-12 && self.drag_corners(&originals, applied, total) {
+                    self.drag = Drag::Vertex { view, originals, start, anchor, applied: total };
+                }
+            }
+            Drag::Vertex3d { view, originals, anchor, applied } if view == index => {
+                let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
+                let on_grid = self.prefs.get().view.snap_grid;
+                let snap_to = |x: f64| if on_grid { (x / g).round() * g } else { x };
+                let at = anchor + applied;
+                let target = if shift {
+                    let Some(t) = closest_on_axis(at, DVec3::Z, origin, dir) else { return };
+                    DVec3::new(at.x, at.y, snap_to(at.z + t))
+                } else {
+                    let t = (at.z - origin.z) / dir.z;
+                    if dir.z.abs() < 1e-9 || t <= 0.0 {
+                        return;
                     }
-                    self.mark_changed();
+                    let p = origin + dir * t;
+                    DVec3::new(snap_to(p.x), snap_to(p.y), at.z)
+                };
+                self.snap_mark = Some((index, target, false));
+                let total = target - anchor;
+                if (total - applied).length_squared() > 1e-12 && self.drag_corners(&originals, applied, total) {
+                    self.drag = Drag::Vertex3d { view, originals, anchor, applied: total };
                 }
             }
             Drag::Axis { view, axis, center, start, base, applied } if view == index => {
@@ -1194,9 +1199,15 @@ impl MapCraftApp {
                 self.session.selection = picked;
                 self.mark_changed();
             }
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::Vertex { .. } | Drag::Axis { .. } | Drag::Rotate { .. } | Drag::Scale { .. } => {
-                self.session.end_coalesce()
-            }
+            Drag::ComponentBox { view, start, add, remove } if view == index => self.box_select_components(index, rect, start, pos, add, remove),
+            Drag::Move { .. }
+            | Drag::Resize { .. }
+            | Drag::Vertex { .. }
+            | Drag::Vertex3d { .. }
+            | Drag::Axis { .. }
+            | Drag::Rotate { .. }
+            | Drag::Scale { .. }
+            | Drag::Path { .. } => self.session.end_coalesce(),
             Drag::Extrude { created, .. } => {
                 self.session.end_coalesce();
                 // A split or stamp selects what it made, ready for the next drag.

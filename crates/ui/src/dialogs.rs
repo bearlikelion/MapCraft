@@ -20,6 +20,21 @@ pub(crate) struct TransformDialog {
     values: [f64; 3],
 }
 
+/// Copies of the selection, each one step on: an offset, then a turn about a pivot.
+pub(crate) struct ArrayDialog {
+    pub open: bool,
+    copies: usize,
+    offset: [f64; 3],
+    rotation: [f64; 3],
+    pivot: [f64; 3],
+}
+
+impl Default for ArrayDialog {
+    fn default() -> Self {
+        Self { open: false, copies: 4, offset: [128.0, 0.0, 0.0], rotation: [0.0; 3], pivot: [0.0; 3] }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ReplaceDialog {
     pub open: bool,
@@ -37,6 +52,7 @@ pub(crate) struct Dialogs {
     /// A registry URL or path being typed in Preferences.
     pub new_registry: String,
     pub transform: TransformDialog,
+    pub array: ArrayDialog,
     pub replace: ReplaceDialog,
     /// Autosaves left behind by a session that did not close cleanly.
     pub recovery: Vec<PathBuf>,
@@ -86,6 +102,7 @@ impl MapCraftApp {
 
     pub(crate) fn extra_dialogs(&mut self, ctx: &egui::Context) {
         self.transform_dialog(ctx);
+        self.array_dialog(ctx);
         self.replace_dialog(ctx);
         self.preferences_dialog(ctx);
         self.shortcuts_dialog(ctx);
@@ -102,10 +119,10 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 11] = [
-                ("Copy", "Ctrl+C"),
+            const FIXED: [(&str, &str); 20] = [
+                ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
-                ("Paste", "Ctrl+V"),
+                ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
                 ("Cancel the current drag or tool step", "Escape"),
                 ("Apply the clip", "Enter"),
                 ("Extrude a face", "Shift+Drag"),
@@ -114,6 +131,15 @@ impl MapCraftApp {
                 ("Pick a face's material", "Alt+Click"),
                 ("Apply or wrap the picked material", "Alt+Right Click, Alt+Shift+Right Click"),
                 ("Fly the 3D camera", "Right Drag + WASD"),
+                ("Lock a UV grab or scale to U or V", "X, Y"),
+                ("Snap a UV grab, rotate or scale", "Ctrl"),
+                ("Apply a UV grab, rotate or scale", "Click, Enter"),
+                ("Cancel a UV grab, rotate or scale", "Escape, Right Click"),
+                ("Change a bevel's segments while sizing it", "Scroll"),
+                ("Apply a bevel being sized", "Click, Enter"),
+                ("Cancel a bevel being sized", "Escape, Right Click"),
+                ("Move a 3D vertex handle up and down", "Shift+Drag"),
+                ("Add a third clip point that tilts the cut", "Click in the 3D view"),
             ];
             let bound = crate::shortcuts::actions().filter_map(|(id, label)| Some((label, crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts)?)));
             let rows: Vec<(&str, String)> = bound
@@ -182,6 +208,58 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
+    pub(crate) fn open_array(&mut self) {
+        self.dialogs.array.open = true;
+        if let Some(c) = self.session.selection_center() {
+            self.dialogs.array.pivot = c.to_array();
+        }
+    }
+
+    fn array_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.array.open;
+        let mut apply = false;
+        let center = self.session.selection_center();
+        egui::Window::new("Array").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            let d = &mut self.dialogs.array;
+            egui::Grid::new("array-grid").num_columns(4).show(ui, |ui| {
+                ui.label("Copies");
+                ui.add(egui::DragValue::new(&mut d.copies).range(1..=256));
+                ui.end_row();
+                for (label, values, speed) in [("Offset", &mut d.offset, 1.0), ("Turn", &mut d.rotation, 1.0), ("Pivot", &mut d.pivot, 1.0)] {
+                    ui.label(label);
+                    for (v, axis) in values.iter_mut().zip(["X", "Y", "Z"]) {
+                        ui.add(egui::DragValue::new(v).speed(speed).prefix(format!("{axis} ")));
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.label("Each copy moves by the offset and turns by the degrees about the pivot, from the copy before it.");
+            ui.horizontal(|ui| {
+                if ui.add_enabled(center.is_some(), egui::Button::new("Pivot at selection")).clicked()
+                    && let Some(c) = center
+                {
+                    d.pivot = c.to_array();
+                }
+                if ui.button("Pivot at origin").clicked() {
+                    d.pivot = [0.0; 3];
+                }
+            });
+            apply = ui.add_enabled(center.is_some(), egui::Button::new("Make copies")).clicked();
+        });
+        self.dialogs.array.open = open;
+        if !apply {
+            return;
+        }
+        let d = &self.dialogs.array;
+        let (v, p) = (DVec3::from_array(d.rotation), DVec3::from_array(d.pivot));
+        let turn = DQuat::from_rotation_z(v.z.to_radians()) * DQuat::from_rotation_y(v.y.to_radians()) * DQuat::from_rotation_x(v.x.to_radians());
+        let step = DMat4::from_translation(DVec3::from_array(d.offset) + p) * DMat4::from_quat(turn) * DMat4::from_translation(-p);
+        if let Err(e) = self.session.array_selection(d.copies, &step) {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
+    }
+
     fn replace_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.dialogs.replace.open;
         let mut run = false;
@@ -227,6 +305,9 @@ impl MapCraftApp {
                 ui.end_row();
                 ui.label("Fly speed");
                 ui.add(egui::DragValue::new(&mut prefs.view.fly_speed).range(16.0..=8192.0).suffix(" units/s"));
+                ui.end_row();
+                ui.label("Materials");
+                ui.checkbox(&mut prefs.view.apply_on_click, "Clicking a material applies it to the selection");
                 ui.end_row();
                 ui.label("Shortcuts");
                 egui::ComboBox::from_id_salt("keymap").selected_text(prefs.keymap.label()).show_ui(ui, |ui| {

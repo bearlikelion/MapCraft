@@ -100,6 +100,7 @@ fn tidy(v: DVec3) -> [f64; 3] {
 #[derive(Default)]
 struct Derived {
     nodes: BTreeSet<NodeId>,
+    covered: BTreeSet<(NodeId, FaceId)>,
     next_node: u64,
     next_face: u64,
 }
@@ -127,9 +128,12 @@ fn node_value(map: &Map, id: NodeId, derived: &mut Derived) -> Result<Value, For
         // Engine importers read these polygons so they need no brush kernel; invalid brushes get none.
         if let Ok(solid) = b.solid() {
             let displaced: std::collections::BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
-            for (i, (face, winding)) in faces.iter_mut().zip(&solid.faces).enumerate() {
+            for (i, ((face, winding), f)) in faces.iter_mut().zip(&solid.faces).zip(&b.faces).enumerate() {
                 if let (Some(obj), Some(w)) = (face.as_object_mut(), winding) {
                     obj.insert("polygon".into(), json!(w.0.iter().map(|p| tidy(*p)).collect::<Vec<_>>()));
+                    if derived.covered.contains(&(id, f.id)) {
+                        obj.insert("covered".into(), Value::Bool(true));
+                    }
                     if let Some(grid) = displaced.get(&i) {
                         obj.insert("disp_vertices".into(), json!(grid.iter().map(|p| tidy(*p)).collect::<Vec<_>>()));
                     }
@@ -163,6 +167,7 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
     let (full, owner) = mapcraft_map::mirror::expand(map);
     let mut derived = Derived {
         nodes: owner.into_keys().collect(),
+        covered: mapcraft_map::covered_faces(&full, None),
         next_node: map.nodes().map(|(id, _)| id.0).max().unwrap_or(0).saturating_add(1),
         next_face: map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).map(|f| f.id.0).max().unwrap_or(0).saturating_add(1),
     };
@@ -343,7 +348,7 @@ pub fn save(path: &Path, map: &Map, sdk: Option<&str>, view: &Value) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use mapcraft_geom::Aabb;
+    use mapcraft_geom::{Aabb, DMat4};
     use mapcraft_map::{Brush, Connection, Entity, Group, Layer, Prefab, TexDefaults};
 
     use super::*;
@@ -382,6 +387,45 @@ mod tests {
         assert_eq!(back.to_string().unwrap(), text);
         assert!(text.contains("\"polygon\""));
         assert!(text.contains("\"type\": \"zone_start\"") || text.contains("\"classname\": \"zone_start\""));
+    }
+
+    #[test]
+    fn linked_copies_are_written_filled_and_read_back_as_links() {
+        use mapcraft_map::Link;
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: "a".into(), scale: 1.0 };
+        let lamp = e
+            .insert(
+                ROOT,
+                NodeKind::Group(Group { name: "Lamp".into(), link: Some(Box::new(Link { source: None, frame: DMat4::IDENTITY })), ..Group::default() }),
+            )
+            .unwrap();
+        e.insert(lamp, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(16.0)), &tex))).unwrap();
+        let frame = DMat4::from_translation(DVec3::new(256.0, 0.0, 0.0));
+        e.insert(ROOT, NodeKind::Group(Group { name: "Lamp".into(), link: Some(Box::new(Link { source: Some(lamp), frame })), ..Group::default() })).unwrap();
+        map.apply(e.finish());
+        let file = MapFile { map, sdk: None, view: Value::Null };
+        let text = file.to_string().unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let copy = &v["map"]["root"]["children"][1];
+        assert_eq!(copy["children"][0]["derived"], true, "importers get the copy's brushes");
+        assert_eq!(from_str(&text).unwrap(), file, "and the editor reads the link back");
+    }
+
+    #[test]
+    fn faces_between_brushes_are_marked_covered() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: "a".into(), scale: 1.0 };
+        for x in [0.0, 64.0] {
+            e.insert(ROOT, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(x, 0.0, 0.0), DVec3::new(x + 64.0, 64.0, 64.0)), &tex))).unwrap();
+        }
+        map.apply(e.finish());
+        let file = MapFile { map, sdk: None, view: Value::Null };
+        let text = file.to_string().unwrap();
+        assert_eq!(text.matches("\"covered\": true").count(), 2);
+        assert_eq!(from_str(&text).unwrap(), file, "covered is derived and ignored on load");
     }
 
     #[test]
@@ -454,5 +498,20 @@ mod tests {
         let s = sample();
         save(&path, &s.map, s.sdk.as_deref(), &s.view).unwrap();
         assert_eq!(load(&path).unwrap(), sample());
+    }
+
+    #[test]
+    fn paths_and_curve_groups_round_trip() {
+        use mapcraft_map::{CurveOp, Path, PathPoint};
+        let mut file = sample();
+        let mut e = file.map.edit();
+        let pt = |x: f64| PathPoint { pos: DVec3::new(x, 0.0, 0.0), handle_in: DVec3::new(x - 32.0, 0.0, 0.0), handle_out: DVec3::new(x + 32.0, 16.0, 0.0) };
+        let path = e.insert(ROOT, NodeKind::Path(Path { points: vec![pt(0.0), pt(256.0)], closed: false })).unwrap();
+        let op = CurveOp::Array { path, nodes: vec![path], count: 3, spacing: 0.0, yaw_only: true, bind: mapcraft_geom::DMat4::IDENTITY };
+        e.insert(ROOT, NodeKind::Group(Group { name: "Posts".into(), curve: Some(Box::new(op)), ..Group::default() })).unwrap();
+        file.map.apply(e.finish());
+        let text = file.to_string().unwrap();
+        assert!(text.contains("\"type\": \"path\"") && text.contains("\"op\": \"array\"") && text.contains("\"in\": [-32, 0, 0]"));
+        assert_eq!(from_str(&text).unwrap(), file);
     }
 }

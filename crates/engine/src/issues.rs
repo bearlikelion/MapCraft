@@ -41,9 +41,14 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
     let mut out = Vec::new();
     let mut push = |node, face, severity, message: String, fix| out.push(Issue { node, face, severity, message, fix });
     let names: BTreeSet<&str> = map.nodes().filter_map(|(_, n)| n.kind.entity()?.get("targetname")).filter(|s| !s.is_empty()).collect();
+    let limits = game.and_then(|g| g.map_size).filter(|(low, high)| low < high).map(|(low, high)| (low as f64, high as f64));
+    let outside = |b: &mapcraft_geom::Aabb| limits.filter(|(low, high)| b.min.min_element() < *low || b.max.max_element() > *high);
     for (id, node) in map.nodes() {
         match &node.kind {
             NodeKind::Brush(b) => {
+                if let Some((low, high)) = b.bounds().ok().as_ref().and_then(outside) {
+                    push(id, None, Severity::Error, format!("brush reaches outside the SDK's map limits, {low} to {high}"), None);
+                }
                 for (i, f) in b.faces.iter().enumerate() {
                     let Some(plane) = f.plane() else {
                         push(id, Some(f.id), Severity::Error, format!("face {i} has collinear points"), Some(Fix::RemoveFace));
@@ -63,6 +68,9 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
                 }
             }
             NodeKind::Entity(e) => {
+                if let Some((low, high)) = e.origin().filter(|_| node.children.is_empty()).and_then(|o| outside(&mapcraft_geom::Aabb::new(o, o))) {
+                    push(id, None, Severity::Error, format!("entity sits outside the SDK's map limits, {low} to {high}"), None);
+                }
                 if e.classname.is_empty() {
                     push(id, None, Severity::Error, "entity has no classname".into(), Some(Fix::Remove));
                     continue;
@@ -100,6 +108,9 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
                         push(id, None, Severity::Warning, msg, Some(Fix::RemoveConnection(i)));
                     }
                 }
+            }
+            NodeKind::Group(g) if node.children.is_empty() && g.link.as_ref().is_some_and(|l| l.source.is_some()) => {
+                push(id, None, Severity::Warning, "linked copy shows nothing: its original is gone, empty or holds it".into(), Some(Fix::Remove));
             }
             NodeKind::Group(g) if node.children.is_empty() && g.generator.is_none() => {
                 push(id, None, Severity::Warning, "empty group".into(), Some(Fix::Remove));
@@ -180,6 +191,24 @@ mod tests {
     use mapcraft_map::{Brush, Entity, ROOT, TexDefaults};
 
     use super::*;
+
+    #[test]
+    fn things_outside_the_map_limits_are_errors() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults::default();
+        let inside = e.insert(ROOT, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(4096.0)), &tex))).unwrap();
+        let far = e.insert(ROOT, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(4000.0, 0.0, 0.0), DVec3::new(4160.0, 64.0, 64.0)), &tex))).unwrap();
+        let mut light = Entity::new("light");
+        light.set("origin", "0 -5000 0");
+        let lamp = e.insert(ROOT, NodeKind::Entity(light)).unwrap();
+        map.apply(e.finish());
+        let game = GameData::parse_str("@mapsize(-4096, 4096)\n@PointClass = light []");
+        let outside: Vec<NodeId> = validate(&map, Some(&game)).into_iter().filter(|i| i.message.contains("map limits")).map(|i| i.node).collect();
+        assert_eq!(outside, vec![far, lamp]);
+        assert!(!outside.contains(&inside), "touching the limit is fine");
+        assert!(validate(&map, Some(&GameData::default())).iter().all(|i| !i.message.contains("map limits")), "no limits, no errors");
+    }
 
     #[test]
     fn finds_problems() {

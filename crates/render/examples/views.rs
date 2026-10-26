@@ -1,4 +1,4 @@
-//! Renders a map from the four standard views into one PNG: `cargo run -p mapcraft-render --example views -- map.mcmap out.png`.
+//! Renders a map from the four standard views into one PNG: `cargo run -p mapcraft-render --example views -- map.mcmap out.png [lit]`.
 
 use std::collections::BTreeSet;
 
@@ -8,7 +8,7 @@ use mapcraft_render::{Camera, NoStyle, RenderMode, Renderer, View, build_scene};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(input), Some(output)) = (args.first(), args.get(1)) else {
-        eprintln!("usage: views <map.mcmap> <out.png>");
+        eprintln!("usage: views <map.mcmap> <out.png> [lit]");
         std::process::exit(2);
     };
     let file = mapcraft_format::load(std::path::Path::new(input)).unwrap();
@@ -33,7 +33,8 @@ fn main() {
             cam.pitch = -30.0;
         }
         let target = renderer.target([w, h]);
-        renderer.render(&target, &cam, RenderMode::Textured, Some(64.0), &[]);
+        let mode = if args.get(2).is_some_and(|m| m == "lit") { RenderMode::Lit } else { RenderMode::Textured };
+        renderer.render(&target, &cam, mode, Some(64.0), &[]);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,

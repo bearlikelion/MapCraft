@@ -11,6 +11,10 @@ classes = {
 "func_detail": {
 "node": "world"
 },
+"func_illusionary": {
+"node": "node",
+"visible": true
+},
 "info_player_start": {
 "name": "SpawnPoint",
 "node": "marker",
@@ -21,6 +25,9 @@ classes = {
 "sdk_zone": "kill"
 },
 "name": "KillBox"
+},
+"prop_static": {
+"node": "model"
 },
 "starting_platform": {
 "node": "marker"

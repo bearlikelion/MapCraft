@@ -54,6 +54,8 @@ func _check_imported(root: Node3D) -> void:
 		direction = booster.get_meta(&"boost_direction", Vector3.ZERO)
 	_expect(direction.is_equal_approx(Vector3.FORWARD), "boost_direction turns from +Y to -Z")
 
+	_check_prop(root.get_node_or_null("crate") as Node3D)
+
 	var mesh: MeshInstance3D = root.get_node_or_null("WorldMesh") as MeshInstance3D
 	_expect(mesh != null and mesh.mesh.get_surface_count() == 2, "one surface per material")
 	if mesh != null:
@@ -64,6 +66,17 @@ func _check_imported(root: Node3D) -> void:
 
 	for node: Node in root.find_children("*", "", true, false):
 		_expect(node.get_script() == null, "%s carries no script" % node.name)
+
+
+# Map (x, y, z) is Godot (x, z, -y), so yaw 90 turns the model's +X toward Godot -Z.
+func _check_prop(prop: Node3D) -> void:
+	_expect(prop != null, "the prop is a node named by its targetname")
+	if prop == null:
+		return
+	_expect(prop.scene_file_path == "res://Assets/Models/box.glb", "the prop instances its model")
+	var expected: Vector3 = Vector3(0.0, 0.0, -128.0) / UNITS_PER_METER
+	_expect(prop.position.is_equal_approx(expected), "the prop sits at its origin")
+	_expect(prop.basis.x.is_equal_approx(Vector3(0.0, 0.0, -2.0)), "the prop turns and scales")
 
 
 # The displaced floor collides as triangles and its middle vertex rises 48 units.
@@ -107,7 +120,7 @@ func _check_runtime_build() -> void:
 	map.entity_built.connect(_on_entity_built)
 	_expect(map.build() == OK, "MapCraftMap builds at runtime")
 	_expect(map.get_node_or_null("WorldMesh") != null, "the runtime build has world geometry")
-	_expect(_entities_built == 7, "entity_built fires once per entity")
+	_expect(_entities_built == 8, "entity_built fires once per entity")
 	map.free()
 
 	var solid: MapCraftMap = MapCraftMap.new()
@@ -120,6 +133,9 @@ func _check_runtime_build() -> void:
 		holder = body.get_child(0) as CollisionShape3D
 	var trimesh: bool = holder != null and holder.shape is ConcavePolygonShape3D
 	_expect(trimesh, "trimesh collision makes the world one triangle mesh")
+	if trimesh:
+		var faces: PackedVector3Array = (holder.shape as ConcavePolygonShape3D).get_faces()
+		_expect(faces.size() == 86 * 3, "faces hidden between touching brushes are left out")
 	solid.free()
 
 

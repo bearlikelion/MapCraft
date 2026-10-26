@@ -4,6 +4,11 @@ use mapcraft_map::{Cordon, Face, FaceId, Map, NodeId, NodeKind, Tag, TagId};
 
 use crate::{EngineError, Session};
 
+/// Entities of any of `classes`, ignoring case: the members of an FGD `@AutoVisGroup`.
+pub fn entities_of(map: &Map, classes: &[String]) -> Vec<NodeId> {
+    map.nodes().filter(|(_, n)| n.kind.entity().is_some_and(|e| classes.iter().any(|c| c.eq_ignore_ascii_case(&e.classname)))).map(|(id, _)| id).collect()
+}
+
 /// Entities whose classname or any value contains `query`, or with `key=value`, whose `key`
 /// value contains `value`; case does not matter.
 pub fn find_entities(map: &Map, query: &str) -> Vec<NodeId> {
@@ -43,8 +48,8 @@ impl Session {
     /// Moves `ids` under `parent` in front of its child at `index`, keeping their order.
     pub fn move_nodes(&mut self, ids: &[NodeId], parent: NodeId, index: usize) -> Result<(), EngineError> {
         let target = self.map.get(parent).ok_or(EngineError::Refused("the drop target is gone"))?;
-        if matches!(&target.kind, NodeKind::Group(g) if g.generator.is_some()) {
-            return Err(EngineError::Refused("a generator group rebuilds its own contents"));
+        if matches!(&target.kind, NodeKind::Group(g) if g.generator.is_some() || g.curve.is_some()) {
+            return Err(EngineError::Refused("a generator or curve group rebuilds its own contents"));
         }
         let before = target.children.clone();
         let mut e = self.map.edit();

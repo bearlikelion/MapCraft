@@ -5,7 +5,7 @@ The SDK's FGD files define which classes exist and what keys each one has.
 
 ## Point and brush entities
 
-- A **point entity** sits at one spot, its `origin`, and is drawn as a box with its class's size and color.
+- A **point entity** sits at one spot, its `origin`, and is drawn as a box with its class's size and color, or as its model when it has one (see [Models](#models)).
 - A **brush entity** owns brushes; zones and triggers are brush entities.
   Its brushes with `tools/` materials, such as the `tools/trigger` that zones use, are drawn see-through in the class's color.
 
@@ -31,6 +31,34 @@ Press `N`, then click in a view.
 
 The new entity gets its class's default key values, goes where new objects go (see [Organizing](organizing.md#where-new-objects-go)) and is selected.
 The tool starts out placing `info_player_start`.
+
+## Models
+
+Point entities can show glTF 2.0 models (`.glb` and `.gltf`), the format Godot projects use.
+An entity shows a model when its class names one in the FGD, as `studio("props/crate.glb")` or TrenchBroom's `model({ "path": "props/crate.glb" })`, or else when its `model` key names a `.glb` or `.gltf` file.
+Paths are relative to the SDK's model folders (`[models] roots` in its `sdk.toml`, else its texture folders); a leading `res://` is ignored, so Godot paths work as they are.
+
+- The model is placed by the entity's `origin`, its `angles` (pitch, yaw, roll) or `angle` (yaw), and a `scale` or `modelscale` key.
+- glTF is Y up in meters; MapCraft turns it Z up and scales it by the SDK's units per meter, the same way the Godot importer places it.
+- Models draw in the Textured, Flat and Lit modes with their base color texture and color, and as wireframes in the 2D views and the Wireframe mode.
+- Clicking anywhere in a model's box selects its entity; a selected model is tinted and boxed in red.
+- Models load in the background the first time a map uses them.
+  One that is missing, unreadable or larger than about a million triangles shows as the entity's box, with a line in the Output panel saying why.
+
+Only static meshes are drawn: positions, normals, texture coordinates and the base color.
+Skinned models show in their bind pose, and animations, morph targets and other material maps are ignored.
+Source and Quake `.mdl` models are not drawn; their entities stay boxes.
+
+### The Models tab
+
+Open it with `Ctrl+6`.
+It lists every `.glb` and `.gltf` file in the SDK's model folders, skipping hidden folders such as `.godot`; type in the search box to filter.
+
+Click a model to load it: the tab shows its triangle count and size in units.
+When the SDK names a prop class (`[models] class` in its `sdk.toml`), clicking a model also switches to the Entity tool with that class, and each click in a view places a prop with its model key set to the model's path.
+Without a prop class the tab can still preview models but cannot place them.
+
+The SurfsUp SDK's prop class is `prop_static`, with `model`, `angles` and `scale` keys; its model paths are relative to the SurfsUp project folder.
 
 ## The inspector
 
@@ -85,6 +113,14 @@ An entity with no `targetname` has no inputs.
 - The entity goes where the first brush was, and ends up selected.
 
 **Tools > Move to World** (`Ctrl+Shift+W`) does the reverse: the selected brush entities are removed and their brushes stay where the entity was, selected.
+
+### Brush type
+
+The brush inspector starts with a **Type** row for switching selected brushes in one click.
+**World** makes them plain world brushes; **detail**, **illusionary** and **wall** tie them to `func_detail`, `func_illusionary` or `func_wall`, whichever the SDK's FGD defines.
+The selected brushes leave whatever entity they were in, empty entities are removed, and the switch is one undo step.
+**Group** groups the selection, as **Tools > Group** does.
+In the SurfsUp SDK, `func_detail` merges into the world and `func_illusionary` is drawn but has no collision.
 
 ## Zone from Selection
 

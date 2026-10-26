@@ -20,12 +20,12 @@ enum Source {
     Pixels(std::sync::Arc<mapcraft_plugin_host::Picture>),
 }
 
-fn decode(source: &Source) -> Option<ColorImage> {
+fn decode(source: &Source, size: u32) -> Option<ColorImage> {
     let img = match source {
         Source::File(path) => std::panic::catch_unwind(|| image::open(path)).ok()?.ok()?,
         Source::Pixels(p) => image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(p.width, p.height, p.rgba.clone())?),
     };
-    let rgba = img.thumbnail(SIZE, SIZE).to_rgba8();
+    let rgba = img.thumbnail(size, size).to_rgba8();
     Some(ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw()))
 }
 
@@ -37,12 +37,17 @@ impl Default for Thumbs {
 
 impl Thumbs {
     pub fn new() -> Self {
+        Self::sized(SIZE)
+    }
+
+    /// Previews that fit in `size` by `size` pixels.
+    pub fn sized(size: u32) -> Self {
         let (requests, rx) = mpsc::channel::<(String, Source)>();
         let (tx, results) = mpsc::channel();
         // Ends when the sender is dropped with the app.
         std::thread::spawn(move || {
             for (name, source) in rx {
-                if tx.send((name, decode(&source))).is_err() {
+                if tx.send((name, decode(&source, size))).is_err() {
                     break;
                 }
             }

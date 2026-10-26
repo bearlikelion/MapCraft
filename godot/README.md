@@ -17,6 +17,7 @@ A C++ GDExtension that loads MapCraft maps (`.mcmap`) in Godot 4.4 and newer, fr
 - Entity key values become metadata: whole numbers as `int`, other numbers as `float`, three numbers as `Vector3` (turned into Godot axes when the key ends in `direction`), anything else as `String`.
 - A node is named by its class's `name`, else its `targetname`, else its classname; duplicates get a number (`FinishZone2`).
 - Prefab instances load the prefab `.mcmap` as a scene instance.
+- A point entity mapped to `model` instances the scene of the `.glb` or `.gltf` its model key names (`res://` is added when missing), turned by its `angles` and scaled by its `scale` or `modelscale`, without the -Z facing turn markers get, so the model sits as MapCraft draws it.
 - Map space is Z up in inches; a point becomes `(x, z, -y) / units_per_meter`.
 
 ## Materials
@@ -30,9 +31,10 @@ Texture coordinates use the albedo texture's size, or 64 texels when the materia
 
 | Key | Meaning |
 |---|---|
-| `node` | `marker`, `node`, `area`, `static`, `world` (merge into world geometry), `scene` or `skip` |
+| `node` | `marker`, `node`, `area`, `static`, `world` (merge into world geometry), `scene`, `model` (instance the entity's model) or `skip` |
 | `name` | Node name instead of the targetname |
 | `scene` | Scene to instance for `scene` |
+| `key` | The key holding the model path for `model`, `model` by default |
 | `meta` | Extra metadata set on the node |
 | `properties` | `false` to leave key values off the node |
 | `visible` | `true` to draw a brush entity's brushes |

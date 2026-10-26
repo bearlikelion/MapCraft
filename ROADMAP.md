@@ -28,7 +28,9 @@
 - [x] Organization: tags (visgroups) panel, cordons, prefab override editing.
 - [x] Quality: undo and redo with coalescing, autosave, issue browser, offscreen UI smoke test.
 - [x] Quality: quick fixes, crash recovery prompt, entity report, find and replace, Hammer and TrenchBroom keymap presets, preferences window.
-- [ ] Later: FGD `@AutoVisGroup` tags, vertex editing in the 3D view, extruding faces behind a brush in 3D.
+- [x] FGD `@AutoVisGroup` sets as auto tags in the Tags panel (show, hide, select), with sets in the SurfsUp and Quake FGDs.
+- [x] Vertex editing in the 3D view: drag a corner, edge or face handle across its level plane, Shift for height.
+- [ ] Later: extruding faces behind a brush in 3D.
 
 ## UX pass
 
@@ -58,7 +60,22 @@
 - [x] Mirror groups: build one half and the other follows live; the file holds both halves so importers need nothing new.
 - [x] Displacements on four-cornered faces, a Sculpt tool (raise, lower, smooth, flatten, noise) that keeps neighbors joined, and heightmap images.
 - [x] Snap Selection to Grid, F to focus the selection, see-through zones that never fight the floor they sit on.
-- [ ] Later: dockable and rearrangeable panels, a lit 3D preview, a model browser.
+- [x] Edit > Selection Mode submenu showing the current mode; 3D scale handles on both sides of each axis.
+- [x] Faces hidden between touching world brushes are found and marked in the file; the Godot importer leaves them out of meshes and trimesh collision, and the Face tool leaves them out of picks.
+- [x] Linked copies (`Alt+D`): copies that follow their original's contents but keep their own place, Edit Linked Copy Here to make any copy the original, Make Real to break the link; saved filled so importers need nothing new.
+- [x] Playtest round: View > Go to Origin (`Shift+Home`), a one view layout where Space cycles the views, a right click shape menu on the Block icon, a brush Type row (World, detail, illusionary, wall, Group), three point clipping in the 3D view, and an Array dialog for rows, rings and spirals of copies.
+- [x] SDKs set map limits (`map_size`, else the FGD's `@mapsize`): the views outline them in red and Check for Problems reports brushes and entities outside; Quake is -4096 to 4096 and CS:S -16384 to 16384.
+- [x] Face tool copy and paste: Ctrl+C copies the active face, Ctrl+V gives the picked faces its material, alignment (wrapped across edges) and attributes in one undo step.
+- [x] Plugin material listing runs on a worker thread, so a CS:S project opens at once and its 5,500 materials arrive in the background.
+- [x] Clicking a material applies it to the selection, as in TrenchBroom (a preference turns it off).
+- [x] Size labels like TrenchBroom's while drawing a block or resizing or scaling the selection, and the faces a resize, scale or extrude moves highlighted in the selection red.
+- [x] Lit render mode (`Ctrl+Alt+4`): a 3D preview shaded by the map's point, spot and sun lights, read from Source and Quake light keys.
+- [x] PBR in Lit: metallic-roughness shading with normal and ambient occlusion maps from Godot `.tres` materials and ambientCG image sets, and a stand-in sun and sky for maps without lights.
+- [x] Blender-style UV editor: any view can show the picked faces over their tiled texture with picks shared with the Face tool, G, R and S move, turn and scale textures with axis locks and Ctrl snapping, and Tools > UV holds Unwrap, Project from View, Cube Projection and Reset.
+- [x] Blender-style Vertex tool: vertex, edge and face select modes (1, 2, 3) with click and box select, Merge at center (M), and Bevel (Ctrl+B) with width, segments and profile set by the pointer and scroll, an Adjust Last Bevel window, and textures wrapped around the new faces.
+- [x] glTF models: point entities show the `.glb` or `.gltf` their class or `model` key names in every view, a Models tab places them as the SDK's prop class (`[models]` in `sdk.toml`), and the Godot importer instances them.
+- [x] Curves: a Bezier Path tool (P) with Blender-style points and handles edited in every view, and Sweep Along Path, Spin and Array Along Path as curve groups that rebuild in the same undo step when their path, faces or settings change, with trims running on around every bend.
+- [ ] Later: dockable and rearrangeable panels.
 
 ## M3 Plugins and the SurfsUp SDK
 
@@ -68,7 +85,9 @@
 - [x] Example plugin written in Python, user plugins folder.
 - [x] Importers: plugins list file formats under File > Import and read the picked file's bytes.
 - [x] Surf Ramp gains drop, ridge, inside troughs, gaps, sloped ends and pyramids, and lead in and out, with warnings for walkable faces and coarse curves; bhop platforms gain shapes, path facing and jitter; new Surf Window and Surf Stage generators. See [`docs/surf-mapping.md`](docs/surf-mapping.md).
-- [ ] Later: compiled plugin cache for faster startup, SurfsUp map validators, prefab scenes as bhop platforms.
+- [x] Compiled plugins are cached, so loading a plugin again takes milliseconds.
+- [x] Plugin validators: a `validate` hook whose issues join Check for Problems; SurfsUp checks spawns, start and finish zones, zone sizes and teleport destinations.
+- [ ] Later: prefab scenes as bhop platforms.
 
 ## M4 Godot extension
 
@@ -89,7 +108,7 @@
 ## M6 Quake SDK
 
 - [x] `quake` plugin: Standard and Valve220 `.map` import with texture alignment and TrenchBroom layers and groups, WAD2 and WAD3 textures in the browser, the palette from the user's PAK; `sdks/quake` with an FGD written from scratch.
-- [ ] `.map` export (needs an exporter hook in the plugin API) so the ericw-tools compile profiles can run.
+- [x] Valve220 `.map` export through the plugin exporter hook, so the ericw-tools compile profiles run.
 
 ## M7 Platform
 

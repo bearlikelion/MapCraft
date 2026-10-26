@@ -33,6 +33,7 @@ impl MapCraftApp {
                 (LeftTab::Tags, "Tags", "panel.tags"),
                 (LeftTab::Materials, "Materials", "panel.materials"),
                 (LeftTab::Entities, "Entities", "panel.entities"),
+                (LeftTab::Models, "Models", "panel.models"),
             ] {
                 if ui.selectable_label(self.left_tab == tab, label).on_hover_text(self.chord(id)).clicked() {
                     self.run_action(id);
@@ -45,6 +46,7 @@ impl MapCraftApp {
             LeftTab::Tags => self.tags_panel(ui),
             LeftTab::Materials => self.material_browser(ui),
             LeftTab::Entities => self.entity_browser(ui),
+            LeftTab::Models => self.model_browser(ui),
         }
     }
 
@@ -78,7 +80,7 @@ impl MapCraftApp {
             return None;
         }
         let fits = |parent: &mapcraft_map::Node| {
-            !matches!(&parent.kind, NodeKind::Group(g) if g.generator.is_some())
+            !matches!(&parent.kind, NodeKind::Group(g) if g.generator.is_some() || g.curve.is_some())
                 && self.tree_drag.iter().all(|d| map.get(*d).is_some_and(|dn| parent.kind.can_contain(&dn.kind)))
         };
         if fits(n) {
@@ -261,6 +263,55 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
+    /// The FGD's `@AutoVisGroup` sets, which follow entity classes and are not stored in the map.
+    fn auto_tags(&mut self, ui: &mut egui::Ui) {
+        let mut parents: Vec<(String, Vec<(String, Vec<String>)>)> = Vec::new();
+        for g in &self.project.game.auto_visgroups {
+            match parents.iter_mut().find(|(p, _)| *p == g.name) {
+                Some((_, children)) => children.extend(g.children.iter().cloned()),
+                None => parents.push((g.name.clone(), g.children.clone())),
+            }
+        }
+        if parents.is_empty() {
+            return;
+        }
+        ui.separator();
+        ui.label(RichText::new("Auto tags").strong());
+        let mut action = None;
+        for (parent, children) in &parents {
+            ui.collapsing(parent, |ui| {
+                for (name, classes) in children {
+                    let members = mapcraft_engine::entities_of(&self.session.map, classes);
+                    if members.is_empty() {
+                        continue;
+                    }
+                    let mut shown = !members.iter().all(|id| self.session.map.get(*id).is_some_and(|n| n.hidden));
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut shown, name).on_hover_text(classes.join(", ")).changed() {
+                            action = Some((members.clone(), Some(!shown)));
+                        }
+                        ui.label(RichText::new(members.len().to_string()).weak());
+                        if ui.small_button("Select").clicked() {
+                            action = Some((members.clone(), None));
+                        }
+                    });
+                }
+            });
+        }
+        match action {
+            Some((ids, Some(hidden))) => {
+                if let Err(e) = self.session.set_hidden(&ids, hidden) {
+                    self.status = e.to_string();
+                }
+                self.mark_changed();
+            }
+            Some((ids, None)) => {
+                self.session.selection = ids.into_iter().filter(|id| self.session.map.get(*id).is_some_and(|n| !n.locked && !n.hidden)).collect()
+            }
+            None => {}
+        }
+    }
+
     fn tags_panel(&mut self, ui: &mut egui::Ui) {
         let any = !self.session.selection.is_empty();
         ui.horizontal(|ui| {
@@ -324,6 +375,7 @@ impl MapCraftApp {
             }
             self.mark_changed();
         }
+        self.auto_tags(ui);
 
         ui.separator();
         ui.label(RichText::new("Cordons").strong());
@@ -374,8 +426,15 @@ impl MapCraftApp {
             ui.label("No SDK: pick one with File > New Map to browse materials.");
             return;
         }
+        if self.material_list.is_some() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Loading the SDK's materials…");
+            });
+        }
         ui.add(egui::TextEdit::singleline(&mut self.material_filter).hint_text("Search materials"));
-        if ui.add_enabled(!self.session.selection.is_empty(), egui::Button::new("Apply to selection")).clicked() {
+        let any = !self.session.selection.is_empty() || !self.session.face_selection.is_empty();
+        if ui.add_enabled(any, egui::Button::new("Apply to selection")).clicked() {
             self.run_command("tools.apply_material");
         }
         let filter = self.material_filter.to_lowercase();
@@ -431,8 +490,11 @@ impl MapCraftApp {
                 }
             });
         }
-        if let Some((name, apply)) = chosen {
+        if let Some((name, twice)) = chosen {
+            let changed = self.session.tex.material != name;
             self.session.tex.material = name;
+            // A double click's first click already applied it.
+            let apply = if self.prefs.get().view.apply_on_click { any && (changed || !twice) } else { twice };
             if apply {
                 self.run_command("tools.apply_material");
             }
@@ -651,11 +713,26 @@ impl MapCraftApp {
                                 ui.separator();
                                 self.mirror_inspector(ui, *id, g.clone(), m);
                             }
-                            self.active_button(ui, *id);
-                            ui.separator();
-                            self.brush_editor(ui);
+                            if let Some(op) = g.curve.as_deref().cloned() {
+                                ui.separator();
+                                self.curve_inspector(ui, *id, op);
+                            }
+                            let link = g.link.as_deref().copied();
+                            if let Some(link) = link {
+                                ui.separator();
+                                self.link_inspector(ui, *id, link);
+                            }
+                            if link.is_none_or(|l| l.source.is_none()) {
+                                // A curve group's contents are rebuilt, so nothing new may go in.
+                                if g.curve.is_none() {
+                                    self.active_button(ui, *id);
+                                }
+                                ui.separator();
+                                self.brush_editor(ui);
+                            }
                         }
                         Some(NodeKind::Prefab(p)) => self.prefab_inspector(ui, *id, p),
+                        Some(NodeKind::Path(p)) => self.path_inspector(ui, *id, p),
                         None => {}
                     }
                 }
@@ -665,6 +742,37 @@ impl MapCraftApp {
                 }
             }
         });
+    }
+
+    fn link_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, link: mapcraft_map::Link) {
+        let map = &self.session.map;
+        let copies: Vec<NodeId> = map.nodes().filter(|(n, _)| mapcraft_map::link::copy_of(map, *n).is_some_and(|(s, _)| s == id)).map(|(n, _)| n).collect();
+        let mut select = None;
+        match link.source {
+            Some(source) => {
+                let name = map.get(source).map_or_else(|| "a missing group".to_string(), |n| n.kind.label());
+                ui.label(RichText::new("Linked copy").strong());
+                ui.label(RichText::new(format!("Shows {name}; edit the original and every copy follows.")).weak().small());
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Select original").clicked() {
+                        select = Some(vec![source]);
+                    }
+                    self.action_button(ui, "tools.edit_link_here", "Edit here", true);
+                    self.action_button(ui, "tools.make_link_real", "Make real", true);
+                });
+            }
+            None => {
+                ui.label(RichText::new(format!("Original of {} linked copies", copies.len())).strong());
+                ui.label(RichText::new("Edits here show in every copy; moving this group leaves the copies where they are.").weak().small());
+                if !copies.is_empty() && ui.button("Select copies").clicked() {
+                    select = Some(copies);
+                }
+            }
+        }
+        if let Some(ids) = select {
+            self.session.selection = ids.into_iter().collect();
+            self.mark_changed();
+        }
     }
 
     fn mirror_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, g: Group, m: Mirror) {
@@ -783,11 +891,12 @@ impl MapCraftApp {
                 self.face_edit("Apply material", None, move |f| f.material = m.clone());
             }
             let picked = self.picked_face.clone();
-            let tip = "Material and alignment of the face last picked with Alt+click, wrapped across shared edges";
-            if ui.add_enabled(picked.is_some(), egui::Button::new("Paste alignment")).on_hover_text(tip).clicked()
+            let tip = "Material, alignment and attributes of the face last copied (Ctrl+C) or Alt+clicked, wrapped across shared edges (Ctrl+V)";
+            if ui.add_enabled(picked.is_some(), egui::Button::new("Paste face")).on_hover_text(tip).clicked()
                 && let Some(src) = picked
+                && let Err(e) = self.session.paste_face(&src)
             {
-                self.face_edit("Apply material and alignment", None, move |f| f.wrap_from(&src));
+                self.status = e.to_string();
             }
         });
         let (mut uo, mut vo, mut us, mut vs, mut rot) = (first.u.offset, first.v.offset, first.u.scale, first.v.scale, first.rotation);
@@ -929,11 +1038,7 @@ impl MapCraftApp {
             let Some(b) = self.session.map.get(*id).and_then(|n| n.kind.brush()) else { continue };
             let (Ok(solid), Some(i)) = (b.solid(), b.faces.iter().position(|f| f.id == *face)) else { continue };
             let Some(Some(w)) = solid.faces.get(i) else { continue };
-            let size = b
-                .faces
-                .get(i)
-                .and_then(|f| self.gpu.as_ref()?.renderer.material_size(&f.material))
-                .map_or(DVec2::splat(64.0), |s| DVec2::new(f64::from(s[0]), f64::from(s[1])));
+            let size = b.faces.get(i).map_or(DVec2::splat(64.0), |f| crate::uv::texture_size(self.gpu.as_ref().map(|g| &g.renderer), &f.material));
             polys.insert(*face, (w.0.clone(), size));
         }
         self.face_edit("Justify texture", None, move |f| {
@@ -1150,7 +1255,49 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
+    /// World or one of the common brush entity classes the SDK defines, switched in one click.
+    fn brush_type_row(&mut self, ui: &mut egui::Ui) {
+        let brushes = self.session.selected_brushes();
+        if brushes.is_empty() {
+            return;
+        }
+        let classes: Vec<&str> =
+            ["func_detail", "func_illusionary", "func_wall"].into_iter().filter(|c| self.project.game.class(c).is_some_and(|d| d.kind.is_solid())).collect();
+        let owner = |id: &NodeId| {
+            let map = &self.session.map;
+            map.get(*id).and_then(|n| n.parent).and_then(|p| map.get(p)).and_then(|p| p.kind.entity()).map(|e| e.classname.clone())
+        };
+        let owners: BTreeSet<Option<String>> = brushes.iter().map(owner).collect();
+        let current = if owners.len() == 1 { owners.into_iter().next() } else { None };
+        let mut pick = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Type");
+            let world = current.as_ref().is_some_and(Option::is_none);
+            if ui.selectable_label(world, "World").on_hover_text("Plain world brushes").clicked() && !world {
+                pick = Some(None);
+            }
+            for c in &classes {
+                let on = current.as_ref().is_some_and(|o| o.as_deref() == Some(*c));
+                let label = c.strip_prefix("func_").unwrap_or(c);
+                let tip = self.project.game.class(c).map(|d| d.description.clone()).unwrap_or_default();
+                if ui.selectable_label(on, label).on_hover_text(tip).clicked() && !on {
+                    pick = Some(Some(c.to_string()));
+                }
+            }
+            if ui.button("Group").on_hover_text("Group the selection (Tools > Group)").clicked() {
+                self.run_command("tools.group");
+            }
+        });
+        if let Some(class) = pick {
+            if let Err(e) = self.session.set_brush_class(class.as_deref()) {
+                self.status = e.to_string();
+            }
+            self.mark_changed();
+        }
+    }
+
     fn brush_editor(&mut self, ui: &mut egui::Ui) {
+        self.brush_type_row(ui);
         let ids = self.selected_brushes();
         if ids.is_empty() {
             return;

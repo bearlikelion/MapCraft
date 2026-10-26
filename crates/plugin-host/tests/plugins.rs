@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use mapcraft_map::NodeKind;
-use mapcraft_plugin_host::{Context, Host, MaterialInfo, Plugin};
+use mapcraft_plugin_host::{Channel, ChannelMap, Context, Host, MaterialInfo, Pbr, Plugin};
 use mapcraft_sdk::Vfs;
 use serde_json::json;
 
@@ -80,25 +80,43 @@ fn fuel_stops_runaway_calls() {
 fn godot_materials() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("Brick")).unwrap();
-    std::fs::write(dir.path().join("Brick/brick_color.jpg"), b"").unwrap();
-    let tres = "[gd_resource type=\"StandardMaterial3D\" format=3]\n[ext_resource type=\"Texture2D\" path=\"res://Assets/Textures/Brick/brick_color.jpg\" id=\"1_a\"]\n[resource]\nalbedo_texture = ExtResource(\"1_a\")\n";
+    std::fs::create_dir_all(dir.path().join("Rock")).unwrap();
+    for file in ["Brick/brick_color.jpg", "Brick/brick_n.jpg", "Rock/Rock_1K_Color.jpg", "Rock/Rock_1K_NormalDX.jpg", "Rock/Rock_1K_Roughness.jpg", "loose.png"]
+    {
+        std::fs::write(dir.path().join(file), b"").unwrap();
+    }
+    let tres = "[gd_resource type=\"StandardMaterial3D\" format=3]\n[ext_resource type=\"Texture2D\" path=\"res://Assets/Textures/Brick/brick_color.jpg\" id=\"1_a\"]\n[ext_resource type=\"Texture2D\" path=\"res://Assets/Textures/Brick/brick_n.jpg\" id=\"2_n\"]\n[resource]\nalbedo_texture = ExtResource(\"1_a\")\nnormal_enabled = true\nnormal_texture = ExtResource(\"2_n\")\nroughness = 0.5\nmetallic = 7\n";
     std::fs::write(dir.path().join("Brick/brick.tres"), tres).unwrap();
     std::fs::write(dir.path().join("env.tres"), "[gd_resource type=\"Environment\" format=3]\n").unwrap();
     let shader = "[gd_resource type=\"ShaderMaterial\" format=3]\n[resource]\nshader_parameter/base_color = Color(1, 0.4, 0, 1)\n";
     std::fs::write(dir.path().join("ramps-orange1.tres"), shader).unwrap();
-    std::fs::write(dir.path().join("loose.png"), b"").unwrap();
     let host = Host::new().unwrap();
     let Some(mut p) = load(&host, "godot", Vfs::new(vec![dir.path().into()])) else { return };
     assert!(p.manifest.materials);
-    let info = |name: &str, image: Option<&str>, color| MaterialInfo { name: name.into(), image: image.map(String::from), color, pixels: None };
+    let pbr = |normal: Option<&str>, normal_dx, roughness_value, metallic_value| Pbr {
+        normal: normal.map(String::from),
+        normal_dx,
+        roughness: None,
+        roughness_value,
+        metallic: None,
+        metallic_value,
+        ao: None,
+    };
+    let info =
+        |name: &str, image: Option<&str>, color, pbr| MaterialInfo { name: name.into(), image: image.map(String::from), color, pixels: None, size: None, pbr };
+    let rock = Pbr {
+        roughness: Some(ChannelMap { path: "Rock/Rock_1K_Roughness.jpg".into(), channel: Channel::Red }),
+        ..pbr(Some("Rock/Rock_1K_NormalDX.jpg"), true, 1.0, 0.0)
+    };
     let mut got = p.materials().unwrap();
     got.sort_by(|a, b| a.name.cmp(&b.name));
     assert_eq!(
         got,
         vec![
-            info("Brick/brick", Some("Brick/brick_color.jpg"), None),
-            info("loose", Some("loose.png"), None),
-            info("ramps-orange1", None, Some([255, 102, 0])),
+            info("Brick/brick", Some("Brick/brick_color.jpg"), None, Some(pbr(Some("Brick/brick_n.jpg"), false, 0.5, 1.0))),
+            info("Rock/Rock_1K_Color", Some("Rock/Rock_1K_Color.jpg"), None, Some(rock)),
+            info("loose", Some("loose.png"), None, None),
+            info("ramps-orange1", None, Some([255, 102, 0]), Some(pbr(None, false, 1.0, 0.0))),
         ]
     );
 }
@@ -165,4 +183,76 @@ fn zones_export_as_zon() {
     assert!(text.contains("\"main0_start\"") && text.contains("\"main0_end\""));
     assert!(text.contains("\"2048.000000 0.000000 0.000000\""), "the finish keeps its corner");
     assert!(p.export("zon", &Map::new(), "empty", &ctx()).is_err(), "no start or finish is an error");
+
+    let mut e = map.edit();
+    let teleport = e.insert(ROOT, NodeKind::Entity(Entity::new("teleport_zone"))).unwrap();
+    map.apply(e.finish());
+    let issues = p.validate(&map, "surf_test").unwrap();
+    assert!(issues.iter().any(|i| i.error && i.node.is_none() && i.message.contains("info_player_start")), "{issues:?}");
+    assert!(issues.iter().any(|i| i.node == Some(teleport) && i.message.contains("no Destination")), "issues point back at their node: {issues:?}");
+}
+
+/// A cached host compiles a plugin once; the next load reads the compiled code back.
+#[test]
+fn compiled_plugins_are_cached() {
+    let Some(path) = built("surfsup") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let time = |host: &Host| {
+        let start = std::time::Instant::now();
+        let p = host.load_file(&path, Vfs::default()).unwrap();
+        assert_eq!(p.manifest.id, "surfsup");
+        start.elapsed()
+    };
+    let first = time(&Host::with_cache(dir.path()).unwrap());
+    let again = time(&Host::with_cache(dir.path()).unwrap());
+    eprintln!("first load {first:?}, cached load {again:?}");
+    let cached = std::fs::read_dir(dir.path()).unwrap().count();
+    assert!(cached > 0, "the cache folder fills");
+}
+
+/// Counter-Strike: Source, when Mark's install and decompiled surf map are on this machine: the game's materials, and a `.vmf` that keeps its brushes and entities through import, export and import again.
+#[test]
+fn vmf_round_trip_and_game_materials() {
+    use mapcraft_format::Fragment;
+    use mapcraft_map::{Map, NodeId, ROOT};
+    let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdks/cstrike/plugins/source.wasm");
+    let css = PathBuf::from("/mnt/Storage/Gamedev/SurfsUp/CSS-Windows");
+    let vmf = "/mnt/Storage/Gamedev/SurfsUp/SurfMaps/Decomp/surf_activation_d.vmf";
+    let (true, true, Ok(data)) = (wasm.is_file(), css.is_dir(), std::fs::read(vmf)) else {
+        eprintln!("skipped: source.wasm, the CS:S install or {vmf} is missing");
+        return;
+    };
+    let host = Host::new().unwrap();
+    let mut p = host.load_file(&wasm, Vfs::new(vec![css.join("cstrike"), css.join("hl2")])).unwrap();
+    let start = std::time::Instant::now();
+    let materials = p.materials().unwrap();
+    let pictured = materials.iter().filter(|m| m.pixels.is_some()).count();
+    eprintln!("{} materials, {pictured} with pictures, in {:?}: {:?}", materials.len(), start.elapsed(), p.take_log());
+    assert!(materials.len() > 3000 && pictured * 10 > materials.len() * 9);
+    let shrunk = materials.iter().filter_map(|m| Some((m.pixels.as_ref()?.width, m.size?[0]))).filter(|(w, full)| full > w).count();
+    assert!(shrunk > 0, "previews smaller than their texture say how big the texture is");
+
+    fn count(nodes: &[Fragment]) -> (usize, usize) {
+        nodes.iter().fold((0, 0), |(b, e), f| {
+            let (cb, ce) = count(&f.children);
+            (b + cb + usize::from(matches!(f.kind, NodeKind::Brush(_))), e + ce + usize::from(matches!(f.kind, NodeKind::Entity(_))))
+        })
+    }
+    fn insert(e: &mut mapcraft_map::Edit<'_>, parent: NodeId, nodes: Vec<Fragment>) {
+        for f in nodes {
+            let id = e.insert(parent, f.kind).unwrap();
+            insert(e, id, f.children);
+        }
+    }
+    let first = p.import("vmf", "surf_activation_d.vmf", &data, &ctx()).unwrap();
+    let before = count(&first.nodes);
+    let mut map = Map::new();
+    let mut e = map.edit();
+    insert(&mut e, ROOT, first.nodes);
+    map.apply(e.finish());
+    let text = p.export("vmf", &map, "surf_activation_d", &ctx()).unwrap();
+    let again = p.import("vmf", "surf_activation_d.vmf", &text, &ctx()).unwrap();
+    eprintln!("{before:?} {:?}", p.take_log());
+    assert_eq!(count(&again.nodes), before);
+    assert!(before.0 > 7000 && before.1 == 4411, "{before:?}");
 }

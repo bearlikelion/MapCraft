@@ -122,11 +122,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-source"
+version = "0.1.0"
+dependencies = [
+ "valve",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "plugin-source-bsp"
 version = "0.1.0"
 dependencies = [
  "glam",
- "lzma-rust2",
+ "valve",
  "wit-bindgen",
 ]
 
@@ -230,6 +238,13 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "valve"
+version = "0.1.0"
+dependencies = [
+ "lzma-rust2",
+]
 
 [[package]]
 name = "wasm-encoder"

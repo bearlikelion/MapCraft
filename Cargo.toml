@@ -38,9 +38,11 @@ log = "0.4"
 tempfile = "3"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
+gltf-json = "1.4"
+base64 = "0.22"
 
 # plugins
-wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "parallel-compilation"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "parallel-compilation", "cache"] }
 wasmtime-wasi = { version = "50", default-features = false, features = ["p2"] }
 
 # sdk registry: downloads over rustls with the system's certificates

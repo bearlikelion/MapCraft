@@ -397,3 +397,86 @@ fn sdk_manager_checks_and_creates_sdks() {
     assert_eq!(h.state().sdk_ids_for_test().first().map(String::as_str), Some("my-game"), "user SDKs list first");
     assert!(h.query_by_label("Remove…").is_some(), "a user SDK can be removed");
 }
+
+#[test]
+fn uv_editor_grabs_locks_and_cancels() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(2);
+    h.get_by_label("Side").click();
+    h.run_steps(2);
+    h.get_by_label("UV Editor").click();
+    h.run_steps(2);
+    let offsets = |h: &mut Harness<MapCraftApp>| -> Vec<(f64, f64)> {
+        h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| (f.u.offset, f.v.offset)).collect()
+    };
+    let before = offsets(&mut h);
+    let at = Pos2::new(1050.0, 750.0);
+    h.hover_at(at);
+    h.run_steps(2);
+    h.key_press(egui::Key::G);
+    h.run_steps(2);
+    h.hover_at(at + egui::vec2(40.0, 0.0));
+    h.run_steps(2);
+    assert_ne!(offsets(&mut h), before, "the texture follows the pointer");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(offsets(&mut h), before, "Esc puts it back");
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 6, "Esc leaves the Face tool alone");
+
+    h.key_press(egui::Key::G);
+    h.run_steps(2);
+    h.hover_at(at + egui::vec2(40.0, 30.0));
+    h.run_steps(1);
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    click(&mut h, at + egui::vec2(40.0, 30.0));
+    let after = offsets(&mut h);
+    assert!(after.iter().zip(&before).all(|(a, b)| a.0 == b.0 && a.1 != b.1), "Y locks the grab to V: {after:?}");
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 6, "the click that applies picks nothing");
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Move UVs"));
+    h.state_mut().run_command_for_test("edit.undo");
+    assert_eq!(offsets(&mut h), before, "one undo step");
+}
+
+#[test]
+fn vertex_tool_bevels_edges_and_merges_corners() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    let brush = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().clone();
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.key_press(egui::Key::Num2);
+    h.run_steps(2);
+    let side = 3;
+    let at = h.state().screen_for_test(side, DVec3::new(64.0, 32.0, 64.0));
+    click(&mut h, at);
+    h.state_mut().run_command_for_test("vertex.bevel");
+    let at = h.state().screen_for_test(side, DVec3::new(48.0, 32.0, 48.0));
+    click(&mut h, at);
+    assert_eq!(brush(&mut h).faces.len(), 7, "the picked edge is chamfered 16 units, snapped to the grid");
+    h.get_by_value("Segments 1").click();
+    h.run_steps(2);
+    h.event(Event::Text("3".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(brush(&mut h).faces.len(), 9, "Adjust Last Bevel redoes it with three segments");
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert_eq!(brush(&mut h).faces.len(), 6, "one undo step takes the adjusted bevel back");
+
+    h.key_press(egui::Key::Num1);
+    h.run_steps(2);
+    let front = 2;
+    let (a, b) = (h.state().screen_for_test(front, DVec3::new(0.0, -16.0, 80.0)), h.state().screen_for_test(front, DVec3::new(0.0, 80.0, 48.0)));
+    drag(&mut h, a, b);
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    let merged = brush(&mut h).vertices().unwrap();
+    assert_eq!(merged.len(), 5, "a box with its top merged is a pyramid");
+    assert!(merged.iter().any(|v| v.distance(DVec3::new(32.0, 32.0, 64.0)) < 1e-6));
+}

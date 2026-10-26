@@ -6,15 +6,16 @@ The core editor knows no game; plugins teach it how to work with one.
 
 ## What a plugin can do
 
-A plugin exports five functions:
+A plugin exports six functions:
 
 | Export | Purpose |
 |---|---|
-| `manifest` | Its id, name, version, commands, importers, exporters, and whether it lists materials |
+| `manifest` | Its id, name, version, commands, importers, exporters, and whether it lists materials or validates maps |
 | `run-command` | Runs one of its commands with parameter values and returns brushes and entities |
 | `list-materials` | Lists the SDK's materials for the browser, with a preview image or color each |
 | `import-file` | Reads a file the user picked for one of its importers and returns brushes and entities |
 | `export-file` | Writes the map in one of its export formats and returns the file's bytes |
+| `validate` | Checks the map and returns problems for Check for Problems |
 
 It can call four host functions:
 
@@ -68,10 +69,32 @@ Every brush comes with its faces (three points, material and texture axes) and i
 The editor has already resolved prefabs and mirror copies and removed layers left out of exports and everything outside an active cordon, so an exporter writes what it gets.
 It returns the file's bytes, and the editor saves them.
 
+## Validators
+
+A plugin that sets `validates` in its manifest is asked to check the map whenever Check for Problems runs.
+`validate` gets the same `map-data` an exporter gets and returns a list of issues, each a warning or an error with a message and, when one node is at fault, that node's index in `map-data.nodes`.
+The editor lists them with its own problems and selects the node when the user clicks the issue.
+A plugin that does not validate returns an empty list.
+
 ## Materials
 
 A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
 Each material has a name, which is what faces store and what engine importers look up, and a preview: an image path in the asset folders, or an sRGB color.
+A plugin that returns its own pictures (`pixels`) may shrink them to save memory; it then sets `size` to the texture's real width and height, because texture scales and offsets count real texels.
+Importers do the same for the materials they return.
+
+`pbr` gives the maps the Lit view shades with, as paths in the asset folders; the editor reads them only when a map uses the material, so listing stays cheap.
+Leave it out (`none`) for materials without such maps; they draw fully rough and not metallic.
+
+| Field | Meaning |
+|---|---|
+| `normal` | Tangent space normal map, green pointing up the picture (OpenGL, as Godot uses) |
+| `normal-dx` | The normal map is DirectX style, green pointing down; the editor flips it |
+| `roughness`, `metallic`, `ao` | A `channel-map`: a picture's path and the channel (`red`, `green`, `blue`, `alpha` or `gray`) holding the value |
+| `roughness-value`, `metallic-value` | Multiply their map, as in Godot, or stand alone without one; 0 to 1 |
+
+Ambient occlusion darkens only ambient light.
+A packed occlusion, roughness and metallic picture is one path named three times with the channels `red`, `green` and `blue`.
 
 ## Where plugins come from
 
@@ -104,6 +127,10 @@ impl Guest for Mine {
 
     fn export_file(_exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
         Err("this plugin exports no files".into())
+    }
+
+    fn validate(_map: MapData) -> Vec<Issue> {
+        Vec::new()
     }
 }
 

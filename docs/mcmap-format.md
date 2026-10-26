@@ -32,11 +32,12 @@ Every node has an `id` (unique integer), a `type`, and optionally `children`, `t
 | `type` | Fields | Children |
 |---|---|---|
 | `world` | `classname` (`worldspawn`), `properties` | anything except `world` |
-| `layer` | `name`, `color`, `omit_from_export` | groups, entities, brushes, prefabs |
-| `group` | `name`, `generator`, `mirror` | groups, entities, brushes, prefabs |
+| `layer` | `name`, `color`, `omit_from_export` | groups, entities, brushes, prefabs, paths |
+| `group` | `name`, `generator`, `mirror`, `link`, `curve` | groups, entities, brushes, prefabs, paths |
 | `entity` | `classname`, `properties`, `connections` | brushes (a brush entity) or none (a point entity) |
 | `brush` | `faces` | none |
 | `prefab` | `path`, `origin`, `angles`, `overrides` | none |
+| `path` | `points`, `closed` | none |
 
 `properties` is a list of `[key, value]` string pairs in file order; keys can repeat in imported data.
 `connections` is a list of `{output, target, input, param, delay, times_to_fire}`; `times_to_fire` of -1 means every time.
@@ -60,6 +61,31 @@ How the copy is made:
 - Prefab instances are copied as instances at the mirrored origin with mirrored angles; their contents are turned, not flipped.
 - A mirror group inside another one is copied as a mirror group across the reflected plane, with its own derived half.
 
+## Linked copies
+
+A group with a `link` (`{source, frame}`) takes part in linked copies; `frame` is a 4 by 4 matrix, 16 numbers in column order.
+Without `source` the group is an original, and `frame` moves with it.
+With `source` (a group id) the group is a copy: its children are the source's children moved by `frame` times the inverse of the source's frame, written like mirror copies as subtrees flagged `"derived": true`.
+Importers treat them like any other nodes; MapCraft drops them on load and builds them again.
+A copy of a group that holds copies gets those copies' contents too, and a copy inside a mirror group is mirrored with it.
+
+## Paths and curve groups
+
+A `path` is a curve of cubic Bezier spans that builds nothing by itself, so importers can skip it.
+`points` is a list of `{pos, in, out}`: a point and its two handles, all in map space.
+Span `i` runs from `points[i].pos` with control points `points[i].out` and `points[i + 1].in` to `points[i + 1].pos`; a `closed` path has one more span from the last point back to the first.
+A handle lying on its point makes a sharp corner.
+
+A group with a `curve` holds brushes MapCraft builds from other nodes and rebuilds whenever those nodes or the settings change.
+Its children are written as ordinary nodes, so importers treat it like any other group.
+`curve.op` says what it builds:
+
+- `sweep` (`{path, faces, segments, twist, scale, bind}`): each face in `faces`, a list of `[node id, face id]` pairs, swept along `path` as a run of convex brushes, `segments` of them per curved span; the cross-section turns `twist` degrees and scales to `scale` by the end.
+- `spin` (`{faces, axis, pivot, angle, steps}`): each face turned `angle` degrees about `axis` through `pivot`, one brush per step.
+- `array` (`{path, nodes, count, spacing, yaw_only, bind}`): copies of the subtrees under `nodes` along `path`, `count` of them, or one every `spacing` units when that is above zero, each turned with the path or, with `yaw_only`, only about Z.
+
+`bind` is a 4 by 4 matrix, 16 numbers column by column, that places the sources' center in the frame of the path's start; it is what lets the result follow the path when the path moves.
+
 ## Faces
 
 ```json
@@ -76,6 +102,7 @@ How the copy is made:
 
 - `points` define the face plane. Seen from outside the brush they run clockwise, so the outward normal is `normalize((p0 - p1) x (p2 - p1))`.
 - `polygon` is the face's convex polygon, counter-clockwise seen from outside (so it is front-facing for a right-handed, counter-clockwise renderer). It is written by MapCraft for importers and ignored when MapCraft reads the file. Faces of invalid brushes have no polygon.
+- `covered: true` marks a face wholly hidden by the opposite faces of world brushes that touch it, such as the joins between the pieces of a ramp. Importers can leave such faces out of meshes and triangle collision; they still bound the brush. Only world brushes, not brushes of entities, cover or are covered, and tool materials and displaced brushes take no part. Like `polygon`, it is written for importers and ignored on load.
 - Texture coordinates in texels: `u = dot(p, u.axis) / u.scale + u.offset`, likewise for `v`. Divide by the texture's width and height for normalized UVs. This is the Valve220 and VMF convention.
 - `rotation` is informational; the axes already include it.
 - `attrs` holds per-face game attributes such as `lightmapscale` or `smoothing_groups` as strings.

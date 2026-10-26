@@ -64,7 +64,8 @@ pub fn expand_instance(e: &mut Edit, id: NodeId, load: &mut dyn FnMut(&str) -> O
                 NodeKind::Prefab(inner)
             }
             NodeKind::Layer(l) => NodeKind::Group(Group { name: l.name, ..Group::default() }),
-            NodeKind::Group(g) => NodeKind::Group(Group { mirror: None, ..g }),
+            NodeKind::Group(g) => NodeKind::Group(Group { mirror: None, curve: None, ..g }),
+            NodeKind::Path(path) => NodeKind::Path(path.transformed(&m)),
             NodeKind::World(_) => continue,
             other => other,
         };

@@ -58,11 +58,15 @@ impl EntityClass {
         }
     }
 
-    /// The preview model or sprite path when the class names a fixed one.
+    /// The preview model or sprite path when the class names a fixed one, as `studio("x")` or
+    /// TrenchBroom's `model({ "path": "x" })`.
     pub fn model(&self) -> Option<String> {
         let h = self.helper(&["studio", "studioprop", "model", "sprite", "iconsprite"])?;
         let raw = h.raw.trim();
-        let path = raw.strip_prefix('"')?.strip_suffix('"')?;
+        let path = match raw.strip_prefix('{') {
+            Some(obj) => obj.split_once("\"path\"")?.1.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?.split_once('"')?.0,
+            None => raw.strip_prefix('"')?.strip_suffix('"')?,
+        };
         (!path.is_empty() && !path.contains('"')).then(|| path.to_string())
     }
 }
@@ -250,5 +254,16 @@ mod tests {
         let c = gd.class("c").unwrap();
         assert_eq!(c.properties.len(), 2);
         assert!(gd.class("missing").is_none());
+    }
+
+    #[test]
+    fn model_helpers() {
+        let gd = GameData::parse_str(
+            "@PointClass model({ \"path\": \"props/crate.glb\", \"skin\": skin }) = tb []\n@PointClass model({ \"path\": model }) = keyed []\n@PointClass studio() = any []",
+        );
+        let model = |c: &str| gd.class(c).unwrap().model();
+        assert_eq!(model("tb").as_deref(), Some("props/crate.glb"));
+        assert_eq!(model("keyed"), None, "a path taken from a key is not fixed");
+        assert_eq!(model("any"), None);
     }
 }

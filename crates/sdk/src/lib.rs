@@ -49,11 +49,17 @@ pub struct Manifest {
     pub plugins: Vec<String>,
     #[serde(default = "default_units_per_meter")]
     pub units_per_meter: f64,
+    /// The lowest and highest coordinate a map may use on every axis, such as Quake's `[-4096, 4096]`;
+    /// unset, an FGD's `@mapsize` gives it, else maps are unbounded.
+    #[serde(default)]
+    pub map_size: Option<[i64; 2]>,
     /// Entity definition files, relative to the SDK folder; `${var}` paths are expanded.
     #[serde(default)]
     pub fgd: Vec<String>,
     #[serde(default)]
     pub textures: Textures,
+    #[serde(default)]
+    pub models: Models,
     /// More folders plugins may read, such as a game install; ones whose paths are unset are skipped.
     #[serde(default)]
     pub files: Files,
@@ -100,6 +106,30 @@ fn default_extensions() -> Vec<String> {
 
 fn default_scale() -> f64 {
     1.0
+}
+
+/// glTF models: where they live and the point entity class the Models tab places them with.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Models {
+    /// Folders model paths are relative to; empty uses the texture folders.
+    #[serde(default)]
+    pub roots: Vec<String>,
+    #[serde(default)]
+    pub class: Option<String>,
+    /// The key that holds the model path.
+    #[serde(default = "default_model_key")]
+    pub key: String,
+}
+
+impl Default for Models {
+    fn default() -> Self {
+        Self { roots: Vec::new(), class: None, key: default_model_key() }
+    }
+}
+
+fn default_model_key() -> String {
+    "model".into()
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -154,12 +184,22 @@ impl Sdk {
             let path = self.resolve(raw, vars)?;
             gd.extend(GameData::load(&path, &mut |p| std::fs::read(p)));
         }
+        if let Some([low, high]) = self.manifest.map_size {
+            gd.map_size = Some((low, high));
+        }
         Ok(gd)
     }
 
     pub fn vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
         let roots = self.manifest.textures.roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?;
         Ok(Vfs::new(roots))
+    }
+
+    /// Where model paths resolve: the `[models]` folders, else the texture folders.
+    pub fn model_vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
+        let models = &self.manifest.models.roots;
+        let roots = if models.is_empty() { &self.manifest.textures.roots } else { models };
+        Ok(Vfs::new(roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?))
     }
 
     /// What plugins may read: the texture folders, then the extra file folders that are set.
@@ -221,7 +261,11 @@ steps = [
         let sdk_dir = root.path().join("surfsup");
         std::fs::create_dir_all(sdk_dir.join("fgd")).unwrap();
         std::fs::write(sdk_dir.join(MANIFEST), SURFSUP).unwrap();
-        std::fs::write(sdk_dir.join("fgd/surfsup.fgd"), "@SolidClass = zone_start : \"Start\" [ course_id(integer) : \"Course\" : 0 ]").unwrap();
+        std::fs::write(
+            sdk_dir.join("fgd/surfsup.fgd"),
+            "@mapsize(-16384, 16384)\n@SolidClass = zone_start : \"Start\" [ course_id(integer) : \"Course\" : 0 ]",
+        )
+        .unwrap();
         let bad = root.path().join("bad");
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(bad.join(MANIFEST), "id = \"Bad Id\"\nname = \"x\"").unwrap();
@@ -237,7 +281,17 @@ steps = [
         let gd = sdk.game_data(&vars).unwrap();
         assert!(gd.diagnostics.is_empty());
         assert!(gd.class("zone_start").is_some());
+        assert_eq!(gd.map_size, Some((-16384, 16384)), "the FGD's @mapsize, with none in the manifest");
+        let mut quake = sdk.clone();
+        quake.manifest.map_size = Some([-4096, 4096]);
+        assert_eq!(quake.game_data(&vars).unwrap().map_size, Some((-4096, 4096)), "the manifest wins");
         assert_eq!(sdk.vfs(&vars).unwrap().roots(), [PathBuf::from("/games/surfsup/Assets/Textures")]);
+        assert_eq!(sdk.model_vfs(&vars).unwrap().roots(), sdk.vfs(&vars).unwrap().roots(), "models default to the texture folders");
+        assert_eq!((sdk.manifest.models.class.as_deref(), sdk.manifest.models.key.as_str()), (None, "model"));
+        let mut props = sdk.clone();
+        props.manifest.models = toml::from_str("roots = [\"${project}\"]\nclass = \"prop_static\"").unwrap();
+        assert_eq!(props.model_vfs(&vars).unwrap().roots(), [PathBuf::from("/games/surfsup")]);
+        assert_eq!(props.manifest.models.key, "model");
         assert!(sdk.vfs(&BTreeMap::new()).is_err());
     }
 

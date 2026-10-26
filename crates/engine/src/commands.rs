@@ -22,6 +22,18 @@ fn has_selection(s: &Session) -> bool {
     !s.selection.is_empty()
 }
 
+fn has_faces(s: &Session) -> bool {
+    !s.face_selection.is_empty()
+}
+
+fn has_link_copy(s: &Session) -> bool {
+    s.selection.iter().any(|id| mapcraft_map::link::copy_of(&s.map, *id).is_some())
+}
+
+fn one_link_copy(s: &Session) -> bool {
+    s.selection.len() == 1 && has_link_copy(s)
+}
+
 const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "edit.undo",
@@ -56,6 +68,33 @@ const COMMANDS: &[CommandSpec] = &[
             let g = s.grid;
             s.duplicate_selection(mapcraft_geom::DVec3::new(g, g, 0.0))
         },
+    },
+    CommandSpec {
+        id: "edit.duplicate_linked",
+        label: "Duplicate Linked",
+        menu: "Edit/Duplicate Linked",
+        shortcut: Some("Alt+D"),
+        enabled: has_selection,
+        run: |s| {
+            let g = s.grid;
+            s.duplicate_linked(mapcraft_geom::DVec3::new(g, g, 0.0)).map(|_| ())
+        },
+    },
+    CommandSpec {
+        id: "tools.edit_link_here",
+        label: "Edit Linked Copy Here",
+        menu: "Tools/Edit Linked Copy Here",
+        shortcut: None,
+        enabled: one_link_copy,
+        run: |s| s.edit_link_here().map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.make_link_real",
+        label: "Make Linked Copy Real",
+        menu: "Tools/Make Linked Copy Real",
+        shortcut: None,
+        enabled: has_link_copy,
+        run: Session::make_link_real,
     },
     CommandSpec {
         id: "edit.select_all",
@@ -176,6 +215,41 @@ const COMMANDS: &[CommandSpec] = &[
         run: Session::make_mirror_real,
     },
     CommandSpec {
+        id: "tools.sweep",
+        label: "Sweep Along Path",
+        menu: "Tools/Curves/Sweep Along Path",
+        shortcut: Some("Ctrl+Alt+S"),
+        enabled: has_faces,
+        run: |s| s.sweep_faces().map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.spin",
+        label: "Spin",
+        menu: "Tools/Curves/Spin",
+        shortcut: Some("Ctrl+Alt+N"),
+        enabled: has_faces,
+        run: |s| {
+            let pivot = s.selection_center().unwrap_or_default();
+            s.spin_faces(pivot).map(|_| ())
+        },
+    },
+    CommandSpec {
+        id: "tools.array_path",
+        label: "Array Along Path",
+        menu: "Tools/Curves/Array Along Path",
+        shortcut: Some("Ctrl+Alt+D"),
+        enabled: has_selection,
+        run: |s| s.array_along_path().map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.curve_make_real",
+        label: "Make Curve Real",
+        menu: "Tools/Curves/Make Real",
+        shortcut: None,
+        enabled: |s| s.selection.iter().any(|id| s.map.get(*id).is_some_and(|n| crate::curves::curve_of(&n.kind).is_some())),
+        run: Session::make_curve_real,
+    },
+    CommandSpec {
         id: "tools.tie_to_entity",
         label: "Tie to Entity",
         menu: "Tools/Tie to Entity",
@@ -236,6 +310,24 @@ const COMMANDS: &[CommandSpec] = &[
         enabled: |s| has_selection(s) || !s.face_selection.is_empty(),
         run: Session::apply_material,
     },
+    CommandSpec { id: "uv.unwrap", label: "Unwrap", menu: "Tools/UV/Unwrap", shortcut: Some("U"), enabled: has_faces, run: Session::unwrap_faces },
+    CommandSpec {
+        id: "uv.project_from_view",
+        label: "Project from View",
+        menu: "Tools/UV/Project from View",
+        shortcut: None,
+        enabled: has_faces,
+        run: |s| s.project_faces(s.view_dir),
+    },
+    CommandSpec {
+        id: "uv.cube_projection",
+        label: "Cube Projection",
+        menu: "Tools/UV/Cube Projection",
+        shortcut: None,
+        enabled: has_faces,
+        run: |s| s.edit_faces("Cube projection", None, mapcraft_map::Face::align_to_world),
+    },
+    CommandSpec { id: "uv.reset", label: "Reset UVs", menu: "Tools/UV/Reset", shortcut: None, enabled: has_faces, run: Session::reset_uvs },
     CommandSpec {
         id: "tools.toggle_texture_lock",
         label: "Texture Lock",

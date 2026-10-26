@@ -84,6 +84,8 @@ interface types {
         materials: bool,
         importers: list<importer-spec>,
         exporters: list<exporter-spec>,
+        /// Whether `validate` checks maps; the editor only asks plugins that do.
+        validates: bool,
     }
 
     /// Editor state a command may use: the grid size and the material picked in the browser.
@@ -182,11 +184,54 @@ interface types {
         nodes: list<map-node>,
     }
 
+    enum severity {
+        warning,
+        error,
+    }
+
+    /// A problem a plugin found, listed by Check for Problems.
+    record issue {
+        severity: severity,
+        message: string,
+        /// The node at fault, as an index into `map-data.nodes`; none for the map as a whole.
+        node: option<u32>,
+    }
+
     /// An RGBA8 picture, rows top to bottom.
     record image {
         width: u32,
         height: u32,
         rgba: list<u8>,
+    }
+
+    /// Which channel of a picture holds a value; `gray` averages red, green and blue.
+    enum channel {
+        red,
+        green,
+        blue,
+        alpha,
+        gray,
+    }
+
+    /// One channel of a picture in the SDK's asset folders.
+    record channel-map {
+        path: string,
+        channel: channel,
+    }
+
+    /// Maps the Lit view shades with, as asset folder paths; the editor reads them only for materials a map uses.
+    record pbr {
+        /// Tangent space normal map whose green points up the picture (OpenGL), or down with `normal-dx`.
+        normal: option<string>,
+        normal-dx: bool,
+        /// Roughness is the map's channel times the value, or the value alone without a map; 1 is fully rough.
+        roughness: option<channel-map>,
+        roughness-value: f32,
+        /// Metallic works like roughness; 0 is not metallic.
+        metallic: option<channel-map>,
+        metallic-value: f32,
+        /// Ambient occlusion, which darkens only ambient light.
+        ao: option<channel-map>,
     }
 
     /// A material for the browser. `image` is a path in the SDK's asset folders shown as its
@@ -197,6 +242,10 @@ interface types {
         color: option<tuple<u8, u8, u8>>,
         /// The picture itself, for a material from outside the SDK's asset folders.
         pixels: option<image>,
+        /// The texture's own width and height when the preview is smaller; texture scales count these.
+        size: option<tuple<u32, u32>>,
+        /// Physically based maps; without them the material is fully rough and not metallic.
+        pbr: option<pbr>,
     }
 }
 
@@ -216,7 +265,7 @@ interface host {
 }
 
 world plugin {
-    use types.{manifest, param, context, output, material-info, map-data};
+    use types.{manifest, param, context, output, material-info, map-data, issue};
 
     import host;
 
@@ -232,4 +281,7 @@ world plugin {
 
     /// Writes the map in one of the manifest's export formats; the editor saves the bytes.
     export export-file: func(exporter: string, %map: map-data, context: context) -> result<list<u8>, string>;
+
+    /// Checks the map for the game's own rules; the same map an exporter gets.
+    export validate: func(%map: map-data) -> list<issue>;
 }

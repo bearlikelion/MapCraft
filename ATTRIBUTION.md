@@ -9,6 +9,7 @@ Third-party assets also have an `.attribution` file next to them with the full d
 | `apps/mapcraft/assets/mapcraft-256.png` | MapCraft app icon, 256 px | Mark Arneman | MIT |
 | `apps/mapcraft/assets/mapcraft-512.png` | MapCraft app icon, 512 px | Mark Arneman | MIT |
 | `godot/test/Assets/Textures/checker.png` | Checker test texture | Mark Arneman | MIT |
+| `godot/test/Assets/Models/box.glb` | Box test model | Mark Arneman | MIT |
 | `site/assets/mapcraft.svg` | MapCraft app icon (Block M) | Mark Arneman | MIT |
 | `site/assets/hero.webp` | MapCraft editor with a curved surf ramp selected | Mark Arneman | MIT |
 | `site/assets/views.webp` | Four views, scene tree and entity inspector | Mark Arneman | MIT |

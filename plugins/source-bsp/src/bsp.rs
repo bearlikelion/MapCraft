@@ -1,14 +1,12 @@
 //! Reads Valve BSP files (versions 19 to 21) into entities and brushes rebuilt from their planes.
 
 use std::borrow::Cow;
-use std::io::Read;
-
 use std::collections::BTreeSet;
 
 use glam::{DMat3, DVec3};
+use valve::{Files, Library, Origin, bytes, lzma, u16_at, u32_at};
 
 use crate::mapcraft::plugin::types::{Brush, Entity, Face, Group, Image, MaterialInfo, Output, TexAxis, Vec3};
-use crate::materials::{Files, Library, Origin};
 
 const ENTITIES: usize = 0;
 const PLANES: usize = 1;
@@ -28,7 +26,6 @@ const TEXDATA_STRING_TABLE: usize = 44;
 const HEADER: usize = 8 + 64 * 16 + 4;
 const STATIC_PROPS: u32 = u32::from_be_bytes(*b"sprp");
 const NODRAW: &str = "tools/toolsnodraw";
-const MAX_LUMP: usize = 256 << 20;
 /// Bevels take curved brushes to about 500 sides; far more means a corrupt file, and clipping is quadratic.
 const MAX_SIDES: usize = 2048;
 /// Faces thinner than this come from planes that only touch the brush at an edge or corner.
@@ -63,24 +60,12 @@ pub struct Import {
     pub warnings: Vec<String>,
 }
 
-fn bytes<const N: usize>(b: &[u8], at: usize) -> [u8; N] {
-    at.checked_add(N).and_then(|end| b.get(at..end)).and_then(|s| s.try_into().ok()).unwrap_or([0; N])
-}
-
-pub(crate) fn u16_at(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes(bytes(b, at))
-}
-
 fn i16_at(b: &[u8], at: usize) -> i16 {
     i16::from_le_bytes(bytes(b, at))
 }
 
 fn i32_at(b: &[u8], at: usize) -> i32 {
     i32::from_le_bytes(bytes(b, at))
-}
-
-pub(crate) fn u32_at(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(bytes(b, at))
 }
 
 fn f32_at(b: &[u8], at: usize) -> f64 {
@@ -98,20 +83,6 @@ fn index(v: i32) -> usize {
 /// The NUL-terminated string at the start of `b`.
 fn c_str(b: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(b.split(|&c| c == 0).next().unwrap_or_default())
-}
-
-/// The first `limit` bytes of a raw LZMA stream that unpacks to `size` bytes, given its 5 property bytes.
-pub(crate) fn lzma(props: &[u8], stream: &[u8], size: usize, limit: usize) -> Result<Vec<u8>, String> {
-    let len = size.min(limit);
-    if len > MAX_LUMP {
-        return Err(format!("{size} bytes uncompressed is more than MapCraft reads"));
-    }
-    let (&lc_lp_pb, dict) = props.split_first().ok_or("truncated LZMA header")?;
-    let dict = u32::from_le_bytes(dict.try_into().map_err(|_| "truncated LZMA header")?);
-    let mut reader = lzma_rust2::LzmaReader::new_with_props(stream, size as u64, lc_lp_pb, dict, None).map_err(|e| format!("LZMA: {e}"))?;
-    let mut out = vec![0; len];
-    reader.read_exact(&mut out).map_err(|e| format!("LZMA: {e}"))?;
-    Ok(out)
 }
 
 /// Valve's LZMA block: `LZMA`, uncompressed size, compressed size, 5 property bytes, then the stream.
@@ -574,7 +545,9 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
                 name: name.to_string(),
                 image: None,
                 color: texdata.iter().find(|t| t.0 == name).map(|t| srgb(t.2)),
-                pixels: picture.map(|((width, height, rgba), _)| Image { width, height, rgba }),
+                size: picture.as_ref().map(|p| p.2),
+                pixels: picture.map(|((width, height, rgba), ..)| Image { width, height, rgba }),
+                pbr: None,
             }
         })
         .collect();
@@ -740,20 +713,6 @@ mod tests {
         assert_closed(&brush);
         let Brush::Faces(faces) = &brush else { panic!() };
         assert!(faces.len() == 6 && faces.iter().all(|f| f.material == NODRAW && f.uv.is_none()));
-    }
-
-    #[test]
-    fn lzma_prefix_matches_the_whole() {
-        use std::io::Write;
-        let data: Vec<u8> = (0..200_000u32).map(|i| ((i % 251) ^ ((i / 997) % 7)) as u8).collect();
-        let mut writer = lzma_rust2::LzmaWriter::new_use_header(Vec::new(), &lzma_rust2::LzmaOptions::default(), Some(data.len() as u64)).unwrap();
-        writer.write_all(&data).unwrap();
-        let packed = writer.finish().unwrap();
-        let (props, stream) = (&packed[..5], &packed[13..]);
-        for limit in [1, 4095, 4096, 77_777, 199_999, 200_000, usize::MAX] {
-            assert_eq!(lzma(props, stream, data.len(), limit).unwrap(), data[..limit.min(data.len())], "{limit}");
-        }
-        assert!(lzma(props, &stream[..stream.len() / 2], data.len(), usize::MAX).is_err());
     }
 
     #[test]

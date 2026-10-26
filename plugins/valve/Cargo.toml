@@ -1,0 +1,13 @@
+[package]
+name = "valve"
+description = "Valve formats the Source plugins share: VPK packages, VMT materials, VTF textures and KeyValues text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std", "encoder"] }

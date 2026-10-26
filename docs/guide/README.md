@@ -11,7 +11,8 @@ Start with the first two, then dip into the rest as you need them.
 ## Building
 
 - [Views and navigation](views.md): the four views, the 3D camera, grid and snapping.
-- [Tools](tools.md): Select, Move, Extrude, Rotate, Scale, Block, Entity, Clip, Vertex, Face and Sculpt.
+- [Tools](tools.md): Select, Move, Extrude, Rotate, Scale, Block, Entity, Clip, Vertex, Face, Sculpt and Path.
+- [Paths, sweeps and spins](curves.md): Bezier paths, sweeping faces along them, spinning faces about an axis, and copies along a path.
 - [Materials](materials.md): browsing, applying and aligning materials.
 - [Entities and zones](entities.md): point and brush entities, the inspector, and zoning.
 - [Displacements](displacements.md): terrain from four-cornered faces, sculpting and heightmaps.
@@ -25,6 +26,7 @@ Start with the first two, then dip into the rest as you need them.
 ## Games and tools
 
 - [Importing BSP maps](importing-bsp.md): bring a compiled Source map in to zone it.
+- [Counter-Strike: Source](cstrike.md): the game's materials, Hammer `.vmf` files and compiling with vbsp, vvis and vrad.
 - [SDKs and plugins](sdks-and-plugins.md): how MapCraft learns a game, and how to extend it.
 - [The Godot workflow](godot.md): from a map to a scene in your Godot project.
 - [Keyboard shortcuts](shortcuts.md): every shortcut, the presets, and how to change them.

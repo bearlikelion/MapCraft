@@ -46,6 +46,8 @@ pub struct Picture {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The width and height the full-size mip shows, which texture scales count.
+    pub full: (u32, u32),
 }
 
 impl Picture {
@@ -133,7 +135,8 @@ pub fn decode(miptex: &[u8], palette: &[u8], mip: u32, sky: bool, fence: bool) -
             rgba.extend(if fence && i == 255 { [0, 0, 0, 0] } else { [r, g, b, 255] });
         }
     }
-    Ok(Picture { width: shown as u32, height: h as u32, rgba })
+    let full = (if sky { (width / 2).max(1) } else { width }, height);
+    Ok(Picture { width: shown as u32, height: h as u32, rgba, full })
 }
 
 /// A file inside a PAK archive, by its path there, ignoring case.
@@ -373,7 +376,7 @@ pub(crate) mod tests {
         assert_eq!((&p.rgba[..4], &p.rgba[4..8]), (&[0, 0, 0, 0][..], &[1, 254, 0, 255][..]));
         assert!(decode(&tex[..200], &palette, 0, false, false).is_err());
         assert!(decode(&tex[..10], &palette, 0, false, false).is_err());
-        assert_eq!(Picture { width: 1, height: 2, rgba: vec![10, 20, 30, 255, 0, 0, 0, 0] }.average(), (10, 20, 30));
+        assert_eq!(Picture { width: 1, height: 2, rgba: vec![10, 20, 30, 255, 0, 0, 0, 0], full: (1, 2) }.average(), (10, 20, 30));
     }
 
     #[test]

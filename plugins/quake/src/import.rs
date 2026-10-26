@@ -16,7 +16,14 @@ pub struct Import {
 
 pub fn material(name: String, picture: Picture) -> MaterialInfo {
     let color = Some(picture.average());
-    MaterialInfo { name, image: None, color, pixels: Some(Image { width: picture.width, height: picture.height, rgba: picture.rgba }) }
+    MaterialInfo {
+        name,
+        image: None,
+        color,
+        size: Some(picture.full),
+        pixels: Some(Image { width: picture.width, height: picture.height, rgba: picture.rgba }),
+        pbr: None,
+    }
 }
 
 fn brushes(entity: &mut MapEntity) -> Vec<Brush> {

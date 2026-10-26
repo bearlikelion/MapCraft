@@ -328,8 +328,8 @@ impl MapCraftApp {
         self.drag = Drag::Rotate { view, axis, center, last: angle, turned, applied: applied_now };
     }
 
-    /// The scale handles in the 3D view: axis index, screen start and end.
-    fn scale_handles(&self, index: usize, rect: Rect) -> Vec<(usize, Pos2, Pos2, Color32)> {
+    /// 3D scale handles on both sides of each axis: axis, low side, screen start and end, color.
+    fn scale_handles(&self, index: usize, rect: Rect) -> Vec<(usize, bool, Pos2, Pos2, Color32)> {
         let (Some(cam), Some(b)) = (self.panes.get(index).map(|p| p.camera), self.selection_bounds()) else { return Vec::new() };
         if cam.is_2d() || self.tool != Tool::Scale {
             return Vec::new();
@@ -337,35 +337,52 @@ impl MapCraftApp {
         let c = b.center();
         let len = cam.position.distance(c) * 0.12;
         let Some(start) = to_screen(&cam, rect, c) else { return Vec::new() };
-        AXES.iter().enumerate().filter_map(|(i, (axis, color))| Some((i, start, to_screen(&cam, rect, c + *axis * len)?, *color))).collect()
+        let mut out = Vec::new();
+        for (i, (axis, color)) in AXES.iter().enumerate() {
+            for low in [false, true] {
+                let (dir, color) = if low { (-*axis, color.gamma_multiply(0.6)) } else { (*axis, *color) };
+                if let Some(end) = to_screen(&cam, rect, c + dir * len) {
+                    out.push((i, low, start, end, color));
+                }
+            }
+        }
+        out
     }
 
     pub(crate) fn begin_scale(&mut self, index: usize, rect: Rect, pos: Pos2) -> bool {
-        let handle = self.scale_handles(index, rect).into_iter().find(|(_, a, b, _)| segment_distance(pos, *a, *b) < REACH);
-        let (Some((axis, ..)), Some(b), Some(cam)) = (handle, self.selection_bounds(), self.panes.get(index).map(|p| p.camera)) else { return false };
+        let handle = self
+            .scale_handles(index, rect)
+            .into_iter()
+            .filter(|(_, _, a, b, _)| segment_distance(pos, *a, *b) < REACH)
+            .min_by(|x, y| x.3.distance(pos).total_cmp(&y.3.distance(pos)));
+        let (Some((axis, low, ..)), Some(b), Some(cam)) = (handle, self.selection_bounds(), self.panes.get(index).map(|p| p.camera)) else { return false };
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let Some(start) = closest_on_axis(b.center(), AXES[axis].0, origin, dir) else { return false };
-        self.drag = Drag::Scale { view: index, axis, bounds: b, start, applied: b };
+        self.drag = Drag::Scale { view: index, axis, low, bounds: b, start, applied: b };
         true
     }
 
     pub(crate) fn update_scale(&mut self, index: usize, rect: Rect, pos: Pos2) {
-        let Drag::Scale { view, axis, bounds, start, applied } = self.drag.clone() else { return };
+        let Drag::Scale { view, axis, low, bounds, start, applied } = self.drag.clone() else { return };
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let Some(t) = closest_on_axis(bounds.center(), AXES[axis].0, origin, dir) else { return };
         let g = self.view_grid(index);
-        let mut edge = bounds.max[axis] + (t - start);
+        let mut edge = if low { bounds.min[axis] } else { bounds.max[axis] } + (t - start);
         if self.prefs.get().view.snap_grid {
             edge = (edge / g).round() * g;
         }
         let mut target: Aabb = bounds;
-        target.max[axis] = edge.max(bounds.min[axis] + g.max(1.0));
+        if low {
+            target.min[axis] = edge.min(bounds.max[axis] - g.max(1.0));
+        } else {
+            target.max[axis] = edge.max(bounds.min[axis] + g.max(1.0));
+        }
         if target != applied {
             if let Err(e) = self.session.transform_selection(&box_transform(&applied, &target), "Scale", Some("drag-scale")) {
                 self.status = e.to_string();
             }
-            self.drag = Drag::Scale { view, axis, bounds, start, applied: target };
+            self.drag = Drag::Scale { view, axis, low, bounds, start, applied: target };
             self.mark_changed();
         }
     }
@@ -384,7 +401,7 @@ impl MapCraftApp {
             painter.line_segment([c - Vec2::new(5.0, 0.0), c + Vec2::new(5.0, 0.0)], Stroke::new(1.5, crate::chrome::ACCENT));
             painter.line_segment([c - Vec2::new(0.0, 5.0), c + Vec2::new(0.0, 5.0)], Stroke::new(1.5, crate::chrome::ACCENT));
         }
-        for (_, a, b, color) in self.scale_handles(index, rect) {
+        for (_, _, a, b, color) in self.scale_handles(index, rect) {
             painter.line_segment([a, b], Stroke::new(3.0, color));
             painter.rect_filled(Rect::from_center_size(b, Vec2::splat(9.0)), 1.0, color);
         }

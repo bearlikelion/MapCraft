@@ -134,11 +134,19 @@ impl Mirror {
             NodeKind::Prefab(p) if self.on_plane(p.origin) => return Vec::new(),
             NodeKind::Prefab(p) => NodeKind::Prefab(Prefab { origin: self.point(p.origin), angles: self.angles(p.angles), ..p.clone() }),
             // A nested mirror group's copy stays live, so making the outer half real keeps it whole.
-            NodeKind::Group(g) => NodeKind::Group(Group { name: g.name.clone(), generator: None, mirror: g.mirror.map(|m| m.transformed(&self.matrix())) }),
+            NodeKind::Group(g) => NodeKind::Group(Group {
+                name: g.name.clone(),
+                generator: None,
+                mirror: g.mirror.map(|m| m.transformed(&self.matrix())),
+                link: g.link.as_ref().map(|l| Box::new(l.transformed(&self.matrix()))),
+                curve: None,
+            }),
+            NodeKind::Path(p) => NodeKind::Path(p.transformed(&self.matrix())),
             NodeKind::Layer(_) | NodeKind::World(_) => return Vec::new(),
         };
         let children: Vec<Mirrored> = n.children.iter().flat_map(|c| self.node(map, *c, depth + 1)).collect();
-        if children.is_empty() && (matches!(n.kind, NodeKind::Group(_)) || !n.children.is_empty()) {
+        let link_copy = matches!(&n.kind, NodeKind::Group(g) if g.link.as_ref().is_some_and(|l| l.source.is_some()));
+        if children.is_empty() && !link_copy && (matches!(n.kind, NodeKind::Group(_)) || !n.children.is_empty()) {
             return Vec::new();
         }
         vec![Mirrored { source: id, kind, children }]
@@ -194,6 +202,7 @@ pub fn expand(map: &Map) -> (Map, BTreeMap<NodeId, NodeId>) {
         let c = e.finish();
         out.apply(c);
     }
+    crate::link::expand(&mut out, &mut owner);
     (out, owner)
 }
 
@@ -209,7 +218,7 @@ mod tests {
     }
 
     fn mirror_group(axis: Axis, offset: f64) -> NodeKind {
-        NodeKind::Group(Group { name: "Mirror".into(), generator: None, mirror: Some(Mirror { axis, offset, texture_lock: true }) })
+        NodeKind::Group(Group { name: "Mirror".into(), mirror: Some(Mirror { axis, offset, texture_lock: true }), ..Group::default() })
     }
 
     fn brush_bounds(map: &Map, ids: impl IntoIterator<Item = NodeId>) -> Vec<Aabb> {

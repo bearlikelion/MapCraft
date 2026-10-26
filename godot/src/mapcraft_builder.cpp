@@ -323,6 +323,10 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			points.push_back(to_godot(p));
 		}
 		hull.append_array(points);
+		// The editor marks faces hidden between touching brushes; they would only add seams.
+		if (bool(face.get("covered", false))) {
+			continue;
+		}
 		for (int k = 1; trimesh && k + 1 < points.size(); k++) {
 			triangles.push_back(points[0]);
 			triangles.push_back(points[k + 1]);
@@ -477,13 +481,23 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	}
 
 	Node3D *node = nullptr;
-	if (kind == "scene") {
-		Ref<PackedScene> scene = ResourceLoader::get_singleton()->load(config.get("scene", ""));
+	if (kind == "scene" || kind == "model") {
+		String path = config.get("scene", "");
+		if (kind == "model") {
+			path = String(properties.get(config.get("key", "model"), "")).strip_edges().replace("\\", "/");
+			if (!path.is_empty() && !path.begins_with("res://")) {
+				path = "res://" + path.trim_prefix("/");
+			}
+		}
+		Ref<PackedScene> scene;
+		if (!path.is_empty()) {
+			scene = ResourceLoader::get_singleton()->load(path);
+		}
 		if (scene.is_valid()) {
 			node = Object::cast_to<Node3D>(scene->instantiate());
 		}
 		if (node == nullptr) {
-			UtilityFunctions::push_warning("MapCraft: ", classname, " has no usable scene; using a Node3D");
+			UtilityFunctions::push_warning("MapCraft: ", classname, " has no usable scene ", path, "; using a Node3D");
 		}
 	}
 	if (node == nullptr) {
@@ -491,7 +505,7 @@ void Builder::add_entity(const Dictionary &p_entity) {
 			node = memnew(Area3D);
 		} else if (kind == "static") {
 			node = memnew(StaticBody3D);
-		} else if (kind == "node" || kind == "scene") {
+		} else if (kind == "node" || kind == "scene" || kind == "model") {
 			node = memnew(Node3D);
 		} else {
 			node = memnew(Marker3D);
@@ -543,8 +557,14 @@ void Builder::add_entity(const Dictionary &p_entity) {
 		if (!parse_vec3(properties.get("angles", ""), angles) && properties.has("angle")) {
 			angles.y = String(properties["angle"]).to_float();
 		}
-		// Godot nodes look down -Z; the entity's forward is +X in map space.
-		Basis basis = godot_basis(map_angles(angles)) * Basis(Vector3(0, 1, 0), -Math_PI / 2.0);
+		Basis basis = godot_basis(map_angles(angles));
+		if (kind == "model") {
+			double size = String(properties.get("scale", properties.get("modelscale", "1"))).to_float();
+			basis.scale(Vector3(1, 1, 1) * (size > 0.0 ? size : 1.0));
+		} else {
+			// Godot nodes look down -Z; the entity's forward is +X in map space.
+			basis = basis * Basis(Vector3(0, 1, 0), -Math_PI / 2.0);
+		}
 		node->set_transform(Transform3D(basis, to_godot(origin)));
 	}
 

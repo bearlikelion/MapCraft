@@ -70,6 +70,7 @@ fn moved_group(mut g: Group, m: &DMat4) -> Group {
         (generator.origin, generator.angles) = moved_placement(m, generator.origin, generator.angles);
     }
     g.mirror = g.mirror.map(|mirror| mirror.transformed(m));
+    g.link = g.link.map(|l| Box::new(l.transformed(m)));
     g
 }
 
@@ -77,7 +78,8 @@ fn moved_group(mut g: Group, m: &DMat4) -> Group {
 pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool) -> Result<Option<NodeKind>, EngineError> {
     Ok(Some(match kind {
         NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, lock)?),
-        NodeKind::Group(g) => NodeKind::Group(moved_group(g, m)),
+        // Copies of a curve group keep its brushes but stop following its sources.
+        NodeKind::Group(g) => NodeKind::Group(Group { curve: None, ..moved_group(g, m) }),
         NodeKind::Entity(mut ent) if point => {
             let origin = ent.origin().unwrap_or_default();
             ent.set("origin", fmt_vec(m.transform_point3(origin)));
@@ -87,6 +89,7 @@ pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool)
             (p.origin, p.angles) = moved_placement(m, p.origin, p.angles);
             NodeKind::Prefab(p)
         }
+        NodeKind::Path(p) => NodeKind::Path(p.transformed(m)),
         _ => return Ok(None),
     }))
 }
@@ -135,7 +138,7 @@ impl Session {
             for n in self.map.subtree(id) {
                 if let Some(node) = self.map.get(n) {
                     match &node.kind {
-                        NodeKind::Brush(_) | NodeKind::Prefab(_) => {
+                        NodeKind::Brush(_) | NodeKind::Prefab(_) | NodeKind::Path(_) => {
                             out.insert(n);
                         }
                         NodeKind::Entity(_) if node.children.is_empty() => {
@@ -193,16 +196,23 @@ impl Session {
 
     /// Bounds of `roots` and everything inside them, with point entities counted as their origin.
     pub(crate) fn bounds_of(&self, roots: impl IntoIterator<Item = NodeId>) -> Option<Aabb> {
+        let roots: Vec<NodeId> = roots.into_iter().collect();
+        let linked = roots.iter().any(|r| self.map.subtree(*r).iter().any(|n| mapcraft_map::link::copy_of(&self.map, *n).is_some()));
+        // Linked copies hold nothing real, so their bounds come from the expanded map.
+        let full = linked.then(|| mapcraft_map::mirror::expand(&self.map).0);
+        let map = full.as_ref().unwrap_or(&self.map);
         let mut pts = Vec::new();
-        for id in self.leaves_of(roots) {
-            match self.map.get(id).map(|n| &n.kind) {
+        let leaves: BTreeSet<NodeId> = roots.iter().flat_map(|r| map.subtree(*r)).collect();
+        for id in leaves {
+            match map.get(id).map(|n| &n.kind) {
                 Some(NodeKind::Brush(b)) => {
                     if let Ok(bb) = b.bounds() {
                         pts.extend([bb.min, bb.max]);
                     }
                 }
-                Some(NodeKind::Entity(e)) => pts.extend(e.origin()),
+                Some(NodeKind::Entity(e)) if map.get(id).is_some_and(|n| n.children.is_empty()) => pts.extend(e.origin()),
                 Some(NodeKind::Prefab(p)) => pts.push(p.origin),
+                Some(NodeKind::Path(p)) => pts.extend(p.bounds().map(|b| [b.min, b.max]).into_iter().flatten()),
                 _ => {}
             }
         }
@@ -370,6 +380,14 @@ impl Session {
     }
 
     /// Gives one face a material (Hammer's apply-to-face click).
+    /// Gives the picked faces `src`'s material, alignment (wrapped across shared edges) and face attributes.
+    pub fn paste_face(&mut self, src: &Face) -> Result<(), EngineError> {
+        self.edit_faces("Paste face", None, |f| {
+            f.wrap_from(src);
+            f.attrs = src.attrs.clone();
+        })
+    }
+
     pub fn apply_material_to_face(&mut self, id: NodeId, face: FaceId) -> Result<(), EngineError> {
         let Some(mut b) = self.map.get(id).and_then(|n| n.kind.brush()).cloned() else { return Ok(()) };
         for f in b.faces.iter_mut().filter(|f| f.id == face) {
@@ -450,6 +468,7 @@ impl Session {
                 leaves.iter().find_map(|l| match &self.map.get(*l)?.kind {
                     NodeKind::Entity(ent) => ent.origin(),
                     NodeKind::Prefab(p) => Some(p.origin),
+                    NodeKind::Path(p) => p.points.first().map(|q| q.pos),
                     _ => None,
                 })
             };
@@ -491,7 +510,8 @@ impl Session {
                         p.origin += delta;
                         NodeKind::Prefab(p)
                     }
-                    NodeKind::Group(g) => NodeKind::Group(moved_group(g, &DMat4::from_translation(delta))),
+                    NodeKind::Group(g) => NodeKind::Group(Group { curve: None, ..moved_group(g, &DMat4::from_translation(delta)) }),
+                    NodeKind::Path(p) => NodeKind::Path(p.transformed(&DMat4::from_translation(delta))),
                     other => other,
                 };
                 let id = e.insert(dst_parent, kind)?;
@@ -503,6 +523,41 @@ impl Session {
         }
         let c = e.finish();
         self.apply("Duplicate", c);
+        self.selection = copies;
+        Ok(())
+    }
+
+    /// Copies the selection `count` times, each copy one `step` on from the last (Hammer's Paste Special).
+    pub fn array_selection(&mut self, count: usize, step: &DMat4) -> Result<(), EngineError> {
+        let roots = self.require_selection()?;
+        if !(1..=256).contains(&count) {
+            return Err(EngineError::Refused("make between 1 and 256 copies"));
+        }
+        let mut e = self.map.edit();
+        let mut copies = BTreeSet::new();
+        let mut m = DMat4::IDENTITY;
+        for _ in 0..count {
+            m = *step * m;
+            for root in &roots {
+                let Some(parent) = e.node(*root).and_then(|n| n.parent) else { continue };
+                let mut stack = vec![(*root, parent, true)];
+                while let Some((src, dst, top)) = stack.pop() {
+                    let Some(node) = e.node(src).cloned() else { continue };
+                    let point = matches!(node.kind, NodeKind::Entity(_)) && node.children.is_empty();
+                    let mut kind = transform_kind(node.kind.clone(), &m, self.texture_lock, point)?.unwrap_or(node.kind);
+                    if let NodeKind::Brush(b) = &mut kind {
+                        b.faces.iter_mut().for_each(|f| f.id = Default::default());
+                    }
+                    let id = e.insert(dst, kind)?;
+                    if top {
+                        copies.insert(id);
+                    }
+                    stack.extend(node.children.iter().rev().map(|c| (*c, id, false)));
+                }
+            }
+        }
+        let c = e.finish();
+        self.apply("Array", c);
         self.selection = copies;
         Ok(())
     }
@@ -670,6 +725,42 @@ impl Session {
     }
 
     /// Turns selected brush entities back into world brushes.
+    /// Takes the selected brushes out of their entities and, given a class, ties them to one new entity of it.
+    pub fn set_brush_class(&mut self, classname: Option<&str>) -> Result<(), EngineError> {
+        let brushes = self.selected_brushes();
+        if brushes.is_empty() {
+            return Err(EngineError::NothingSelected);
+        }
+        let mut e = self.map.edit();
+        let mut parents = Vec::new();
+        for id in &brushes {
+            let Some(parent) = e.node(*id).and_then(|n| n.parent) else { continue };
+            let owner = e.node(parent).filter(|p| matches!(p.kind, NodeKind::Entity(_))).map(|p| (parent, p.parent));
+            match owner {
+                Some((entity, Some(above))) => {
+                    e.reparent(*id, above, None)?;
+                    if e.node(entity).is_some_and(|n| n.children.is_empty()) {
+                        e.remove(entity)?;
+                    }
+                    parents.push(above);
+                }
+                _ => parents.push(parent),
+            }
+        }
+        let mut selection: BTreeSet<NodeId> = brushes.iter().copied().collect();
+        if let (Some(class), Some(parent)) = (classname, parents.first()) {
+            let ent = e.insert(*parent, NodeKind::Entity(Entity::new(class)))?;
+            for id in &brushes {
+                e.reparent(*id, ent, None)?;
+            }
+            selection = BTreeSet::from([ent]);
+        }
+        let c = e.finish();
+        self.apply(classname.map_or("Move to world".to_string(), |c| format!("Make {c}")).as_str(), c);
+        self.selection = selection;
+        Ok(())
+    }
+
     pub fn move_to_world(&mut self) -> Result<(), EngineError> {
         let ids = self.require_selection()?;
         let mut e = self.map.edit();
@@ -834,6 +925,57 @@ mod tests {
         s.apply_material().unwrap();
         let mats: Vec<String> = s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| f.material.clone()).collect();
         assert_eq!(mats.iter().filter(|m| *m == "ramps/orange").count(), 1, "only the picked face changes: {mats:?}");
+    }
+
+    #[test]
+    fn arrays_step_each_copy_from_the_last() {
+        let mut s = session();
+        let a = s.create_brush(Aabb::new(DVec3::new(64.0, -8.0, 0.0), DVec3::new(80.0, 8.0, 16.0))).unwrap();
+        s.selection = BTreeSet::from([a]);
+        let quarter = DMat4::from_quat(DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2));
+        s.array_selection(3, &quarter).unwrap();
+        let centers: Vec<DVec3> = s.selection.iter().map(|id| s.map.get(*id).unwrap().kind.brush().unwrap().bounds().unwrap().center()).collect();
+        for want in [DVec3::new(0.0, 72.0, 8.0), DVec3::new(-72.0, 0.0, 8.0), DVec3::new(0.0, -72.0, 8.0)] {
+            assert!(centers.iter().any(|c| c.distance(want) < 1e-6), "{want} in {centers:?}");
+        }
+        assert!(s.array_selection(0, &quarter).is_err());
+        assert!(s.undo() && s.map.nodes().filter(|(_, n)| n.kind.brush().is_some()).count() == 1, "one undo step for the array");
+    }
+
+    #[test]
+    fn brush_class_switches_in_one_step() {
+        let mut s = session();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let b = s.create_brush(Aabb::new(DVec3::splat(64.0), DVec3::splat(128.0))).unwrap();
+        s.selection = BTreeSet::from([a, b]);
+        s.set_brush_class(Some("func_detail")).unwrap();
+        let detail = *s.selection.first().unwrap();
+        assert_eq!(s.map.get(detail).unwrap().kind.entity().unwrap().classname, "func_detail");
+        s.set_brush_class(Some("func_illusionary")).unwrap();
+        let ill = *s.selection.first().unwrap();
+        assert!(s.map.get(detail).is_none(), "the emptied entity goes");
+        assert_eq!(s.map.get(ill).unwrap().children.len(), 2);
+        s.set_brush_class(None).unwrap();
+        assert!(s.map.get(ill).is_none() && s.map.get(a).unwrap().parent == Some(ROOT), "back in the world");
+        assert!(s.undo() && s.map.get(ill).is_some(), "each switch is one undo step");
+    }
+
+    #[test]
+    fn pasted_faces_take_material_alignment_and_attributes() {
+        let mut s = session();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let faces = s.map.get(b).unwrap().kind.brush().unwrap().faces.clone();
+        let mut src = faces[0].clone();
+        src.material = "ramps/orange".into();
+        src.u.offset = 7.0;
+        src.attrs.insert("lightmapscale".into(), "8".into());
+        s.face_selection = faces.iter().skip(1).map(|f| (b, f.id)).collect();
+        let before = s.undo_label().map(str::to_string);
+        s.paste_face(&src).unwrap();
+        let after = s.map.get(b).unwrap().kind.brush().unwrap().faces.clone();
+        assert!(after.iter().skip(1).all(|f| f.material == "ramps/orange" && f.attrs.get("lightmapscale").is_some_and(|v| v == "8")));
+        assert_eq!(after[0].material, faces[0].material, "faces not picked keep theirs");
+        assert!(s.undo() && s.undo_label().map(str::to_string) == before, "one undo step");
     }
 
     #[test]

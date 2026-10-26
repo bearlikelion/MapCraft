@@ -49,7 +49,7 @@ impl Vfs {
     }
 
     /// Every file with one of the extensions, as `/`-separated paths without the extension, sorted
-    /// and without duplicates shadowed by an earlier root.
+    /// and without duplicates shadowed by an earlier root; hidden folders such as `.godot` are skipped.
     pub fn list(&self, extensions: &[String]) -> Vec<(String, PathBuf)> {
         let mut out: Vec<(String, PathBuf)> = Vec::new();
         for root in &self.roots {
@@ -60,7 +60,7 @@ impl Vfs {
                     let Ok(ty) = entry.file_type() else { continue };
                     let path = entry.path();
                     // file_type does not follow symlinks, so linked folders cannot loop.
-                    if ty.is_dir() && depth < MAX_DEPTH {
+                    if ty.is_dir() && depth < MAX_DEPTH && !entry.file_name().to_string_lossy().starts_with('.') {
                         stack.push((path, depth + 1));
                     } else if ty.is_file() && path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e))) {
                         let Ok(rel) = path.with_extension("").strip_prefix(root).map(Path::to_path_buf) else { continue };
@@ -98,6 +98,8 @@ mod tests {
         std::fs::create_dir_all(b.path().join("ramps")).unwrap();
         std::fs::write(b.path().join("ramps/orange.png"), b"b").unwrap();
         std::fs::write(b.path().join("ramps/notes.txt"), b"").unwrap();
+        std::fs::create_dir_all(b.path().join(".godot")).unwrap();
+        std::fs::write(b.path().join(".godot/cache.png"), b"").unwrap();
         let vfs = Vfs::new(vec![a.path().into(), b.path().into()]);
         assert_eq!(vfs.read("ramps/orange.png").unwrap(), b"a");
         assert!(vfs.read("../etc/passwd").is_none());

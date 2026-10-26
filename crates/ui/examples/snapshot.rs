@@ -2,7 +2,7 @@
 //! `cargo run -p mapcraft-ui --example snapshot -- out.png [map.mcmap] [steps]`.
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
-//! `--drag x,y x,y`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path
+//! `--drag x,y x,y`, `--hold x,y x,y`, `--hover x,y`, `--scroll <lines>`, `--key <name>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path
 //! and `--registry <url|path>` replaces the SDK Manager's registries.
 
 use std::path::PathBuf;
@@ -43,8 +43,10 @@ fn main() {
             }
             "--registry" => registries.extend(it.next().cloned()),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
-            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" | "--wait" => steps.push((a.clone(), take(1, &mut it))),
-            "--drag" => steps.push((a.clone(), take(2, &mut it))),
+            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" | "--wait" | "--hover" | "--scroll" => {
+                steps.push((a.clone(), take(1, &mut it)))
+            }
+            "--drag" | "--hold" => steps.push((a.clone(), take(2, &mut it))),
             path => options.open = Some(PathBuf::from(path)),
         }
     }
@@ -64,6 +66,13 @@ fn main() {
                 }
             }
             "--command" => h.state_mut().run_command_for_test(arg),
+            "--hover" => h.hover_at(pos(arg)),
+            "--scroll" => h.event(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, arg.parse().unwrap_or(1.0)),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            }),
             "--key" => {
                 if let Some(k) = egui::Key::from_name(arg) {
                     h.key_press(k);
@@ -81,7 +90,7 @@ fn main() {
                 h.run_steps(1);
                 h.event(Event::ModifiersChanged(Modifiers::NONE));
             }
-            "--drag" => {
+            "--drag" | "--hold" => {
                 let (a, b) = (pos(arg), pos(args.get(1).map(String::as_str).unwrap_or_default()));
                 h.hover_at(a);
                 h.run_steps(1);
@@ -91,8 +100,10 @@ fn main() {
                     h.hover_at(a + (b - a) * (i as f32 / 8.0));
                     h.run_steps(1);
                 }
-                press(&h, b, false, Modifiers::NONE);
-                h.run_steps(1);
+                if step == "--drag" {
+                    press(&h, b, false, Modifiers::NONE);
+                    h.run_steps(1);
+                }
             }
             _ => {}
         }

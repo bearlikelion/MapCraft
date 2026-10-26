@@ -3,8 +3,6 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod bsp;
-mod materials;
-mod vtf;
 
 use mapcraft::plugin::host;
 use mapcraft::plugin::types::ImporterSpec;
@@ -15,7 +13,7 @@ struct SourceBsp;
 
 struct HostFiles;
 
-impl materials::Files for HostFiles {
+impl valve::Files for HostFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         host::read_file(path).ok()
     }
@@ -35,6 +33,7 @@ impl Guest for SourceBsp {
             materials: false,
             importers: vec![ImporterSpec { id: "bsp".into(), label: "Source BSP".into(), extensions: vec!["bsp".into()] }],
             exporters: Vec::new(),
+            validates: false,
         }
     }
 
@@ -68,6 +67,9 @@ impl Guest for SourceBsp {
 
     fn export_file(exporter: String, _map: MapData, _context: Context) -> Result<Vec<u8>, String> {
         Err(format!("unknown exporter {exporter}"))
+    }
+    fn validate(_map: MapData) -> Vec<Issue> {
+        Vec::new()
     }
 }
 

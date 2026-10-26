@@ -480,6 +480,8 @@ fn shortcut_table(root: &Path) -> Result<String> {
         ("panel.", "Panels"),
         ("run.", "Run"),
         ("help.", "Help"),
+        ("uv.", "UV editor"),
+        ("vertex.", "Vertex tool"),
     ];
     let group = |id: &str| GROUPS.iter().find(|(p, _)| id.starts_with(p)).map_or("Other", |(_, g)| *g);
     let cell = |chord: &str| if chord.is_empty() { "*none*".to_string() } else { format!("`{chord}`") };

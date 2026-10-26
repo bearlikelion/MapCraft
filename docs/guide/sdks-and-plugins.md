@@ -8,6 +8,7 @@ An **SDK** describes one game, and **plugins** add the code a game needs.
 An SDK is a folder with an `sdk.toml` file that says:
 
 - which entity classes exist (FGD files);
+- how far maps may reach, when the game has a limit (Quake's is -4096 to 4096 on every axis, Source's -16384 to 16384);
 - where materials live, which material new brushes get and at what scale;
 - which plugins to load;
 - which folders and programs the user has to point it at;
@@ -115,5 +116,6 @@ The first-party plugins:
 | `godot` | Lists a Godot project's `.tres` materials, previewed by their texture or color, plus images no material uses |
 | `surfsup` | Surf Ramp, Bhop Platforms, Surf Window and Surf Stage generators; see [Surf mapping](../surf-mapping.md) |
 | `source-bsp` | **File > Import > Source BSP**; see [Importing BSP maps](importing-bsp.md) |
+| `source` | Lists a Source game's materials, and **File > Import** and **File > Export** of Hammer `.vmf` files; see [Counter-Strike: Source](cstrike.md) |
 
 To write your own, see the [plugin API](../plugin-api.md); `plugins/stairs-py` is a small generator written in Python.

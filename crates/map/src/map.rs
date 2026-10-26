@@ -250,6 +250,7 @@ fn kind_name(k: &NodeKind) -> &'static str {
         NodeKind::Entity(_) => "an entity",
         NodeKind::Brush(_) => "a brush",
         NodeKind::Prefab(_) => "a prefab",
+        NodeKind::Path(_) => "a path",
     }
 }
 
