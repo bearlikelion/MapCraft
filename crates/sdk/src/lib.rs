@@ -277,7 +277,8 @@ steps = [
         assert_eq!(sdk.manifest.units_per_meter, 39.37);
         assert_eq!(sdk.manifest.compile[0].steps.len(), 2);
 
-        let vars = BTreeMap::from([("project".to_string(), "/games/surfsup".to_string())]);
+        let project = root.path().join("games/surfsup");
+        let vars = BTreeMap::from([("project".to_string(), project.to_string_lossy().into_owned())]);
         let gd = sdk.game_data(&vars).unwrap();
         assert!(gd.diagnostics.is_empty());
         assert!(gd.class("zone_start").is_some());
@@ -285,12 +286,12 @@ steps = [
         let mut quake = sdk.clone();
         quake.manifest.map_size = Some([-4096, 4096]);
         assert_eq!(quake.game_data(&vars).unwrap().map_size, Some((-4096, 4096)), "the manifest wins");
-        assert_eq!(sdk.vfs(&vars).unwrap().roots(), [PathBuf::from("/games/surfsup/Assets/Textures")]);
+        assert_eq!(sdk.vfs(&vars).unwrap().roots(), [project.join("Assets/Textures")]);
         assert_eq!(sdk.model_vfs(&vars).unwrap().roots(), sdk.vfs(&vars).unwrap().roots(), "models default to the texture folders");
         assert_eq!((sdk.manifest.models.class.as_deref(), sdk.manifest.models.key.as_str()), (None, "model"));
         let mut props = sdk.clone();
         props.manifest.models = toml::from_str("roots = [\"${project}\"]\nclass = \"prop_static\"").unwrap();
-        assert_eq!(props.model_vfs(&vars).unwrap().roots(), [PathBuf::from("/games/surfsup")]);
+        assert_eq!(props.model_vfs(&vars).unwrap().roots(), std::slice::from_ref(&project));
         assert_eq!(props.manifest.models.key, "model");
         assert!(sdk.vfs(&BTreeMap::new()).is_err());
     }
