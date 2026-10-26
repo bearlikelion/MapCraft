@@ -4,6 +4,7 @@
 
 mod app;
 mod chrome;
+mod context_menu;
 mod curves;
 mod dialogs;
 mod measure;

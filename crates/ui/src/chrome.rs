@@ -439,13 +439,7 @@ impl MapCraftApp {
                     });
                 }
                 if let Some((shape, generator)) = pick {
-                    if let Some(shape) = shape {
-                        self.shape = shape;
-                    }
-                    self.pick_plugin_shape(generator);
-                    if self.tool != Tool::Block {
-                        self.run_action(id);
-                    }
+                    self.pick_block_shape(shape, generator);
                 } else if r.clicked() {
                     self.run_action(id);
                 }
@@ -885,8 +879,21 @@ fn shape_name(shape: mapcraft_engine::Shape) -> &'static str {
     }
 }
 
+impl MapCraftApp {
+    /// Switches to the Block tool drawing `shape`, or placing a plugin generator.
+    pub(crate) fn pick_block_shape(&mut self, shape: Option<mapcraft_engine::Shape>, generator: Option<(String, mapcraft_plugin_host::CommandSpec)>) {
+        if let Some(shape) = shape {
+            self.shape = shape;
+        }
+        self.pick_plugin_shape(generator);
+        if self.tool != Tool::Block {
+            self.run_action("tool.block");
+        }
+    }
+}
+
 /// The Block tool's built-in shapes with their default settings.
-fn block_shapes() -> [(mapcraft_engine::Shape, &'static str); 6] {
+pub(crate) fn block_shapes() -> [(mapcraft_engine::Shape, &'static str); 6] {
     use mapcraft_engine::Shape as S;
     let arch = S::Arch { sides: 8, arc: 180.0, start: 0.0, thickness: 16.0 };
     [(S::Block, "Box"), (S::Wedge, "Wedge"), (S::Cylinder(8), "Cylinder"), (S::Spike(4), "Spike"), (S::Sphere(8), "Sphere"), (arch, "Arch")]

@@ -8,6 +8,21 @@ The status bar shows a hint for the current tool.
 `Escape` returns to the Select tool from any other.
 A whole drag is one undo step, so `Ctrl+Z` takes all of it back.
 
+## The right click menu
+
+Right click in any view, without dragging, for the tools that fit what is selected, as in Blender.
+Right dragging still flies the 3D camera and pans a 2D view.
+
+- **With objects selected:** Duplicate, Duplicate Linked, Delete, Hollow, Subtract (Carve), Merge Brushes and Clip, then submenus for **Brush Type**, **Transform** (turns, flips, snap, Transform and Array), **UV**, **Organize** (group, tie to entity, mirror, zone) and **Curves**, the linked copy commands for a linked copy, and Focus, Hide, Isolate and Lock.
+- **With faces picked in the Face tool:** Apply Current Material, Copy Face, Paste Face, the **UV** submenu, Sweep Along Path and Spin.
+- **In the Vertex tool:** the select modes, Merge at Center and Bevel Edges come first.
+- **With nothing selected:** **Add** (every Block shape and plugin generator, Entity and Path), Select All, Show All, Unlock All, Frame All and Go to Origin.
+
+The **UV** submenu works straight from selected brushes: it picks their visible faces with the Face tool first, so right click a ramp and choose **UV > Unwrap**.
+**Edit UVs in This View** turns the view you clicked into the UV editor.
+Each entry shows its shortcut, and entries that cannot run on the selection are grayed out.
+Alt+right click still applies the current material to a face, and a right click still cancels a bevel being sized.
+
 ## Select
 
 Press `Q`.

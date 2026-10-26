@@ -844,6 +844,10 @@ impl MapCraftApp {
         if response.double_clicked() && cam.is_2d() {
             self.frame_selection();
         }
+        // Alt+right click applies materials and right click cancels a bevel being sized.
+        if !alt && self.vertex.bevel.is_none() {
+            response.context_menu(|ui| self.viewport_menu(ui, index));
+        }
     }
 
     pub(crate) fn frame_selection(&mut self) {

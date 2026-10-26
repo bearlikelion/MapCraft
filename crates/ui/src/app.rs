@@ -828,31 +828,36 @@ impl MapCraftApp {
         crate::shortcuts::chord(id, p.keymap, &p.shortcuts).unwrap_or_default()
     }
 
+    /// Remembers the active picked face's material and alignment for pasting.
+    pub(crate) fn copy_face(&mut self) {
+        let face = self.session.active_pick().and_then(|(id, f)| self.session.map.get(id)?.kind.brush()?.faces.iter().find(|x| x.id == f).cloned());
+        match face {
+            Some(f) => {
+                self.status = format!("Copied the face's material and alignment ({}); Ctrl+V pastes them on picked faces", f.material);
+                self.session.tex.material = f.material.clone();
+                self.picked_face = Some(f);
+            }
+            None => self.status = "Pick a face to copy first".into(),
+        }
+    }
+
+    pub(crate) fn paste_face(&mut self) {
+        let result = match self.picked_face.clone() {
+            Some(src) => self.session.paste_face(&src).map_err(|e| e.to_string()),
+            None => Err("Copy a face first: Ctrl+C on a picked face, or Alt+click a face".into()),
+        };
+        if let Err(e) = result {
+            self.status = e;
+        }
+        self.mark_changed();
+    }
+
     fn clipboard(&mut self, ctx: &egui::Context) {
         let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
         for ev in events {
             match ev {
-                egui::Event::Copy if self.tool == Tool::Face => {
-                    let face = self.session.active_pick().and_then(|(id, f)| self.session.map.get(id)?.kind.brush()?.faces.iter().find(|x| x.id == f).cloned());
-                    match face {
-                        Some(f) => {
-                            self.status = format!("Copied the face's material and alignment ({}); Ctrl+V pastes them on picked faces", f.material);
-                            self.session.tex.material = f.material.clone();
-                            self.picked_face = Some(f);
-                        }
-                        None => self.status = "Pick a face to copy first".into(),
-                    }
-                }
-                egui::Event::Paste(_) if self.tool == Tool::Face => {
-                    let result = match self.picked_face.clone() {
-                        Some(src) => self.session.paste_face(&src).map_err(|e| e.to_string()),
-                        None => Err("Copy a face first: Ctrl+C on a picked face, or Alt+click a face".into()),
-                    };
-                    if let Err(e) = result {
-                        self.status = e;
-                    }
-                    self.mark_changed();
-                }
+                egui::Event::Copy if self.tool == Tool::Face => self.copy_face(),
+                egui::Event::Paste(_) if self.tool == Tool::Face => self.paste_face(),
                 egui::Event::Copy | egui::Event::Cut => match self.session.copy_selection() {
                     Ok(text) => {
                         ctx.copy_text(text);

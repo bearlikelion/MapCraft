@@ -62,6 +62,7 @@
 - [x] Snap Selection to Grid, F to focus the selection, see-through zones that never fight the floor they sit on.
 - [x] Edit > Selection Mode submenu showing the current mode; 3D scale handles on both sides of each axis.
 - [x] Faces hidden between touching world brushes are found and marked in the file; the Godot importer leaves them out of meshes and trimesh collision, and the Face tool leaves them out of picks.
+- [x] Right click menu in the views, Blender style: the tools that fit the selection (Hollow, Subtract, Brush Type, Transform, UV straight from brushes, Organize, Curves), the Face and Vertex tools' own commands, and Add with every shape on empty space.
 - [x] Linked copies (`Alt+D`): copies that follow their original's contents but keep their own place, Edit Linked Copy Here to make any copy the original, Make Real to break the link; saved filled so importers need nothing new.
 - [x] Playtest round: View > Go to Origin (`Shift+Home`), a one view layout where Space cycles the views, a right click shape menu on the Block icon, a brush Type row (World, detail, illusionary, wall, Group), three point clipping in the 3D view, and an Array dialog for rows, rings and spirals of copies.
 - [x] SDKs set map limits (`map_size`, else the FGD's `@mapsize`): the views outline them in red and Check for Problems reports brushes and entities outside; Quake is -4096 to 4096 and CS:S -16384 to 16384.

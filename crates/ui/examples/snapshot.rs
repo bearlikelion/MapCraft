@@ -43,7 +43,7 @@ fn main() {
             }
             "--registry" => registries.extend(it.next().cloned()),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
-            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--key" | "--wait" | "--hover" | "--scroll" => {
+            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--right-click-at" | "--key" | "--wait" | "--hover" | "--scroll" => {
                 steps.push((a.clone(), take(1, &mut it)))
             }
             "--drag" | "--hold" => steps.push((a.clone(), take(2, &mut it))),
@@ -89,6 +89,15 @@ fn main() {
                 press(&h, p, false, m);
                 h.run_steps(1);
                 h.event(Event::ModifiersChanged(Modifiers::NONE));
+            }
+            "--right-click-at" => {
+                let p = pos(arg);
+                h.hover_at(p);
+                h.run_steps(1);
+                for pressed in [true, false] {
+                    h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+                    h.run_steps(1);
+                }
             }
             "--drag" | "--hold" => {
                 let (a, b) = (pos(arg), pos(args.get(1).map(String::as_str).unwrap_or_default()));
