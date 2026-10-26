@@ -37,8 +37,21 @@ fn has_extension(path: &str, ext: &str) -> bool {
     path.rsplit_once('.').is_some_and(|(_, e)| e.eq_ignore_ascii_case(ext))
 }
 
-fn file_name(path: &str) -> &str {
+pub fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+impl Library {
+    /// Folders the `wad` key names for WADs the readable folders lack, as the map spells them.
+    pub fn missing_folders<'a>(&self, wad_key: &'a str) -> BTreeSet<&'a str> {
+        wad_key
+            .split(';')
+            .map(str::trim)
+            .filter(|e| !self.wads.iter().any(|w| file_name(&w.path).eq_ignore_ascii_case(file_name(&e.replace('\\', "/")))))
+            .filter_map(|e| e.rsplit_once(['/', '\\']).map(|(dir, _)| dir))
+            .filter(|dir| !dir.is_empty())
+            .collect()
+    }
 }
 
 /// Width, height and RGBA8 pixels, rows top to bottom.
@@ -355,6 +368,13 @@ pub(crate) mod tests {
 
     fn mem(files: Vec<(&str, Vec<u8>)>) -> Mem {
         Mem(files.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    }
+
+    #[test]
+    fn names_the_folders_of_missing_wads() {
+        let lib = Library { wads: vec![Wad { path: "id1/gfx/base.wad".into(), half_life: false, lumps: Vec::new() }], palette: None, problems: Vec::new() };
+        let key = "/mnt/Storage/Quake/WAD/mc_anniv_jam.wad; C:\\Quake\\wads\\BASE.wad;knave.wad";
+        assert_eq!(lib.missing_folders(key).into_iter().collect::<Vec<_>>(), vec!["/mnt/Storage/Quake/WAD"]);
     }
 
     #[test]

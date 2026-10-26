@@ -135,6 +135,11 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
 
     let library = Library::open(files, &wad_key);
     log.extend(library.problems.iter().cloned());
+    let folders = library.missing_folders(&wad_key);
+    if !folders.is_empty() {
+        let folders: Vec<&str> = folders.into_iter().collect();
+        log.push(format!("to load those textures, set the SDK's WAD folder (File > SDK Settings) to {}", folders.join(" or ")));
+    }
     let (pictures, failed) = library.pictures(files, Some(&used));
     let missing: Vec<&str> = used.iter().filter(|n| !library.wads.iter().any(|w| w.lumps.iter().any(|l| &l.name == *n))).map(String::as_str).collect();
     log.push(format!("textures: {} of {} found in {} WADs", pictures.len(), used.len(), library.wads.len()));
