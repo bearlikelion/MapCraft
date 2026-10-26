@@ -29,4 +29,5 @@ Start with the first two, then dip into the rest as you need them.
 - [Counter-Strike: Source](cstrike.md): the game's materials, Hammer `.vmf` files and compiling with vbsp, vvis and vrad.
 - [SDKs and plugins](sdks-and-plugins.md): how MapCraft learns a game, and how to extend it.
 - [The Godot workflow](godot.md): from a map to a scene in your Godot project.
+- [AI agents (MCP)](mcp.md): let an agent such as Claude Code open, edit, check and save maps.
 - [Keyboard shortcuts](shortcuts.md): every shortcut, the presets, and how to change them.

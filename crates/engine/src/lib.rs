@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod commands;
+pub mod control;
 mod curves;
 mod generate;
 mod issues;
@@ -38,6 +39,8 @@ pub enum EngineError {
     NothingSelected,
     #[error("the map has not been saved yet")]
     NoPath,
+    #[error("bad argument: {0}")]
+    Argument(String),
     #[error("unknown command `{0}`")]
     UnknownCommand(String),
     #[error("`{0}` is not available right now")]

@@ -2,6 +2,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod mcp;
 mod sdk;
 
 use std::collections::BTreeMap;
@@ -19,6 +20,7 @@ const USAGE: &str = "usage:
   mapcraft-cli info <map.mcmap>
   mapcraft-cli validate <map.mcmap> [--sdk <dir>] [--var name=value]...
   mapcraft-cli fgd <file.fgd>... [--class <name>]
+  mapcraft-cli mcp
   mapcraft-cli sdk <list|check|install|remove|package|new> ...";
 
 /// A hollow 512 x 512 x 256 room with a player start, so a new map can be compiled right away.
@@ -161,6 +163,7 @@ fn main() -> ExitCode {
         Some((cmd, [path])) if cmd == "info" => info(path).map(|()| true),
         Some((cmd, rest)) if cmd == "validate" => validate_cmd(rest),
         Some((cmd, rest)) if cmd == "fgd" => fgd(rest).map(|()| true),
+        Some((cmd, [])) if cmd == "mcp" => mcp::run().map(|()| true),
         Some((cmd, rest)) if cmd == "sdk" => sdk::run(rest).map_err(|e| if e == sdk::USAGE { format!("usage:\n{e}") } else { e }),
         _ => Err(USAGE.into()),
     };
