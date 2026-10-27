@@ -104,7 +104,9 @@ impl Entry {
             let base = registry.rsplit_once('/').map_or(registry, |(b, _)| b);
             return format!("{base}/{}", self.download.trim_start_matches('/'));
         }
-        local(registry).parent().unwrap_or(Path::new("")).join(&self.download).to_string_lossy().into_owned()
+        // Keeping the registry's trailing separator stops join adding a native one, so `/` paths stay `/` on Windows.
+        let dir = registry.strip_prefix("file://").unwrap_or(registry).trim_end_matches(|c| !std::path::is_separator(c));
+        Path::new(dir).join(&self.download).to_string_lossy().into_owned()
     }
 
     /// Why this MapCraft cannot install the entry, if it cannot.
@@ -218,6 +220,9 @@ mod tests {
         assert_eq!(reg.sdks[0].plugins, ["demo"]);
         assert_eq!(reg.sdks[0].source("https://example.com/sdks/index.json"), "https://example.com/sdks/demo-1.0.zip");
         assert_eq!(reg.sdks[0].source("/srv/reg/index.json"), "/srv/reg/demo-1.0.zip");
+        assert_eq!(reg.sdks[0].source("index.json"), "demo-1.0.zip");
+        #[cfg(windows)]
+        assert_eq!(reg.sdks[0].source(r"C:\reg\index.json"), r"C:\reg\demo-1.0.zip");
         assert!(reg.sdks[0].unsupported().is_none());
 
         let mut far = entry("far");
