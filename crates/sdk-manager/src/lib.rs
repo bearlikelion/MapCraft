@@ -93,6 +93,8 @@ pub fn search_dirs(data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origi
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         dirs.extend(exe_dir.ancestors().take(5).map(|d| (d.join("sdks"), Origin::Bundled)));
         dirs.push((exe_dir.join("../share/mapcraft/sdks"), Origin::Bundled));
+        // Inside a macOS app bundle the executable is in Contents/MacOS and the SDKs in Contents/Resources.
+        dirs.push((exe_dir.join("../Resources/sdks"), Origin::Bundled));
     }
     dirs.push((source.clone(), Origin::Source));
     if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {

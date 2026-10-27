@@ -34,6 +34,24 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev mesa-vulkan-drivers
       - run: cargo xtask ci
 
+  # macOS runners have no GPU for the offscreen editor tests, so this checks the build, lints and the other tests.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask plugins
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude mapcraft-ui
+      - name: Godot extension
+        run: brew install ninja && godot/build.sh macos template_debug
+
   godot:
     runs-on: ubuntu-latest
     steps:
