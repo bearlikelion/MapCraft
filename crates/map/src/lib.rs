@@ -20,7 +20,7 @@ pub use brush::{Bevel, Brush, BrushError, Face, Justify, TexAxis, TexDefaults, s
 pub use cover::covered_faces;
 pub use curve::{CurveOp, Path, PathPoint};
 pub use disp::Displacement;
-pub use entity::{Connection, Entity};
+pub use entity::{Connection, Entity, parse_vec3};
 pub use link::Link;
 pub use map::{Changes, Edit, EditError, Map, ROOT};
 pub use mirror::{Axis, Mirror};

@@ -269,7 +269,11 @@ pub fn build_scene(
                     }
                 } else {
                     push_box(scene.batches.entry(String::new()).or_default(), min, max, if selected { SELECTED_TINT } else { color });
-                    box_lines(if selected { &mut scene.selected_edges } else { &mut scene.edges }, min, max, edge);
+                    let out = if selected { &mut scene.selected_edges } else { &mut scene.edges };
+                    box_lines(out, min, max, edge);
+                    if ["angles", "angle"].iter().any(|k| !numbers(e.get(k).unwrap_or_default()).is_empty()) {
+                        facing_arrow(out, &entity_transform(e), min, max, edge);
+                    }
                 }
                 if let Some((sun, sky)) = read_environment(e) {
                     scene.lights.push(sun);
@@ -434,6 +438,20 @@ fn push_model(batches: &mut BTreeMap<String, Vec<MeshVertex>>, edges: &mut Vec<L
     }
 }
 
+/// A point entity's facing, as an arrow from the middle of its box's top out past its side.
+fn facing_arrow(out: &mut Vec<LineVertex>, at: &DMat4, min: DVec3, max: DVec3, color: [f32; 4]) {
+    let turn = DMat3::from_mat4(*at);
+    let (dir, side) = ((turn * DVec3::X).normalize_or(DVec3::X), (turn * DVec3::Y).normalize_or(DVec3::Y));
+    let reach = (max - min).truncate().max_element().max(16.0);
+    let from = ((min + max) / 2.0).with_z(max.z);
+    let tip = from + dir * reach;
+    let head = reach * 0.3;
+    for (a, b) in [(from, tip), (tip, tip - (dir + side * 0.5) * head), (tip, tip - (dir - side * 0.5) * head)] {
+        out.push(LineVertex::new(a, color));
+        out.push(LineVertex::new(b, color));
+    }
+}
+
 fn push_box(out: &mut Vec<MeshVertex>, min: DVec3, max: DVec3, tint: [f32; 4]) {
     let faces: [(DVec3, [DVec3; 4]); 6] = [
         (DVec3::X, [DVec3::new(max.x, min.y, min.z), DVec3::new(max.x, max.y, min.z), DVec3::new(max.x, max.y, max.z), DVec3::new(max.x, min.y, max.z)]),
@@ -487,6 +505,23 @@ mod tests {
         let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::from([(b, face)]), &|_| None, &NoStyle, true);
         assert_eq!(scene.selected_edges.len(), 8, "a picked face is outlined");
         assert!(scene.batches["a"].iter().all(|v| v.tint == WHITE), "and keeps its true color");
+    }
+
+    #[test]
+    fn point_entities_show_their_facing() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let mut ent = Entity::new("info_player_start");
+        ent.set("angles", "0 90 0");
+        e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
+        e.insert(ROOT, NodeKind::Entity(Entity::new("info_target"))).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        assert_eq!(scene.edges.len(), 24 * 2 + 6, "only the entity with a facing gets an arrow");
+        assert!(
+            scene.edges.iter().any(|v| DVec3::from(v.pos.map(f64::from)).abs_diff_eq(DVec3::new(0.0, 16.0, 8.0), 1e-4)),
+            "the arrow runs along +Y from the top of the box"
+        );
     }
 
     #[test]

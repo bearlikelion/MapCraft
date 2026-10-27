@@ -113,6 +113,16 @@ pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool)
         NodeKind::Entity(mut ent) if point => {
             let origin = ent.origin().unwrap_or_default();
             ent.set("origin", fmt_vec(m.transform_point3(origin)));
+            let turn = m.x_axis.y.atan2(m.x_axis.x).to_degrees();
+            if turn.abs() > 1e-9 && m.determinant() > 0.0 {
+                if let Some(a) = ent.get("angles").and_then(mapcraft_map::parse_vec3) {
+                    ent.set("angles", fmt_vec(moved_placement(m, origin, a).1));
+                }
+                // -1 and -2 mean straight up and straight down, which a turn about Z leaves alone.
+                if let Some(yaw) = ent.get("angle").and_then(|s| s.trim().parse::<f64>().ok()).filter(|y| y.is_finite() && *y >= 0.0) {
+                    ent.set("angle", fmt_num(moved_placement(m, origin, DVec3::new(0.0, yaw, 0.0)).1.y));
+                }
+            }
             NodeKind::Entity(ent)
         }
         NodeKind::Prefab(mut p) => {
@@ -1076,6 +1086,24 @@ mod tests {
         let undo = s.undo_label().map(str::to_string);
         s.snap_selection_to_grid().unwrap();
         assert_eq!(s.undo_label().map(str::to_string), undo, "snapping what is on the grid adds no undo step");
+    }
+
+    #[test]
+    fn rotating_a_point_entity_turns_its_facing() {
+        let mut s = session();
+        let props = |a: &str, b: &str| vec![(a.to_string(), b.to_string())];
+        let spawn = s.create_point_entity("info_player_start", DVec3::new(32.0, 32.0, 0.0), props("angles", "0 30 0")).unwrap();
+        let quake = s.create_point_entity("info_player_start", DVec3::new(32.0, 32.0, 0.0), props("angle", "90")).unwrap();
+        let key = |s: &Session, id, k| s.map.get(id).unwrap().kind.entity().unwrap().get(k).map(str::to_string);
+        s.selection = BTreeSet::from([spawn]);
+        s.rotate_selection(DVec3::Z, 90.0).unwrap();
+        assert_eq!(key(&s, spawn, "angles").as_deref(), Some("0 120 0"));
+        assert_eq!(key(&s, spawn, "origin").as_deref(), Some("32 32 0"));
+        s.selection = BTreeSet::from([quake]);
+        s.rotate_selection(DVec3::Z, -135.0).unwrap();
+        assert_eq!(key(&s, quake, "angle").as_deref(), Some("315"));
+        s.translate_selection(DVec3::new(16.0, 0.0, 0.0), None).unwrap();
+        assert_eq!(key(&s, quake, "angle").as_deref(), Some("315"), "moving leaves the facing alone");
     }
 
     #[test]
