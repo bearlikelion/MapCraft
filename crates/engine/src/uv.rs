@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use mapcraft_geom::{Aabb, DAffine2, DVec2, DVec3, EPSILON};
-use mapcraft_map::{Face, FaceId, Map, NodeId, TexAxis, TexDefaults};
+use mapcraft_map::{Face, FaceId, Map, NodeId, TexAxis, TexDefaults, share_edge};
 
 use crate::{EngineError, Session};
 
@@ -21,24 +21,6 @@ pub fn face_polygons<'a>(map: &'a Map, brushes: &BTreeSet<NodeId>) -> Vec<(FaceP
         }
     }
     out
-}
-
-/// Whether an edge of `a` and an edge of `b` lie along each other for some length.
-fn share_edge(a: &[DVec3], b: &[DVec3]) -> bool {
-    let edges = |p: &[DVec3]| p.iter().copied().zip(p.iter().copied().cycle().skip(1)).collect::<Vec<_>>();
-    let eb = edges(b);
-    edges(a).into_iter().any(|(a0, a1)| {
-        let len = a0.distance(a1);
-        if len < EPSILON {
-            return false;
-        }
-        let d = (a1 - a0) / len;
-        let off = |p: DVec3| (p - a0).reject_from_normalized(d).length();
-        eb.iter().any(|&(b0, b1)| {
-            let (t0, t1) = ((b0 - a0).dot(d), (b1 - a0).dot(d));
-            off(b0) < EPSILON && off(b1) < EPSILON && t0.max(t1).min(len) - t0.min(t1).max(0.0) > EPSILON
-        })
-    })
 }
 
 /// The picked faces in islands of faces that share an edge and a material. Each island starts at

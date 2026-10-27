@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use brush::{Bevel, Brush, BrushError, Face, Justify, TexAxis, TexDefaults};
+pub use brush::{Bevel, Brush, BrushError, Face, Justify, TexAxis, TexDefaults, share_edge, wrap_runs};
 pub use cover::covered_faces;
 pub use curve::{CurveOp, Path, PathPoint};
 pub use disp::Displacement;

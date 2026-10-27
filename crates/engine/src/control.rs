@@ -203,14 +203,24 @@ An arch spans `arc` degrees starting `start` degrees off +X with walls `thicknes
     },
     Tool {
         name: "set_material",
-        description: "Gives the selected brushes' faces `material`: all of them, or those facing top, bottom, sides, +x, -x, +y or -y. \
-It also becomes the default for later brushes.",
-        schema: || object(json!({"material": string(), "faces": sides()}), &["material"]),
+        description: "Gives the selected brushes' faces `material`: all of them, or those facing top, bottom, sides, +x, -x, +y or -y, \
+and with `scale` that texture scale (units per texel). Both become the defaults for later brushes and generators.",
+        schema: || object(json!({"material": string(), "faces": sides(), "scale": {"type": "number", "exclusiveMinimum": 0}}), &["material"]),
         run: |s, a| {
+            let scale = match a.get("scale") {
+                None => None,
+                Some(v) => Some(v.as_f64().filter(|k| k.is_finite() && *k > 0.0).ok_or_else(|| bad("scale", "a number above 0"))?),
+            };
             let picked = faces_facing(s, a)?;
             s.tex.material = str_arg(a, "material")?.into();
+            if let Some(k) = scale {
+                s.tex.scale = k;
+            }
             let before = std::mem::replace(&mut s.face_selection, picked);
-            let applied = s.apply_material();
+            let applied = s.apply_material().and_then(|_| match scale {
+                Some(k) => s.edit_faces("Texture scale", None, |f| (f.u.scale, f.v.scale) = (k, k)),
+                None => Ok(()),
+            });
             s.face_selection = before;
             applied?;
             Ok(info(s))
@@ -981,9 +991,10 @@ mod tests {
         assert_eq!(bounds(&s, kept).min.x, 16.0);
         call(&mut s, "run_command", &json!({"id": "edit.undo"})).unwrap();
 
-        call(&mut s, "set_material", &json!({"material": "floor", "faces": "top"})).unwrap();
+        call(&mut s, "set_material", &json!({"material": "floor", "faces": "top", "scale": 3})).unwrap();
         let faces = &s.map.get(NodeId(b)).unwrap().kind.brush().unwrap().faces;
-        assert_eq!(faces.iter().filter(|f| f.material == "floor").count(), 1);
+        assert_eq!(faces.iter().filter(|f| f.material == "floor" && f.u.scale == 3.0).count(), 1);
+        assert_eq!(s.tex.scale, 3.0);
 
         call(&mut s, "scale", &json!({"factors": [2, 1, 1]})).unwrap();
         assert_eq!(bounds(&s, b).size().x, 128.0);
@@ -1077,6 +1088,7 @@ mod tests {
             ("scale", json!({"factors": [0, 1, 1]})),
             ("duplicate", json!({"delta": [1, 0, 0], "count": 100000})),
             ("set_material", json!({"material": "x", "faces": "up"})),
+            ("set_material", json!({"material": "x", "scale": 0})),
             ("batch", json!({"calls": [{"tool": "batch", "arguments": {}}]})),
             ("move_to", json!({"ids": [0], "parent": 999})),
             ("pick_faces", json!({"faces": "up"})),

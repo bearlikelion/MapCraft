@@ -715,9 +715,77 @@ impl Brush {
     }
 }
 
+/// Whether an edge of `a` and an edge of `b` lie along each other for some length.
+pub fn share_edge(a: &[DVec3], b: &[DVec3]) -> bool {
+    let edges = |p: &[DVec3]| p.iter().copied().zip(p.iter().copied().cycle().skip(1)).collect::<Vec<_>>();
+    let eb = edges(b);
+    edges(a).into_iter().any(|(a0, a1)| {
+        let len = a0.distance(a1);
+        if len < EPSILON {
+            return false;
+        }
+        let d = (a1 - a0) / len;
+        let off = |p: DVec3| (p - a0).reject_from_normalized(d).length();
+        eb.iter().any(|&(b0, b1)| {
+            let (t0, t1) = ((b0 - a0).dot(d), (b1 - a0).dot(d));
+            off(b0) < EPSILON && off(b1) < EPSILON && t0.max(t1).min(len) - t0.min(t1).max(0.0) > EPSILON
+        })
+    })
+}
+
+/// Carries each face's texture on across the edges it shares with faces of the same material, so
+/// a run of brushes such as a curved ramp has no seams; the first face of each run leads.
+pub fn wrap_runs(brushes: &mut [Brush]) {
+    let polys: Vec<(usize, usize, Vec<DVec3>, Option<Aabb>)> = brushes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| Some((i, b.solid().ok()?)))
+        .flat_map(|(i, s)| s.faces.into_iter().enumerate().filter_map(move |(j, w)| w.map(|w| (i, j, w.0))))
+        .map(|(i, j, w)| {
+            let b = Aabb::from_points(w.iter().copied()).map(|b| b.expanded(EPSILON));
+            (i, j, w, b)
+        })
+        .collect();
+    let mut seen = vec![false; polys.len()];
+    for seed in 0..polys.len() {
+        if std::mem::replace(&mut seen[seed], true) {
+            continue;
+        }
+        let mut queue = std::collections::VecDeque::from([seed]);
+        while let Some(k) = queue.pop_front() {
+            let (bi, fi, poly, bounds) = &polys[k];
+            let Some(src) = brushes.get(*bi).and_then(|b| b.faces.get(*fi)).cloned() else { continue };
+            for (m, (bj, fj, other, ob)) in polys.iter().enumerate() {
+                if seen[m] || !bounds.zip(*ob).is_some_and(|(a, b)| a.intersects(&b)) || !share_edge(poly, other) {
+                    continue;
+                }
+                let Some(f) = brushes.get_mut(*bj).and_then(|b| b.faces.get_mut(*fj)) else { continue };
+                if f.material == src.material {
+                    seen[m] = true;
+                    f.wrap_from(&src);
+                    queue.push_back(m);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapped_runs_meet_at_their_seams() {
+        let tex = TexDefaults { material: "ramp".into(), scale: 3.0 };
+        let a = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0)), &tex);
+        let b = Brush::cuboid(Aabb::new(DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0)), &tex);
+        let mut run = [a, b];
+        run[1].faces.iter_mut().for_each(|f| f.u.offset = 17.0);
+        wrap_runs(&mut run);
+        let edge = DVec3::new(64.0, 32.0, 64.0);
+        let top = |b: &Brush| b.faces.iter().find(|f| f.plane().is_some_and(|p| p.normal.z > 0.9)).unwrap().clone();
+        assert!(top(&run[0]).texel(edge).distance(top(&run[1]).texel(edge)) < 1e-6);
+    }
 
     fn cube(min: f64, max: f64) -> Brush {
         Brush::cuboid(Aabb::new(DVec3::splat(min), DVec3::splat(max)), &TexDefaults { material: "dev".into(), scale: 0.25 })

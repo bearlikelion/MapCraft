@@ -189,6 +189,7 @@ fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
                 if let Some((_, m)) = best {
                     f.material = tex(m).material;
                 }
+                f.align_to_face();
             }
             Some(b)
         }
@@ -273,12 +274,19 @@ fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, bud
         }
     };
     let mut frags: Vec<Fragment> = Vec::new();
+    let (mut hulls, mut faced) = (Vec::new(), Vec::new());
     for b in brushes {
         if !take(budget) {
             break;
         }
-        frags.extend(brush(b, ctx).map(|b| leaf(NodeKind::Brush(b))));
+        let hull = matches!(b, t::Brush::Hull(_));
+        if let Some(b) = brush(b, ctx) {
+            if hull { hulls.push(b) } else { faced.push(b) }
+        }
     }
+    // Hulls carry no UVs, so a plugin's pieces get one texture running across them.
+    mapcraft_map::wrap_runs(&mut hulls);
+    frags.extend(faced.into_iter().chain(hulls).map(|b| leaf(NodeKind::Brush(b))));
     for e in entities {
         if !take(budget) {
             break;
