@@ -1,7 +1,7 @@
 # Terrain
 
-Turn flat floors into hills, banks and mountains, then shape them with a brush or a grayscale image.
-MapCraft does this with displacements: a four-cornered face becomes a grid of points that each move up or down.
+MapCraft makes terrain, such as hills, banks and mountains, from displacements: a four-cornered face becomes a grid of points that each move up or down.
+Shape them with the Sculpt tool or a grayscale heightmap image.
 
 Displacements move, rotate and flip with their brushes.
 
@@ -25,7 +25,7 @@ A brush with a displacement shows only its displaced faces, as Source does.
 ![The Face tool with a platform's top face picked, and the Displacement section in the inspector with Power 3 and Make](img/terrain-make.webp#wide)
 
 > [!WARNING]
-> Switching to the Face tool with brushes selected picks every face of them. Click just the faces you want, or **Make** displaces the sides too.
+> Switching to the Face tool with brushes selected picks every face of them. Click only the faces you want, or **Make** displaces the sides too.
 
 ### Changing the power
 
@@ -70,10 +70,10 @@ To limit it:
 - **Pick first:** pick faces with the Face tool, then switch to Sculpt. The picks keep their cyan outline and limit every stroke until you switch tools. Picks with no displacement in them limit nothing.
 - **Hide the rest:** select brushes and press `H` to hide them, or `I` to isolate the ones you want. Press `U` to show everything again.
 
-### Seams stay sewn
+### Seams
 
 Neighboring displacements stay joined.
-Where two displaced faces share a point, it gets one height, so you can sculpt across seams freely.
+Where two displaced faces share a point, both use one height, so sculpting across a seam leaves no gap.
 
 ## Heightmaps
 

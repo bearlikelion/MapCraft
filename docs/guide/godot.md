@@ -1,7 +1,7 @@
 # Play it in Godot
 
-The MapCraft addon lets games made with Godot 4.4 and newer load `.mcmap` maps.
-With SurfsUp, one click in the **Run** menu copies your map into the game and starts it.
+The MapCraft addon loads `.mcmap` maps in games made with Godot 4.4 and newer.
+For SurfsUp, the **Run** menu copies your map into the game and starts it.
 
 ## Install the addon
 
@@ -9,7 +9,7 @@ With SurfsUp, one click in the **Run** menu copies your map into the game and st
 2. Unzip it into your Godot project's folder, so the addon lands in `addons/mapcraft`.
 3. Open the project in the Godot editor once, so Godot registers the addon.
 
-Building the addon yourself instead is covered in [Godot addon](../../godot/README.md#building).
+To build the addon yourself, see [Godot addon](../../godot/README.md#building).
 
 ## Point MapCraft at your game
 
@@ -45,8 +45,8 @@ See [Compile profiles](sdks-and-plugins.md#compile-profiles) for the Output pane
 
 ## Maps as scenes
 
-This part is for people making their own Godot game.
-Every `.mcmap` file in a project imports as a scene, so you can instance it, open it or load it like a `.tscn`.
+This section is for people making their own Godot game.
+Every `.mcmap` file in a project imports as a scene that you instance, open or load like a `.tscn`.
 The scene uses only Godot's built-in nodes, so the game needs neither the addon nor any script to load it.
 
 - World brushes become one mesh, with a surface per material, and one collision body.
@@ -74,18 +74,19 @@ Select the `.mcmap` in Godot's FileSystem dock, change these in the Import dock,
 > Use Trimesh Collision for surf maps: seams between the pieces of a curved ramp can catch players when each brush collides on its own.
 > The SurfsUp entity map turns it on for every SurfsUp map.
 
-Faces hidden between touching brushes, such as the joins between ramp pieces, are left out of the meshes and of trimesh collision, so they cost nothing to draw and leave no seams; collision per brush still uses whole brushes.
+Faces hidden between touching brushes, such as the joins between ramp pieces, are left out of the meshes and of trimesh collision, so they cost nothing to draw and leave no seams.
+Collision per brush still uses whole brushes.
 
 The addon ships the SurfsUp entity map, so SurfsUp maps need no setup: the player start becomes the `SpawnPoint`, zones become `Area3D` nodes tagged `sdk_zone`, `func_detail` merges into the world, and `prop_static` places its model.
 Props get no collision of their own; give the model collision in its Godot import settings when players should hit it.
 
 ## Load maps while the game runs
 
-Games can also load maps from user folders or downloads, with no import step:
+Games can load maps from user folders or downloads, with no import step:
 
 - A `MapCraftMap` node builds a map while the game runs: set **Map File** and call `build()`, or leave **Build On Ready** on.
   Building first removes the node's children, and `clear()` does only that.
   It has the importer's settings and emits `entity_built(node, classname, properties)` for each entity, so the game can finish it off.
-- `load()` turns any `.mcmap` path, inside or outside the project, into a scene the same way the importer does.
+- Godot's `load()` turns any `.mcmap` path, inside or outside the project, into a scene the same way the importer does.
 
 Entity maps, the sky and sun entity, metadata types and the rest are in the technical [Godot addon](../../godot/README.md) page.

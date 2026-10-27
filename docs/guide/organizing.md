@@ -1,7 +1,6 @@
 # Organizing
 
 A map is a tree: the world at the top, then layers, groups, entities, brushes and prefabs.
-This page shows how to select inside that tree and keep a big map tidy.
 
 ## Selection modes
 
@@ -11,7 +10,7 @@ The **Groups**, **Objects** and **Solids** buttons on the top bar decide what a 
 |---|---|---|
 | **Groups** | `Alt+1` | The outermost group around what you click, else its entity, else the brush |
 | **Objects** | `Alt+2` | The entity or loose brush, ignoring groups |
-| **Solids** | `Alt+3` | Just the one brush |
+| **Solids** | `Alt+3` | The one brush |
 
 - `Ctrl+Click` or `Shift+Click` adds an object to the selection, or takes it out.
 - `Ctrl+A` selects everything that is not hidden, and `Ctrl+Shift+A` selects nothing.
@@ -43,7 +42,6 @@ Rename it in the inspector.
 ## Linked copies
 
 A linked copy shows another group's contents and follows every change to it, like Blender's linked duplicates.
-Build a light fixture once, place copies all over the map, and change them all by changing one.
 
 1. Select a group.
 2. Press `Alt+D` (**Edit > Duplicate Linked**).
@@ -141,7 +139,7 @@ Lock a reference layer, such as an imported map you are zoning, so clicks only r
 
 ## Tags
 
-Tags are labels you stick on objects, like Hammer's visgroups.
+Tags are labels on objects, like Hammer's visgroups.
 An object can carry several.
 
 1. Select the objects.

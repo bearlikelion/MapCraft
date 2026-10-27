@@ -8,7 +8,7 @@ The official registry is the MapCraftSDKs repository; anyone can host another on
 
 Preferences > SDK registries lists the registries, the official one first.
 Each entry is an `https://` or `http://` URL, or a path to an `index.json` on disk.
-A local path makes private registries and testing easy.
+Use a local path for a private registry or for testing.
 
 ## Format
 

@@ -2,7 +2,7 @@
 
 MapCraft plugins are WebAssembly components built against [`wit/plugin.wit`](../wit/plugin.wit).
 Any language that can target the component model works: Rust, C and C++, C#, Go, JavaScript, Python and Zig.
-The core editor knows no game; plugins teach it how to work with one.
+The core editor has no game-specific code; plugins provide it.
 
 ## What a plugin can do
 
@@ -43,7 +43,9 @@ The editor places it at the selection's center, or where the cursor last was in 
 Brushes come in two forms:
 
 - `faces`: three points per face plane, clockwise seen from outside the brush, the same convention as `.map` and `.vmf` files.
-- `hull`: the convex solid around a list of points. Faces get the hull's material, except those whose outward normal is within about 8 degrees of a `surface` hint, which get that hint's material. This is the easy form for generators: list the corners and say which way the special faces point.
+- `hull`: the convex solid around a list of points.
+  Faces get the hull's material, except those whose outward normal is within about 8 degrees of a `surface` hint, which get that hint's material.
+  It is the simpler form for generators: list the corners and say which way the special faces point.
 
 An empty material means the material picked in the browser.
 

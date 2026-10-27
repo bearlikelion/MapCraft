@@ -2,7 +2,7 @@
 
 `mapcraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on standard input and output, so an AI agent such as Claude Code can build and edit maps.
 While the editor is open, every tool acts on the map open in it, live and undoable; otherwise tools act on a map held in memory by the server.
-The overview of what an agent can do, and how to set one up, is [AI agents](ai-agents.md).
+[AI agents](ai-agents.md) covers what an agent can do and how to set one up.
 
 ## Setup
 

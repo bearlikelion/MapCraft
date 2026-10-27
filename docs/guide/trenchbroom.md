@@ -1,7 +1,7 @@
 # TrenchBroom and func_godot
 
-Make Godot maps with TrenchBroom and the func_godot addon?
-Point MapCraft at your game and it builds an SDK with your entities, textures and scale, so you can keep making the same maps here and build them with func_godot as before.
+If you make Godot maps with TrenchBroom and the func_godot addon, MapCraft can build an SDK from your game's entities, textures and scale.
+You then make the same maps in MapCraft and build them with func_godot as before.
 
 ## Before you start
 
@@ -16,7 +16,7 @@ That writes `GameConfig.cfg` and your `.fgd` into TrenchBroom's games folder, wh
 
 ![The SDK Manager's Create tab with the Import from TrenchBroom / func_godot section and its Browse button highlighted](img/sdks-import-trenchbroom.webp)
 
-- The new SDK opens in the **Installed** tab and is checked right away.
+- The new SDK opens in the **Installed** tab, and MapCraft runs its check.
 - The message at the top lists anything MapCraft had to guess, such as a Godot project it could not find.
 - Make a map with **File > New Map** and pick the new SDK.
 - **File > SDK Settings** holds your Godot project folder; it is filled in when MapCraft found the project.
@@ -41,7 +41,7 @@ That writes `GameConfig.cfg` and your `.fgd` into TrenchBroom's games folder, wh
 
 > [!NOTE]
 > The Output panel may say long texture names do not fit Quake's WADs and BSPs.
-> That only matters for Quake; func_godot reads them fine.
+> That only matters for Quake; func_godot reads them.
 
 ## After you change your entities
 
@@ -56,4 +56,4 @@ The SDK keeps its id, which comes from your game's name, so your maps still find
 - `.def` and `.ent` entity files, `.wal` textures, texture WADs listed in your map settings, and NetRadiant Custom gamepacks are not read.
 - Clip, skip and origin textures are plain materials in MapCraft; func_godot still treats them as tool textures when it builds the map.
 
-How each setting maps onto the SDK is in [TrenchBroom and func_godot import](../trenchbroom-import.md).
+[TrenchBroom and func_godot import](../trenchbroom-import.md) lists how each setting maps onto the SDK.

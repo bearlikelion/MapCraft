@@ -1,7 +1,7 @@
 # Surf ramps and bhop
 
 The SurfsUp SDK adds two shapes to the Block tool: **Surf Ramp** and **Bhop Platforms**.
-Both stay editable after you place them, so you can try a curve, play it, and tune it later.
+Both stay editable after you place them.
 
 ## Place a ramp
 
@@ -9,16 +9,16 @@ Both stay editable after you place them, so you can try a curve, play it, and tu
 2. Set **Turn**, or click **90°** to add a quarter turn.
 3. Click in a view to place it: on the ground or a face in the 3D view, or at the last block's depth in a 2D view.
 
-A yellow ghost shows where it will land, and it waits where the pointer left it so you can watch your changes.
+A yellow ghost shows where it will land, and stays where the pointer left it while you change settings.
 `Alt+B` switches back to the plain shapes.
 The **Plugins** menu makes the same ramps from a window instead.
 
 ![Surf Ramp picked in the top bar (1), the 90° turn button (2) and the yellow ghost in the Top view (3)](img/first-ramp.webp)
 
-## Change it any time
+## Edit a placed ramp
 
 A placed ramp is a group that remembers its settings.
-Select it with the Select tool (`Q`) and change anything in the inspector: the ramp rebuilds as you type, as one undo step.
+Select it with the Select tool (`Q`) and change its settings in the inspector: the ramp rebuilds as you type, as one undo step.
 Each shape also remembers the settings you last used, until you quit.
 
 ![A curved ramp selected in all four views, with its Shape, Turn, Length, Angle, Rise, Bank and Segments outlined in the inspector](img/surf-ramp-settings.webp)
@@ -54,7 +54,7 @@ Each shape also remembers the settings you last used, until you quit.
 | **Ridge** | A flat top on the peak, or the floor of an Inside trough |
 | **Bank** | Leans a curve into its turn |
 | **Drop** | Height the ramp loses along its length; on a straight ramp it makes a slide |
-| **Gap** | Breaks the ramp into pieces this far apart, a broken ramp to strafe across |
+| **Gap** | Breaks the ramp into pieces this far apart |
 | **End slope** | Straight only: the base reaches past the top at each end; negative undercuts, and length 0 makes a pyramid |
 | **Lead in**, **Lead out** | Straight runs before and after a curve |
 | **Surf**, **Side** and **Bottom material** | Empty uses the current material; **Use current** fills one in |
@@ -78,7 +78,7 @@ A 90 degree turn needs 18 segments or more.
 The Output panel warns when a curve has too few.
 
 > [!TIP]
-> In Godot, the SurfsUp entity map already turns on trimesh collision, so the seams between pieces cannot catch players. See [Play it in Godot](godot.md#import-options).
+> In Godot, the SurfsUp entity map turns on trimesh collision, so the seams between pieces cannot catch players. See [Play it in Godot](godot.md#import-options).
 
 ![A curved ramp in the Top view built from 14 pieces, with Segments outlined in the inspector](img/surf-segments.webp)
 
@@ -122,5 +122,5 @@ Point each destination the way the stage continues, so players arrive facing for
 
 ## Symmetric maps and terrain
 
-- Build one half of a map and let MapCraft draw the other: [Mirror groups](mirror-groups.md).
+- Build one half of a map and mirror it: [Mirror groups](mirror-groups.md).
 - Sculpt rocky ground around the course: [Terrain](displacements.md).

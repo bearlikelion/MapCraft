@@ -1,7 +1,5 @@
 # Surf mapping with the SurfsUp SDK
 
-This page covers the surf-specific tools in the SurfsUp SDK and the geometry rules behind them.
-
 ## Making things
 
 Pick the Block tool (B); the shape bar lists the plugin generators next to the plain shapes.
@@ -36,7 +34,7 @@ The tip is a base under the surf face's low edge, so the face never thins to a k
 
 ## Curves and seams
 
-Curves are built from straight pieces, and a seam between pieces can catch a player and stop them dead.
+Curves are built from straight pieces, and a seam between pieces can catch a player and stop them.
 Keep each piece to 5 degrees of turn or less; the generator warns above that, and a 90 degree turn needs at least 18 segments.
 MapCraft joins pieces exactly, with no grid rounding, so seams only come from the game's collision.
 In Godot, turn on Trimesh collision in the MapCraft import options or on a `MapCraftMap` node: the whole world then collides as one triangle mesh instead of one convex shape per brush.

@@ -176,7 +176,7 @@ kbd {
 .get { margin-top: clamp(28px, 3.2vw, 44px); }
 .get h2 { display: flex; align-items: baseline; gap: 12px; margin: 0 0 14px; font: 700 1.6rem/1.2 var(--body); font-stretch: normal; letter-spacing: -0.01em; }
 .get-version { color: var(--orange); font: 600 1.15rem/1 var(--mono); }
-.dl-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 44rem; margin: 0; padding: 0; list-style: none; }
+.dl-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 34rem; margin: 0; padding: 0; list-style: none; }
 .dl-btn {
 	display: grid;
 	grid-template-columns: 24px minmax(0, 1fr);
@@ -198,7 +198,6 @@ kbd {
 .dl-btn.primary { border-color: var(--orange); background: var(--orange); color: var(--on-orange); }
 .dl-btn.primary small { color: color-mix(in srgb, var(--on-orange) 72%, transparent); }
 .dl-btn.primary:hover { background: var(--orange-hi); }
-.dl-note { max-width: 44rem; margin: 12px 0 0; color: var(--muted); font-size: 0.88rem; }
 
 /* Homepage sections */
 

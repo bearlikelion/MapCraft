@@ -1,16 +1,15 @@
 # Keyboard shortcuts
 
-Every menu item, panel, tool and switch has a shortcut, and you can change any of them.
-Coming from Hammer or TrenchBroom? Pick their preset and your hands already know the keys.
-New to MapCraft? Start with [Hotkeys](hotkeys.md), the keys you will use every minute.
-Want them all at a glance? The [cheat sheet](hotkeys.md#every-key-on-one-page) fits every key on one page, ready to print.
+Menu items, panels, tools and switches can all have shortcuts, and you can change any of them.
+The Hammer and TrenchBroom presets use those editors' keys.
+[Hotkeys](hotkeys.md) covers the keys you use most, and its [cheat sheet](hotkeys.md#every-key-on-one-page) prints every key on one page.
 
 ## See every shortcut
 
 Press `F1` for the list of every shortcut, with a search box.
-**Edit in Preferences** takes you straight to changing them.
+**Edit in Preferences** opens Preferences to change them.
 
-Menus and tooltips always show the key that is bound right now.
+Menus and tooltips show the current key.
 
 ![The Keyboard Shortcuts window with its search box and the File shortcuts at the top](img/shortcuts-f1.webp)
 
@@ -35,7 +34,7 @@ Menus and tooltips always show the key that is bound right now.
 ## All shortcuts
 
 These are the MapCraft preset's keys.
-The tables come straight from the editor's code, so they match the version this site was built from.
+The tables are generated from the editor's code, so they match the version this site was built from.
 
 <!-- shortcuts:start -->
 

@@ -1,7 +1,7 @@
 # Paths, sweeps and spins
 
-Build curved roads, rails, trims, pipes, arches and round towers without placing every piece by hand.
-Draw a path or pick an axis, and MapCraft builds the pieces for you and rebuilds them whenever you change what they came from.
+Sweeps, spins and arrays build curved roads, rails, trims, pipes, arches and round towers from a path or an axis.
+They rebuild when you change what they came from.
 
 Brushes are always convex, so a curve is made of many straight pieces that fit together exactly.
 
@@ -48,7 +48,7 @@ The sweep follows the selected path, or the newest one when none is selected.
 ![A flat block at the start of a path, with its side face picked in the Face tool](img/curves-sweep-pick.webp)
 
 The result is a group named Sweep, selected and shown in the inspector.
-The brushes you picked faces of stay as they are.
+The brushes you picked faces from stay as they are.
 
 | Setting | Effect |
 |---|---|
@@ -58,7 +58,7 @@ The brushes you picked faces of stay as they are.
 
 - The cross-section stays upright as the path turns, climbs and falls, and never flips, even through a loop.
 - Neighboring pieces share their faces exactly, so there are no gaps.
-- Textures follow the brushes you swept and carry on around every bend. Line up the texture on the profile brush with the Face tool and the whole sweep follows; the ends keep the swept face's own texture.
+- Textures come from the brushes you swept and continue around every bend. Line up the texture on the profile brush with the Face tool and the whole sweep follows; the ends keep the swept face's own texture.
 
 ![The sweep: a curved deck following the S-shaped path in the 3D and Top views, with Segments, Twist and End scale in the inspector](img/curves-sweep.webp#wide)
 
@@ -112,7 +112,7 @@ Sweeps, spins and arrays stay live:
 Copying or duplicating a curve group gives a plain group too.
 
 > [!NOTE]
-> Huge settings are refused rather than slowing the editor down: a sweep or spin makes at most 4096 brushes, and an array at most 256 copies.
+> A sweep or spin makes at most 4096 brushes, and an array at most 256 copies; larger settings are refused.
 
 Paths and curve groups are saved in the `.mcmap` file, and the Godot addon builds their brushes like any others.
-The [file format reference](../mcmap-format.md#paths-and-curve-groups) has the details.
+See the [file format reference](../mcmap-format.md#paths-and-curve-groups).

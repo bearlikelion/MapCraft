@@ -62,7 +62,7 @@ Copy `addons/mapcraft` into the project and open the project in the Godot editor
 
 ## Building
 
-Requires CMake 3.17, Ninja, Python 3 and a C++17 compiler; Windows builds cross-compile with MinGW.
+Requires CMake 3.17, Ninja, Python 3 and a C++17 compiler; Windows builds cross-compile with MinGW, and the macOS build (a universal library for Apple Silicon and Intel) has to run on a Mac.
 
 ```sh
 ./build.sh linux                     # or windows, macos; add template_release for release builds

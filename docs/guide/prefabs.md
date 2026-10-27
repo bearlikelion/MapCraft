@@ -1,7 +1,7 @@
 # Prefabs
 
 A prefab is a piece of a map kept in its own `.mcmap` file and placed as instances, like a Godot scene or a Hammer instance.
-Change the prefab file and every instance changes with it.
+Change the prefab file, reload prefabs, and every instance updates.
 
 ## Save the selection as a prefab
 

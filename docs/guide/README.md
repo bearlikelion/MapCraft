@@ -1,7 +1,7 @@
 # User guide
 
-Short, visual guides to building maps with MapCraft.
-New here? Read the first two pages, then come back when you need something.
+How to build maps with MapCraft.
+If you are new, read the first two pages.
 
 ## The editor at a glance
 
@@ -9,17 +9,17 @@ New here? Read the first two pages, then come back when you need something.
 2. **Panels**: the Scene tree, Tags, Materials, Entities and Models tabs.
 3. **Tools**: Select, Move, Extrude, Rotate, Scale, Block, Entity, Clip, Vertex, Face, Sculpt and Path.
 4. **Views**: 3D, Top, Front and Side. Press `Space` to fill the window with the one under the pointer.
-5. **Inspector**: everything about what you selected, ready to edit.
+5. **Inspector**: shows and edits the settings of the selection.
 6. **Status bar**: what is selected, the grid, and a hint for the current tool.
 
 ![The MapCraft window with six numbered areas: top bar, panels, tool column, the four views, the inspector and the status bar](img/editor-overview.webp#wide)
 
 ## Getting started
 
-- [Install MapCraft](installing.md): download it for Linux or Windows.
-- [Your first map](first-map.md): from a blank map to playing it, in a few minutes.
+- [Install MapCraft](installing.md): download it for Linux, Windows or macOS.
+- [Your first map](first-map.md): build a small surf course and play it.
 - [Getting around](views.md): the four views, the 3D camera, the grid and snapping.
-- [Hotkeys](hotkeys.md): the keys to learn first, on one keyboard map.
+- [Hotkeys](hotkeys.md): the keys to learn first, shown on a keyboard.
 
 ## Building
 
@@ -33,7 +33,7 @@ New here? Read the first two pages, then come back when you need something.
 ## Organizing
 
 - [Organizing](organizing.md): selection modes, groups, layers, the scene tree, tags and cordons.
-- [Mirror groups](mirror-groups.md): build one half of a map and get the other half for free.
+- [Mirror groups](mirror-groups.md): build one half of a symmetric map and MapCraft draws the other half.
 - [Prefabs](prefabs.md): reuse a piece of a map across maps.
 
 ## Games
@@ -43,9 +43,9 @@ New here? Read the first two pages, then come back when you need something.
 - [Import a BSP map](importing-bsp.md): bring in a compiled Counter-Strike: Source map to zone it.
 - [Import a SurfsUp SDK map](importing-sdk.md): bring in a map made with the SurfsUp SDK in Godot.
 - [Counter-Strike: Source](cstrike.md): make CS:S maps with Hammer `.vmf` files and Valve's compilers.
-- [SDKs and plugins](sdks-and-plugins.md): how MapCraft learns a game, and how to add more.
+- [SDKs and plugins](sdks-and-plugins.md): how MapCraft supports a game, and how to add more games.
 
 ## Reference
 
 - [Keyboard shortcuts](shortcuts.md): every shortcut, the Hammer and TrenchBroom presets, and how to change them.
-- [Technical docs](../README.md): optional reading for building from source, SDKs, plugins and file formats.
+- [Technical docs](../README.md): building from source, SDKs, plugins and file formats; not needed for making maps.

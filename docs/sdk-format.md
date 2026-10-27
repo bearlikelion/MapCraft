@@ -74,12 +74,12 @@ steps = [
 | `units_per_meter` | Map units per meter, 39.37 by default |
 | `map_size` | The lowest and highest coordinate maps may use on every axis, such as `[-4096, 4096]` for Quake; unset, an FGD's `@mapsize` gives it, and without either maps are unbounded |
 | `fgd` | Entity definition files, merged in order; later classes replace earlier ones |
-| `textures.roots` | Folders searched for materials, first match wins |
+| `textures.roots` | Folders searched for materials, first match wins; texture folders the user adds in SDK Settings are searched after these |
 | `textures.extensions` | File types that count as materials |
 | `textures.default` | Material for new brushes |
 | `textures.scale` | Texture scale for new faces |
-| `textures.pixelated` | `true` draws textures without smoothing when magnified, as Quake and other early 3D games do; off by default |
-| `textures.sky` | Material name prefixes, such as `["sky"]` for Quake, whose pictures hold a far layer on the right half and a near layer on the left with clear pixels; faces with them show the sky projected from the view direction, as Quake draws it |
+| `textures.pixelated` | `true` magnifies textures without smoothing, as Quake and other early 3D games do; off by default |
+| `textures.sky` | Name prefixes of sky materials, such as `["sky"]` for Quake; a sky picture holds the far layer in its right half and the near layer, with clear pixels, in its left half, and faces with it show the sky projected from the view direction, as Quake draws it |
 | `models.roots` | Folders glTF model paths are relative to; empty uses `textures.roots` |
 | `models.class` | Point entity class the Models tab places models with; unset, models can be previewed but not placed |
 | `models.key` | The key that holds a model's path, `model` by default |
@@ -111,7 +111,7 @@ An unknown variable stops the compile with an error instead of expanding to noth
 - `{ copy = "...", to = "..." }` copies a file, creating the destination folder.
 - `{ export = "id", to = "..." }` writes the map with the exporter `id` of one of the SDK's plugins, such as a Quake `.map` before `qbsp` runs. Prefabs and mirror copies are resolved first, and layers left out of exports and anything outside an active cordon are dropped.
 
-Export steps run first, before the other steps start, because plugins run in the editor; the other steps then run in order and the profile stops at the first failure.
+Export steps run before all other steps, because plugins run in the editor; the other steps then run in order and the profile stops at the first failure.
 MapCraft asks before running an SDK's programs the first time.
 
 ## Where SDKs are found

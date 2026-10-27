@@ -1,7 +1,7 @@
 # Tools
 
-Every tool lives in the column left of the views.
-Click one or press its key; keys here are the MapCraft preset's (see [Keyboard shortcuts](shortcuts.md)).
+The tools are in the column left of the views.
+Click one or press its key; keys here are from the MapCraft preset (see [Keyboard shortcuts](shortcuts.md)).
 
 ## The tool column
 
@@ -26,7 +26,7 @@ A whole drag is one undo step, so `Ctrl+Z` takes all of it back.
 
 ## The right click menu
 
-Right click in any view, without dragging, for the tools that fit what is selected, as in Blender.
+Right click in any view, without dragging, to open a menu of commands for what is selected, as in Blender.
 
 - **Objects selected:** Duplicate, Duplicate Linked, Delete, Hollow, Carve, Merge and Clip, then the **Brush Type**, **Transform**, **UV**, **Organize** and **Curves** submenus, then Focus, Hide, Isolate and Lock. A linked copy adds its linked copy commands.
 - **Faces picked in the Face tool:** Apply Current Material, Copy Face, Paste Face, the **UV** submenu, Sweep Along Path and Spin.
@@ -40,7 +40,7 @@ Each entry shows its shortcut, and entries that cannot run are grayed out.
 ![The right click menu with nothing selected: Add, Select All, Show All, Unlock All, Frame All and Go to Origin](img/tools-right-click-empty.webp)
 
 > [!TIP]
-> The **UV** submenu works straight from selected brushes: right click a ramp and choose **UV > Unwrap**.
+> The **UV** submenu also works on selected brushes: right click a ramp and choose **UV > Unwrap**.
 > **Edit UVs in This View** turns the view you clicked into the [UV editor](materials.md#the-uv-editor).
 
 Right dragging still flies the 3D camera and pans a 2D view.
@@ -111,7 +111,7 @@ On a box both do the same; they differ on slanted faces, such as the slope of a 
 - The status bar shows how far you have dragged.
 - With **Snap** on, straight faces land on the grid and slanted faces move in whole grid steps.
 - A drag that would remove one of the brush's faces is refused.
-- After a split or stamp, the new brushes are selected, ready for the next drag.
+- After a split or stamp, the new brushes are selected.
 
 ## Rotate
 
@@ -144,7 +144,7 @@ A selection cannot shrink below one grid step, and with **Snap** on its edge lan
 Press `B`.
 
 1. Pick the Block tool.
-2. Pick a shape on the top bar. You can also right click the Block icon, or press `Alt+B` to step through the shapes.
+2. Pick a shape on the top bar, or right click the Block icon, or press `Alt+B` to step through the shapes.
 3. Drag a rectangle in a 2D view.
 
 Labels show the block's size in every view while you draw.
@@ -181,7 +181,7 @@ Plugins add shapes to the bar, such as **Surf Ramp** and **Bhop Platforms** in t
 2. A yellow ghost follows the pointer: on the face or ground under it in the 3D view, or at the last block's depth in a 2D view.
 3. Click to place it.
 
-The ghost stays where the pointer left it, so you can watch it change as you edit its settings.
+The ghost stays where the pointer left it and updates as you edit its settings.
 
 - A placed generator is a group that stays editable: select it, change any setting in the inspector, and it rebuilds.
 - Each shape remembers the settings you last used until you quit.
@@ -261,7 +261,7 @@ For exact moves, hover a 2D view and press the arrow keys: the selected handles 
 
 - The brush always stays a solid convex shape around its corners.
 - A move that would break the brush is refused with "Cannot move there" in the status bar.
-- Handles snap to the grid and to other corners, as **Snap** and **Corners** say.
+- Handles snap to the grid and to other corners when **Snap** and **Corners** are on.
 
 ### Merge
 
@@ -302,7 +302,7 @@ Press `Shift+F`.
 Switching to Face picks every face of the selected brushes, so you can texture them all at once.
 Faces hidden between touching brushes, such as the joins between ramp pieces, are left out, and the status bar says how many.
 
-- Click a face in the 3D view to pick just that face.
+- Click a face in the 3D view to pick only that face.
 - Ctrl+click or Shift+click adds a face, or takes it out.
 - Click empty space to pick nothing.
 
@@ -319,7 +319,7 @@ The inspector shows the face panel: see [Materials](materials.md#the-face-panel)
 
 Press `D`.
 
-Drag on a displacement in the 3D view to raise, lower, smooth, flatten or roughen it.
+Drag on a displacement in any view to raise, lower, smooth, flatten or roughen it.
 The mode, radius and strength are on the top bar, and `Ctrl` swaps raise and lower.
 See [Terrain](displacements.md#the-sculpt-tool).
 
@@ -328,14 +328,14 @@ See [Terrain](displacements.md#the-sculpt-tool).
 Press `P`.
 
 Click in a view to add the points of a curved path, and drag to pull out their handles.
-Sweeps, spins and copies along a path live under **Tools > Curves**.
+Sweeps, spins and copies along a path are under **Tools > Curves**.
 See [Paths, sweeps and spins](curves.md).
 
 ![A three point path drawn with the Path tool, curving through its middle point, with its length in the inspector](img/tools-path.webp)
 
 ## Brush operations
 
-These work on the selection and live in the **Tools** menu.
+These work on the selection and are in the **Tools** menu.
 
 | Command | Key | Does |
 |---|---|---|

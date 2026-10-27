@@ -1,7 +1,7 @@
 # Getting around
 
-How to look at your map: the four views, the 3D camera, the grid and snapping.
-Keys here are the MapCraft preset's; the Hammer and TrenchBroom presets change some of them (see [Keyboard shortcuts](shortcuts.md)).
+The four views, the 3D camera, the grid and snapping.
+Keys here are from the MapCraft preset; the Hammer and TrenchBroom presets change some of them (see [Keyboard shortcuts](shortcuts.md)).
 
 ## The four views
 
@@ -37,8 +37,7 @@ Press `Shift+Space` again, or the square button, to bring back all four.
 
 ## Go to Origin
 
-Lost? **View > Go to Origin** (`Shift+Home`) frames the middle of the map in every view.
-**View > Frame All** (`Home`) frames everything in the map.
+**View > Go to Origin** (`Shift+Home`) frames the map's origin (0, 0, 0) in every view.
 
 ## Moving around a 2D view
 
@@ -104,9 +103,9 @@ Every 3D view uses the same mode.
 Lit previews lighting and materials without compiling the map.
 Faces take light from the map's lights, spotlights and sun, with normal maps and shine from the materials.
 
-- A map with no lights gets a stand-in warm sun and cool fill, so you can still judge materials.
+- A map with no lights gets a stand-in warm sun and cool fill light, so materials still show.
 - Quake lights shade the way the game's compiled lighting looks, with bright pools near lights and darker corners.
-- A `light_environment` with the Godot sky keys draws the same sky and sun the MapCraft Godot addon builds, so you can tune the game's look in the inspector.
+- A `light_environment` with the Godot sky keys draws the same sky and sun the MapCraft Godot addon builds, so you can tune them in the inspector.
 - Nothing casts shadows, and fog is not shown.
 
 ![A surf stage in the Lit mode, with ice and lava ramps under a blue Godot sky](img/views-lit.webp)
@@ -139,9 +138,9 @@ Drags in that view snap to the coarser grid; zoom in to snap finer.
 Both snapping switches sit on the top bar and are on by default.
 
 - **Snap** (`Shift+W`) puts dragged, drawn and placed things on the grid, and turns rotations in 15 degree steps.
-- **Corners** (`Shift+Q`) lets a point dragged in a 2D view catch a nearby brush corner or entity origin.
+- **Corners** (`Shift+Q`) snaps a point dragged in a 2D view to a nearby brush corner or entity origin.
 
-While you drag, an orange cross marks the grid point you will land on and a yellow ring marks a caught corner.
+While you drag, an orange cross marks the grid point you will land on and a yellow ring marks a snapped corner.
 When you move a selection, the corner nearest where you grabbed it is the one that snaps.
 
 ![The top bar with the Snap and Corners switches highlighted](img/views-snapping.webp)
@@ -171,7 +170,7 @@ Tags and cordons hide whole sets at once (see [Organizing](organizing.md)).
 
 ## Color by object
 
-**View > Color Brushes by Object** (`Ctrl+Alt+C`) gives the edges of each brush a color of its own, so neighbors stand apart.
+**View > Color Brushes by Object** (`Ctrl+Alt+C`) gives the edges of each brush a color of its own, so neighboring brushes are easy to tell apart.
 It is on by default and shows in the 2D views and in Wireframe.
 Brushes inside an entity keep the entity's color, and selected edges keep the selection color.
 

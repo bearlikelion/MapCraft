@@ -1,7 +1,6 @@
 # Mirror groups
 
-Build one half of a symmetric map and MapCraft draws the other half for you.
-The mirrored half follows every edit you make.
+A mirror group draws the other half of a symmetric map from the half you build.
 
 ## Make a mirror group
 
@@ -9,7 +8,7 @@ The mirrored half follows every edit you make.
 2. Select it.
 3. Press `Ctrl+Shift+M` (**Tools > Make Mirror Group**).
 
-The other half appears at once, mirrored left and right across a plane at a fixed X.
+The other half appears, mirrored left and right across a plane at a fixed X.
 
 - The selection goes into a new group named Mirror. If you selected one group, that group becomes the mirror group instead.
 - The plane goes through the edge of your half nearest the map's origin, or through 0 when your half spans the origin.
@@ -22,7 +21,7 @@ The other half appears at once, mirrored left and right across a plane at a fixe
 
 ## How the mirror follows
 
-- The mirrored half is drawn live and changes the moment you edit your half.
+- The mirrored half follows every edit to your half.
 - Clicking the mirrored half selects the original it copies (or its group, depending on the selection mode).
 - Moving the mirror group moves its plane with it.
 - While the mirror group, or anything in it, is selected, the plane is outlined in the views.
@@ -64,4 +63,4 @@ The saved map holds both halves, so Godot and other importers get the whole symm
 MapCraft rebuilds the mirrored half from your half each time it opens the map.
 A prefab whose file holds a mirror group comes in with that mirror made real.
 
-Importer authors: see [the .mcmap format](../mcmap-format.md#mirror-groups).
+For importer authors: [the .mcmap format](../mcmap-format.md#mirror-groups).

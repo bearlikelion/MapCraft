@@ -1,6 +1,6 @@
 # Import a BSP map
 
-Bring a compiled Source map into MapCraft, such as a Counter-Strike: Source surf map, so you can zone it for SurfsUp.
+Import a compiled Source map, such as a Counter-Strike: Source surf map, to zone it for SurfsUp.
 
 ## Before you import
 
@@ -18,7 +18,7 @@ Choose **File > Import > Source BSP** and pick a `.bsp` file.
 
 - Everything goes into a new layer named after the file, as one undo step, and the views frame it.
 - The Output panel (`Ctrl+5`) sums up what came in: world brushes and how many are ramps, entities, brush entities, static props, dropped brushes, skipped displacements, and how many textures came from the map, from the game or were missing.
-- It reminds you to set the Counter-Strike: Source folder when textures are missing because of it.
+- When textures are missing because the Counter-Strike: Source folder is not set, it says so.
 
 ![The File menu with Import open, showing Source BSP](img/bsp-import.webp)
 

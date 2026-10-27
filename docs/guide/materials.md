@@ -1,12 +1,11 @@
 # Materials
 
-Pick a texture, put it on brushes, and line it up so it looks right.
-Keys here are the MapCraft preset's defaults; see [Keyboard shortcuts](shortcuts.md) for the Hammer and TrenchBroom presets.
+Pick a material, put it on faces and align it.
+Keys here are from the MapCraft preset; see [Keyboard shortcuts](shortcuts.md) for the Hammer and TrenchBroom presets.
 
 ## The current material
 
-The current material is the one new brushes get.
-It is also the one the apply commands use.
+New brushes and the apply commands use the current material.
 The **Material** chip on the top bar shows it; click the chip to open the Materials panel.
 
 When the SDK names a default material and texture scale, they become current as the SDK loads.
@@ -16,7 +15,7 @@ When the SDK names a default material and texture scale, they become current as 
 ## The Materials panel
 
 Open the **Materials** tab on the left (`Ctrl+3`).
-It lists every material of the map's SDK.
+It lists every material of the map's SDK, including the [texture folders](sdks-and-plugins.md#texture-folders) you added in SDK Settings.
 
 1. Type in **Search materials** to filter by name.
 2. **Previews** switches between pictures and a plain list of names.
@@ -29,7 +28,8 @@ Without an SDK the panel asks you to pick one with **File > New Map**.
 ![The Materials panel with numbered markers on the search box, the Previews toggle, a material picture and Apply to selection](img/materials-panel.webp)
 
 > [!TIP]
-> Want a click to only make a material current? Turn off **Clicking a material applies it to the selection** in **Edit > Preferences**. A double click then applies it.
+> To make a click only set the current material, turn off **Clicking a material applies it to the selection** in **Edit > Preferences**.
+> A double click then applies it.
 
 ## Applying a material
 
@@ -38,7 +38,7 @@ Without an SDK the panel asks you to pick one with **File > New Map**.
 | `Shift+T` (**Tools > Apply Current Material**) | The picked faces, or else every face of the selected brushes |
 | **Apply current material** in the inspector | The same |
 | Click a material in the Materials panel | The same, unless you turned that off |
-| Alt+right click a face in the 3D view | Just that face |
+| Alt+right click a face in the 3D view | Only that face |
 
 Alt+right click works in any tool, so you can paint faces without switching tools.
 
@@ -69,7 +69,7 @@ Wrapping carries a texture around a corner without a seam.
 3. Keep going, face after face.
 
 Each face gets the material and alignment of the face you Alt+clicked, turned across the edge where they meet.
-Until you have Alt+clicked a face, Alt+Shift+right click just applies the current material.
+Until you have Alt+clicked a face, Alt+Shift+right click only applies the current material.
 
 ## The face panel
 
@@ -118,7 +118,7 @@ In the UV editor:
 | Scroll | Zoom |
 | Middle or right drag | Pan |
 | Double click | Fit the picked faces in the view |
-| Click a face | Pick just that face; Ctrl+click or Shift+click adds or removes it |
+| Click a face | Pick only that face; Ctrl+click or Shift+click adds or removes it |
 | Drag a box | Pick the faces whose middle is inside it; with Ctrl or Shift it adds them |
 | Right click | Open the unwrap commands |
 
@@ -157,11 +157,11 @@ A closed shape such as a box still has one seam where the faces meet again.
 ![The UV editor's right click menu: Unwrap, Project from View, Cube Projection and Reset](img/materials-unwrap.webp)
 
 > [!TIP]
-> The right click menu in any view has a **UV** submenu that works straight from selected brushes: right click a ramp and choose **UV > Unwrap**.
+> The right click menu in any view has a **UV** submenu that also works on selected brushes: right click a ramp and choose **UV > Unwrap**.
 
 ## Texturing whole brushes
 
-Select brushes with the Select tool and the inspector offers:
+With brushes selected in the Select tool, the inspector has:
 
 - **Apply current material** for every face.
 - **Align to world** and **Align to face** for every face.

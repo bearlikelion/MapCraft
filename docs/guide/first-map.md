@@ -1,7 +1,7 @@
 # Your first map
 
 Build a small surf course with the SurfsUp SDK, save it, and play it in the game.
-Every step has a picture; the orange numbers on each picture match the numbered steps.
+The orange numbers on each picture match the numbered steps.
 
 ## 1. Start a new map
 
@@ -20,10 +20,10 @@ The SurfsUp SDK takes its materials from your SurfsUp Godot project.
 Until it knows where that is, **SDK Settings** opens by itself.
 
 1. Click **Browse** next to **SurfsUp Godot project folder** and pick the project folder.
-2. Click **Apply**, or just close the window.
+2. Click **Apply**, or close the window.
 
 A path that does not exist turns red.
-The other folders are only needed to play the map and to import BSP maps, so you can fill them in later with **File > SDK Settings** (`Ctrl+Shift+Comma`).
+The other folders are only needed to play the map and to import BSP maps; fill them in later with **File > SDK Settings** (`Ctrl+Shift+Comma`).
 
 ![SurfsUp SDK Settings with five empty paths, a Browse button marked 1 next to the project folder and Apply marked 2](img/first-sdk-settings.webp)
 
@@ -34,10 +34,10 @@ The other folders are only needed to play the map and to import BSP maps, so you
 
 The first block is 64 units deep; later blocks match the depth of the last one you drew.
 It gets the material shown in the top bar.
-In the 3D view you can drag on the ground or on any face instead; hold `Shift` while dragging to set the height.
+You can also drag in the 3D view, on the ground or on any face; hold `Shift` while dragging to set the height.
 
 > [!TIP]
-> To change the material, open the Materials tab (`Ctrl+3`) and click one: the selected block gets it right away. See [Materials](materials.md).
+> To change the material, open the Materials tab (`Ctrl+3`) and click one: the selected block gets it. See [Materials](materials.md).
 
 ![The Block tool marked 1 and a new orange block drawn in the Top view, marked 2, also shown in the 3D view](img/first-block.webp)
 
@@ -53,8 +53,8 @@ With the Block tool on, the top bar lists the shapes, then **Surf Ramp** and **B
 
 ### Change it later
 
-The ramp remembers its settings.
-Press `Q` for the Select tool, click the ramp, and change anything in the inspector: the ramp rebuilds as you type.
+The ramp keeps its settings.
+Press `Q` for the Select tool, click the ramp, and change any setting in the inspector: the ramp rebuilds as you type.
 [Surf ramps and bhop](surf.md) explains each setting.
 
 ![A placed surf ramp selected, with its Surf Ramp parameters outlined in the inspector](img/first-ramp-edit.webp)
@@ -90,7 +90,7 @@ The window title starts with `*` while there are unsaved changes.
 
 - **File > Open** (`Ctrl+O`) opens a map, and **File > Open Recent** lists the last ones you opened.
 - Drag a `.mcmap` file from your file manager onto the MapCraft window to open it.
-- Drop any file a loaded plugin imports, such as a Quake `.map` or a Hammer `.vmf`, and it goes into a new layer of the open map, as **File > Import** does.
+- Drag in any file a loaded plugin imports, such as a Quake `.map` or a Hammer `.vmf`, to add it to the open map as a new layer, as **File > Import** does.
 
 While you drag a file over the window, it dims and says what dropping will do.
 A file MapCraft cannot open leaves the map as it is and says so in the status bar.
@@ -99,7 +99,7 @@ If the open map has unsaved changes, MapCraft asks whether to save them first.
 ### Autosave and crash recovery
 
 MapCraft saves a backup every 5 minutes while you have unsaved changes.
-If it ever closes without saving, the next start asks **Recover unsaved work?**:
+If MapCraft closes without saving, the next start asks **Recover unsaved work?**:
 
 - **Open** loads the backup as an unsaved map.
 - **Delete autosaves** throws the backups away.

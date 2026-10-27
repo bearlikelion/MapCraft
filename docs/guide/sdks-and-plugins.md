@@ -1,7 +1,7 @@
 # SDKs and plugins
 
-MapCraft knows no game by itself.
-An **SDK** teaches it one game, and **plugins** add the code that game needs, such as surf ramp generators and map importers.
+MapCraft does not know any game by itself.
+An **SDK** describes one game, and **plugins** add the code that game needs, such as surf ramp generators and map importers.
 
 ## What an SDK is
 
@@ -42,7 +42,7 @@ Switching is not an undo step: to go back, switch to the old SDK again.
 **File > SDK Manager** lists every SDK MapCraft found.
 
 - **Configure** opens the SDK's settings.
-- **Check** tests the SDK and lists what passed, what needs a look, and what failed.
+- **Check** tests the SDK and lists what passed, what has warnings and what failed.
 - **Test** opens the SDK's sample map.
 - **Open Folder** shows the SDK's folder.
 
@@ -72,7 +72,7 @@ The full search order, including the `MAPCRAFT_SDK_PATH` variable, is in [SDK ma
 - A path that does not exist turns red.
 - Settings that materials or entities need come first; hover a name to see why.
 - While one of those is empty, the window opens by itself when the SDK loads.
-- Click **Apply**, or just close the window, to reload the SDK with the new paths.
+- Click **Apply**, or close the window, to reload the SDK with the new paths.
 
 Paths are saved per SDK, so every map made with that SDK shares them.
 
@@ -87,6 +87,23 @@ Paths are saved per SDK, so every map made with that SDK shares them.
 | SurfsUp game executable | **Play in SurfsUp** |
 | Folder SurfsUp loads maps from | Where **Play in SurfsUp** copies the map |
 | Counter-Strike: Source game folder | Stock textures of [imported BSP maps](importing-bsp.md) |
+
+### Texture folders
+
+The **Texture folders** list, below the SDK's own paths, adds more material folders to any SDK.
+
+- Type a folder and click **Add**, or click **Browse** to pick one.
+- A folder that does not exist turns red; **Remove** takes a folder off the list.
+- Click **Apply**, or close the window, to reload the materials.
+
+Materials in an added folder are named by their path inside it without the extension, as in the SDK's own folders.
+The SDK's own folders are searched first, then the added ones in list order, so when two folders hold the same name the first one wins.
+Plugins read the added folders too, so the Godot plugin lists the `.tres` materials in them as well as their pictures.
+The list is saved per SDK, under `sdk_textures` in MapCraft's `config.toml`.
+
+> [!NOTE]
+> The game has to find the same names.
+> Godot looks materials up under the import's [Material Root](godot.md#import-options), `res://Assets/Textures` for SurfsUp, so a material from another folder shows in MapCraft but not in the game until it is there too.
 
 ## Compile profiles
 
@@ -115,8 +132,7 @@ Profiles run programs the SDK names, so the first time you run one from an SDK, 
 
 ## Plugins
 
-Plugins add the code a game needs.
-They can be written in Rust, C, C++, C#, Go, Python, JavaScript or Zig, and they run in a sandbox:
+Plugins can be written in Rust, C, C++, C#, Go, Python, JavaScript or Zig, and they run in a sandbox:
 
 - no network, no other programs and no environment variables;
 - they can only read the SDK's material folders and the game folders it lists;
@@ -153,7 +169,7 @@ They also appear as shapes of the Block tool, with a ghost to place them by clic
 ### Importers and material lists
 
 Importers appear under **File > Import**, and what they bring in goes into a new layer named after the file.
-Dropping a file on the MapCraft window runs the importer that reads its extension too.
+Dropping a file on the MapCraft window also runs the importer for its extension.
 Material lists replace the plain list of images from the SDK's material folders, as the Godot plugin does with a project's `.tres` materials.
 
 ![The File menu with Import open, showing the Source BSP and SurfsUp SDK map importers](img/sdks-import-menu.webp)

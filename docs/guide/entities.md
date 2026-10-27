@@ -42,7 +42,7 @@ The tool starts out placing `info_player_start`, the player spawn.
 
 ## Models
 
-Point entities can show 3D models in `.glb` or `.gltf` files, the formats Godot projects use.
+Point entities can show 3D models from `.glb` or `.gltf` files, the formats Godot uses.
 An entity shows a model when its class names one, or when its `model` key names a `.glb` or `.gltf` file.
 
 - Models move, turn and scale with the entity's `origin`, `angles` (or `angle`) and `scale` keys.
@@ -170,13 +170,13 @@ While the brush class is still `func_detail`, MapCraft asks you to pick a trigge
 | `zone_respawn` | Changes where the player respawns, and counts as a checkpoint on maps with no splits |
 | `bhop_zone` | The same jump area as `zone_checkpoint` |
 
-Each zone becomes the matching SurfsUp zone in the game, and every setting on it arrives on that zone with the same name and type.
+In the game, each zone becomes the matching SurfsUp zone and keeps every setting, with the same name and type.
 `starting_platform` and `finish_line` place SurfsUp's own starting and landing platforms.
 [Surf ramps and bhop](surf.md) has tips on sizing and placing zones.
 
 ## Link lines
 
-Select an entity and lines run from it to every entity it names: through settings that point at a target (such as a teleport zone's **Destination**) and through its outputs.
+Select an entity to see lines from it to every entity it names, through settings that point at a target (such as a teleport zone's **Destination**) and through its outputs.
 For a class the SDK does not define, the keys `target`, `parentname`, `respawn` and `landmark` count.
 
 ![A selected teleport_zone in the Top view with a line running to its teleport destination](img/entities-link-lines.webp)

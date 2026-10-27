@@ -1,7 +1,7 @@
 # Hotkeys
 
-A few keys do most of the work.
-Learn these first; [Keyboard shortcuts](shortcuts.md) lists every one and shows how to change them.
+These are the keys to learn first.
+[Keyboard shortcuts](shortcuts.md) lists every shortcut and shows how to change them.
 
 ![A keyboard with MapCraft's hotkeys colored by kind: the tools in orange on the left hand side, the view keys in blue, hide and show in purple, the grid keys in green, and Escape, F1, F9, Enter, Delete and the arrow keys in white](img/hotkeys-keyboard.webp#wide)
 
@@ -12,8 +12,6 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 ![The MapCraft hotkeys cheat sheet: every key in five columns, grouped as Tools, Tool options, Sculpt, Run and help, File, Edit, Panels, Brushes, Curves, Organize, Prefabs, View, Render and grid, Hide and lock, Fly and pan, UV editor, Vertex tool, and Mouse and fixed keys](img/hotkeys-cheatsheet.webp#wide "Click the sheet to open it full size for printing.")
 
 ## Pick a tool
-
-The tools sit under your left hand.
 
 | Key | Tool |
 |---|---|
@@ -76,6 +74,6 @@ The tools sit under your left hand.
 
 ## Coming from Hammer or TrenchBroom
 
-These are MapCraft's own keys.
-To use the keys your hands already know, open **Edit > Preferences** (`Ctrl+Comma`) and pick the **Hammer** or **TrenchBroom** preset under **Shortcuts**.
+The keys on this page are the MapCraft preset.
+To use Hammer or TrenchBroom keys instead, open **Edit > Preferences** (`Ctrl+Comma`) and pick the **Hammer** or **TrenchBroom** preset under **Shortcuts**.
 [Keyboard shortcuts](shortcuts.md#change-a-shortcut) shows how.

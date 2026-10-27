@@ -1,7 +1,7 @@
 # AI agents
 
 An AI agent such as Claude Code can build and edit your map from a prompt.
-While MapCraft is open, the agent works on the map you have open: you watch the views change, and every change lands in the undo history like your own.
+While MapCraft is open, the agent edits the open map: the views update as it works, and its changes go into the undo history like your own.
 
 ## What an agent can do
 
@@ -17,19 +17,19 @@ Ask for what you want in plain words, for example "add a curved surf ramp after 
 
 ## Set it up
 
-The agent talks to MapCraft through `mapcraft-cli`, a small command line program that is not in the downloads yet.
+The agent connects to MapCraft through `mapcraft-cli`, a command line program that is not in the downloads yet.
 
-1. Build it from the MapCraft source: see [Building from source](building.md).
-2. Register it with your agent. For Claude Code that is `claude mcp add mapcraft -- /path/to/mapcraft-cli mcp`; other agents take the same command in their MCP server settings.
+1. Build it from source: see [Building from source](building.md).
+2. Register it with your agent: for Claude Code, run `claude mcp add mapcraft -- /path/to/mapcraft-cli mcp`; other agents take the same command in their MCP server settings.
 3. Open a map in MapCraft, so the agent gets its SDK's entities, materials and generators.
 4. Ask the agent for what you want built.
 
-The full list of what the agent can call is on the [MCP server](mcp-server.md) page.
+[MCP server](mcp-server.md) lists every tool the agent can call.
 
 ## Staying in control
 
 - `Ctrl+Z` undoes the agent's edits, one step at a time, like your own.
-- Nothing is saved until the agent saves, and it cannot throw away unsaved changes unless it asks to on purpose.
+- Nothing is saved until the agent saves, and it discards unsaved changes only when it explicitly asks to.
 - The usual autosave and crash recovery cover the agent's work too.
 - The first time an agent runs a profile from the **Run** menu, MapCraft asks you to allow the SDK's programs, as it does for you.
 - Only programs on your own computer can reach the editor; web pages and other users cannot.

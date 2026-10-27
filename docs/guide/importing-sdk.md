@@ -1,6 +1,6 @@
 # Import a SurfsUp SDK map
 
-Bring a map built with the SurfsUp SDK in Godot into MapCraft, and keep building it here.
+Import a map built with the SurfsUp SDK in Godot and keep editing it in MapCraft.
 
 ## Import
 

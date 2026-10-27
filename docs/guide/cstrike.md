@@ -67,8 +67,8 @@ Start the game and type `map <name>` in the console to play it.
 
 ## What is lost
 
-A `.vmf` holds more than a MapCraft plugin can pass to the editor yet.
-These are skipped on import and listed in the Output panel:
+Some `.vmf` content cannot come into MapCraft yet.
+Import skips it and lists it in the Output panel:
 
 - **Displacements:** their brushes come in flat.
 - **Entity outputs** (the `connections` block): triggers and buttons lose their outputs.
@@ -77,4 +77,4 @@ These are skipped on import and listed in the Output panel:
 - **Hammer groups:** their contents come in ungrouped.
 - **Cameras, cordons and Hammer's view settings.**
 
-Exports leave out displacements (their brushes are written flat) and entity outputs too, and the Output panel says how many.
+Export also leaves out displacements (their brushes are written flat) and entity outputs, and the Output panel says how many.

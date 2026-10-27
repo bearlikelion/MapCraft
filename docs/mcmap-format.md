@@ -1,7 +1,7 @@
 # The `.mcmap` format
 
 A `.mcmap` file is UTF-8 JSON.
-This page is the reference for anyone writing an importer (the Godot extension, a Unity importer, game tools).
+This page is the reference for importers such as the Godot extension, a Unity importer or game tools.
 
 ## Envelope
 
@@ -100,10 +100,18 @@ Its children are written as ordinary nodes, so importers treat it like any other
 }
 ```
 
-- `points` define the face plane. Seen from outside the brush they run clockwise, so the outward normal is `normalize((p0 - p1) x (p2 - p1))`.
-- `polygon` is the face's convex polygon, counter-clockwise seen from outside (so it is front-facing for a right-handed, counter-clockwise renderer). It is written by MapCraft for importers and ignored when MapCraft reads the file. Faces of invalid brushes have no polygon.
-- `covered: true` marks a face wholly hidden by the opposite faces of world brushes that touch it, such as the joins between the pieces of a ramp. Importers can leave such faces out of meshes and triangle collision; they still bound the brush. Only world brushes, not brushes of entities, cover or are covered, and tool materials and displaced brushes take no part. Like `polygon`, it is written for importers and ignored on load.
-- Texture coordinates in texels: `u = dot(p, u.axis) / u.scale + u.offset`, likewise for `v`. Divide by the texture's width and height for normalized UVs. This is the Valve220 and VMF convention.
+- `points` define the face plane.
+  Seen from outside the brush they run clockwise, so the outward normal is `normalize((p0 - p1) x (p2 - p1))`.
+- `polygon` is the face's convex polygon, counter-clockwise seen from outside (so it is front-facing for a right-handed, counter-clockwise renderer).
+  MapCraft writes it for importers and ignores it when reading the file.
+  Faces of invalid brushes have no polygon.
+- `covered: true` marks a face wholly hidden by the opposite faces of world brushes that touch it, such as the joins between the pieces of a ramp.
+  Importers can leave such faces out of meshes and triangle collision; they still bound the brush.
+  Only world brushes, not brushes of entities, cover or are covered, and tool materials and displaced brushes take no part.
+  Like `polygon`, it is written for importers and ignored on load.
+- Texture coordinates in texels: `u = dot(p, u.axis) / u.scale + u.offset`, likewise for `v`.
+  Divide by the texture's width and height for normalized UVs.
+  This is the Valve220 and VMF convention.
 - `rotation` is informational; the axes already include it.
 - `attrs` holds per-face game attributes such as `lightmapscale` or `smoothing_groups` as strings.
 - Face `id`s are unique within a map and stable across saves.
@@ -121,8 +129,10 @@ A face with four corners may carry a `disp`: Hammer-style displacement that turn
 - `start` picks the corner the grid starts at: the polygon corner nearest it.
 - Vertex `(i, j)` is entry `j * size + i`: `i` steps from the start corner toward the next corner counter-clockwise from outside, and `j` steps from the start corner toward the previous one.
 - `heights` has one value per vertex in that order, measured along the face's outward normal.
-- `disp_vertices` is the displaced grid in map space, row by row, written for importers and ignored on read. Triangulate cell `(i, j)` with corners `a = (i, j)`, `b = (i + 1, j)`, `c = (i + 1, j + 1)`, `d = (i, j + 1)` as `a b c` and `a c d` when `i + j` is even, else `a b d` and `b c d`; these are counter-clockwise from outside.
-- A brush with any displaced face counts only as its displaced faces, as in Source: importers draw and collide with the displaced surfaces and skip the brush's other faces. Collide with them as triangles, not as a convex hull.
+- `disp_vertices` is the displaced grid in map space, row by row, written for importers and ignored on read.
+  Triangulate cell `(i, j)` with corners `a = (i, j)`, `b = (i + 1, j)`, `c = (i + 1, j + 1)`, `d = (i, j + 1)` as `a b c` and `a c d` when `i + j` is even, else `a b d` and `b c d`; these are counter-clockwise from outside.
+- A brush with any displaced face counts only as its displaced faces, as in Source: importers draw and collide with the displaced surfaces and skip the brush's other faces.
+  Collide with them as triangles, not as a convex hull.
 
 ## Units and axes
 

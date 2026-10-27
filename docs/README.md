@@ -1,16 +1,15 @@
 # Technical docs
 
-You do not need any of this to make maps.
-These pages are for people who build MapCraft from source, teach it a new game, write plugins, or read `.mcmap` files in their own tools.
-For making maps, start with the [user guide](guide/README.md).
+These pages are for people who build MapCraft from source, add a game to it, write plugins, or read `.mcmap` files in their own tools.
+For making maps, see the [user guide](guide/README.md).
 
 ## Build and automate
 
 - [Building from source](building.md): compile the editor, its plugins and the release packages.
-- [AI agents](ai-agents.md): let an AI agent such as Claude Code build in your map while you watch.
-- [MCP server](mcp-server.md): every tool an AI agent can call, and how it reaches the editor.
+- [AI agents](ai-agents.md): have an AI agent such as Claude Code edit your map.
+- [MCP server](mcp-server.md): the tools an AI agent can call, and how it connects to the editor.
 
-## Teach MapCraft a game
+## Add a game
 
 - [SDK manifests](sdk-format.md): the `sdk.toml` that describes a game.
 - [SDK registries](sdk-registry.md): publish SDKs so the SDK Manager can install them.

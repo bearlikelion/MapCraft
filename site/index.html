@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MapCraft level editor</title>
-<meta name="description" content="MapCraft is a free, open-source level editor that combines Valve Hammer and TrenchBroom with a Godot-style scene tree. Download it for Linux and Windows.">
+<meta name="description" content="MapCraft is a free, open-source level editor in the style of Hammer and TrenchBroom, with a Godot-style scene tree. For Windows, macOS and Linux.">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#15171b" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#eef0f3" media="(prefers-color-scheme: light)">
@@ -36,7 +36,7 @@
 	<div class="hero-grid">
 		<div class="hero-copy">
 			<h1>MapCraft</h1>
-			<p class="pitch">The level editor that combines Hammer and TrenchBroom with a Godot-style scene tree. Draw brushes in four views, place surf ramps that stay editable, and play your map in your game with one click.</p>
+			<p class="pitch">A level editor for brush-based maps in the style of Hammer and TrenchBroom, with a Godot-style scene tree. It comes with SDKs for SurfsUp, Counter-Strike: Source and Quake.</p>
 
 			<div class="get" id="download">
 				<h2>Download <span class="get-version" id="dl-tag">latest</span></h2>
@@ -49,12 +49,15 @@
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2c-2.6 0-4.2 2.1-4.2 5 0 1.6.4 2.6-.6 4.1C5.9 13.2 4 15.8 4.6 18.6c.2.9.9 1.4 1.7 1.6l2.3.6c.8.2 1.5.9 2.3.9h2.2c.8 0 1.5-.7 2.3-.9l2.3-.6c.8-.2 1.5-.7 1.7-1.6.6-2.8-1.3-5.4-2.6-7.3-1-1.5-.6-2.5-.6-4.1 0-2.9-1.6-5-4.2-5zm-1.6 4.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zm3.2 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zM12 9.1c.9 0 2 .5 2 1s-1.1 1.1-2 1.1-2-.6-2-1.1 1.1-1 2-1zm-2.2 3.3c.7.4 1.4.6 2.2.6s1.5-.2 2.2-.6c.8 1.4 1.4 3.1 1.1 4.8-.2 1-1.3 1.6-3.3 1.6s-3.1-.6-3.3-1.6c-.3-1.7.3-3.4 1.1-4.8z"/></svg>
 						<b>Linux</b><small>AppImage</small>
 					</a></li>
+					<li><a class="dl-btn" data-asset="MapCraft-macos.zip" data-repo-path="/releases/latest/download/MapCraft-macos.zip">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9s-1.9-.9-3.2-.8c-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.2.8c1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.5-1-2.5-3.9zM14 5.3c.7-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1.1.1 2.1-.5 2.8-1.3z"/></svg>
+						<b>macOS</b><small>Apple Silicon and Intel</small>
+					</a></li>
 					<li><a class="dl-btn" data-asset="MapCraft-godot-addon.zip" data-repo-path="/releases/latest/download/MapCraft-godot-addon.zip">
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5zm2 1.3v6.5l6 3v-6.5zm14 0-6 3v6.5l6-3zM12 5.2 6.3 8 12 10.9 17.7 8z"/></svg>
 						<b>Godot addon</b><small>For Godot 4.4+</small>
 					</a></li>
 				</ul>
-				<p class="dl-note">Free and open source, with the SurfsUp, Counter-Strike: Source and Quake SDKs built in. No macOS build yet: <a href="technical/building.html">build it from source</a>.</p>
 			</div>
 		</div>
 
@@ -69,52 +72,52 @@
 
 <section class="band" id="tour" aria-labelledby="tour-title">
 	<div class="band-inner">
-		<h2 class="band-title" id="tour-title">What it does</h2>
+		<h2 class="band-title" id="tour-title">Features</h2>
 		<ul class="tour">
 			<li class="card">
 				<img src="assets/card-views.webp" width="800" height="500" loading="lazy" alt="Top, front, side and 3D views of a surf course beside the scene tree.">
-				<h3><a href="guide/views.html">Four views, one scene tree</a></h3>
-				<p>Top, front, side and 3D, laid out like Hammer.</p>
+				<h3><a href="guide/views.html">Four views and a scene tree</a></h3>
+				<p>Top, front, side and 3D views, laid out as in Hammer.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-surf.webp" width="800" height="500" loading="lazy" alt="A curved surf ramp and its parameters in the inspector.">
-				<h3><a href="guide/surf.html">Surf ramps that stay editable</a></h3>
-				<p>Change a ramp's shape any time, and it rebuilds.</p>
+				<h3><a href="guide/surf.html">Surf ramp generator</a></h3>
+				<p>Ramps keep their settings and rebuild when you change them.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-tools.webp" width="800" height="500" loading="lazy" alt="The Clip tool previewing a cut across a ramp.">
-				<h3><a href="guide/tools.html">The brush tools you know</a></h3>
-				<p>Clip, carve, hollow and more, previewed first.</p>
+				<h3><a href="guide/tools.html">Brush tools</a></h3>
+				<p>Clip, carve, hollow, merge and extrude, with a preview.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-lit.webp" width="800" height="500" loading="lazy" alt="The same surf ramp split in two: flat in Textured, and in Lit with the sky behind it and its cracked surface shaded by the sun.">
-				<h3><a href="guide/views.html#render-modes">See the lighting as you build</a></h3>
-				<p>Lit mode shades PBR materials under your map's sky and sun.</p>
+				<h3><a href="guide/views.html#render-modes">Lit preview</a></h3>
+				<p>PBR materials under the map's sky, sun and lights.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-terrain.webp" width="800" height="500" loading="lazy" alt="Rocky displacement mountains around a surf course in the Lit view.">
-				<h3><a href="guide/displacements.html">Sculpt terrain</a></h3>
-				<p>Paint mountains, or load a heightmap.</p>
+				<h3><a href="guide/displacements.html">Terrain</a></h3>
+				<p>Sculpt displacements, or load a heightmap.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-blender.webp" width="800" height="450" loading="lazy" alt="The right click menu over a curved surf ramp in the Vertex tool, with Select Mode open on Vertex, Edge and Face, then Merge at Center and Bevel Edges.">
-				<h3><a href="guide/tools.html#vertex">Shape brushes like in Blender</a></h3>
-				<p>Bevel edges, edit UVs, sweep along Bezier paths.</p>
+				<h3><a href="guide/tools.html#vertex">Vertex, UV and curve tools</a></h3>
+				<p>Bevels, a UV editor and Bezier paths, modeled on Blender.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-mirror.webp" width="800" height="500" loading="lazy" alt="A mirror group: one half of a map built by hand and the other half drawn by MapCraft.">
-				<h3><a href="guide/mirror-groups.html">Build half, mirror the rest</a></h3>
-				<p>Mirrors, linked copies and prefabs stay in sync.</p>
+				<h3><a href="guide/mirror-groups.html">Mirrors and prefabs</a></h3>
+				<p>Mirror groups, linked copies and prefabs stay in sync.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-keys.webp" width="672" height="420" loading="lazy" alt="The Keyboard Shortcuts window with a search box.">
-				<h3><a href="guide/shortcuts.html">Bring your muscle memory</a></h3>
-				<p>Hammer and TrenchBroom key presets, or your own.</p>
+				<h3><a href="guide/shortcuts.html">Keyboard presets</a></h3>
+				<p>Hammer and TrenchBroom key layouts, or your own.</p>
 			</li>
 			<li class="card">
 				<img src="assets/card-godot.webp" width="640" height="400" loading="lazy" alt="The Run menu with the SurfsUp play profiles.">
-				<h3><a href="guide/sdks-and-plugins.html">One editor, every game</a></h3>
-				<p>Compile for CS:S with Valve's tools, or play in SurfsUp.</p>
+				<h3><a href="guide/sdks-and-plugins.html">SDKs and plugins</a></h3>
+				<p>Each game is an SDK; Run compiles for CS:S or starts SurfsUp.</p>
 			</li>
 		</ul>
 	</div>
@@ -124,13 +127,13 @@
 	<div class="band-inner">
 		<div class="band-head">
 			<h2 id="start-title">Your first map</h2>
-			<a href="guide/first-map.html">Full walkthrough with pictures</a>
+			<a href="guide/first-map.html">Step by step guide</a>
 		</div>
 		<ol class="steps-row">
-			<li><h3>Download</h3><p>Unzip on Windows. On Linux, make the AppImage executable and run it.</p></li>
-			<li><h3>Pick your game</h3><p>File &gt; New Map, then pick SurfsUp, Counter-Strike: Source or Quake.</p></li>
-			<li><h3>Point it at your game</h3><p>Choose your game's folder when SDK Settings asks.</p></li>
-			<li><h3>Build and play</h3><p>Press B to draw a block, add a spawn, then press Run.</p></li>
+			<li><h3>Install</h3><p>Unzip on Windows or macOS. On Linux, make the AppImage executable and run it.</p></li>
+			<li><h3>Choose an SDK</h3><p>File &gt; New Map, then choose SurfsUp, Counter-Strike: Source or Quake.</p></li>
+			<li><h3>Set your game folder</h3><p>Choose it when SDK Settings asks.</p></li>
+			<li><h3>Build and run</h3><p>Press B to draw a block, add a spawn, then press Run.</p></li>
 		</ol>
 	</div>
 </section>
@@ -141,7 +144,7 @@
 		<div class="split">
 			<div class="door">
 				<h3>Guide</h3>
-				<p>Making maps, one screenshot per step.</p>
+				<p>How to make maps.</p>
 				<ul>
 					<li><a href="guide/first-map.html">Your first map</a></li>
 					<li><a href="guide/views.html">Getting around</a></li>
@@ -153,7 +156,7 @@
 			</div>
 			<div class="door tech">
 				<h3>Technical <span class="tag-opt">optional</span></h3>
-				<p>For people who extend MapCraft.</p>
+				<p>Building, plugins, SDKs and file formats.</p>
 				<ul>
 					<li><a href="technical/building.html">Building from source</a></li>
 					<li><a href="technical/plugin-api.html">Plugin API</a></li>
@@ -172,7 +175,7 @@
 <footer class="foot">
 	<div class="foot-inner">
 		<p>MapCraft is made by <a href="https://github.com/bearlikelion">Mark</a> and is free under the <a data-repo-path="/blob/main/LICENSE">MIT License</a>.</p>
-		<p>Screenshots show real maps made in MapCraft, with textures from SurfsUp.</p>
+		<p>Screenshots use textures from SurfsUp.</p>
 	</div>
 </footer>
 
@@ -183,9 +186,10 @@
 
 	// The visitor's platform gets the orange button.
 	const ua = navigator.userAgent;
-	if (/Linux|X11/.test(ua) && !/Android|CrOS/.test(ua)) {
+	const mine = /Macintosh|Mac OS X/.test(ua) && !/iPhone|iPad/.test(ua) ? "-macos.zip" : /Linux|X11/.test(ua) && !/Android|CrOS/.test(ua) ? ".AppImage" : "";
+	if (mine) {
 		document.querySelector(".dl-btn.primary")?.classList.remove("primary");
-		document.querySelector('.dl-btn[data-asset$=".AppImage"]')?.classList.add("primary");
+		document.querySelector(`.dl-btn[data-asset$="${mine}"]`)?.classList.add("primary");
 	}
 
 	// Asked at view time so a new release shows without rebuilding the site; the links above work without it.
