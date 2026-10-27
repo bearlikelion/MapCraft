@@ -20,6 +20,8 @@ get_target_property(GODOTCPP_PLATFORM godot::cpp GODOTCPP_PLATFORM)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_library(${LIBNAME} SHARED)
+# godot-cpp's headers need C++17; Apple's clang defaults to an older standard.
+target_compile_features(${LIBNAME} PRIVATE cxx_std_17)
 file(GLOB MAPCRAFT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/src/*.cpp" "${CMAKE_CURRENT_LIST_DIR}/src/*.h")
 target_sources(${LIBNAME} PRIVATE ${MAPCRAFT_SOURCES})
 target_link_libraries(${LIBNAME} PRIVATE godot-cpp)
