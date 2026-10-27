@@ -87,3 +87,8 @@ opt-level = 3
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
+
+# The release build waits on this crate alone, and split it compiles about 3x faster.
+[profile.release.package.mapcraft-ui]
+codegen-units = 16
