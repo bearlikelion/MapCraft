@@ -157,6 +157,8 @@ fn default_kind() -> String {
 pub struct Sdk {
     pub dir: PathBuf,
     pub manifest: Manifest,
+    /// Texture folders the user added in SDK Settings, searched after the manifest's.
+    pub user_textures: Vec<PathBuf>,
 }
 
 impl Sdk {
@@ -173,7 +175,7 @@ impl Sdk {
         if !(manifest.textures.scale != 0.0 && manifest.textures.scale.is_finite()) {
             return Err(SdkError::Invalid("textures.scale must be a non-zero number".into()));
         }
-        Ok(Self { dir: dir.to_path_buf(), manifest })
+        Ok(Self { dir: dir.to_path_buf(), manifest, user_textures: Vec::new() })
     }
 
     /// Resolves a manifest path: `${var}`s expanded, relative paths taken from the SDK folder.
@@ -196,8 +198,10 @@ impl Sdk {
         Ok(gd)
     }
 
+    /// The texture folders: the manifest's, then the user's.
     pub fn vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
-        let roots = self.manifest.textures.roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?;
+        let mut roots = self.manifest.textures.roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?;
+        roots.extend(self.user_textures.iter().cloned());
         Ok(Vfs::new(roots))
     }
 
@@ -208,11 +212,11 @@ impl Sdk {
         Ok(Vfs::new(roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?))
     }
 
-    /// What plugins may read: the texture folders, then the extra file folders that are set.
+    /// What plugins may read: the texture folders, the user's, then the extra file folders that are set.
     pub fn plugin_vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
-        let textures = self.manifest.textures.roots.iter();
-        let roots = textures.chain(&self.manifest.files.roots).filter_map(|r| self.resolve(r, vars).ok()).filter(|p| p.is_dir()).collect();
-        Vfs::new(roots)
+        let resolve = |r: &String| self.resolve(r, vars).ok();
+        let textures = self.manifest.textures.roots.iter().filter_map(resolve).chain(self.user_textures.iter().cloned());
+        Vfs::new(textures.chain(self.manifest.files.roots.iter().filter_map(resolve)).filter(|p| p.is_dir()).collect())
     }
 }
 
@@ -300,6 +304,29 @@ steps = [
         assert_eq!(props.model_vfs(&vars).unwrap().roots(), std::slice::from_ref(&project));
         assert_eq!(props.manifest.models.key, "model");
         assert!(sdk.vfs(&BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn user_texture_folders_follow_the_sdks_own() {
+        let root = tempfile::tempdir().unwrap();
+        let (own, user, game) = (root.path().join("p/Assets/Textures"), root.path().join("mine"), root.path().join("game"));
+        for file in [own.join("wall.png"), user.join("wall.png"), user.join("metal/plate.png"), game.join("x.png")] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, b"").unwrap();
+        }
+        let mut sdk = Sdk { dir: root.path().into(), manifest: toml::from_str(SURFSUP).unwrap(), user_textures: vec![user.clone(), root.path().join("gone")] };
+        sdk.manifest.files.roots = vec!["${game}".into()];
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let vars = BTreeMap::from([("project".to_string(), s(&root.path().join("p"))), ("game".to_string(), s(&game))]);
+        let vfs = sdk.vfs(&vars).unwrap();
+        assert_eq!(vfs.roots(), [own.clone(), user.clone(), root.path().join("gone")]);
+        assert_eq!(sdk.plugin_vfs(&vars).roots(), [own.clone(), user.clone(), game], "missing folders are left out of what plugins read");
+        let listed = vfs.list(&["png".to_string()]);
+        assert_eq!(
+            listed,
+            [("metal/plate".to_string(), user.join("metal/plate.png")), ("wall".to_string(), own.join("wall.png"))],
+            "the SDK's own folders win a clash"
+        );
     }
 
     #[test]

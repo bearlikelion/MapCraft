@@ -51,6 +51,8 @@ pub(crate) struct Dialogs {
     pub shortcut_filter: String,
     /// A registry URL or path being typed in Preferences.
     pub new_registry: String,
+    /// A texture folder being typed in SDK Settings.
+    pub new_texture_dir: String,
     pub transform: TransformDialog,
     pub array: ArrayDialog,
     pub replace: ReplaceDialog,

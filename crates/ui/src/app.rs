@@ -330,7 +330,10 @@ impl MapCraftApp {
     }
 
     pub(crate) fn load_project(&mut self, sdk_id: Option<String>) {
-        let sdk = sdk_id.as_deref().and_then(|id| self.sdk_by_id(id));
+        let mut sdk = sdk_id.as_deref().and_then(|id| self.sdk_by_id(id));
+        if let Some(s) = &mut sdk {
+            s.user_textures = self.prefs.get().sdk_textures.get(&s.manifest.id).into_iter().flatten().map(PathBuf::from).collect();
+        }
         if let (Some(id), None) = (&sdk_id, &sdk) {
             self.status = format!("SDK `{id}` is not installed; entities and materials are unavailable");
         }
@@ -574,6 +577,11 @@ impl MapCraftApp {
     pub fn sdk_check_for_test(&self, id: &str) -> Option<Vec<mapcraft_sdk_manager::Item>> {
         let dir = &self.sdks.iter().find(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == id))?.dir;
         self.sdk_manager.check_results(dir).cloned()
+    }
+
+    /// Names in the material list, and whether plugins are still listing theirs, for tests.
+    pub fn materials_for_test(&self) -> (Vec<String>, bool) {
+        (self.project.materials.iter().map(|m| m.name.clone()).collect(), self.material_list.is_some())
     }
 
     /// The status bar message, for tests.
@@ -1244,6 +1252,8 @@ impl MapCraftApp {
         let mut vars = if current { self.project.vars.clone() } else { self.sdk_vars(&sdk.manifest.id, Some(&sdk)) };
         let mut changed = false;
         let mut apply = false;
+        let mut dirs = self.prefs.get().sdk_textures.get(&sdk.manifest.id).cloned().unwrap_or_default();
+        let mut dirs_changed = false;
         let editing = if current { self.project.missing_for_editing() } else { Vec::new() };
         // Paths that materials and entities need come first; the rest only matter for Run.
         let mut paths: Vec<_> = sdk.manifest.paths.iter().collect();
@@ -1280,9 +1290,47 @@ impl MapCraftApp {
             if !editing.is_empty() {
                 ui.colored_label(crate::chrome::ACCENT, format!("Materials load once {} is set.", editing.join(", ")));
             }
+            ui.separator();
+            let heading = ui.label("Texture folders").on_hover_text("More folders of materials, searched after the SDK's own, which win when both hold a name");
+            let mut remove = None;
+            for (i, d) in dirs.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let missing = !std::path::Path::new(d).is_dir();
+                    let text = egui::RichText::new(d).monospace();
+                    let label = ui.label(if missing { text.color(egui::Color32::LIGHT_RED) } else { text });
+                    if missing {
+                        label.on_hover_text("This folder does not exist");
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                dirs.remove(i);
+                dirs_changed = true;
+            }
+            ui.horizontal(|ui| {
+                let typed = &mut self.dialogs.new_texture_dir;
+                ui.add(egui::TextEdit::singleline(typed).hint_text("A folder of images").desired_width(300.0)).labelled_by(heading.id);
+                let mut added = None;
+                if ui.add_enabled(!typed.trim().is_empty(), egui::Button::new("Add")).clicked() {
+                    added = Some(typed.trim().to_string());
+                    typed.clear();
+                }
+                if ui.button("Browse…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().pick_folder()
+                {
+                    added = Some(p.to_string_lossy().into_owned());
+                }
+                if let Some(d) = added.filter(|d| !dirs.contains(d)) {
+                    dirs.push(d);
+                    dirs_changed = true;
+                }
+            });
             if current {
                 ui.horizontal(|ui| {
-                    apply = ui.add_enabled(self.sdk_paths_changed || changed, egui::Button::new("Apply")).clicked();
+                    apply = ui.add_enabled(self.sdk_paths_changed || changed || dirs_changed, egui::Button::new("Apply")).clicked();
                     ui.label(egui::RichText::new("Closing the window applies changes too.").color(crate::chrome::TEXT_WEAK));
                 });
             } else {
@@ -1297,6 +1345,13 @@ impl MapCraftApp {
             }
             self.prefs.update(|p| {
                 p.sdk_paths.insert(id, vars);
+            });
+        }
+        if dirs_changed {
+            self.sdk_paths_changed |= current;
+            let id = sdk.manifest.id.clone();
+            self.prefs.update(|p| {
+                p.sdk_textures.insert(id, dirs);
             });
         }
         self.show_sdk_dialog &= open;

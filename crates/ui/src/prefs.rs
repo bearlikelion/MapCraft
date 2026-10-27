@@ -13,6 +13,8 @@ pub struct Prefs {
     pub registries: Vec<String>,
     /// Per SDK id, the folders and programs the user picked for its `paths`.
     pub sdk_paths: BTreeMap<String, BTreeMap<String, String>>,
+    /// Per SDK id, the user's own texture folders, searched after the SDK's.
+    pub sdk_textures: BTreeMap<String, Vec<String>>,
     /// SDKs whose compile tools the user allowed to run.
     pub approved_tools: BTreeSet<String>,
     pub view: ViewPrefs,
@@ -29,6 +31,7 @@ impl Default for Prefs {
             sdk_dirs: Vec::new(),
             registries: vec![mapcraft_sdk_manager::DEFAULT_REGISTRY.to_string()],
             sdk_paths: BTreeMap::new(),
+            sdk_textures: BTreeMap::new(),
             approved_tools: BTreeSet::new(),
             view: ViewPrefs::default(),
             keymap: crate::shortcuts::Preset::default(),
