@@ -27,6 +27,8 @@ jobs:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
+          # rust-cache leaves [profile] out of its key, so a profile change would restore stale deps.
+          key: ${{ hashFiles('Cargo.toml') }}
           workspaces: |
             . -> target
             plugins -> target
@@ -59,6 +61,7 @@ jobs:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           workspaces: |
             . -> target
             plugins -> target
@@ -82,7 +85,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - run: cargo build --release -p mapcraft --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
@@ -102,6 +105,7 @@ jobs:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ hashFiles('Cargo.toml') }}
           workspaces: |
             . -> target
             plugins -> target
