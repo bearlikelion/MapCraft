@@ -4,10 +4,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use mapcraft_geom::{Aabb, DMat4, DVec3, Plane};
-use mapcraft_map::{EditError, FaceId, NodeId, NodeKind, ROOT};
+use mapcraft_map::{Bevel, Cordon, CurveOp, EditError, FaceId, NodeId, NodeKind, PathPoint, ROOT};
 use serde_json::{Value, json};
 
-use crate::{ClipKeep, EngineError, Session, Severity, Shape, commands, execute, find_entities, validate};
+use crate::curves::curve_of;
+use crate::{ClipKeep, EngineError, ExtrudeMode, Sculpt, SculptMode, Session, Severity, Shape, commands, execute, find_entities, validate};
 
 /// The file in the data folder where a running editor writes its control port and token.
 pub const CONTROL_FILE: &str = "control.json";
@@ -204,28 +205,9 @@ An arch spans `arc` degrees starting `start` degrees off +X with walls `thicknes
         name: "set_material",
         description: "Gives the selected brushes' faces `material`: all of them, or those facing top, bottom, sides, +x, -x, +y or -y. \
 It also becomes the default for later brushes.",
-        schema: || {
-            let faces = json!({"type": "string", "enum": ["all", "top", "bottom", "sides", "+x", "-x", "+y", "-y"]});
-            object(json!({"material": string(), "faces": faces}), &["material"])
-        },
+        schema: || object(json!({"material": string(), "faces": sides()}), &["material"]),
         run: |s, a| {
-            let side = a.get("faces").and_then(Value::as_str).unwrap_or("all");
-            if !["all", "top", "bottom", "sides", "+x", "-x", "+y", "-y"].contains(&side) {
-                return Err(bad("faces", "all, top, bottom, sides, +x, -x, +y or -y"));
-            }
-            let wanted = |n: DVec3| {
-                let f = facing(n);
-                side == "all" || side == f || (side == "sides" && !matches!(f, "top" | "bottom"))
-            };
-            let picked: BTreeSet<(NodeId, FaceId)> = s
-                .selected_brushes()
-                .into_iter()
-                .filter_map(|id| Some((id, s.map.get(id)?.kind.brush()?)))
-                .flat_map(|(id, b)| b.faces.iter().filter(|f| f.plane().is_some_and(|p| wanted(p.normal))).map(move |f| (id, f.id)))
-                .collect();
-            if picked.is_empty() {
-                return Err(EngineError::Refused("no selected brush has faces facing that way"));
-            }
+            let picked = faces_facing(s, a)?;
             s.tex.material = str_arg(a, "material")?.into();
             let before = std::mem::replace(&mut s.face_selection, picked);
             let applied = s.apply_material();
@@ -338,6 +320,310 @@ It also becomes the default for later brushes.",
             s.insert_prefab(&path, vec_arg(a, "origin")?)?;
             Ok(info(s))
         },
+    },
+    Tool {
+        name: "save_prefab",
+        description: "Writes the selection to `path` as its own .mcmap file and replaces it with an instance of that file.",
+        schema: || object(json!({"path": string()}), &["path"]),
+        run: |s, a| {
+            s.save_selection_as_prefab(Path::new(str_arg(a, "path")?))?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "make_prefab_local",
+        description: "Turns the selected prefab instances into ordinary nodes that no longer follow their file.",
+        schema: || object(json!({}), &[]),
+        run: |s, _| {
+            let dir = s.path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf).unwrap_or_default();
+            s.make_local(&mut |stored| mapcraft_format::load(&dir.join(stored)).ok().map(|f| f.map))?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "pick_faces",
+        description: "Picks faces of the selected brushes as the Face tool does: all of them, or those facing top, bottom, sides, +x, -x, +y or -y; \
+`add` keeps earlier picks. Sweeps, spins, the uv.* commands, displace, extrude and face_texture act on the picks.",
+        schema: || object(json!({"faces": sides(), "add": {"type": "boolean"}}), &[]),
+        run: |s, a| {
+            let picked = faces_facing(s, a)?;
+            if !flag(a, "add") {
+                s.face_selection.clear();
+            }
+            s.face_selection.extend(picked);
+            Ok(json!({"faces": s.face_selection.len()}))
+        },
+    },
+    Tool {
+        name: "face_texture",
+        description: "Sets the picked faces' texture `offset` [u, v] and `scale` [u, v], and turns it `rotate` degrees, as the face inspector does.",
+        schema: || {
+            let uv = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
+            object(json!({"offset": uv, "scale": uv, "rotate": {"type": "number"}}), &[])
+        },
+        run: |s, a| {
+            let pair = |key| match a.get(key) {
+                None => Ok(None),
+                Some(v) => match v.as_array().map(|v| v.iter().map(Value::as_f64).collect::<Option<Vec<f64>>>()) {
+                    Some(Some(p)) if p.len() == 2 && p.iter().all(|x| x.is_finite()) => Ok(Some((p[0], p[1]))),
+                    _ => Err(bad(key, "[u, v]")),
+                },
+            };
+            let (offset, scale, rotate) = (pair("offset")?, pair("scale")?, num_or(a, "rotate", 0.0)?);
+            if scale.is_some_and(|(u, v)| u == 0.0 || v == 0.0) {
+                return Err(bad("scale", "non-zero"));
+            }
+            s.edit_faces("Edit face", None, |f| {
+                if let Some((u, v)) = offset {
+                    (f.u.offset, f.v.offset) = (u, v);
+                }
+                if let Some((u, v)) = scale {
+                    (f.u.scale, f.v.scale) = (u, v);
+                }
+                if rotate != 0.0 {
+                    f.rotate_texture(rotate);
+                }
+            })?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "extrude",
+        description: "Pushes each picked face `distance` along its normal. `mode` resize moves the face (the default), normal keeps its shape adding square sides, \
+split adds a brush in the swept volume (or cuts when negative), stamp adds a brush between the face and its moved copy.",
+        schema: || {
+            let mode = json!({"type": "string", "enum": ["resize", "normal", "split", "stamp"]});
+            object(json!({"distance": {"type": "number"}, "mode": mode}), &["distance"])
+        },
+        run: |s, a| {
+            let mode = match a.get("mode").and_then(Value::as_str).unwrap_or("resize") {
+                "resize" => ExtrudeMode::Resize,
+                "normal" => ExtrudeMode::AlongNormal,
+                "split" => ExtrudeMode::Split,
+                "stamp" => ExtrudeMode::Stamp,
+                _ => return Err(bad("mode", "resize, normal, split or stamp")),
+            };
+            let distance = num_or(a, "distance", f64::NAN).and_then(|d| if d.is_finite() { Ok(d) } else { Err(bad("distance", "a number")) })?;
+            let faces: Vec<_> = s.face_selection.iter().filter_map(|(id, f)| Some((*id, s.map.get(*id)?.kind.brush()?.clone(), *f))).collect();
+            if faces.is_empty() {
+                return Err(EngineError::Refused("pick faces first"));
+            }
+            Ok(json!({"created": s.extrude(&faces, distance, mode, &[], None)?}))
+        },
+    },
+    Tool {
+        name: "move_vertices",
+        description: "Moves corners of the selected brushes, each move [from, to], as the Vertex tool does.",
+        schema: || object(json!({"moves": pairs()}), &["moves"]),
+        run: |s, a| {
+            s.move_vertices(&pairs_arg(a, "moves")?, None)?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "bevel",
+        description: "Bevels edges of the selected brushes, each edge [a, b] by its two corners, as the Vertex tool's Ctrl+B: \
+`width` (16), `segments` (1) and `profile` (0.5; lower is concave, higher convex).",
+        schema: || {
+            let n = json!({"type": "number"});
+            object(json!({"edges": pairs(), "width": n, "segments": {"type": "integer", "minimum": 1, "maximum": 64}, "profile": n}), &["edges"])
+        },
+        run: |s, a| {
+            let edges = pairs_arg(a, "edges")?;
+            let width = num_or(a, "width", 16.0)?;
+            if width <= 0.0 {
+                return Err(bad("width", "more than 0"));
+            }
+            let bevel = Bevel { width, segments: count_or(a, "segments", 1, 64)?, profile: num_or(a, "profile", 0.5)? };
+            let job: Vec<_> = s
+                .selected_brushes()
+                .into_iter()
+                .filter_map(|id| {
+                    let b = s.map.get(id)?.kind.brush()?.clone();
+                    let corners = b.vertices().ok()?;
+                    let has = |p: DVec3| corners.iter().any(|c| c.distance_squared(p) < 1e-4);
+                    let mine: Vec<_> = edges.iter().copied().filter(|(p, q)| has(*p) && has(*q)).collect();
+                    (!mine.is_empty()).then_some((id, (b, mine)))
+                })
+                .collect();
+            if job.is_empty() {
+                return Err(EngineError::Refused("no selected brush has those edges"));
+            }
+            s.bevel_edges(&job, &bevel, None)?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "create_path",
+        description: "Makes a path through `points` for sweeps and arrays along a path, and selects it; it curves smoothly through them unless `smooth` is false.",
+        schema: || object(json!({"points": {"type": "array", "items": vec3(), "minItems": 2}, "smooth": {"type": "boolean"}}), &["points"]),
+        run: |s, a| {
+            let pts: Vec<DVec3> = a
+                .get("points")
+                .and_then(Value::as_array)
+                .and_then(|v| v.iter().map(vec_value).collect())
+                .ok_or_else(|| bad("points", "an array of [x, y, z]"))?;
+            if pts.len() < 2 {
+                return Err(bad("points", "at least two points"));
+            }
+            let smooth = a.get("smooth").and_then(Value::as_bool).unwrap_or(true);
+            let last = pts.len() - 1;
+            let points = (0..=last)
+                .map(|i| {
+                    let t = if smooth { (pts[(i + 1).min(last)] - pts[i.saturating_sub(1)]) / 6.0 } else { DVec3::ZERO };
+                    PathPoint { pos: pts[i], handle_in: pts[i] - t, handle_out: pts[i] + t }
+                })
+                .collect();
+            Ok(json!({"id": s.create_path(points)?}))
+        },
+    },
+    Tool {
+        name: "set_curve",
+        description: "Changes a sweep, spin or path array group's settings and rebuilds it: sweep `segments`, `twist`, `scale`; \
+spin `angle`, `steps`, `axis`, `pivot`; array `count`, `spacing`, `yaw_only`.",
+        schema: || {
+            let (n, i) = (json!({"type": "number"}), json!({"type": "integer", "minimum": 1, "maximum": 4096}));
+            let props = json!({"id": id(), "segments": i, "twist": n, "scale": n, "angle": n, "steps": i, "axis": vec3(), "pivot": vec3(), "count": i, "spacing": n, "yaw_only": {"type": "boolean"}});
+            object(props, &["id"])
+        },
+        run: |s, a| {
+            let group = id_arg(a, "id")?;
+            let mut op =
+                s.map.get(group).and_then(|n| curve_of(&n.kind)).cloned().ok_or(EngineError::Refused("that node is not a sweep, spin or path array"))?;
+            match &mut op {
+                CurveOp::Sweep { segments, twist, scale, .. } => {
+                    *segments = count_or(a, "segments", *segments, 4096)?;
+                    *twist = num_or(a, "twist", *twist)?;
+                    *scale = num_or(a, "scale", *scale)?;
+                }
+                CurveOp::Spin { axis, pivot, angle, steps, .. } => {
+                    *angle = num_or(a, "angle", *angle)?;
+                    *steps = count_or(a, "steps", *steps, 4096)?;
+                    if a.get("axis").is_some() {
+                        *axis = vec_arg(a, "axis")?.try_normalize().ok_or_else(|| bad("axis", "a non-zero direction"))?;
+                    }
+                    if a.get("pivot").is_some() {
+                        *pivot = vec_arg(a, "pivot")?;
+                    }
+                }
+                CurveOp::Array { count, spacing, yaw_only, .. } => {
+                    *count = count_or(a, "count", *count, 4096)?;
+                    *spacing = num_or(a, "spacing", *spacing)?;
+                    *yaw_only = a.get("yaw_only").and_then(Value::as_bool).unwrap_or(*yaw_only);
+                }
+            }
+            s.set_curve(group, op, None)?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "displace",
+        description: "Turns the picked four-cornered faces into terrain displacements of `power` 2, 3 (the default) or 4, or flattens them again with `remove`.",
+        schema: || object(json!({"power": {"type": "integer", "minimum": 2, "maximum": 4}, "remove": {"type": "boolean"}}), &[]),
+        run: |s, a| {
+            if flag(a, "remove") {
+                s.remove_displacements()?;
+                return Ok(info(s));
+            }
+            let power = a.get("power").map_or(Some(3), Value::as_u64).and_then(|p| u32::try_from(p).ok()).filter(|p| (2..=4).contains(p));
+            Ok(json!({"faces": s.displace_faces(power.ok_or_else(|| bad("power", "2, 3 or 4"))?)?}))
+        },
+    },
+    Tool {
+        name: "sculpt",
+        description: "One dab of the Sculpt tool at `center` on the picked displacements, or every visible one when none are picked: \
+`mode` raise, lower, smooth, flatten (toward the center's height) or noise; `radius` (128); `amount` in units for raise, lower and noise (64), 0 to 1 for smooth and flatten (0.5).",
+        schema: || {
+            let mode = json!({"type": "string", "enum": ["raise", "lower", "smooth", "flatten", "noise"]});
+            object(json!({"mode": mode, "center": vec3(), "radius": {"type": "number"}, "amount": {"type": "number"}}), &["center"])
+        },
+        run: |s, a| {
+            let (mode, amount) = match a.get("mode").and_then(Value::as_str).unwrap_or("raise") {
+                "raise" => (SculptMode::Raise, 64.0),
+                "lower" => (SculptMode::Lower, 64.0),
+                "smooth" => (SculptMode::Smooth, 0.5),
+                "flatten" => (SculptMode::Flatten, 0.5),
+                "noise" => (SculptMode::Noise, 64.0),
+                _ => return Err(bad("mode", "raise, lower, smooth, flatten or noise")),
+            };
+            let center = vec_arg(a, "center")?;
+            let radius = num_or(a, "radius", 128.0)?;
+            if radius <= 0.0 {
+                return Err(bad("radius", "more than 0"));
+            }
+            let dab = Sculpt { mode, center, radius, amount: num_or(a, "amount", amount)?, level: center };
+            Ok(json!({"moved": s.sculpt(&dab, None)?}))
+        },
+    },
+    Tool {
+        name: "heightmap",
+        description: "Shapes the picked displacements (or every visible one) from a grayscale grid stretched over them together: \
+`values` row by row from the far (+Y) side, `width` values per row, 0 at `low` (0) and 1 at `high` (256).",
+        schema: || {
+            let n = json!({"type": "number"});
+            object(json!({"width": {"type": "integer", "minimum": 2}, "values": {"type": "array", "items": n}, "low": n, "high": n}), &["width", "values"])
+        },
+        run: |s, a| {
+            let gray: Vec<f32> = a
+                .get("values")
+                .and_then(Value::as_array)
+                .and_then(|v| v.iter().map(|x| x.as_f64().map(|x| x as f32)).collect())
+                .ok_or_else(|| bad("values", "an array of numbers"))?;
+            let width =
+                a.get("width").and_then(Value::as_u64).and_then(|w| usize::try_from(w).ok()).filter(|w| *w >= 2).ok_or_else(|| bad("width", "2 or more"))?;
+            s.apply_heightmap(&gray, width, gray.len() / width, num_or(a, "low", 0.0)?, num_or(a, "high", 256.0)?)?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "zone_from_selection",
+        description: "Makes a `classname` zone covering the top of the selected brushes, `height` units tall (256 when omitted), and selects it.",
+        schema: || object(json!({"classname": string(), "height": {"type": "number"}}), &["classname"]),
+        run: |s, a| {
+            let height = num_or(a, "height", 256.0)?;
+            if height <= 0.0 {
+                return Err(bad("height", "more than 0"));
+            }
+            s.zone_from_selection(str_arg(a, "classname")?, height)?;
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "tag",
+        description: "Adds the selection to the tag `name` (a Hammer visgroup), creating the tag when it is new; `remove` takes the selection out of it.",
+        schema: || object(json!({"name": string(), "remove": {"type": "boolean"}}), &["name"]),
+        run: |s, a| {
+            let name = str_arg(a, "name")?;
+            match s.map.tags.iter().find(|t| t.name == name).map(|t| t.id) {
+                Some(tag) => s.tag_selection(tag, !flag(a, "remove"))?,
+                None if flag(a, "remove") => return Err(EngineError::Refused("there is no tag with that name")),
+                None => _ = s.create_tag(name)?,
+            }
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "cordon",
+        description: "Adds or replaces the cordon `name`, a box from `min` to `max` that limits what the views show and the map exports while `active`; `remove` deletes it.",
+        schema: || object(json!({"name": string(), "min": vec3(), "max": vec3(), "active": {"type": "boolean"}, "remove": {"type": "boolean"}}), &["name"]),
+        run: |s, a| {
+            let name = str_arg(a, "name")?;
+            let mut cordons: Vec<Cordon> = s.map.cordons.iter().filter(|c| c.name != name).cloned().collect();
+            if !flag(a, "remove") {
+                cordons.push(Cordon { name: name.into(), bounds: Aabb::new(vec_arg(a, "min")?, vec_arg(a, "max")?), active: flag(a, "active") });
+            }
+            s.edit_cordons(cordons, "Edit cordons");
+            Ok(info(s))
+        },
+    },
+    Tool {
+        name: "replace_materials",
+        description: "Renames material `find` to `replace` on every face, or on the selection's with `selected_only`: \
+whole names ignoring case, or every occurrence inside a name with `partial`. Returns how many faces changed.",
+        schema: || {
+            object(json!({"find": string(), "replace": string(), "partial": {"type": "boolean"}, "selected_only": {"type": "boolean"}}), &["find", "replace"])
+        },
+        run: |s, a| Ok(json!({"faces": s.replace_materials(str_arg(a, "find")?, str_arg(a, "replace")?, flag(a, "partial"), flag(a, "selected_only"))?})),
     },
     Tool {
         name: "batch",
@@ -489,11 +775,62 @@ pub fn str_arg<'a>(a: &'a Value, key: &str) -> Result<&'a str, EngineError> {
 }
 
 pub fn vec_arg(a: &Value, key: &str) -> Result<DVec3, EngineError> {
-    let v: Option<Vec<f64>> = a.get(key).and_then(Value::as_array).and_then(|v| v.iter().map(Value::as_f64).collect());
-    match v.as_deref() {
-        Some(&[x, y, z]) if x.is_finite() && y.is_finite() && z.is_finite() => Ok(DVec3::new(x, y, z)),
-        _ => Err(bad(key, "[x, y, z] in inches, Z up")),
+    a.get(key).and_then(vec_value).ok_or_else(|| bad(key, "[x, y, z] in inches, Z up"))
+}
+
+fn vec_value(v: &Value) -> Option<DVec3> {
+    let v: Vec<f64> = v.as_array()?.iter().map(Value::as_f64).collect::<Option<_>>()?;
+    match v.as_slice() {
+        &[x, y, z] if x.is_finite() && y.is_finite() && z.is_finite() => Some(DVec3::new(x, y, z)),
+        _ => None,
     }
+}
+
+/// A list of [a, b] point pairs, such as vertex moves or edges.
+fn pairs_arg(a: &Value, key: &str) -> Result<Vec<(DVec3, DVec3)>, EngineError> {
+    let pair = |p: &Value| match p.as_array()?.as_slice() {
+        [x, y] => Some((vec_value(x)?, vec_value(y)?)),
+        _ => None,
+    };
+    a.get(key).and_then(Value::as_array).and_then(|v| v.iter().map(pair).collect()).ok_or_else(|| bad(key, "an array of [[x, y, z], [x, y, z]]"))
+}
+
+/// The whole number under `key` from 1 to `max`, or `default` when it is missing.
+fn count_or(a: &Value, key: &str, default: usize, max: usize) -> Result<usize, EngineError> {
+    match a.get(key) {
+        None => Ok(default),
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=max).contains(n))
+            .ok_or_else(|| bad(key, &format!("a whole number from 1 to {max}"))),
+    }
+}
+
+fn flag(a: &Value, key: &str) -> bool {
+    a.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The selected brushes' faces that look the way `faces` says.
+fn faces_facing(s: &Session, a: &Value) -> Result<BTreeSet<(NodeId, FaceId)>, EngineError> {
+    let side = a.get("faces").and_then(Value::as_str).unwrap_or("all");
+    if !SIDES.contains(&side) {
+        return Err(bad("faces", "all, top, bottom, sides, +x, -x, +y or -y"));
+    }
+    let wanted = |n: DVec3| {
+        let f = facing(n);
+        side == "all" || side == f || (side == "sides" && !matches!(f, "top" | "bottom"))
+    };
+    let picked: BTreeSet<(NodeId, FaceId)> = s
+        .selected_brushes()
+        .into_iter()
+        .filter_map(|id| Some((id, s.map.get(id)?.kind.brush()?)))
+        .flat_map(|(id, b)| b.faces.iter().filter(|f| f.plane().is_some_and(|p| wanted(p.normal))).map(move |f| (id, f.id)))
+        .collect();
+    if picked.is_empty() {
+        return Err(EngineError::Refused("no selected brush has faces facing that way"));
+    }
+    Ok(picked)
 }
 
 /// The number under `key`, or `default` when it is missing.
@@ -578,6 +915,16 @@ fn id() -> Value {
 
 fn ids() -> Value {
     json!({"type": "array", "items": id()})
+}
+
+const SIDES: [&str; 8] = ["all", "top", "bottom", "sides", "+x", "-x", "+y", "-y"];
+
+fn sides() -> Value {
+    json!({"type": "string", "enum": SIDES})
+}
+
+fn pairs() -> Value {
+    json!({"type": "array", "items": {"type": "array", "items": vec3(), "minItems": 2, "maxItems": 2}})
 }
 
 fn vec3() -> Value {
@@ -667,6 +1014,51 @@ mod tests {
     }
 
     #[test]
+    fn face_curve_terrain_and_prefab_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::default();
+        s.path = Some(dir.path().join("t.mcmap"));
+        call(&mut s, "create_brush", &json!({"min": [0, 0, -64], "max": [512, 512, 0]})).unwrap();
+        assert_eq!(call(&mut s, "pick_faces", &json!({"faces": "top"})).unwrap()["faces"], 1);
+        assert_eq!(call(&mut s, "displace", &json!({"power": 2})).unwrap()["faces"], 1);
+        assert_eq!(call(&mut s, "sculpt", &json!({"center": [256, 256, 0], "radius": 256})).unwrap()["moved"], true);
+        call(&mut s, "heightmap", &json!({"width": 2, "values": [0, 1, 0, 1], "high": 64})).unwrap();
+        call(&mut s, "face_texture", &json!({"offset": [8, 0], "rotate": 90})).unwrap();
+
+        call(&mut s, "create_brush", &json!({"min": [0, 0, 0], "max": [16, 64, 64]})).unwrap();
+        call(&mut s, "pick_faces", &json!({"faces": "+x"})).unwrap();
+        call(&mut s, "create_path", &json!({"points": [[16, 32, 32], [512, 32, 32], [512, 512, 32]]})).unwrap();
+        call(&mut s, "run_command", &json!({"id": "tools.sweep"})).unwrap();
+        let sweep = s.selection.first().unwrap().0;
+        call(&mut s, "set_curve", &json!({"id": sweep, "segments": 4})).unwrap();
+        assert!(s.map.get(NodeId(sweep)).unwrap().children.len() > 2);
+
+        let b = call(&mut s, "create_brush", &json!({"min": [0, 0, 0], "max": [64, 64, 64]})).unwrap()["selection"][0].as_u64().unwrap();
+        call(&mut s, "move_vertices", &json!({"moves": [[[64, 64, 64], [64, 64, 96]]]})).unwrap();
+        assert_eq!(bounds(&s, b).max.z, 96.0);
+        call(&mut s, "pick_faces", &json!({"faces": "-y"})).unwrap();
+        call(&mut s, "extrude", &json!({"distance": 32})).unwrap();
+        assert_eq!(bounds(&s, b).min.y, -32.0);
+        call(&mut s, "bevel", &json!({"edges": [[[0, -32, 0], [64, -32, 0]]], "width": 8})).unwrap();
+        assert!(s.map.get(NodeId(b)).unwrap().kind.brush().unwrap().faces.len() > 6);
+
+        call(&mut s, "tag", &json!({"name": "Decor"})).unwrap();
+        call(&mut s, "tag", &json!({"name": "Decor"})).unwrap();
+        assert_eq!(s.map.tags.len(), 1);
+        call(&mut s, "cordon", &json!({"name": "a", "min": [0, 0, 0], "max": [64, 64, 64], "active": true})).unwrap();
+        assert!(s.map.cordons[0].active);
+        call(&mut s, "cordon", &json!({"name": "a", "remove": true})).unwrap();
+        assert!(s.map.cordons.is_empty());
+
+        call(&mut s, "zone_from_selection", &json!({"classname": "zone_start"})).unwrap();
+        assert_eq!(call(&mut s, "replace_materials", &json!({"find": "tools/trigger", "replace": "zones"})).unwrap()["faces"], 6);
+        call(&mut s, "save_prefab", &json!({"path": dir.path().join("prefabs/zone.mcmap")})).unwrap();
+        assert!(call(&mut s, "find", &json!({"query": "zone_start"})).unwrap().as_array().unwrap().is_empty());
+        call(&mut s, "make_prefab_local", &json!({})).unwrap();
+        assert_eq!(call(&mut s, "find", &json!({"query": "zone_start"})).unwrap().as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn hostile_arguments_are_errors() {
         let mut s = Session::default();
         for (name, args) in [
@@ -687,6 +1079,19 @@ mod tests {
             ("set_material", json!({"material": "x", "faces": "up"})),
             ("batch", json!({"calls": [{"tool": "batch", "arguments": {}}]})),
             ("move_to", json!({"ids": [0], "parent": 999})),
+            ("pick_faces", json!({"faces": "up"})),
+            ("extrude", json!({"distance": 8})),
+            ("displace", json!({"power": 9})),
+            ("sculpt", json!({"center": [0, 0, 0], "mode": "melt"})),
+            ("heightmap", json!({"width": 1, "values": []})),
+            ("create_path", json!({"points": [[0, 0, 0]]})),
+            ("set_curve", json!({"id": 0})),
+            ("bevel", json!({"edges": [[1, 2]]})),
+            ("move_vertices", json!({"moves": "all"})),
+            ("face_texture", json!({"scale": [0, 1]})),
+            ("cordon", json!({"name": "c"})),
+            ("tag", json!({"name": "none", "remove": true})),
+            ("make_prefab_local", json!({})),
         ] {
             assert!(matches!(call(&mut s, name, &args), Err(e) if !matches!(e, EngineError::Panic(_))), "{name} {args}");
         }
