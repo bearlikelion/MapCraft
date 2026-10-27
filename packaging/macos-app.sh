@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds dist/MapCraft-macos.zip: a universal (Apple Silicon and Intel) MapCraft.app with the SDKs and their plugins.
 # Runs on macOS with the aarch64-apple-darwin and x86_64-apple-darwin Rust targets installed.
+# Set MAPCRAFT_PREBUILT to package the slices already in target/ instead of building them.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,9 +9,11 @@ cd "$root"
 version="${MAPCRAFT_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 
 cargo xtask plugins
-for target in aarch64-apple-darwin x86_64-apple-darwin; do
-	cargo build --release -p mapcraft --target "$target"
-done
+if [[ -z "${MAPCRAFT_PREBUILT:-}" ]]; then
+	for target in aarch64-apple-darwin x86_64-apple-darwin; do
+		cargo build --release -p mapcraft --target "$target"
+	done
+fi
 
 app=dist/MapCraft.app
 rm -rf "$app" dist/MapCraft-macos.zip

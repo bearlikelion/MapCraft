@@ -2,11 +2,17 @@ name: Release
 
 on:
   push:
+    # A tag run can only read caches saved on main, so main builds keep them warm and tag runs save none.
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   appimage:
@@ -20,6 +26,11 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins -> target
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Linux packages
         run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
       - name: appimagetool
@@ -47,13 +58,40 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins -> target
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - run: packaging/windows-zip.sh x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/MapCraft-windows-x86_64.zip
 
+  # Each slice links on its own runner; one after the other they were most of the macOS time.
+  macos-slice:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - run: cargo build --release -p mapcraft --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/mapcraft
+
   macos:
+    needs: [macos-slice]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,51 +99,75 @@ jobs:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip2, aarch64-apple-darwin, x86_64-apple-darwin
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            plugins -> target
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-aarch64-apple-darwin
+          path: target/aarch64-apple-darwin/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64-apple-darwin
+          path: target/x86_64-apple-darwin/release
       - name: Version
         run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
-      - run: packaging/macos-app.sh
+      # Artifacts drop the executable bit.
+      - run: chmod +x target/*-apple-darwin/release/mapcraft && packaging/macos-app.sh
+        env:
+          MAPCRAFT_PREBUILT: 1
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: dist/MapCraft-macos.zip
 
-  # The macOS library has to be built on a Mac; the addon job below packs it with the others.
-  godot-macos:
-    runs-on: macos-latest
+  # The macOS library has to be built on a Mac; the build box builds the rest.
+  godot:
+    strategy:
+      matrix:
+        platform: [linux, windows, macos]
+        target: [template_debug, template_release]
+        include:
+          - platform: linux
+            runner: [self-hosted, build]
+          - platform: windows
+            runner: [self-hosted, build]
+          - platform: macos
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v4
-      - name: Tools
-        run: brew install ninja
+      # The build box keeps its ccache on disk.
+      - uses: hendrikmuhs/ccache-action@v1.2
+        if: runner.environment == 'github-hosted'
+        with:
+          key: godot-${{ matrix.platform }}-${{ matrix.target }}
+          max-size: 1G
+          save: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Build the extension
-        run: |
-          godot/build.sh macos template_debug
-          godot/build.sh macos template_release
+        run: godot/build.sh ${{ matrix.platform }} ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: godot-macos
-          path: godot/addons/mapcraft/bin/macos
+          name: godot-${{ matrix.platform }}-${{ matrix.target }}
+          path: godot/addons/mapcraft/bin
 
   godot-addon:
-    needs: [godot-macos]
-    runs-on: ubuntu-24.04
+    needs: [godot]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: actions/download-artifact@v4
         with:
-          name: godot-macos
-          path: godot/addons/mapcraft/bin/macos
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build mingw-w64
-      - name: Build the extension
-        run: |
-          for target in template_debug template_release; do
-            godot/build.sh linux "$target"
-            godot/build.sh windows "$target"
-          done
+          pattern: godot-*
+          path: godot/addons/mapcraft/bin
+          merge-multiple: true
       - run: packaging/godot-addon.sh
       - uses: actions/upload-artifact@v4
         with:
