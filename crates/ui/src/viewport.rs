@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use mapcraft_engine::pick_target;
-use mapcraft_geom::{Aabb, DMat4, DVec2, DVec3, snap};
+use mapcraft_geom::{Aabb, DMat4, DQuat, DVec2, DVec3, snap};
 use mapcraft_map::{FaceId, Group, Mirror, NodeId, NodeKind};
 use mapcraft_render::{LineVertex, SELECTED_EDGE, box_lines};
 
 use crate::app::MapCraftApp;
+use crate::vertex::HandleKind;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -40,12 +41,17 @@ pub enum Drag {
         view: usize,
         start: Pos2,
     },
-    /// `anchor` is the selection's corner nearest the grab point; it is what snaps.
+    UvMarquee {
+        view: crate::uv::UvView,
+        start: Pos2,
+    },
+    /// `anchor` is the selection's corner nearest the grab point; it is what snaps. With `clone` the next step makes a copy to move.
     Move {
         view: usize,
         start: DVec3,
         anchor: DVec3,
         applied: DVec3,
+        clone: bool,
     },
     Resize {
         view: usize,
@@ -67,11 +73,14 @@ pub enum Drag {
         view: usize,
         point: usize,
     },
-    /// A sculpt stroke; flatten levels toward `level`, where it began.
+    /// A sculpt stroke; flatten levels toward `level`, where it began, paint spaces dabs from `from`, unset off every displacement, keeping Ctrl's `invert` from the press.
     Sculpt {
         view: usize,
         level: DVec3,
         last: std::time::Instant,
+        from: Option<DVec3>,
+        refused: bool,
+        invert: bool,
     },
     /// Dragging the Vertex tool's selection; `originals` are each brush's corners as they began.
     Vertex {
@@ -96,17 +105,18 @@ pub enum Drag {
         add: bool,
         remove: bool,
     },
-    /// Dragging faces of `faces` (the brushes as they were) along `normal`; `created` are the
-    /// brushes a split or stamp added so far.
+    /// Dragging faces of `faces` (the brushes as they were) from the pointer's `start`; `paths` snap their corners, `created` is what a split or stamp added.
     Extrude {
         view: usize,
         faces: Vec<(NodeId, mapcraft_map::Brush, FaceId)>,
         normal: DVec3,
-        center: DVec3,
-        start: f64,
+        anchor: DVec3,
+        reference: Option<DVec3>,
+        start: DVec3,
+        paths: Vec<(DVec3, DVec3)>,
         mode: mapcraft_engine::ExtrudeMode,
         created: Vec<NodeId>,
-        distance: f64,
+        offset: DVec3,
     },
     /// Turning the selection about `axis` through `center`; `turned` is the unwrapped angle in
     /// radians and `applied` the degrees already applied.
@@ -143,6 +153,11 @@ pub enum Drag {
         view: usize,
         grab: Box<crate::curves::PathDrag>,
     },
+    /// Dragging a brush entity's origin handle in a 2D view.
+    Origin {
+        view: usize,
+        entity: NodeId,
+    },
     /// Moving the selection along one gizmo arrow in the 3D view.
     Axis {
         view: usize,
@@ -152,6 +167,7 @@ pub enum Drag {
         /// The selection's low edge along the axis, which snaps to the grid.
         base: f64,
         applied: f64,
+        clone: bool,
     },
 }
 
@@ -173,12 +189,22 @@ pub(crate) fn closest_on_axis(center: DVec3, axis: DVec3, origin: DVec3, dir: DV
 }
 
 const PREVIEW: [f32; 4] = [1.0, 1.0, 0.2, 1.0];
+const LEAK: [f32; 4] = [1.0, 0.1, 0.1, 1.0];
 
 /// How close on screen, in points, a corner must be to catch a dragged point.
 const SNAP_REACH: f64 = 8.0;
 
 pub(crate) fn dvec(v: Vec2) -> DVec2 {
     DVec2::new(f64::from(v.x), f64::from(v.y))
+}
+
+/// Nearest visible, unlocked brush face of `map` on the ray: its brush, face index and distance.
+fn face_on_ray(map: &mapcraft_map::Map, origin: DVec3, dir: DVec3) -> Option<(NodeId, usize, f64)> {
+    let visible = map.visible_nodes();
+    map.nodes()
+        .filter(|(id, n)| visible.contains(id) && !n.locked)
+        .filter_map(|(id, n)| n.kind.brush()?.ray_hit(origin, dir).map(|(t, i)| (id, i, t)))
+        .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
 impl MapCraftApp {
@@ -207,12 +233,13 @@ impl MapCraftApp {
     }
 
     /// Visible brushes and point entities on the ray, nearest first, as the nodes of the real map
-    /// they belong to.
-    pub(crate) fn pick_all(&self, origin: DVec3, dir: DVec3) -> Vec<(NodeId, f64)> {
-        let visible = self.view_map().visible_nodes();
+    /// they belong to; locked ones count only as a `surface` to place on or aim at.
+    pub(crate) fn pick_all(&self, origin: DVec3, dir: DVec3, surface: bool) -> Vec<(NodeId, f64)> {
+        let map = self.view_map();
+        let reach = if surface { map.visible_nodes() } else { map.editable_nodes() };
         let mut hits: Vec<(NodeId, f64)> = Vec::new();
-        for (id, n) in self.view_map().nodes() {
-            if !visible.contains(&id) || n.locked {
+        for (id, n) in map.nodes() {
+            if !reach.contains(&id) {
                 continue;
             }
             let t = match &n.kind {
@@ -231,16 +258,17 @@ impl MapCraftApp {
     }
 
     /// Nearest visible brush or point entity on the ray, with the hit distance.
-    pub(crate) fn pick(&self, origin: DVec3, dir: DVec3) -> Option<(NodeId, f64)> {
-        self.pick_all(origin, dir).into_iter().next()
+    pub(crate) fn pick(&self, origin: DVec3, dir: DVec3, surface: bool) -> Option<(NodeId, f64)> {
+        self.pick_all(origin, dir, surface).into_iter().next()
     }
 
-    /// Nearest visible brush face on the ray.
-    pub(crate) fn pick_face(&self, origin: DVec3, dir: DVec3) -> Option<(NodeId, FaceId, f64)> {
-        let visible = self.session.map.visible_nodes();
+    /// Nearest visible brush face on the ray; locked ones count only as a `surface`.
+    pub(crate) fn pick_face(&self, origin: DVec3, dir: DVec3, surface: bool) -> Option<(NodeId, FaceId, f64)> {
+        let map = &self.session.map;
+        let reach = if surface { map.visible_nodes() } else { map.editable_nodes() };
         let mut best: Option<(NodeId, FaceId, f64)> = None;
-        for (id, n) in self.session.map.nodes() {
-            let (true, false, Some(b)) = (visible.contains(&id), n.locked, n.kind.brush()) else { continue };
+        for (id, n) in map.nodes() {
+            let (true, Some(b)) = (reach.contains(&id), n.kind.brush()) else { continue };
             let Some((t, i)) = b.ray_hit(origin, dir) else { continue };
             if best.is_none_or(|(_, _, bt)| t < bt)
                 && let Some(f) = b.faces.get(i)
@@ -253,12 +281,46 @@ impl MapCraftApp {
 
     /// The displaced surface under the pointer in the 3D view, and its face's normal.
     fn sculpt_hit(&self, index: usize, rect: Rect, pos: Pos2) -> Option<(DVec3, DVec3)> {
+        self.sculpt_face(index, rect, pos).map(|(p, n, ..)| (p, n))
+    }
+
+    /// The displaced surface under the pointer, its face's normal, and the face.
+    fn sculpt_face(&self, index: usize, rect: Rect, pos: Pos2) -> Option<(DVec3, DVec3, NodeId, FaceId)> {
         let cam = self.panes.get(index)?.camera;
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
-        let (id, face, t) = self.pick_face(origin, dir)?;
+        let (id, face, t) = self.pick_face(origin, dir, false)?;
         let b = self.session.map.get(id)?.kind.brush()?;
         let normal = b.faces.iter().find(|f| f.id == face && f.disp.is_some())?.plane()?.normal;
-        Some((origin + dir * t, normal))
+        Some((origin + dir * t, normal, id, face))
+    }
+
+    /// Moves the sculpt ring to the pointer and, while painting, reads the blend there.
+    fn hover_sculpt(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<(DVec3, DVec3)> {
+        let hit = self.sculpt_face(index, rect, pos);
+        self.sculpt_at = hit.map(|(p, n, ..)| (index, p, n));
+        let painting = matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
+        self.blend_readout = hit.filter(|_| painting).and_then(|(p, _, id, face)| {
+            let (f, w) = self.blend_under(id, face, p)?;
+            let short = |m: &str| m.rsplit('/').next().unwrap_or(m).to_string();
+            Some(format!("{} + {}: {:.0}%", short(&f.material), f.blend_layer().map_or_else(|| "weights".into(), short), w * 100.0))
+        });
+        hit.map(|(p, n, ..)| (p, n))
+    }
+
+    /// A displaced face and its second layer's share at the grid point nearest `p`.
+    fn blend_under(&self, id: NodeId, face: FaceId, p: DVec3) -> Option<(&mapcraft_map::Face, f64)> {
+        let b = self.session.map.get(id)?.kind.brush()?;
+        let solid = b.solid().ok()?;
+        let (i, grid) = b.displaced(&solid).into_iter().find(|(i, _)| b.faces.get(*i).is_some_and(|f| f.id == face))?;
+        let f = b.faces.get(i)?;
+        Some((f, f.disp.as_ref()?.blend_at(mapcraft_map::Displacement::nearest(&grid, p)?)))
+    }
+
+    /// The layer that shows most at `p` on a blended displacement: its second material from half up, else its own.
+    fn dominant_layer(&self, id: NodeId, face: FaceId, p: DVec3) -> Option<String> {
+        let (f, w) = self.blend_under(id, face, p)?;
+        let b = f.blend_layer()?;
+        Some(if w >= 0.5 { b } else { &f.material }.to_string())
     }
 
     /// Why a sculpt click found nothing to change.
@@ -273,16 +335,37 @@ impl MapCraftApp {
     }
 
     /// Continues a sculpt stroke under the pointer.
-    fn sculpt_step(&mut self, index: usize, rect: Rect, pos: Pos2, invert: bool) {
-        let Drag::Sculpt { view, level, last } = self.drag.clone() else { return };
-        let Some((p, n)) = self.sculpt_hit(index, rect, pos) else { return };
-        self.sculpt_at = Some((index, p, n));
-        self.drag = Drag::Sculpt { view, level, last: std::time::Instant::now() };
-        self.dab(p, level, last.elapsed().as_secs_f64().min(0.1), invert);
+    fn sculpt_step(&mut self, index: usize, rect: Rect, pos: Pos2, ctrl: bool) {
+        let Drag::Sculpt { view, level, last, from, refused, invert } = self.drag.clone() else { return };
+        let Some((p, _)) = self.hover_sculpt(index, rect, pos) else {
+            self.drag = Drag::Sculpt { view, level, last, from: None, refused, invert };
+            return;
+        };
+        let paint = self.sculpt.0 == mapcraft_engine::SculptMode::Paint;
+        let centers = match from {
+            Some(from) if paint => dabs_along(from, p, (self.paint.spacing * self.sculpt.1).max(1.0)),
+            _ => vec![p],
+        };
+        let from = centers.last().copied().or(from);
+        let mut refused = refused;
+        if !centers.is_empty()
+            && let Err(e) = self.dab(&centers, level, last.elapsed().as_secs_f64().min(0.1), if paint { invert } else { ctrl })
+            && !refused
+        {
+            self.refuse(e);
+            refused = true;
+        }
+        self.drag = Drag::Sculpt { view, level, last: std::time::Instant::now(), from, refused, invert };
     }
 
-    /// One dab of the sculpt brush at `center` worth `dt` seconds; `invert` swaps raise and lower.
-    fn dab(&mut self, center: DVec3, level: DVec3, dt: f64, invert: bool) {
+    /// Shows why a stroke changed nothing, again even when the last stroke said the same.
+    fn refuse(&mut self, why: String) {
+        self.status = why;
+        self.status_shown.0.clear();
+    }
+
+    /// Dabs of the sculpt brush at `centers` worth `dt` seconds as one step; `invert` swaps raise and lower, or paints back.
+    fn dab(&mut self, centers: &[DVec3], level: DVec3, dt: f64, invert: bool) -> Result<(), String> {
         use mapcraft_engine::SculptMode as M;
         let (mode, radius, strength) = self.sculpt;
         let mode = match (mode, invert) {
@@ -291,14 +374,33 @@ impl MapCraftApp {
             (m, _) => m,
         };
         let amount = match mode {
+            M::Paint => self.paint.flow,
+            M::Blur => (self.paint.flow * 8.0 * dt).min(1.0),
             M::Smooth | M::Flatten => (strength / 64.0 * dt).min(1.0),
             _ => strength * dt,
         };
-        match self.session.sculpt(&mapcraft_engine::Sculpt { mode, center, radius, amount, level }, Some("sculpt")) {
+        let Some(&center) = centers.first() else { return Ok(()) };
+        let dab = mapcraft_engine::Sculpt { mode, center, radius, amount, level, falloff: self.sculpt_falloff, opacity: self.paint.opacity, invert };
+        let result = match mode {
+            M::Paint | M::Blur => self.session.paint_blend(&dab, centers, Some("sculpt")),
+            _ => self.session.sculpt(&dab, Some("sculpt")),
+        };
+        match result {
             Ok(true) => self.mark_changed(),
             Ok(false) => {}
-            Err(e) => self.status = e.to_string(),
+            Err(e) => return Err(e.to_string()),
         }
+        Ok(())
+    }
+
+    /// `p` from a 2D view moved along the view's depth to the middle of the selection, so points
+    /// placed in two views make a tilted cut through it.
+    fn clip_depth(&self, index: usize, mut p: DVec3) -> DVec3 {
+        if let (Some(cam), Some(b)) = (self.panes.get(index).map(|pane| pane.camera), self.selection_bounds()) {
+            let k = cam.view.axes().2.abs().max_position();
+            p[k] = b.center()[k];
+        }
+        p
     }
 
     /// A clip point under the pointer and the direction the clip plane runs through it: the view
@@ -306,10 +408,11 @@ impl MapCraftApp {
     fn clip_point(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<(DVec3, DVec3)> {
         let cam = self.panes.get(index)?.camera;
         if cam.is_2d() {
-            return Some((self.snapped_plane_point(index, pos, rect)?, cam.view.axes().2));
+            let p = self.snapped_plane_point(index, pos, rect)?;
+            return Some((self.clip_depth(index, p), cam.view.axes().2));
         }
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
-        let (id, face, t) = self.pick_face(origin, dir)?;
+        let (id, face, t) = self.pick_face(origin, dir, true)?;
         let plane = self.session.map.get(id)?.kind.brush()?.faces.iter().find(|f| f.id == face)?.plane()?;
         let p = self.grid_on_plane(plane, origin + dir * t);
         self.snap_mark = Some((index, p, false));
@@ -320,7 +423,8 @@ impl MapCraftApp {
     fn clip_drag_point(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
         let cam = self.panes.get(index)?.camera;
         if cam.is_2d() {
-            return self.snapped_plane_point(index, pos, rect);
+            let p = self.snapped_plane_point(index, pos, rect)?;
+            return Some(self.clip_depth(index, p));
         }
         let (a, normal) = (*self.clip_points.first()?, self.clip_view_axis?);
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
@@ -416,6 +520,31 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
+    /// Takes back the last clip point placed.
+    pub(crate) fn pop_clip_point(&mut self) {
+        if self.clip_points.pop().is_none() {
+            self.status = "No clip points to remove".into();
+        } else if self.clip_points.is_empty() {
+            self.clip_view_axis = None;
+        } else {
+            self.choose_clip_side();
+        }
+    }
+
+    /// Puts the clip plane on the plane of the face under the pointer in 3D, so the cut meets it without a gap.
+    fn clip_to_face(&mut self, index: usize, rect: Rect, pos: Pos2) {
+        let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
+        let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+        let face =
+            self.pick_face(origin, dir, true).and_then(|(id, face, _)| self.session.map.get(id)?.kind.brush()?.faces.iter().find(|f| f.id == face).cloned());
+        if let Some(f) = face {
+            self.clip_points = f.points.to_vec();
+            self.clip_view_axis = f.plane().map(|p| p.normal);
+            self.clip_view = Some(index);
+            self.choose_clip_side();
+        }
+    }
+
     /// The block being dragged out, drawn as the shape it will make inside a faint box.
     fn shape_ghost(&self, out: &mut Vec<LineVertex>, b: Aabb) {
         if self.shape == mapcraft_engine::Shape::Block {
@@ -490,6 +619,15 @@ impl MapCraftApp {
         {
             out.extend(self.ghost_lines(at).into_iter().flat_map(|[a, b]| [LineVertex::new(a, PREVIEW), LineVertex::new(b, PREVIEW)]));
         }
+        if self.tool == Tool::Entity
+            && let Some((_, at)) = self.ghost_at
+        {
+            let b = self.new_entity_box(at);
+            box_lines(&mut out, b.min, b.max, PREVIEW);
+        }
+        if let Some(trail) = &self.pointfile {
+            out.extend(trail.points.windows(2).flat_map(|w| w.iter().map(|p| LineVertex::new(*p, LEAK))));
+        }
         self.link_lines(&mut out);
         self.mirror_lines(&mut out);
         self.path_lines(&mut out);
@@ -499,15 +637,16 @@ impl MapCraftApp {
         if let Some((low, high)) = self.project.game.map_size.filter(|(low, high)| flat && low < high) {
             box_lines(&mut out, DVec3::splat(low as f64), DVec3::splat(high as f64), [0.7, 0.25, 0.25, 1.0]);
         }
-        if let Some(h) = &self.extrude_hover {
-            for poly in &h.polygons {
-                for (i, p) in poly.iter().enumerate() {
-                    out.push(LineVertex::new(*p, PREVIEW));
-                    out.push(LineVertex::new(poly[(i + 1) % poly.len()], PREVIEW));
-                }
+        if matches!(self.drag, Drag::None | Drag::Extrude { .. }) {
+            for poly in self.manipulated_faces() {
+                out.extend(poly.iter().zip(poly.iter().cycle().skip(1)).flat_map(|(a, b)| [LineVertex::new(*a, PREVIEW), LineVertex::new(*b, PREVIEW)]));
             }
         }
-        if let Some(b) = self.selection_bounds().filter(|_| matches!(self.tool, Tool::Select | Tool::Move | Tool::Rotate | Tool::Scale)) {
+        let guide = match self.drag {
+            Drag::Extrude { .. } => self.measured_box(),
+            _ => self.selection_bounds().filter(|_| matches!(self.tool, Tool::Select | Tool::Move | Tool::Rotate | Tool::Scale)),
+        };
+        if let Some(b) = guide {
             box_lines(&mut out, b.min, b.max, [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], 0.35]);
         }
         out
@@ -686,8 +825,13 @@ impl MapCraftApp {
         let overlay = self.overlay_lines(self.panes.get(index).is_some_and(|p| p.camera.is_2d()));
         let grid = self.view_grid(index);
         let mode = self.render_mode;
+        let sky = self.prefs.get().view.sky;
+        let weights = self.tool == Tool::Sculpt
+            && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur)
+            && self.paint.show_weights;
         if let (Some(gpu), Some(pane)) = (&mut self.gpu, self.panes.get_mut(index)) {
             pane.rect = rect;
+            gpu.renderer.show_sky = sky;
             if pane.target.as_ref().is_none_or(|t| t.size != px) {
                 let target = gpu.renderer.target(px);
                 let mut egui_renderer = gpu.state.renderer.write();
@@ -701,6 +845,7 @@ impl MapCraftApp {
                 pane.target = Some(target);
             }
             if let Some(t) = &pane.target {
+                gpu.renderer.set_weight_overlay(if weights { 0.5 } else { 0.0 });
                 // The target is in physical pixels, the camera's zoom in points.
                 let camera = mapcraft_render::Camera { zoom: pane.camera.zoom * f64::from(ppp), ..pane.camera };
                 gpu.renderer.render(t, &camera, mode, Some(grid), &overlay);
@@ -787,6 +932,30 @@ impl MapCraftApp {
             ui.painter_at(rect).rect_filled(r, 0.0, Color32::WHITE);
             ui.painter_at(rect).rect_stroke(r, 0.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
         }
+        for (_, c) in self.origin_handles(index, rect) {
+            let painter = ui.painter_at(rect);
+            painter.circle(c, 5.0, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
+            painter.line_segment([c - Vec2::new(3.0, 0.0), c + Vec2::new(3.0, 0.0)], Stroke::new(1.0, Color32::BLACK));
+            painter.line_segment([c - Vec2::new(0.0, 3.0), c + Vec2::new(0.0, 3.0)], Stroke::new(1.0, Color32::BLACK));
+        }
+    }
+
+    /// Where the origins of the selected brush entities show as handles in a 2D view.
+    fn origin_handles(&self, index: usize, rect: Rect) -> Vec<(NodeId, Pos2)> {
+        let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| c.is_2d()) else { return Vec::new() };
+        let size = dvec(rect.size());
+        self.session
+            .selected_brush_entities()
+            .into_iter()
+            .filter_map(|id| {
+                let q = cam.project(self.session.map.get(id)?.kind.entity()?.origin()?, size)?;
+                Some((id, rect.min + Vec2::new(q.x as f32, q.y as f32)))
+            })
+            .collect()
+    }
+
+    fn origin_handle_at(&self, index: usize, rect: Rect, pos: Pos2) -> Option<NodeId> {
+        self.origin_handles(index, rect).into_iter().find(|(_, c)| c.distance(pos) <= 7.0).map(|(id, _)| id)
     }
 
     fn viewport_input(&mut self, ui: &egui::Ui, index: usize, rect: Rect, response: &egui::Response) {
@@ -810,8 +979,10 @@ impl MapCraftApp {
         if matches!(self.drag, Drag::None) {
             if self.tool == Tool::Sculpt {
                 match hover {
-                    Some(h) => self.sculpt_at = self.sculpt_hit(index, rect, h).map(|(p, n)| (index, p, n)),
-                    None if self.sculpt_at.is_some_and(|(v, ..)| v == index) => self.sculpt_at = None,
+                    Some(h) => {
+                        self.hover_sculpt(index, rect, h);
+                    }
+                    None if self.sculpt_at.is_some_and(|(v, ..)| v == index) => (self.sculpt_at, self.blend_readout) = (None, None),
                     None => {}
                 }
             }
@@ -821,6 +992,13 @@ impl MapCraftApp {
                 && let Some(h) = hover
             {
                 self.ghost_at = self.placement_at(index, rect, h).map(|p| (index, p)).or(self.ghost_at);
+            }
+            if self.tool == Tool::Entity {
+                match hover {
+                    Some(h) => self.ghost_at = self.entity_spot(index, rect, h).map(|p| (index, p)),
+                    None if self.ghost_at.is_some_and(|(v, _)| v == index) => self.ghost_at = None,
+                    None => {}
+                }
             }
             match hover {
                 Some(h) if cam.is_2d() && matches!(self.tool, Tool::Block | Tool::Clip | Tool::Entity | Tool::Path) => {
@@ -879,7 +1057,7 @@ impl MapCraftApp {
                 // Holding still keeps sculpting.
                 ctx.request_repaint();
             } else {
-                self.update_drag(index, rect, p, mods.shift);
+                self.update_drag(index, rect, p, mods);
             }
         }
         if response.drag_stopped()
@@ -888,13 +1066,18 @@ impl MapCraftApp {
             self.end_drag(index, rect, p);
         }
         let alt = ctx.input(|i| i.modifiers.alt);
-        if alt && !cam.is_2d() && (response.clicked_by(egui::PointerButton::Primary) || response.clicked_by(egui::PointerButton::Secondary)) {
+        let painting = self.tool == Tool::Sculpt && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
+        let primary = response.clicked_by(egui::PointerButton::Primary);
+        if alt && (!cam.is_2d() || (painting && primary)) && (primary || response.clicked_by(egui::PointerButton::Secondary)) {
             if let Some(p) = primary_pos.or(hover) {
                 let (origin, dir) = cam.ray(dvec(p - rect.min), size);
-                if let Some((id, face, _)) = self.pick_face(origin, dir) {
-                    if response.clicked_by(egui::PointerButton::Primary) {
+                if let Some((id, face, t)) = self.pick_face(origin, dir, primary) {
+                    if primary {
                         let material = self.session.map.get(id).and_then(|n| n.kind.brush()).and_then(|b| b.faces.iter().find(|f| f.id == face)).cloned();
-                        if let Some(f) = material {
+                        if let Some(layer) = self.dominant_layer(id, face, origin + dir * t).filter(|_| painting) {
+                            self.status = format!("Picked {layer}");
+                            self.session.tex.material = layer;
+                        } else if let Some(f) = material {
                             self.status = format!("Picked {}", f.material);
                             self.session.tex.material = f.material.clone();
                             self.picked_face = Some(f);
@@ -911,13 +1094,21 @@ impl MapCraftApp {
                     self.mark_changed();
                 }
             }
-        } else if response.clicked_by(egui::PointerButton::Primary)
-            && let Some(p) = primary_pos
-        {
-            self.click(index, rect, p, ctx.input(|i| i.modifiers.command || i.modifiers.shift));
+        } else if primary && let Some(p) = primary_pos {
+            let mods = ctx.input(|i| i.modifiers);
+            if mods.shift && !cam.is_2d() && matches!(self.tool, Tool::Select | Tool::Move) {
+                self.pick_face_at(index, rect, p);
+            } else {
+                self.click(index, rect, p, mods.command || (mods.shift && self.tool != Tool::Sculpt));
+            }
         }
         if response.double_clicked() && cam.is_2d() {
             self.frame_selection();
+        } else if response.double_clicked()
+            && self.tool == Tool::Clip
+            && let Some(p) = primary_pos
+        {
+            self.clip_to_face(index, rect, p);
         }
         // Alt+right click applies materials and right click cancels a bevel being sized.
         if !alt && self.vertex.bevel.is_none() {
@@ -943,6 +1134,65 @@ impl MapCraftApp {
         Some(p + depth * self.last_box.min.dot(depth))
     }
 
+    /// The keys a new entity of the picked class starts with: its class defaults and model.
+    fn new_entity_keys(&self) -> Vec<(String, String)> {
+        let class = &self.entity_class;
+        let defaults = self
+            .project
+            .game
+            .class(class)
+            .map(|c| c.properties.iter().filter(|p| p.name != "origin").filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect())
+            .unwrap_or_default();
+        self.project.with_model(class, defaults)
+    }
+
+    /// The box a new entity of the picked class fills with its origin at `at`.
+    fn new_entity_box(&self, at: DVec3) -> Aabb {
+        let mut e = mapcraft_map::Entity::new(self.entity_class.clone());
+        e.properties = self.new_entity_keys();
+        e.set("origin", format!("{} {} {}", at.x, at.y, at.z));
+        self.point_box(&e)
+    }
+
+    /// Where the Entity tool puts a new entity's origin: its box resting on the face or ground
+    /// under the pointer in the 3D view, at the last brush's depth in 2D.
+    pub(crate) fn entity_spot(&mut self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
+        let cam = self.panes.get(index)?.camera;
+        if cam.is_2d() {
+            return self.placement_at(index, rect, pos);
+        }
+        let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+        let map = self.view_map();
+        let plane = match face_on_ray(map, origin, dir) {
+            Some((id, i, _)) => map.get(id)?.kind.brush()?.faces.get(i)?.plane()?,
+            None if dir.z.abs() > 1e-9 && (0.0..=4096.0).contains(&(-origin.z / dir.z)) => {
+                mapcraft_geom::Plane { normal: DVec3::Z * origin.z.signum(), dist: 0.0 }
+            }
+            None => return Some(if self.prefs.get().view.snap_grid { snap(origin + dir * 256.0, self.session.grid) } else { origin + dir * 256.0 }),
+        };
+        let den = dir.dot(plane.normal);
+        if den.abs() < 1e-9 {
+            return None;
+        }
+        let hit = self.grid_on_plane(plane, origin + dir * ((plane.dist - origin.dot(plane.normal)) / den));
+        let b = self.new_entity_box(DVec3::ZERO);
+        let n = plane.normal;
+        let lowest = DVec3::select(n.cmpge(DVec3::ZERO), b.min, b.max);
+        Some(hit - n * lowest.dot(n))
+    }
+
+    /// Picks the face under the pointer in the Face tool, as Shift+click does from Select or Move.
+    fn pick_face_at(&mut self, index: usize, rect: Rect, pos: Pos2) {
+        let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
+        let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+        let Some((id, face, _)) = self.pick_face(origin, dir, false) else { return };
+        self.session.selection.clear();
+        self.run_action("tool.face");
+        self.session.face_selection = BTreeSet::from([(id, face)]);
+        self.session.active_face = Some((id, face));
+        self.mark_changed();
+    }
+
     fn click(&mut self, index: usize, rect: Rect, pos: Pos2, additive: bool) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         if self.tool == Tool::Block && self.plugin_shape.is_some() {
@@ -965,7 +1215,7 @@ impl MapCraftApp {
                 // Clicking the same spot again steps to the next object behind (drill select).
                 let mut targets = BTreeSet::new();
                 let hits: Vec<NodeId> = self
-                    .pick_all(origin, dir)
+                    .pick_all(origin, dir, false)
                     .into_iter()
                     .map(|(id, _)| id)
                     .filter(|id| targets.insert(pick_target(&self.session.map, *id, self.session.select_mode)))
@@ -986,13 +1236,15 @@ impl MapCraftApp {
             Tool::Sculpt => match self.sculpt_hit(index, rect, pos) {
                 Some((p, _)) => {
                     self.session.end_coalesce();
-                    self.dab(p, p, 0.05, additive);
+                    if let Err(e) = self.dab(&[p], p, 0.05, additive) {
+                        self.refuse(e);
+                    }
                     self.session.end_coalesce();
                 }
                 None => self.status = self.nothing_to_sculpt(),
             },
             Tool::Face => {
-                let hit = self.pick_face(origin, dir).map(|(id, f, _)| (id, f));
+                let hit = self.pick_face(origin, dir, false).map(|(id, f, _)| (id, f));
                 if !additive {
                     self.session.face_selection.clear();
                 }
@@ -1005,36 +1257,28 @@ impl MapCraftApp {
                 self.mark_changed();
             }
             Tool::Entity => {
-                let point = if cam.is_2d() {
-                    let p = self.snapped_plane_point(index, pos, rect).unwrap_or_default();
-                    let depth = cam.view.axes().2.abs();
-                    p + depth * self.last_box.min.dot(depth)
-                } else {
-                    match self.pick(origin, dir) {
-                        Some((_, t)) if self.prefs.get().view.snap_grid => snap(origin + dir * t, self.session.grid),
-                        Some((_, t)) => origin + dir * t,
-                        None => return,
-                    }
-                };
+                let Some(point) = self.entity_spot(index, rect, pos) else { return };
                 let class = self.entity_class.clone();
-                let defaults = self
-                    .project
-                    .game
-                    .class(&class)
-                    .map(|c| c.properties.iter().filter(|p| p.name != "origin").filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect())
-                    .unwrap_or_default();
-                if let Err(e) = self.session.create_point_entity(&class, point, self.project.with_model(&class, defaults)) {
+                if let Err(e) = self.session.create_point_entity(&class, point, self.new_entity_keys()) {
                     self.status = e.to_string();
                 }
                 self.mark_changed();
             }
             Tool::Clip => {
-                if self.clip_points.len() >= 3 || (self.clip_points.len() == 2 && cam.is_2d()) {
+                // Clicking again in the 2D view that drew the line starts a new line; a third point elsewhere tilts the cut.
+                if self.clip_points.len() >= 3 || (self.clip_points.len() == 2 && cam.is_2d() && self.clip_view == Some(index)) {
                     self.clip_points.clear();
                 }
                 if let Some((p, t)) = self.clip_point(index, rect, pos) {
+                    if let [a, b] = self.clip_points[..]
+                        && (b - a).cross(p - a).length() < 1e-6
+                    {
+                        self.status = "That point lines up with the other two; put the third off their line to tilt the cut".into();
+                        return;
+                    }
                     if self.clip_points.is_empty() {
                         self.clip_view_axis = Some(t);
+                        self.clip_view = Some(index);
                     }
                     self.clip_points.push(p);
                     self.choose_clip_side();
@@ -1068,6 +1312,7 @@ impl MapCraftApp {
             if let Some((p, t)) = self.clip_point(index, rect, pos) {
                 self.clip_points = vec![p, p];
                 self.clip_view_axis = Some(t);
+                self.clip_view = Some(index);
                 self.drag = Drag::Clip { view: index };
             }
             return;
@@ -1076,8 +1321,12 @@ impl MapCraftApp {
             match self.sculpt_hit(index, rect, pos) {
                 Some((p, _)) => {
                     self.session.end_coalesce();
-                    self.drag = Drag::Sculpt { view: index, level: p, last: std::time::Instant::now() };
-                    self.dab(p, p, 1.0 / 60.0, mods.command);
+                    let result = self.dab(&[p], p, 1.0 / 60.0, mods.command);
+                    if let Err(e) = &result {
+                        self.refuse(e.clone());
+                    }
+                    self.drag =
+                        Drag::Sculpt { view: index, level: p, last: std::time::Instant::now(), from: Some(p), refused: result.is_err(), invert: mods.command };
                 }
                 None => self.status = self.nothing_to_sculpt(),
             }
@@ -1099,13 +1348,17 @@ impl MapCraftApp {
             if let (Some((axis, ..)), Some(b)) = (arrow, self.selection_bounds()) {
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
                 if let Some(start) = closest_on_axis(b.center(), axis, origin, dir) {
-                    self.drag = Drag::Axis { view: index, axis, center: b.center(), start, base: b.min.dot(axis), applied: 0.0 };
+                    self.drag = Drag::Axis { view: index, axis, center: b.center(), start, base: b.min.dot(axis), applied: 0.0, clone: mods.command };
                 }
             }
             return;
         }
         match self.tool {
             Tool::Select | Tool::Move | Tool::Scale => {
+                if let Some(entity) = self.origin_handle_at(index, rect, pos) {
+                    self.drag = Drag::Origin { view: index, entity };
+                    return;
+                }
                 if let Some((handle, _)) = self.handle_rects(index, rect).into_iter().find(|(_, r)| r.expand(3.0).contains(pos))
                     && let Some(b) = self.selection_bounds()
                 {
@@ -1113,7 +1366,7 @@ impl MapCraftApp {
                     return;
                 }
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
-                let hit = self.pick(origin, dir).map(|(id, _)| pick_target(&self.session.map, id, self.session.select_mode));
+                let hit = self.pick(origin, dir, false).map(|(id, _)| pick_target(&self.session.map, id, self.session.select_mode));
                 match hit {
                     Some(target) => {
                         if !self.session.selection.contains(&target) {
@@ -1134,7 +1387,7 @@ impl MapCraftApp {
                         // Only the in-view part of the anchor moves with the cursor.
                         let (_, _, d) = cam.view.axes();
                         let anchor = anchor - d * (anchor - start).dot(d);
-                        self.drag = Drag::Move { view: index, start, anchor, applied: DVec3::ZERO };
+                        self.drag = Drag::Move { view: index, start, anchor, applied: DVec3::ZERO, clone: mods.command };
                     }
                     None => self.drag = Drag::Marquee { view: index, start: pos },
                 }
@@ -1148,15 +1401,18 @@ impl MapCraftApp {
         }
     }
 
-    fn update_drag(&mut self, index: usize, rect: Rect, pos: Pos2, shift: bool) {
+    /// Follows the pointer in a drag; Shift, or Alt where it means nothing else, moves 3D view handles up and down.
+    fn update_drag(&mut self, index: usize, rect: Rect, pos: Pos2, mods: egui::Modifiers) {
+        let vertical = mods.shift || mods.alt;
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let size = dvec(rect.size());
         let g = self.view_grid(index);
         let (r, u, _) = cam.view.axes();
         let cursor = cam.plane_point(dvec(pos - rect.min), size);
+        let on_grid = self.prefs.get().view.snap_grid;
         match self.drag.clone() {
             Drag::Extrude { view, .. } if view == index => self.update_extrude(index, rect, pos),
-            Drag::Block3d { view, .. } if view == index => self.update_block_3d(index, rect, pos, shift),
+            Drag::Block3d { view, .. } if view == index => self.update_block_3d(index, rect, pos, vertical),
             Drag::Clip { view } if view == index => {
                 if let Some(p) = self.clip_drag_point(index, rect, pos)
                     && let Some(end) = self.clip_points.get_mut(1)
@@ -1183,19 +1439,31 @@ impl MapCraftApp {
                 }
             }
             Drag::Rotate { view, .. } if view == index => self.update_rotate(index, rect, pos),
-            Drag::Path { view, .. } if view == index => self.update_path_drag(index, rect, pos, shift),
+            // Alt on a path point pulls out its handles.
+            Drag::Path { view, .. } if view == index => self.update_path_drag(index, rect, pos, mods.shift),
+            Drag::Origin { view, entity } if view == index => {
+                let Some(old) = self.session.map.get(entity).and_then(|n| n.kind.entity()).and_then(|e| e.origin()) else { return };
+                let d = cam.view.axes().2;
+                let (p, caught) = self.snap_point(index, rect, cursor + d * old.dot(d), &BTreeSet::new(), &[]);
+                self.snap_mark = Some((index, p, caught));
+                if let Err(e) = self.session.set_origins(&[entity], Some(p), Some("drag-origin")) {
+                    self.status = e.to_string();
+                }
+                self.mark_changed();
+            }
             Drag::Scale { view, .. } if view == index => self.update_scale(index, rect, pos),
-            Drag::Move { view, start, anchor, applied } if view == index => {
+            Drag::Move { view, start, anchor, applied, clone } if view == index => {
                 let moving = self.moving_nodes();
                 let (snapped, caught) = self.snap_point(index, rect, anchor + (cursor - start), &moving, &[]);
                 self.snap_mark = Some((index, snapped, caught));
                 let total = snapped - anchor;
                 let step = total - applied;
                 if step.length_squared() > 1e-12 {
+                    self.clone_once(clone);
                     if let Err(e) = self.session.translate_selection(step, Some("drag-move")) {
                         self.status = e.to_string();
                     }
-                    self.drag = Drag::Move { view, start, anchor, applied: total };
+                    self.drag = Drag::Move { view, start, anchor, applied: total, clone: false };
                     self.mark_changed();
                 }
             }
@@ -1223,8 +1491,15 @@ impl MapCraftApp {
                 }
             }
             Drag::Vertex { view, originals, start, anchor, applied } if view == index => {
-                let dragged: Vec<DVec3> = originals.iter().flat_map(|(_, c)| c.iter().map(|o| *o + applied)).collect();
-                let (snapped, caught) = self.snap_point(index, rect, anchor + (cursor - start), &BTreeSet::new(), &dragged);
+                let (snapped, caught) = if self.vertex.mode == HandleKind::Vertex {
+                    let dragged: Vec<DVec3> = originals.iter().flat_map(|(_, c)| c.iter().map(|o| *o + applied)).collect();
+                    self.snap_point(index, rect, anchor + (cursor - start), &BTreeSet::new(), &dragged)
+                } else {
+                    // Edges and faces snap how far they travel, so corners that start on the grid stay on it.
+                    let step = |x: f64| if on_grid { (x / g).round() * g } else { x };
+                    let d = cursor - start;
+                    (anchor + r * step(d.dot(r)) + u * step(d.dot(u)), false)
+                };
                 self.snap_mark = Some((index, snapped, caught));
                 let total = snapped - anchor;
                 if (total - applied).length_squared() > 1e-12 && self.drag_corners(&originals, applied, total) {
@@ -1233,19 +1508,23 @@ impl MapCraftApp {
             }
             Drag::Vertex3d { view, originals, anchor, applied } if view == index => {
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
-                let on_grid = self.prefs.get().view.snap_grid;
-                let snap_to = |x: f64| if on_grid { (x / g).round() * g } else { x };
+                let relative = self.vertex.mode != HandleKind::Vertex;
+                let snap_to = |x: f64, from: f64| match (on_grid, relative) {
+                    (false, _) => x,
+                    (true, false) => (x / g).round() * g,
+                    (true, true) => from + ((x - from) / g).round() * g,
+                };
                 let at = anchor + applied;
-                let target = if shift {
+                let target = if vertical {
                     let Some(t) = closest_on_axis(at, DVec3::Z, origin, dir) else { return };
-                    DVec3::new(at.x, at.y, snap_to(at.z + t))
+                    DVec3::new(at.x, at.y, snap_to(at.z + t, anchor.z))
                 } else {
                     let t = (at.z - origin.z) / dir.z;
                     if dir.z.abs() < 1e-9 || t <= 0.0 {
                         return;
                     }
                     let p = origin + dir * t;
-                    DVec3::new(snap_to(p.x), snap_to(p.y), at.z)
+                    DVec3::new(snap_to(p.x, anchor.x), snap_to(p.y, anchor.y), at.z)
                 };
                 self.snap_mark = Some((index, target, false));
                 let total = target - anchor;
@@ -1253,15 +1532,16 @@ impl MapCraftApp {
                     self.drag = Drag::Vertex3d { view, originals, anchor, applied: total };
                 }
             }
-            Drag::Axis { view, axis, center, start, base, applied } if view == index => {
+            Drag::Axis { view, axis, center, start, base, applied, clone } if view == index => {
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
                 let Some(t) = closest_on_axis(center, axis, origin, dir) else { return };
                 let total = if self.prefs.get().view.snap_grid { ((base + t - start) / g).round() * g - base } else { t - start };
                 if total != applied {
+                    self.clone_once(clone);
                     if let Err(e) = self.session.translate_selection(axis * (total - applied), Some("drag-move")) {
                         self.status = e.to_string();
                     }
-                    self.drag = Drag::Axis { view, axis, center, start, base, applied: total };
+                    self.drag = Drag::Axis { view, axis, center, start, base, applied: total, clone: false };
                     self.mark_changed();
                 }
             }
@@ -1271,6 +1551,13 @@ impl MapCraftApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Copies the selection in place as the first step of a Ctrl drag, so undo takes the copy and its move together.
+    fn clone_once(&mut self, now: bool) {
+        if now && let Err(e) = self.session.duplicate_selection(DVec3::ZERO, Some("drag-move")) {
+            self.status = e.to_string();
         }
     }
 
@@ -1285,10 +1572,10 @@ impl MapCraftApp {
                 let (r, u, _) = cam.view.axes();
                 let (h0, h1) = (a.dot(r).min(b.dot(r)), a.dot(r).max(b.dot(r)));
                 let (v0, v1) = (a.dot(u).min(b.dot(u)), a.dot(u).max(b.dot(u)));
-                let visible = self.view_map().visible_nodes();
+                let editable = self.view_map().editable_nodes();
                 let mut picked = BTreeSet::new();
-                for (id, n) in self.view_map().nodes() {
-                    if !visible.contains(&id) || n.locked {
+                for (id, _) in self.view_map().nodes() {
+                    if !editable.contains(&id) {
                         continue;
                     }
                     let Some(bb) = self.leaf_bounds(id) else { continue };
@@ -1309,15 +1596,9 @@ impl MapCraftApp {
             | Drag::Axis { .. }
             | Drag::Rotate { .. }
             | Drag::Scale { .. }
-            | Drag::Path { .. } => self.session.end_coalesce(),
-            Drag::Extrude { created, .. } => {
-                self.session.end_coalesce();
-                // A split or stamp selects what it made, ready for the next drag.
-                if !created.is_empty() {
-                    self.session.selection = created.into_iter().collect();
-                    self.mark_changed();
-                }
-            }
+            | Drag::Path { .. }
+            | Drag::Origin { .. } => self.session.end_coalesce(),
+            d @ Drag::Extrude { .. } => self.end_extrude(d),
             Drag::Block3d { .. } => {
                 if let Some(b) = self.block_3d_box_of(&dragged) {
                     match self.session.create_shape(self.shape, b) {
@@ -1349,10 +1630,12 @@ impl MapCraftApp {
         }
     }
 
+    /// Arrow keys move the selection a grid step; Shift moves it one unit and Ctrl moves a copy.
     fn nudge(&mut self, ui: &egui::Ui, index: usize) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let (r, u, _) = cam.view.axes();
-        let g = self.session.grid;
+        let mods = ui.input(|i| i.modifiers);
+        let g = if mods.shift { 1.0 } else { self.session.grid };
         let mut d = DVec3::ZERO;
         ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowLeft) {
@@ -1371,18 +1654,47 @@ impl MapCraftApp {
         if d != DVec3::ZERO && self.tool == Tool::Vertex && !self.vertex.selected.is_empty() {
             self.nudge_components(d);
         } else if d != DVec3::ZERO && !self.session.selection.is_empty() {
-            if let Err(e) = self.session.translate_selection(d, Some("nudge")) {
+            let moved = if mods.command {
+                let copied = self.session.duplicate_selection(DVec3::ZERO, Some("clone-nudge"));
+                let moved = copied.and_then(|()| self.session.translate_selection(d, Some("clone-nudge")));
+                self.session.end_coalesce();
+                moved
+            } else {
+                self.session.translate_selection(d, Some("nudge"))
+            };
+            if let Err(e) = moved {
                 self.status = e.to_string();
             }
             self.mark_changed();
         }
     }
 
-    /// Hold the right mouse button to look around; WASD moves, Q/E go down/up, Shift is faster.
+    /// Hold the right mouse button to look around (WASD moves, Q/E go down/up, Shift is faster), or Alt and it to orbit.
     fn fly(&mut self, ui: &egui::Ui, index: usize, response: &egui::Response) {
         let speed = self.prefs.get().view.fly_speed;
+        if response.drag_started_by(egui::PointerButton::Secondary) && ui.input(|i| i.modifiers.alt) {
+            self.orbit = self.orbit_pivot(ui, index, response).map(|p| (index, p));
+        }
+        if !response.dragged_by(egui::PointerButton::Secondary) && self.orbit.is_some_and(|(v, _)| v == index) {
+            self.orbit = None;
+        }
+        let pivot = self.orbit.filter(|(v, _)| *v == index).map(|(_, p)| p);
         let Some(pane) = self.panes.get_mut(index) else { return };
         let cam = &mut pane.camera;
+        if let Some(pivot) = pivot {
+            let d = response.drag_delta();
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            let yaw = -f64::from(d.x) * 0.25;
+            let pitch = (cam.pitch - f64::from(d.y) * 0.25).clamp(-89.0, 89.0) - cam.pitch;
+            // Turning the camera and its offset together keeps the pivot under the pointer.
+            let turn = DQuat::from_rotation_z(yaw.to_radians()) * DQuat::from_axis_angle(cam.right(), pitch.to_radians());
+            let off = turn * (cam.position - pivot);
+            let dist = (off.length() * (-f64::from(scroll) / 250.0).exp()).max(32.0);
+            cam.position = pivot + off.normalize_or_zero() * dist;
+            cam.yaw += yaw;
+            cam.pitch += pitch;
+            return;
+        }
         let looking = response.dragged_by(egui::PointerButton::Secondary);
         if looking {
             let d = response.drag_delta();
@@ -1420,6 +1732,14 @@ impl MapCraftApp {
             cam.position += cam.forward() * f64::from(scroll) * 2.0;
         }
     }
+
+    /// What an orbit in view `index` turns about: the surface under the press, else a point ahead.
+    fn orbit_pivot(&self, ui: &egui::Ui, index: usize, response: &egui::Response) -> Option<DVec3> {
+        let cam = self.panes.get(index)?.camera;
+        let press = ui.input(|i| i.pointer.press_origin()).unwrap_or(response.rect.center());
+        let (origin, dir) = cam.ray(dvec(press - response.rect.min), dvec(response.rect.size()));
+        Some(origin + dir * self.pick(origin, dir, true).map_or(1024.0, |(_, t)| t))
+    }
 }
 
 /// The fly speed after scrolling while flying, as Godot's freelook does; the range matches Preferences.
@@ -1438,6 +1758,14 @@ pub(crate) fn box_transform(from: &Aabb, to: &Aabb) -> DMat4 {
     DMat4::from_translation(to.min) * DMat4::from_scale(scale) * DMat4::from_translation(-from.min)
 }
 
+/// Paint dab centers every `step` units from `from` toward `to`, past `from` and at most 64.
+fn dabs_along(from: DVec3, to: DVec3, step: f64) -> Vec<DVec3> {
+    let d = to - from;
+    let count = (d.length() / step).floor().clamp(0.0, 64.0) as usize;
+    let dir = d.normalize_or_zero();
+    (1..=count).map(|i| from + dir * (step * i as f64)).collect()
+}
+
 fn wgpu_filter() -> eframe::wgpu::FilterMode {
     eframe::wgpu::FilterMode::Linear
 }
@@ -1452,5 +1780,14 @@ mod tests {
         assert!(fly_speed_scrolled(512.0, -50.0) < 512.0);
         assert_eq!(fly_speed_scrolled(8000.0, 5000.0), 8192.0);
         assert_eq!(fly_speed_scrolled(20.0, -5000.0), 16.0);
+    }
+
+    #[test]
+    fn paint_dabs_are_spaced_and_capped() {
+        let dabs = dabs_along(DVec3::ZERO, DVec3::new(100.0, 0.0, 0.0), 32.0);
+        assert_eq!(dabs, [DVec3::new(32.0, 0.0, 0.0), DVec3::new(64.0, 0.0, 0.0), DVec3::new(96.0, 0.0, 0.0)]);
+        assert!(dabs_along(DVec3::ZERO, DVec3::new(10.0, 0.0, 0.0), 32.0).is_empty(), "holding still adds nothing");
+        assert_eq!(dabs_along(DVec3::ZERO, DVec3::new(1e6, 0.0, 0.0), 1.0).len(), 64);
+        assert!(dabs_along(DVec3::ZERO, DVec3::splat(f64::NAN), 1.0).is_empty());
     }
 }

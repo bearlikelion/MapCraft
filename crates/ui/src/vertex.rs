@@ -1,8 +1,10 @@
-//! The Vertex tool's component selection (Blender's vertex, edge and face modes), Merge and Bevel.
+//! The Vertex tool's component selection (Blender's vertex, edge and face modes), Merge, Bevel and Delete.
+
+use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, Pos2, Rect, RichText, Stroke, Vec2};
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Bevel, Brush, NodeId};
+use mapcraft_map::{Bevel, Brush, NodeId, NodeKind};
 
 use crate::app::MapCraftApp;
 use crate::chrome::{ACCENT, TEXT_WEAK};
@@ -202,8 +204,15 @@ impl MapCraftApp {
     fn shift_corners(&mut self, originals: &[(NodeId, Vec<DVec3>)], applied: DVec3, total: DVec3, coalesce: &str) -> bool {
         let moves: Vec<(NodeId, Vec<(DVec3, DVec3)>)> =
             originals.iter().map(|(id, corners)| (*id, corners.iter().map(|o| (*o + applied, *o + total)).collect())).collect();
+        let keep: Vec<(NodeId, Vec<DVec3>)> = self
+            .vertex
+            .selected
+            .iter()
+            .filter(|c| c.kind != HandleKind::Vertex)
+            .map(|c| (c.brush, c.corners.iter().map(|p| *p + (total - applied)).collect()))
+            .collect();
         self.mark_changed();
-        match self.session.move_corners(&moves, Some(coalesce)) {
+        match self.session.move_corners(&moves, &keep, Some(coalesce)) {
             Ok(()) => {
                 for c in &mut self.vertex.selected {
                     c.at += total - applied;
@@ -262,8 +271,53 @@ impl MapCraftApp {
             "vertex.mode_face" => self.set_component_mode(HandleKind::Face),
             "vertex.merge" => self.merge_selected(),
             "vertex.bevel" => self.begin_bevel(),
+            "vertex.delete" => self.delete_selected(),
+            "vertex.origin_to_corners" => self.origin_to_corners(),
             _ => {}
         }
+    }
+
+    /// Deletes the selected corners, or the corners of the selected edges, or dissolves the
+    /// selected faces so the faces around them close over.
+    fn delete_selected(&mut self) {
+        let result = if self.vertex.mode == HandleKind::Face {
+            let mut faces: Vec<(NodeId, Vec<Vec<DVec3>>)> = Vec::new();
+            for c in &self.vertex.selected {
+                match faces.iter_mut().find(|(b, _)| *b == c.brush) {
+                    Some((_, list)) => list.push(c.corners.clone()),
+                    None => faces.push((c.brush, vec![c.corners.clone()])),
+                }
+            }
+            (!faces.is_empty()).then(|| self.session.dissolve_faces(&faces))
+        } else {
+            let corners = self.selected_corners();
+            (!corners.is_empty()).then(|| self.session.delete_corners(&corners))
+        };
+        match result {
+            None => self.status = "Select corners, edges or faces to delete first".into(),
+            Some(Ok(())) => self.vertex.selected.clear(),
+            Some(Err(e)) => self.status = format!("Cannot delete: {e}"),
+        }
+        self.mark_changed();
+    }
+
+    /// Puts the origin of the brush entities owning the selected corners (or, when none does, the selected ones) at the corners' middle, as a hinge.
+    fn origin_to_corners(&mut self) {
+        let picked = self.selected_corners();
+        let corners: Vec<DVec3> = picked.iter().flat_map(|(_, c)| c.iter().copied()).collect();
+        if corners.is_empty() {
+            self.status = "Select the corners to put the origin on first".into();
+            return;
+        }
+        let at = corners.iter().sum::<DVec3>() / corners.len() as f64;
+        let map = &self.session.map;
+        let owners: BTreeSet<NodeId> =
+            picked.iter().filter_map(|(b, _)| map.get(*b)?.parent).filter(|p| map.get(*p).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)))).collect();
+        let ids: Vec<NodeId> = if owners.is_empty() { self.session.selected_brush_entities() } else { owners.into_iter().collect() };
+        if let Err(e) = self.session.set_origins(&ids, Some(at), None) {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
     }
 
     fn merge_selected(&mut self) {
@@ -399,8 +453,8 @@ impl MapCraftApp {
         let corner = self.panes.get(self.maximized.unwrap_or(run.view)).map_or(Pos2::new(320.0, 900.0), |p| p.rect.left_bottom() + Vec2::new(8.0, -8.0));
         let mut b = run.bevel;
         egui::Window::new("Adjust Last Bevel").pivot(Align2::LEFT_BOTTOM).fixed_pos(corner).resizable(false).show(ctx, |ui| {
-            ui.add(egui::DragValue::new(&mut b.width).range(0.125..=4096.0).speed(0.5).prefix("Width "));
-            ui.add(egui::DragValue::new(&mut b.segments).range(1..=64).prefix("Segments "));
+            crate::inspect::number(ui, egui::DragValue::new(&mut b.width).range(0.125..=4096.0).speed(0.5).prefix("Width "));
+            crate::inspect::number(ui, egui::DragValue::new(&mut b.segments).range(1..=64).prefix("Segments "));
             ui.add(egui::Slider::new(&mut b.profile, 0.0..=1.0).text("Profile"));
             ui.label(RichText::new("0.5 is round, 0.25 or less flat, 1 boxy").color(TEXT_WEAK).small());
         });
@@ -422,7 +476,7 @@ impl MapCraftApp {
         self.vertex.last = Some(run);
     }
 
-    /// Mode buttons, Merge and Bevel on the top bar.
+    /// Mode buttons, Merge, Bevel and Delete on the top bar.
     pub(crate) fn vertex_options(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         let tip = |what: &str, id: &str| format!("{what}  ({})", self.chord(id));
@@ -432,18 +486,25 @@ impl MapCraftApp {
             tip("Select faces", "vertex.mode_face"),
             tip("Collapse the selected corners of each brush to their center", "vertex.merge"),
             tip("Round off the selected edges", "vertex.bevel"),
+            tip("Delete the selected corners, or dissolve the selected faces", "vertex.delete"),
         ];
-        let modes =
-            [(HandleKind::Vertex, "Vertex", tips[0].as_str()), (HandleKind::Edge, "Edge", tips[1].as_str()), (HandleKind::Face, "Face", tips[2].as_str())];
+        let modes = [
+            (HandleKind::Vertex, "vertex", "Vertex", tips[0].as_str()),
+            (HandleKind::Edge, "edge", "Edge", tips[1].as_str()),
+            (HandleKind::Face, "face", "Face", tips[2].as_str()),
+        ];
         let mut mode = self.vertex.mode;
-        if Self::segmented(ui, &mut mode, &modes) {
+        if crate::chrome::icon_toggles(ui, &mut mode, &modes) {
             self.set_component_mode(mode);
         }
-        if ui.button("Merge").on_hover_text(&tips[3]).clicked() {
+        if crate::chrome::icon_button(ui, "arrow_merge", "Merge", 24.0, false).on_hover_text(&tips[3]).clicked() {
             self.run_action("vertex.merge");
         }
         if ui.button("Bevel").on_hover_text(&tips[4]).clicked() {
             self.run_action("vertex.bevel");
+        }
+        if crate::chrome::icon_button(ui, "trash_can", "Delete", 24.0, false).on_hover_text(&tips[5]).clicked() {
+            self.run_action("vertex.delete");
         }
     }
 

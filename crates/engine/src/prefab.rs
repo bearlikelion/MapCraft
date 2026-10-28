@@ -52,7 +52,7 @@ pub fn expand_instance(e: &mut Edit, id: NodeId, load: &mut dyn FnMut(&str) -> O
                 b.faces.iter_mut().for_each(|f| f.id = FaceId(0));
                 NodeKind::Brush(b)
             }
-            NodeKind::Entity(mut ent) if node.children.is_empty() => {
+            NodeKind::Entity(mut ent) => {
                 if let Some(o) = ent.origin() {
                     ent.set("origin", fmt_vec(m.transform_point3(o)));
                 }
@@ -67,7 +67,6 @@ pub fn expand_instance(e: &mut Edit, id: NodeId, load: &mut dyn FnMut(&str) -> O
             NodeKind::Group(g) => NodeKind::Group(Group { mirror: None, curve: None, ..g }),
             NodeKind::Path(path) => NodeKind::Path(path.transformed(&m)),
             NodeKind::World(_) => continue,
-            other => other,
         };
         let is_prefab = matches!(kind, NodeKind::Prefab(_));
         let new = e.insert(parent, kind)?;
@@ -210,6 +209,24 @@ mod tests {
         s.make_local(&mut load).unwrap();
         assert!(s.map.nodes().all(|(_, n)| !matches!(n.kind, NodeKind::Prefab(_))));
         assert_eq!(s.map.nodes().filter(|(_, n)| n.kind.brush().is_some()).count(), 1);
+    }
+
+    #[test]
+    fn brush_entity_hinge_survives_save_and_flatten() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Session::default();
+        s.path = Some(dir.path().join("level.mcmap"));
+        s.create_brush(Aabb::new(DVec3::new(1000.0, 0.0, 0.0), DVec3::new(1064.0, 8.0, 128.0))).unwrap();
+        let door = s.tie_to_entity("func_door_rotating").unwrap();
+        s.set_origins(&[door], Some(DVec3::new(1000.0, 4.0, 0.0)), None).unwrap();
+        s.selection = BTreeSet::from([door]);
+        s.save_selection_as_prefab(&dir.path().join("door.mcmap")).unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let mut load = |rel: &str| mapcraft_format::load(&dir_path.join(rel)).ok().map(|f| f.map);
+        let (flat, _, problems) = flatten(&s.map, &mut load);
+        assert!(problems.is_empty());
+        let hinge = flat.nodes().find_map(|(_, n)| n.kind.entity()?.origin());
+        assert_eq!(hinge, Some(DVec3::new(1000.0, 4.0, 0.0)));
     }
 
     #[test]

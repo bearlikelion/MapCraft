@@ -32,4 +32,7 @@ set_target_properties(${LIBNAME}
     LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_LIST_DIR}/addons/mapcraft/bin/${GODOTCPP_PLATFORM}>"
     PREFIX ""
     OUTPUT_NAME "${LIBNAME}${GODOTCPP_SUFFIX}"
+    # macOS dyld merges exported weak symbols across extensions, so only the entry symbol may be public.
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
 )

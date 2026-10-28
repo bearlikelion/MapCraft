@@ -6,7 +6,7 @@ Keys here are from the MapCraft preset; see [Keyboard shortcuts](shortcuts.md) f
 ## The current material
 
 New brushes and the apply commands use the current material.
-The **Material** chip on the top bar shows it; click the chip to open the Materials panel.
+The material chip on the top bar, a swatch and the material's name, shows it; click the chip to open the Materials panel.
 
 When the SDK names a default material and texture scale, they become current as the SDK loads.
 
@@ -18,10 +18,15 @@ Open the **Materials** tab on the left (`Ctrl+3`).
 It lists every material of the map's SDK, including the [texture folders](sdks-and-plugins.md#texture-folders) you added in SDK Settings.
 
 1. Type in **Search materials** to filter by name.
-2. **Previews** switches between pictures and a plain list of names.
+2. The **Previews** button at the right of the material count switches between pictures and a plain list of names.
+   **Folders** lists the SDK's top-level material folders; untick one to hide its materials, or use **Hide all** and tick the ones you want.
+   The choice is saved per SDK, so it holds for every map on that SDK, and faces already using a hidden material still draw.
 3. Click a material to make it current.
    With brushes selected or faces picked, the click also puts it on them, as in TrenchBroom.
 4. **Apply to selection** gives the current material to the picked faces, or else to every face of the selected brushes.
+5. Right click a material for **Select Faces Using It**, which picks every face using it in the Face tool, or **Select Brushes Using It**, which selects every brush with a face using it.
+   Hidden and locked brushes are left out.
+   **Edit > Select by Material** does the same for the current material.
 
 Without an SDK the panel asks you to pick one with **File > New Map**.
 
@@ -36,11 +41,15 @@ Without an SDK the panel asks you to pick one with **File > New Map**.
 | Do this | Puts the current material on |
 |---|---|
 | `Shift+T` (**Tools > Apply Current Material**) | The picked faces, or else every face of the selected brushes |
-| **Apply current material** in the inspector | The same |
+| The bucket (**Apply current material**) in the inspector | The same |
 | Click a material in the Materials panel | The same, unless you turned that off |
 | Alt+right click a face in the 3D view | Only that face |
 
 Alt+right click works in any tool, so you can paint faces without switching tools.
+
+**Tools > Clear Material** takes the material off the picked faces, or else off every face of the selected brushes, and leaves them untextured.
+It is also in the right click menu and beside **Apply to selection** in the Materials panel.
+Untextured faces export as `tools/toolsnodraw` in a VMF.
 
 ## Picking a material
 
@@ -52,7 +61,7 @@ MapCraft also remembers that face's alignment, for [wrapping](#wrapping-alignmen
 
 ## Copying and pasting faces
 
-1. Press `Shift+F` for the Face tool and click the face that looks right.
+1. Press `Shift+F` for the Face tool and click the face that looks right, or Shift+click it in the 3D view from the Select or Move tool.
 2. Press `Ctrl+C` to copy it.
 3. Pick the faces to change and press `Ctrl+V`.
 
@@ -68,36 +77,46 @@ Wrapping carries a texture around a corner without a seam.
 2. Alt+Shift+right click the next face along.
 3. Keep going, face after face.
 
-Each face gets the material and alignment of the face you Alt+clicked, turned across the edge where they meet.
+Each face gets the material, alignment and settings such as lightmap scale of the face you Alt+clicked, turned across the edge where they meet, just as a paste does.
 Until you have Alt+clicked a face, Alt+Shift+right click only applies the current material.
 
 ## The face panel
 
 Press `Shift+F` for the Face tool and pick faces (see [Tools](tools.md#face)).
-The inspector shows the face panel.
-It shows the first picked face's values, and every change applies to all picked faces.
+The inspector shows the face panel, with the **UV**, **Surface** and **Alignment** sections.
+**UV** at the top is the [UV editor](#the-uv-editor).
+Each field shows the picked faces' value, or **mixed** when they differ, and every change applies to all picked faces.
+Dragging a field moves each face's own value by the same amount, so faces that differed stay different; typing a number gives them all that number.
 
 | Control | Does |
 |---|---|
-| **Apply current material** | Gives the picked faces the current material |
+| **Material** | Shows the faces' material; click it to open the Materials panel, where clicking a material applies it to the picked faces |
+| The bucket (**Apply current material**) | Gives the picked faces the current material |
 | **Paste face** | Gives them the material and alignment of the face you last copied (`Ctrl+C` or Alt+click), wrapped across shared edges |
 | **Offset** U and V | Slides the texture, in texels |
-| **Scale** U and V | Map units per texel; bigger stretches the texture (0 is ignored) |
+| **Texture scale** U and V | Map units per texel; bigger stretches the texture (values near 0 are ignored) |
 | **Rotation** | Turns the texture by the amount you change it |
-| **Justify Fit** | Stretches the texture so one copy covers the face |
-| **Justify L, R, T, B** | Lines up the texture's left, right, top or bottom edge with the face's |
-| **Justify C** | Centers the texture on the face |
-| **Align to world** | Projects the texture straight from the nearest world axis and clears the rotation |
-| **Align to face** | Lays the texture on the face with V pointing downhill; floors and ceilings get world alignment |
-| **Lightmap scale** | Sets the face's lightmap scale; clear it to remove the setting |
+| **Justify** expand icon (**Fit**) | Stretches the texture so one copy covers the face |
+| **Justify** arrow icons | Line up the texture's left, right, top or bottom edge with the face's |
+| **Justify** target icon (**Center**) | Centers the texture on the face |
+| **Align** globe icon (**Align to world**) | Projects the texture straight from the nearest world axis and clears the rotation |
+| **Align** face icon (**Align to face**) | Lays the texture on the face with V pointing downhill; floors and ceilings get world alignment |
+| **Lightmap scale** | Sets the faces' lightmap scale; it reads **default** until set, and the curved arrow removes the setting |
+| **Anti-tiling** | Hides the grid a texture repeated across a big ramp or floor shows, in the views and in Godot; see [Anti-tiling](#anti-tiling) |
 
 The **Displacement** section below is covered in [Terrain](displacements.md).
 
-![The Face tool with a ramp's faces picked in cyan, and the face panel in the inspector](img/materials-face-panel.webp#wide)
+![The Face tool with a rock face picked in cyan, and the face panel in the inspector with the face laid over its rock texture in the UV section](img/materials-face-panel.webp#wide)
 
 ## The UV editor
 
 The UV editor lays the picked faces out flat over their texture, like Blender's UV Editor.
+Pick faces with the Face tool and it shows in the **UV** section at the top of the face panel, as in TrenchBroom's face inspector.
+
+- The section's bar shows the texture size; the target button at its right end (**Fit UV View**) fits the picked faces in the view.
+- Click the bar to fold the section away; MapCraft remembers it.
+
+For a bigger one, turn a view into the UV editor:
 
 1. Pick faces with the Face tool.
 2. Click a view's name in its header.
@@ -111,16 +130,27 @@ In the UV editor:
 - The active face's texture repeats in every direction, with the first tile outlined in orange.
 - Each picked face is drawn on it, filled with the color of its island (faces that share an edge and a material).
 - The active face, the one you picked last, has a white outline.
+- An orange box surrounds the picked faces, with square handles to scale them and a round one above to rotate them.
 - Picks are shared with the Face tool: pick here or in the 3D view, and both show it.
+- The inspector's UV editor and each view's keep their own zoom and pan.
+- Picking other faces outside a UV editor, in the 3D view or by coming back to the Face tool, fits them in it again; picks made in a UV editor leave the zoom alone.
 
 | Do this | To |
 |---|---|
 | Scroll | Zoom |
 | Middle or right drag | Pan |
-| Double click | Fit the picked faces in the view |
+| Double click or `F` (**Fit UV View**) | Fit the picked faces in the view |
 | Click a face | Pick only that face; Ctrl+click or Shift+click adds or removes it |
-| Drag a box | Pick the faces whose middle is inside it; with Ctrl or Shift it adds them |
-| Right click | Open the unwrap commands |
+| Drag a picked face | Move the picked faces' textures; dragging another face picks it first, Ctrl or Shift adds it to the picks |
+| Drag a corner handle | Scale the textures about the opposite corner; hold Shift to keep their aspect |
+| Drag an edge handle | Scale the textures along one axis about the opposite edge |
+| Drag the round handle | Rotate the textures about the middle of the box |
+| Drag a box from empty space | Pick the faces whose middle is inside it; with Ctrl or Shift it adds them |
+| Right click | Open the unwrap commands and **Fit UV View** |
+
+While dragging a face or handle, hold `Ctrl` to snap a move to whole texels, a rotation to 15 degrees and a scale to tenths.
+Press `Escape` or right click before letting go to put everything back.
+Each drag is one undo step.
 
 ![The UV editor in the Top view's place, showing a ramp's faces laid out over the metal walkway texture](img/materials-uv-editor.webp)
 
@@ -161,21 +191,36 @@ A closed shape such as a box still has one seam where the faces meet again.
 
 ## Texturing whole brushes
 
-With brushes selected in the Select tool, the inspector has:
+With brushes selected in the Select tool, the inspector's **Brushes** section has:
 
-- **Apply current material** for every face.
-- **Align to world** and **Align to face** for every face.
-- **Texture scale** with **Set**, which gives every face that scale.
-- Four arrow buttons that slide every face's texture 16 texels.
+- **Material**, which names the material or how many the faces use; click it to open the Materials panel, or click the bucket (**Apply current material**) to put the current material on every face.
+- **Texture scale**, which gives every face that scale as you drag or type; flipped textures stay flipped, and it reads **mixed** when the faces differ.
+- **Shift**, four arrows that slide every face's texture 16 texels.
+- **Align**, with **Align to world** and **Align to face** for every face.
+- **Anti-tiling**, which sets **Off**, **Variation** or **Hex tiling** on every face, such as a whole run of ramps.
 
-![The inspector's buttons for whole brushes: Apply current material, Align to world, Align to face, Texture scale and the arrow buttons](img/materials-brushes.webp)
+![The Brushes section for whole brushes: Material, Texture scale, Shift and Align](img/materials-brushes.webp)
+
+## Anti-tiling
+
+The **Anti-tiling** row in the face panel and the Brushes section has three settings:
+
+- **Off** draws the texture as it is.
+- **Variation** lays large, soft light and dark patches over the texture, which suits every texture, pixel art and bricks included.
+- **Hex tiling** also breaks the texture into hexagons about one repeat across, each shifted and turned at random and blended into its neighbors, so even a close look finds no grid.
+
+Hex tiling suits textures without a fixed direction or layout: rock, sand, gravel, dirt, grass, moss and snow.
+Keep bricks, tiles, planks, panels and anything with straight lines or text on **Variation**, since the turned hexagons break their pattern apart.
+Pixel textures, those of an SDK that draws textures pixelated or that the game draws without smoothing, use **Variation** even when set to **Hex tiling**, and the row says so.
+The views show the result at once, and the Godot importer draws the same tiles in the same places, except as noted in [Godot](godot.md#anti-tiling).
+Source and Quake have no anti-tiling, so these faces export plain, and the Output panel counts them.
 
 ## Texture lock
 
 Texture lock is on by default.
-Toggle it with `Shift+L`, the **Texture lock** button on the top bar, or **Tools > Texture Lock**.
+Toggle it with `Shift+L`, the padlock (**Texture lock**) on the top bar, or **Tools > Texture Lock**.
 
-- **On:** textures stick to brushes as you move, rotate, scale, flip, duplicate or paste them.
+- **On:** textures stick to brushes as you move, rotate, scale, flip, duplicate or paste them, and to a face you extrude or slide.
 - **Off:** textures stay put in the world and the brushes slide under them.
 
 Mirror groups have their own texture lock; see [Mirror groups](mirror-groups.md).

@@ -125,7 +125,8 @@ impl Session {
     }
 
     pub fn select_tag(&mut self, tag: TagId) {
-        self.selection = self.map.nodes().filter(|(_, n)| n.tags.contains(&tag) && !n.locked).map(|(id, _)| id).collect();
+        let editable = self.map.editable_nodes();
+        self.selection = self.map.nodes().filter(|(id, n)| n.tags.contains(&tag) && editable.contains(id)).map(|(id, _)| id).collect();
     }
 
     pub fn edit_cordons(&mut self, cordons: Vec<Cordon>, label: &str) {
@@ -150,15 +151,27 @@ impl Session {
         for (id, n) in self.map.nodes().filter(|(id, _)| scope.contains(id)) {
             let Some(mut b) = n.kind.brush().cloned() else { continue };
             let mut changed = false;
-            for f in &mut b.faces {
-                let new = if partial && f.material.contains(find) {
-                    f.material.replace(find, replace)
-                } else if !partial && f.material.eq_ignore_ascii_case(find) {
-                    replace.to_string()
+            let swap = |name: &str| {
+                if partial && name.contains(find) {
+                    Some(name.replace(find, replace))
+                } else if !partial && name.eq_ignore_ascii_case(find) {
+                    Some(replace.to_string())
                 } else {
+                    None
+                }
+            };
+            for f in &mut b.faces {
+                let material = swap(&f.material);
+                let layer = f.disp.as_mut().and_then(|d| Some((swap(d.blend_material.as_deref()?)?, d)));
+                if material.is_none() && layer.is_none() {
                     continue;
-                };
-                f.material = new;
+                }
+                if let Some((name, d)) = layer {
+                    d.blend_material = Some(name);
+                }
+                if let Some(name) = material {
+                    f.material = name;
+                }
                 changed = true;
                 count += 1;
             }
@@ -201,11 +214,48 @@ impl Session {
         Ok(count)
     }
 
+    /// Picks every face using `material`, ignoring case, on brushes a click can reach; returns how many, leaving the selection alone when none.
+    pub fn select_faces_with_material(&mut self, material: &str) -> usize {
+        let editable = self.map.editable_nodes();
+        let faces: BTreeSet<(NodeId, FaceId)> = self
+            .map
+            .nodes()
+            .filter(|(id, _)| editable.contains(id))
+            .filter_map(|(id, n)| Some((id, n.kind.brush()?)))
+            .flat_map(|(id, b)| b.faces.iter().filter(|f| f.material.eq_ignore_ascii_case(material)).map(move |f| (id, f.id)))
+            .collect();
+        let count = faces.len();
+        if count > 0 {
+            self.active_face = faces.first().copied();
+            self.face_selection = faces;
+            self.selection.clear();
+        }
+        count
+    }
+
+    /// Selects every brush a click can reach with a face using `material`, ignoring case; returns how many, leaving the selection alone when none.
+    pub fn select_brushes_with_material(&mut self, material: &str) -> usize {
+        let editable = self.map.editable_nodes();
+        let brushes: BTreeSet<NodeId> = self
+            .map
+            .nodes()
+            .filter(|(id, n)| editable.contains(id) && n.kind.brush().is_some_and(|b| b.faces.iter().any(|f| f.material.eq_ignore_ascii_case(material))))
+            .map(|(id, _)| id)
+            .collect();
+        let count = brushes.len();
+        if count > 0 {
+            self.selection = brushes;
+            self.face_selection.clear();
+        }
+        count
+    }
+
     /// Gives a face `src`'s material and alignment, wrapped across their shared edge.
     pub fn wrap_face(&mut self, id: NodeId, face: FaceId, src: &Face) -> Result<(), EngineError> {
         let Some(mut b) = self.map.get(id).and_then(|n| n.kind.brush()).cloned() else { return Ok(()) };
         for f in b.faces.iter_mut().filter(|f| f.id == face) {
             f.wrap_from(src);
+            f.attrs = src.attrs.clone();
         }
         self.set_kind(id, NodeKind::Brush(b), "Apply material and alignment", None)
     }
@@ -241,6 +291,54 @@ mod tests {
     }
 
     #[test]
+    fn wrap_carries_face_attributes_like_paste() {
+        let mut s = Session::default();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let faces = s.map.get(b).unwrap().kind.brush().unwrap().faces.clone();
+        let mut src = faces[0].clone();
+        src.material = "ramps/orange".into();
+        src.attrs.insert("lightmapscale".into(), "8".into());
+        s.wrap_face(b, faces[1].id, &src).unwrap();
+        let after = &s.map.get(b).unwrap().kind.brush().unwrap().faces[1];
+        assert_eq!(after.material, "ramps/orange");
+        assert_eq!(after.attrs.get("lightmapscale").map(String::as_str), Some("8"));
+    }
+
+    #[test]
+    fn select_faces_and_brushes_by_material() {
+        let mut s = Session::default();
+        s.tex.material = "dev/grid".into();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let b = s.create_brush(Aabb::new(DVec3::splat(128.0), DVec3::splat(192.0))).unwrap();
+        let hidden = s.create_brush(Aabb::new(DVec3::splat(256.0), DVec3::splat(320.0))).unwrap();
+        s.set_hidden(&[hidden], true).unwrap();
+        let first = s.map.get(a).unwrap().kind.brush().unwrap().faces[0].id;
+        s.face_selection = BTreeSet::from([(a, first)]);
+        s.tex.material = "ramps/orange".into();
+        s.apply_material().unwrap();
+        assert_eq!(s.select_faces_with_material("RAMPS/ORANGE"), 1);
+        assert_eq!(s.face_selection, BTreeSet::from([(a, first)]));
+        assert_eq!(s.select_brushes_with_material("dev/grid"), 2);
+        assert_eq!(s.selection, BTreeSet::from([a, b]), "hidden brushes stay out");
+        assert!(s.face_selection.is_empty());
+        assert_eq!(s.select_brushes_with_material("unused"), 0);
+        assert_eq!(s.select_faces_with_material("unused"), 0);
+        assert_eq!(s.selection, BTreeSet::from([a, b]), "no match keeps the selection");
+    }
+
+    #[test]
+    fn select_tag_skips_what_a_locked_layer_holds() {
+        let mut s = Session::default();
+        let layer = s.create_layer("Reference").unwrap();
+        s.active_parent = layer;
+        s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let t = s.create_tag("Detail").unwrap();
+        s.set_locked(&[layer], true).unwrap();
+        s.select_tag(t);
+        assert!(s.selection.is_empty());
+    }
+
+    #[test]
     fn replace_ignores_case_like_find() {
         assert_eq!(replace_ignoring_case("Stage1_Start", "stage1", "stage2").as_deref(), Some("stage2_Start"));
         assert_eq!(replace_ignoring_case("abc", "x", "y"), None);
@@ -261,6 +359,9 @@ mod tests {
         assert!(s.map.get(a).unwrap().tags.is_empty());
         s.undo();
         s.select_tag(t);
+        assert!(s.selection.is_empty(), "a hidden tag's members are out of reach");
+        s.undo();
+        s.select_tag(t);
         assert_eq!(s.selection, BTreeSet::from([a]));
 
         s.edit_cordons(vec![Cordon { name: "c".into(), bounds: Aabb::new(DVec3::splat(500.0), DVec3::splat(600.0)), active: true }], "Cordon");
@@ -271,6 +372,14 @@ mod tests {
         assert_eq!(s.replace_materials("DEV/GRID", "ramps/orange", false, false).unwrap(), 6);
         assert_eq!(s.replace_materials("orange", "blue", true, false).unwrap(), 6);
         assert!(s.map.get(a).unwrap().kind.brush().unwrap().faces.iter().all(|f| f.material == "ramps/blue"));
+        let mut b = s.map.get(a).unwrap().kind.brush().unwrap().clone();
+        let mut d = mapcraft_map::Displacement::new(2, DVec3::ZERO);
+        d.blend_material = Some("nature/grass".into());
+        b.faces[0].disp = Some(d);
+        s.set_kind(a, NodeKind::Brush(b), "Paint", None).unwrap();
+        assert_eq!(s.replace_materials("grass", "moss", true, false).unwrap(), 1, "second layers are renamed too");
+        let layer = |s: &Session| s.map.get(a).unwrap().kind.brush().unwrap().faces[0].disp.as_ref().unwrap().blend_material.clone();
+        assert_eq!(layer(&s).as_deref(), Some("nature/moss"));
 
         let ent = s.create_point_entity("trigger_teleport", DVec3::ZERO, vec![("target".into(), "dest_1".into())]).unwrap();
         let mut e = s.map.get(ent).unwrap().kind.entity().cloned().unwrap();

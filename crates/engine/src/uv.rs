@@ -270,6 +270,8 @@ mod tests {
         }
 
         s.edit_faces("Shift", None, |f| f.u.offset = 9.0).unwrap();
+        s.edit_faces("Shift again", None, |f| f.u.offset = 9.0).unwrap();
+        assert_eq!(s.undo_label(), Some("Shift"), "an edit that changes nothing adds no undo step");
         crate::execute(&mut s, "uv.reset").unwrap();
         for f in all(&s) {
             let fresh = Face::new(f.points, &s.tex);

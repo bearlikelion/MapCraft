@@ -19,7 +19,7 @@ A plugin exports eight functions:
 | `validate` | Checks the map and returns problems for Check for Problems |
 | `load-model` | Reads a model a point entity names, for the views |
 
-It can call four host functions:
+It can call five host functions:
 
 | Import | Purpose |
 |---|---|
@@ -27,6 +27,7 @@ It can call four host functions:
 | `list-files` | Lists files in the SDK's asset folders by extension |
 | `read-file` | Reads a file from the SDK's asset folders |
 | `read-range` | Reads part of a file from them, for archives too big to read whole |
+| `file-path` | Gives where one of those files is on disk, for an export that a compiler outside the editor reads |
 
 Plugins get nothing else: no other files, no network, no processes, no environment.
 Each call has a fuel budget of a few seconds of work and each plugin a memory cap, so a plugin that loops or runs away is stopped and reported instead of freezing the editor.
@@ -48,6 +49,21 @@ Brushes come in two forms:
   It is the simpler form for generators: list the corners and say which way the special faces point.
 
 An empty material means the material picked in the browser.
+Every command, import and export also gets a `context`: the grid size, the material picked in the browser, and `game`, the SDK's name, which the Quake plugin writes as the game a `.map` is for.
+
+A `faces` face can also carry `attrs`, the game attributes MapCraft keeps per face (such as `lightmapscale`, `smoothing_groups` or `anti_tile`), and a `disp`, a displacement:
+
+| Field | Meaning |
+|---|---|
+| `power` | 1 to 4; the grid has 2^power + 1 vertices a side |
+| `corners` | The face's four corners in grid order: the start corner, then counter-clockwise seen from outside; coming back from a plugin only the first is read, as the start corner |
+| `heights` | Each vertex's height along the face's outward normal, row by row: a row runs from the start corner toward the second corner, and rows step toward the fourth |
+| `blend` | Each vertex's share of the second layer, 0 to 1, in the same order; empty is 0 everywhere |
+| `blend-material` | The second layer's material, when the face has one |
+
+The editor keeps at most 64 attributes a face, each key and value at most 1024 bytes.
+A displacement whose power is not 1 to 4, whose heights or blend do not fill the grid, or that holds a height that is not a number comes in flat, and the Output panel counts it.
+A displacement on a face without exactly four corners is kept but draws and exports flat.
 
 ### Generator groups
 
@@ -63,6 +79,7 @@ They appear under File > Import.
 The editor reads the picked file and passes its bytes and file name to `import-file`, so an importer needs no file access of its own.
 The output is placed as it is, in map space, in a new layer named after the file.
 A point entity named `worldspawn` in the output is not placed: its keys go on the map's world, filling in those the world does not have yet, so a file's level settings (such as Quake's `_sunlight` or `message`) come along without replacing the open map's own.
+An entity's `connections` are its outputs (Hammer's I/O), each wiring an output to an input of the entities named `target`, with a parameter, a delay in seconds and how many times it fires (-1 for every time); they show in the inspector's Outputs tab.
 A plugin with no importers returns an empty list and an error from `import-file`.
 
 ## Exporters
@@ -70,7 +87,9 @@ A plugin with no importers returns an empty list and an error from `import-file`
 A manifest's `exporters` list file formats the plugin writes, each with an id, a label and its extensions.
 They appear under File > Export, and compile profiles run them with an `export` step (see [`sdk-format.md`](sdk-format.md)).
 `export-file` gets the map as `map-data`: worldspawn's key values, then a flat list of nodes (layers, groups, entities and brushes) where each node names its parent by index and parents always come first.
-Every brush comes with its faces (three points, material and texture axes) and its corners.
+Every brush comes with its faces (three points, material, texture axes, `attrs` and `disp`) and its corners, and every entity with its key values and `connections`.
+A face's `disp` always has a power of 1 to 4 and a full grid of heights, with `corners` filled in; a displacement that does not fit its face (one that is not four-cornered, or whose heights do not fill the grid) goes out flat, and the Output panel counts it.
+`blend-material` is set only when it is a real second layer: not empty, not the face's own material and not a `tools/` material.
 The editor has already resolved prefabs and mirror copies and removed layers left out of exports and everything outside an active cordon, so an exporter writes what it gets.
 It returns the file's bytes, and the editor saves them.
 
@@ -103,6 +122,14 @@ Leave it out (`none`) for materials without such maps; they draw fully rough and
 Ambient occlusion darkens only ambient light.
 A packed occlusion, roughness and metallic picture is one path named three times with the channels `red`, `green` and `blue`.
 
+Three more fields say how the game draws the material:
+
+| Field | Meaning |
+|---|---|
+| `uv-scale` | How many times the texture repeats across its own texel size, as Godot's `uv1_scale`; the views tile it as densely, ignoring the sign; `none` is once |
+| `pixelated` | The game draws it with nearest filtering, so the views do too |
+| `blend` | `layer` for a material that can be either layer of a blended displacement, `own` for one that holds two textures and mixes them by vertex weight itself (such as Source's WorldVertexTransition), `unblendable` for one painting refuses |
+
 ## Models
 
 The editor reads glTF models itself; a plugin reads the game's own model formats.
@@ -111,6 +138,12 @@ The model comes back as parts, each a list of positions in map units around the 
 The editor works out the normals and places the model by the entity's `origin`, `angles` or `angle`, and `scale`.
 A model that fails to load shows as the entity's box, with the plugin's message in the Output panel.
 A plugin that reads no models leaves `models` empty and returns an error from `load-model`.
+
+`load-model` also reads the file an SDK's bake profile leaves (see [`sdk-format.md`](sdk-format.md)), such as a compiled `.bsp`, which the Lit view draws in place of the brushes.
+For that, each part names its SDK `material` and can carry a `lightmap`, an index into `textures`, with one `lightmap-uvs` coordinate per position.
+The material's sRGB color is multiplied by twice the lightmap's value and clamped, as Quake draws lightmaps, so 128 shows the material as it is; a part without a lightmap shows the material unlit, and sky materials show the sky.
+The Quake plugin colors a `.bsp`'s lightmaps from its BSPX `RGBLIGHTING` lump (ericw-tools `light -bspxlit`), else from a `.lit` beside it, else in gray.
+It places them by the BSPX `LMSHIFT`, `LMOFFSET`, `LMSTYLE` and `DECOUPLED_LM` lumps when the `.bsp` has them, so lightmaps at other scales than 16 units a luxel line up.
 
 ## Where plugins come from
 
@@ -180,5 +213,6 @@ A Python plugin carries its own interpreter, so it is about 18 MB and takes a co
 
 ## Versioning
 
-The WIT package is `mapcraft:plugin@0.1.0`.
-Until 1.0 the API may change between releases; a plugin built against an older version fails to load with a message naming what is missing.
+The WIT package is `mapcraft:plugin@0.2.0`.
+Until 1.0 the API may change between releases, and a plugin built for another API version is not loaded and the Output panel asks for it to be rebuilt.
+Version 0.2.0 added face `attrs` and `disp` and material `uv-scale`, `pixelated` and `blend`, so a plugin built for 0.1, in an SDK or in the user's plugins folder, is not loaded and the Output panel asks for it to be rebuilt against 0.2.

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3};
+use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3, Solid, Winding};
 use mapcraft_map::{Brush, BrushError, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
 
 use crate::{EngineError, Session};
@@ -51,6 +51,18 @@ fn fills(brushes: &[Brush], hull: &Brush) -> Result<bool, BrushError> {
     Ok(total - covered <= total * 1e-6 + 1.0)
 }
 
+fn displaced_faces(brushes: &[Brush]) -> usize {
+    brushes.iter().flat_map(|b| &b.faces).filter(|f| f.disp.is_some()).count()
+}
+
+fn flattened_notice(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some("1 displacement changed shape and came out flat".into()),
+        n => Some(format!("{n} displacements changed shape and came out flat")),
+    }
+}
+
 /// What dragging a face does (TrenchBroom's extrude tool).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtrudeMode {
@@ -62,6 +74,17 @@ pub enum ExtrudeMode {
     Split,
     /// Add a new brush between the face and a moved copy of it.
     Stamp,
+    /// Move the face's corners so it keeps its shape; the faces around it tilt to follow.
+    Slide,
+}
+
+/// How far a face drag moves its faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Push {
+    /// Each face this far along its own normal.
+    Distance(f64),
+    /// Every face by one world offset, so faces across a seam move together; all but a slide use only its part along each face's normal.
+    Offset(DVec3),
 }
 
 /// Which side of a clip plane to keep.
@@ -104,7 +127,7 @@ fn moved_group(mut g: Group, m: &DMat4) -> Group {
     g
 }
 
-/// A brush, point entity, prefab or group placement moved by `m`; `None` for kinds placed by their children.
+/// A brush, entity, prefab or group placement moved by `m`; `None` for kinds placed by their children.
 pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool) -> Result<Option<NodeKind>, EngineError> {
     Ok(Some(match kind {
         NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, lock)?),
@@ -123,6 +146,12 @@ pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool)
                     ent.set("angle", fmt_num(moved_placement(m, origin, DVec3::new(0.0, yaw, 0.0)).1.y));
                 }
             }
+            NodeKind::Entity(ent)
+        }
+        // A brush entity's origin is the hinge its brushes turn about, so it goes where they go.
+        NodeKind::Entity(mut ent) => {
+            let Some(origin) = ent.origin() else { return Ok(None) };
+            ent.set("origin", fmt_vec(m.transform_point3(origin)));
             NodeKind::Entity(ent)
         }
         NodeKind::Prefab(mut p) => {
@@ -280,6 +309,7 @@ impl Session {
             return Err(EngineError::NothingSelected);
         }
         let merged = Brush::merge(&brushes)?;
+        let flattened = displaced_faces(&brushes).saturating_sub(displaced_faces(std::slice::from_ref(&merged)));
         if !fills(&brushes, &merged)? {
             return Err(EngineError::Refused("those brushes don't make one convex shape, so merging would fill in the gaps; group them instead"));
         }
@@ -291,6 +321,7 @@ impl Session {
         let id = e.insert(parent, NodeKind::Brush(merged))?;
         let c = e.finish();
         self.apply("Merge", c);
+        self.notice = flattened_notice(flattened);
         self.selection = BTreeSet::from([id]);
         Ok(id)
     }
@@ -319,13 +350,40 @@ impl Session {
         Ok(())
     }
 
+    /// The selected faces a drag on `face` moves, with their polygons: those in its plane and opposite ones overlapping it across a seam.
+    pub fn extrude_group(&self, id: NodeId, face: FaceId) -> Vec<(NodeId, FaceId, Winding)> {
+        let solids: Vec<(NodeId, &Brush, Solid)> = self
+            .selected_brushes()
+            .into_iter()
+            .filter_map(|b| {
+                let brush = self.map.get(b)?.kind.brush()?;
+                Some((b, brush, brush.solid().ok()?))
+            })
+            .collect();
+        let picked = solids.iter().find(|(b, ..)| *b == id).and_then(|(_, brush, solid)| {
+            let i = brush.faces.iter().position(|f| f.id == face)?;
+            Some((brush.faces.get(i)?.plane()?, solid.faces.get(i)?.clone()?))
+        });
+        let Some((plane, outline)) = picked else { return Vec::new() };
+        let mut out = Vec::new();
+        for (b, brush, solid) in &solids {
+            for (f, w) in brush.faces.iter().zip(&solid.faces) {
+                let (Some(w), Some(p)) = (w, f.plane()) else { continue };
+                if p.approx_eq(&plane, 1e-3) || (p.approx_eq(&plane.flipped(), 1e-3) && w.overlaps(&outline)) {
+                    out.push((*b, f.id, w.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// One step of a face drag. `faces` are the brushes as they were when the drag began, each
     /// with the face being dragged; `created` are the brushes the previous step added, which this
     /// step replaces. Returns the brushes this step added. Steps sharing `coalesce` undo together.
     pub fn extrude(
         &mut self,
         faces: &[(NodeId, Brush, FaceId)],
-        distance: f64,
+        push: Push,
         mode: ExtrudeMode,
         created: &[NodeId],
         coalesce: Option<&str>,
@@ -336,34 +394,57 @@ impl Session {
                 e.remove(*id)?;
             }
         }
+        let lock = self.texture_lock;
+        let planes: Vec<_> = faces.iter().filter_map(|(_, b, f)| b.faces.iter().find(|x| x.id == *f)?.plane()).collect();
+        if mode == ExtrudeMode::Stamp && planes.iter().any(|p| planes.iter().any(|q| p.approx_eq(&q.flipped(), 1e-3))) {
+            return Err(EngineError::Refused("stamps cannot cross a seam"));
+        }
         let mut out = Vec::new();
         for (id, orig, face_id) in faces {
             let Some(face) = orig.faces.iter().find(|f| f.id == *face_id) else { continue };
             let Some(plane) = face.plane() else { continue };
+            let shift = match push {
+                Push::Distance(d) => plane.normal * d,
+                Push::Offset(v) => v,
+            };
+            let distance = shift.dot(plane.normal);
+            let still = if mode == ExtrudeMode::Slide { shift.length() } else { distance.abs() } < 1e-9;
             let parent = e.node(*id).and_then(|n| n.parent).unwrap_or(self.active_parent);
             let tex = mapcraft_map::TexDefaults { material: face.material.clone(), scale: face.u.scale };
             let new = match mode {
+                ExtrudeMode::Stamp if distance < 1e-9 => return Err(EngineError::Refused("stamps go outward")),
+                _ if still => {
+                    e.set_kind(*id, NodeKind::Brush(orig.clone()))?;
+                    None
+                }
                 ExtrudeMode::Resize => {
-                    e.set_kind(*id, NodeKind::Brush(orig.extrude_face(*face_id, distance).ok_or(EngineError::Refused("that would remove a face"))?))?;
+                    e.set_kind(*id, NodeKind::Brush(orig.extrude_face(*face_id, distance, lock).ok_or(EngineError::Refused("that would leave no volume"))?))?;
                     None
                 }
                 ExtrudeMode::AlongNormal => {
-                    e.set_kind(*id, NodeKind::Brush(orig.sweep_face(*face_id, distance).ok_or(EngineError::Refused("that would remove a face"))?))?;
+                    e.set_kind(*id, NodeKind::Brush(orig.sweep_face(*face_id, distance, lock).ok_or(EngineError::Refused("that would leave no volume"))?))?;
                     None
                 }
-                _ if distance.abs() < 1e-9 => {
-                    e.set_kind(*id, NodeKind::Brush(orig.clone()))?;
+                ExtrudeMode::Slide => {
+                    let slid = orig.slide_face(*face_id, shift, lock).ok_or(EngineError::Refused("the face would lose its shape there"))?;
+                    e.set_kind(*id, NodeKind::Brush(slid))?;
                     None
                 }
                 ExtrudeMode::Split if distance > 0.0 => {
                     e.set_kind(*id, NodeKind::Brush(orig.clone()))?;
-                    let grown = orig.extrude_face(*face_id, distance).ok_or(EngineError::Refused("that would remove a face"))?;
+                    let grown = orig.extrude_face(*face_id, distance, lock).ok_or(EngineError::Refused("that would leave no volume"))?;
                     grown.split(face.points, &tex)?.0
                 }
                 ExtrudeMode::Split => {
                     let moved = face.points.map(|p| p + plane.normal * distance);
                     let (front, back) = orig.split(moved, &tex)?;
-                    e.set_kind(*id, NodeKind::Brush(back.ok_or(EngineError::Refused("the split leaves nothing"))?))?;
+                    // A cut past the whole brush leaves it as it was.
+                    let Some(mut kept) = back else {
+                        e.set_kind(*id, NodeKind::Brush(orig.clone()))?;
+                        continue;
+                    };
+                    kept.adopt_face(face, plane.normal * distance, lock);
+                    e.set_kind(*id, NodeKind::Brush(kept))?;
                     front
                 }
                 ExtrudeMode::Stamp => Some(orig.stamp_face(*face_id, distance).ok_or(EngineError::Refused("the stamp has no volume"))?),
@@ -377,6 +458,7 @@ impl Session {
             ExtrudeMode::Resize | ExtrudeMode::AlongNormal => "Extrude",
             ExtrudeMode::Split => "Split",
             ExtrudeMode::Stamp => "Stamp",
+            ExtrudeMode::Slide => "Slide",
         };
         self.apply_coalesced(label, c, coalesce);
         Ok(out)
@@ -412,14 +494,15 @@ impl Session {
             for face in b.faces.iter_mut().filter(|x| self.face_selection.contains(&(id, x.id))) {
                 f(face);
             }
-            e.set_kind(id, NodeKind::Brush(b))?;
+            if e.node(id).and_then(|n| n.kind.brush()) != Some(&b) {
+                e.set_kind(id, NodeKind::Brush(b))?;
+            }
         }
         let c = e.finish();
         self.apply_coalesced(label, c, coalesce);
         Ok(())
     }
 
-    /// Gives one face a material (Hammer's apply-to-face click).
     /// Gives the picked faces `src`'s material, alignment (wrapped across shared edges) and face attributes.
     pub fn paste_face(&mut self, src: &Face) -> Result<(), EngineError> {
         self.edit_faces("Paste face", None, |f| {
@@ -428,6 +511,7 @@ impl Session {
         })
     }
 
+    /// Gives one face a material (Hammer's apply-to-face click).
     pub fn apply_material_to_face(&mut self, id: NodeId, face: FaceId) -> Result<(), EngineError> {
         let Some(mut b) = self.map.get(id).and_then(|n| n.kind.brush()).cloned() else { return Ok(()) };
         for f in b.faces.iter_mut().filter(|f| f.id == face) {
@@ -484,12 +568,16 @@ impl Session {
                 e.set_kind(id, new)?;
             }
         }
-        let groups: BTreeSet<NodeId> = roots.iter().flat_map(|id| self.map.subtree(*id)).collect();
-        for id in groups {
-            let Some(NodeKind::Group(g)) = e.node(id).map(|n| n.kind.clone()) else { continue };
-            let moved = moved_group(g.clone(), m);
-            if moved != g {
-                e.set_kind(id, NodeKind::Group(moved))?;
+        let inner: BTreeSet<NodeId> = roots.iter().flat_map(|id| self.map.subtree(*id)).collect();
+        for id in inner {
+            let Some(node) = e.node(id) else { continue };
+            let moved = match node.kind.clone() {
+                NodeKind::Group(g) => Some(NodeKind::Group(moved_group(g, m))).filter(|k| *k != node.kind),
+                kind @ NodeKind::Entity(_) if !node.children.is_empty() => transform_kind(kind, m, self.texture_lock, false)?,
+                _ => None,
+            };
+            if let Some(kind) = moved {
+                e.set_kind(id, kind)?;
             }
         }
         Ok(())
@@ -526,7 +614,7 @@ impl Session {
     }
 
     /// Copies the selection, offset by `delta`, and selects the copies.
-    pub fn duplicate_selection(&mut self, delta: DVec3) -> Result<(), EngineError> {
+    pub fn duplicate_selection(&mut self, delta: DVec3, coalesce: Option<&str>) -> Result<(), EngineError> {
         let roots = self.require_selection()?;
         let mut e = self.map.edit();
         let mut copies = BTreeSet::new();
@@ -542,8 +630,10 @@ impl Session {
                         b.faces.iter_mut().for_each(|f| f.id = Default::default());
                         NodeKind::Brush(b)
                     }
-                    NodeKind::Entity(mut ent) if node.children.is_empty() => {
-                        ent.set("origin", fmt_vec(ent.origin().unwrap_or_default() + delta));
+                    NodeKind::Entity(mut ent) => {
+                        if let Some(origin) = ent.origin().or(node.children.is_empty().then_some(DVec3::ZERO)) {
+                            ent.set("origin", fmt_vec(origin + delta));
+                        }
                         NodeKind::Entity(ent)
                     }
                     NodeKind::Prefab(mut p) => {
@@ -562,7 +652,7 @@ impl Session {
             }
         }
         let c = e.finish();
-        self.apply("Duplicate", c);
+        self.apply_coalesced("Duplicate", c, coalesce);
         self.selection = copies;
         Ok(())
     }
@@ -620,12 +710,13 @@ impl Session {
             return Err(EngineError::NothingSelected);
         }
         let cutter_ids: BTreeSet<NodeId> = self.selected_brushes().into_iter().collect();
-        let visible = self.map.visible_nodes();
+        let editable = self.map.editable_nodes();
         let mut e = self.map.edit();
+        let mut flattened = 0;
         let targets: Vec<(NodeId, Brush)> = self
             .map
             .nodes()
-            .filter(|(id, n)| !cutter_ids.contains(id) && visible.contains(id) && !n.locked)
+            .filter(|(id, _)| !cutter_ids.contains(id) && editable.contains(id))
             .filter_map(|(id, n)| Some((id, n.kind.brush()?.clone())))
             .collect();
         for (id, brush) in targets {
@@ -633,12 +724,17 @@ impl Session {
             for cutter in &cutters {
                 parts = parts.iter().map(|p| p.subtract(cutter)).collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect();
             }
-            if parts != [brush] {
+            if parts != std::slice::from_ref(&brush) {
+                // A brush carved away whole is gone, not flattened.
+                if !parts.is_empty() {
+                    flattened += displaced_faces(std::slice::from_ref(&brush)).saturating_sub(displaced_faces(&parts));
+                }
                 Self::replace_brush(&mut e, id, parts)?;
             }
         }
         let c = e.finish();
         self.apply("Carve", c);
+        self.notice = flattened_notice(flattened);
         Ok(())
     }
 
@@ -667,9 +763,12 @@ impl Session {
         }
         let mut e = self.map.edit();
         let mut kept = BTreeSet::new();
+        let mut flattened = 0;
         for id in brushes {
             let Some(b) = e.node(id).and_then(|n| n.kind.brush()).cloned() else { continue };
             let (front, back) = b.split(points, &self.tex)?;
+            let halves: Vec<Brush> = front.iter().chain(&back).cloned().collect();
+            flattened += displaced_faces(std::slice::from_ref(&b)).saturating_sub(displaced_faces(&halves));
             let parts: Vec<Brush> = match keep {
                 ClipKeep::Front => front.into_iter().collect(),
                 ClipKeep::Back => back.into_iter().collect(),
@@ -679,6 +778,7 @@ impl Session {
         }
         let c = e.finish();
         self.apply("Clip", c);
+        self.notice = flattened_notice(flattened);
         self.selection = kept;
         Ok(())
     }
@@ -739,6 +839,36 @@ impl Session {
         self.apply("Tie to entity", c);
         self.selection = BTreeSet::from([ent]);
         Ok(ent)
+    }
+
+    /// Brush entities that are selected, inside the selection or hold a selected brush.
+    pub fn selected_brush_entities(&self) -> Vec<NodeId> {
+        let is_brush_entity = |id: &NodeId| self.map.get(*id).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)) && !n.children.is_empty());
+        let mut out = BTreeSet::new();
+        for id in &self.selection {
+            out.extend(self.map.subtree(*id).into_iter().filter(is_brush_entity));
+            out.extend(self.map.ancestors(*id).into_iter().find(is_brush_entity));
+        }
+        out.into_iter().collect()
+    }
+
+    /// Sets the origin of brush entities `ids` to `at`, or to the center of each one's brushes.
+    pub fn set_origins(&mut self, ids: &[NodeId], at: Option<DVec3>, coalesce: Option<&str>) -> Result<(), EngineError> {
+        if ids.is_empty() {
+            return Err(EngineError::Refused("select a brush entity, such as a door, first"));
+        }
+        let mut e = self.map.edit();
+        for id in ids {
+            let Some(origin) = at.or_else(|| self.bounds_of([*id]).map(|b| b.center())) else { continue };
+            let Some(NodeKind::Entity(mut ent)) = e.node(*id).map(|n| n.kind.clone()) else { continue };
+            ent.set("origin", fmt_vec(origin));
+            e.set_kind(*id, NodeKind::Entity(ent))?;
+        }
+        let c = e.finish();
+        if !c.is_empty() {
+            self.apply_coalesced("Set origin", c, coalesce);
+        }
+        Ok(())
     }
 
     /// A `tools/trigger` brush entity of `classname` standing on the selected brushes, `height`
@@ -832,7 +962,15 @@ impl Session {
                 ent.set(key, value);
                 NodeKind::World(ent)
             }
-            _ => return Ok(()),
+            NodeKind::Group(mut g) if key == "name" => {
+                g.name = value.to_string();
+                NodeKind::Group(g)
+            }
+            NodeKind::Layer(mut l) if key == "name" => {
+                l.name = value.to_string();
+                NodeKind::Layer(l)
+            }
+            _ => return Err(EngineError::Argument(format!("node {} takes no key `{key}`; groups and layers only take `name`", id.0))),
         };
         e.set_kind(id, kind)?;
         let c = e.finish();
@@ -876,7 +1014,8 @@ impl Session {
         let c = e.finish();
         self.apply(if locked { "Lock" } else { "Unlock" }, c);
         if locked {
-            self.selection.retain(|id| !ids.contains(id));
+            let locked_set: BTreeSet<NodeId> = ids.iter().flat_map(|id| self.map.subtree(*id)).collect();
+            self.selection.retain(|id| !locked_set.contains(id));
         }
         Ok(())
     }
@@ -918,9 +1057,18 @@ impl Session {
 
     /// Gives the current material to the picked faces, else to every face of the selected brushes.
     pub fn apply_material(&mut self) -> Result<(), EngineError> {
+        let m = self.tex.material.clone();
+        self.set_material(&m, "Apply material")
+    }
+
+    /// Takes the material off the picked faces, else off every face of the selected brushes.
+    pub fn clear_material(&mut self) -> Result<(), EngineError> {
+        self.set_material("", "Clear material")
+    }
+
+    fn set_material(&mut self, material: &str, label: &str) -> Result<(), EngineError> {
         if !self.face_selection.is_empty() {
-            let m = self.tex.material.clone();
-            return self.edit_faces("Apply material", None, |f| f.material = m.clone());
+            return self.edit_faces(label, None, |f| f.material = material.to_string());
         }
         let brushes = self.selected_brushes();
         if brushes.is_empty() {
@@ -929,12 +1077,126 @@ impl Session {
         let mut e = self.map.edit();
         for id in brushes {
             let Some(mut b) = e.node(id).and_then(|n| n.kind.brush()).cloned() else { continue };
-            b.faces.iter_mut().for_each(|f| f.material = self.tex.material.clone());
+            b.faces.iter_mut().for_each(|f| f.material = material.to_string());
             e.set_kind(id, NodeKind::Brush(b))?;
         }
         let c = e.finish();
-        self.apply("Apply material", c);
+        self.apply(label, c);
         Ok(())
+    }
+
+    /// Selected nodes not inside another selected node.
+    fn selection_roots(&self) -> Vec<NodeId> {
+        self.selection.iter().copied().filter(|id| !self.map.ancestors(*id).iter().any(|a| self.selection.contains(a))).collect()
+    }
+
+    /// Moves each selected object down onto the first visible solid brush below it, with `size` giving point entity boxes; returns how many found nothing.
+    pub fn drop_to_floor(&mut self, size: &dyn Fn(&Entity) -> Option<Aabb>) -> Result<usize, EngineError> {
+        self.require_selection()?;
+        let roots = self.selection_roots();
+        let moving: BTreeSet<NodeId> = roots.iter().flat_map(|r| self.map.subtree(*r)).collect();
+        let visible = self.map.visible_nodes();
+        let floors: Vec<&Brush> = self
+            .map
+            .nodes()
+            .filter(|(id, _)| visible.contains(id) && !moving.contains(id))
+            .filter_map(|(_, n)| n.kind.brush())
+            .filter(|b| !b.faces.iter().all(|f| mapcraft_map::is_tool_material(&f.material)))
+            .collect();
+        let mut e = self.map.edit();
+        let mut stuck = 0;
+        for &root in &roots {
+            let bounds = self
+                .leaves_of([root])
+                .into_iter()
+                .filter_map(|l| match &self.map.get(l)?.kind {
+                    NodeKind::Brush(b) => b.bounds().ok(),
+                    NodeKind::Entity(ent) => size(ent).or_else(|| ent.origin().map(|o| Aabb::new(o, o))),
+                    NodeKind::Prefab(p) => Some(Aabb::new(p.origin, p.origin)),
+                    NodeKind::Path(p) => p.bounds(),
+                    _ => None,
+                })
+                .reduce(|a, b| a.union(&b))
+                .or_else(|| self.bounds_of([root]));
+            let Some(b) = bounds else {
+                stuck += 1;
+                continue;
+            };
+            let (c, h) = (b.center(), b.size() * 0.49);
+            // Rays start a unit above mid height so an object sunk into its floor rises onto it.
+            let top = c.z + 1.0;
+            let probes = [(0.0, 0.0), (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)].map(|(x, y)| DVec3::new(c.x + h.x * x, c.y + h.y * y, top));
+            let hit = probes.iter().flat_map(|p| floors.iter().filter_map(|f| f.ray_hit(*p, -DVec3::Z).map(|(t, _)| t))).min_by(f64::total_cmp);
+            let Some(t) = hit else {
+                stuck += 1;
+                continue;
+            };
+            let drop = t - (top - b.min.z);
+            if drop.abs() > 1e-9 {
+                self.transform_nodes(&mut e, &[root], &DMat4::from_translation(-DVec3::Z * drop))?;
+            }
+        }
+        if stuck == roots.len() {
+            return Err(EngineError::Refused("nothing solid is below the selection"));
+        }
+        let c = e.finish();
+        self.apply("Drop to floor", c);
+        Ok(stuck)
+    }
+
+    /// Turns and scales each selected object about its own center within `r`, in one undo step; a seed repeats its result.
+    pub fn randomize_selection(&mut self, r: &Randomize, coalesce: Option<&str>) -> Result<(), EngineError> {
+        self.require_selection()?;
+        let mut state = r.seed;
+        let mut next = move || {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as f64 / u64::MAX as f64 * 2.0 - 1.0
+        };
+        let mut e = self.map.edit();
+        for root in self.selection_roots() {
+            let (yaw, pitch, roll, grow) = (next() * r.yaw, next() * r.tilt, next() * r.tilt, 1.0 + next() * r.scale.clamp(0.0, 0.9));
+            let point = is_point_entity(&e, root);
+            if point && let Some(NodeKind::Entity(mut ent)) = e.node(root).map(|n| n.kind.clone()) {
+                // Entities face by their angles key; turning about the origin would leave tilt unrecorded.
+                match ent.get("angles").and_then(mapcraft_map::parse_vec3) {
+                    None if ent.get("angle").is_some() => {
+                        let a = ent.get("angle").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
+                        ent.set("angle", fmt_num((a + yaw).rem_euclid(360.0)));
+                    }
+                    a => {
+                        let a = a.unwrap_or_default();
+                        ent.set("angles", fmt_vec(DVec3::new(a.x + pitch, (a.y + yaw).rem_euclid(360.0), a.z + roll)));
+                    }
+                }
+                e.set_kind(root, NodeKind::Entity(ent))?;
+                continue;
+            }
+            let Some(c) = self.bounds_of([root]).map(|b| b.center()) else { continue };
+            let turn = DQuat::from_rotation_z(yaw.to_radians()) * DQuat::from_rotation_y(pitch.to_radians()) * DQuat::from_rotation_x(roll.to_radians());
+            let m = DMat4::from_translation(c) * DMat4::from_quat(turn) * DMat4::from_scale(DVec3::splat(grow)) * DMat4::from_translation(-c);
+            self.transform_nodes(&mut e, &[root], &m)?;
+        }
+        let c = e.finish();
+        self.apply_coalesced("Randomize", c, coalesce);
+        Ok(())
+    }
+}
+
+/// Degrees of turn about Z and tilt about X and Y either way, and `scale` as a fraction (0.1 is 10%), for [`Session::randomize_selection`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Randomize {
+    pub yaw: f64,
+    pub tilt: f64,
+    pub scale: f64,
+    pub seed: u64,
+}
+
+impl Default for Randomize {
+    fn default() -> Self {
+        Self { yaw: 180.0, tilt: 0.0, scale: 0.0, seed: 1 }
     }
 }
 
@@ -952,6 +1214,55 @@ mod tests {
         let mut s = Session::default();
         s.tex = TexDefaults { material: "dev/grid".into(), scale: 0.25 };
         s
+    }
+
+    fn brush(s: &Session, id: NodeId) -> Brush {
+        s.map.get(id).unwrap().kind.brush().unwrap().clone()
+    }
+
+    fn face_toward(s: &Session, id: NodeId, n: DVec3) -> (NodeId, Brush, FaceId) {
+        let b = brush(s, id);
+        let f = b.faces.iter().find(|f| f.plane().unwrap().normal.dot(n) > 0.99).unwrap().id;
+        (id, b, f)
+    }
+
+    #[test]
+    fn face_drags_slide_stamp_and_seams() {
+        let mut s = session();
+        let w = s.create_shape(Shape::Wedge, Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap()[0];
+        let n = DVec3::new(1.0, 0.0, 1.0).normalize();
+        let slope = vec![face_toward(&s, w, n)];
+        s.extrude(&slope, Push::Offset(n * 16.0), ExtrudeMode::Slide, &[], Some("slide")).unwrap();
+        assert_eq!(brush(&s, w).vertices().unwrap().len(), 6, "a slide tilts the neighbors instead of adding faces");
+        assert!(s.extrude(&slope, Push::Offset(n * -200.0), ExtrudeMode::Slide, &[], Some("slide")).is_err());
+        s.extrude(&slope, Push::Offset(DVec3::ZERO), ExtrudeMode::Slide, &[], Some("slide")).unwrap();
+        assert_eq!(brush(&s, w), slope[0].1, "back at zero the wedge is as it was");
+        assert_eq!(s.undo_label(), Some("Slide"));
+        assert!(s.cancel_coalesce("slide"));
+
+        let block = s.create_brush(Aabb::new(DVec3::new(100.0, 0.0, 0.0), DVec3::new(164.0, 64.0, 64.0))).unwrap();
+        let top = vec![face_toward(&s, block, DVec3::Z)];
+        assert!(s.extrude(&top, Push::Distance(-8.0), ExtrudeMode::Stamp, &[], None).is_err(), "stamps go outward");
+        assert!(s.extrude(&top, Push::Distance(0.0), ExtrudeMode::Stamp, &[], None).is_err());
+        let made = s.extrude(&top, Push::Distance(-100.0), ExtrudeMode::Split, &[], None).unwrap();
+        assert!(made.is_empty(), "a cut past the whole brush adds nothing");
+        assert_eq!(brush(&s, block), top[0].1);
+
+        let left = s.create_brush(Aabb::new(DVec3::new(0.0, 100.0, 0.0), DVec3::new(64.0, 164.0, 64.0))).unwrap();
+        let right = s.create_brush(Aabb::new(DVec3::new(64.0, 100.0, 0.0), DVec3::new(128.0, 164.0, 64.0))).unwrap();
+        let far = s.create_brush(Aabb::new(DVec3::new(64.0, 300.0, 0.0), DVec3::new(128.0, 364.0, 64.0))).unwrap();
+        s.selection = BTreeSet::from([left, right, far]);
+        let seam = face_toward(&s, left, DVec3::X);
+        let group = s.extrude_group(left, seam.2);
+        assert_eq!(group.iter().map(|g| g.0).collect::<Vec<_>>(), vec![left, right], "the touching face joins, the far one does not");
+        let faces: Vec<_> = group.iter().map(|(id, f, _)| (*id, brush(&s, *id), *f)).collect();
+        assert!(matches!(
+            s.extrude(&faces, Push::Offset(DVec3::X * 16.0), ExtrudeMode::Stamp, &[], None),
+            Err(EngineError::Refused("stamps cannot cross a seam"))
+        ));
+        s.extrude(&faces, Push::Offset(DVec3::X * 16.0), ExtrudeMode::Resize, &[], None).unwrap();
+        assert_eq!(brush(&s, left).bounds().unwrap().max.x, 80.0);
+        assert_eq!(brush(&s, right).bounds().unwrap().min.x, 80.0, "the seam slides");
     }
 
     #[test]
@@ -979,6 +1290,25 @@ mod tests {
         s.apply_material().unwrap();
         let mats: Vec<String> = s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| f.material.clone()).collect();
         assert_eq!(mats.iter().filter(|m| *m == "ramps/orange").count(), 1, "only the picked face changes: {mats:?}");
+    }
+
+    #[test]
+    fn clear_material_takes_picked_faces_else_whole_brushes() {
+        let mut s = session();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let mats = |s: &Session| -> Vec<String> { s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| f.material.clone()).collect() };
+        let face = s.map.get(b).unwrap().kind.brush().unwrap().faces[0].id;
+        s.selection.clear();
+        s.face_selection = BTreeSet::from([(b, face)]);
+        s.clear_material().unwrap();
+        assert_eq!(mats(&s).iter().filter(|m| m.is_empty()).count(), 1, "only the picked face is cleared");
+        s.face_selection.clear();
+        s.selection = BTreeSet::from([b]);
+        s.clear_material().unwrap();
+        assert!(mats(&s).iter().all(String::is_empty), "then every face of the selected brush");
+        assert_eq!(s.undo_label(), Some("Clear material"));
+        s.selection.clear();
+        assert!(s.clear_material().is_err(), "nothing selected is refused");
     }
 
     #[test]
@@ -1030,6 +1360,71 @@ mod tests {
         assert!(after.iter().skip(1).all(|f| f.material == "ramps/orange" && f.attrs.get("lightmapscale").is_some_and(|v| v == "8")));
         assert_eq!(after[0].material, faces[0].material, "faces not picked keep theirs");
         assert!(s.undo() && s.undo_label().map(str::to_string) == before, "one undo step");
+    }
+
+    #[test]
+    fn drop_to_floor_lands_each_object_on_what_is_below() {
+        let mut s = session();
+        s.create_brush(Aabb::new(DVec3::new(-512.0, -512.0, -64.0), DVec3::new(512.0, 512.0, 0.0))).unwrap();
+        let shelf = s.create_brush(Aabb::new(DVec3::new(200.0, 200.0, 0.0), DVec3::new(300.0, 300.0, 32.0))).unwrap();
+        let crate_ = s.create_brush(Aabb::new(DVec3::new(0.0, 0.0, 100.0), DVec3::new(32.0, 32.0, 132.0))).unwrap();
+        let ent = s.create_point_entity("info_player_start", DVec3::new(250.0, 250.0, 300.0), vec![]).unwrap();
+        let lost = s.create_point_entity("info_null", DVec3::new(5000.0, 0.0, 300.0), vec![]).unwrap();
+        s.selection = BTreeSet::from([crate_, ent, lost]);
+        let before = s.undo_label().map(str::to_string);
+        assert_eq!(s.drop_to_floor(&|_| None).unwrap(), 1, "nothing is under the far entity");
+        assert_eq!(brush(&s, crate_).bounds().unwrap().min.z, 0.0);
+        assert_eq!(s.map.get(ent).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(250.0, 250.0, 32.0)), "lands on the shelf");
+        assert_eq!(s.map.get(lost).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(5000.0, 0.0, 300.0)));
+        assert!(s.undo() && s.undo_label().map(str::to_string) == before, "one undo step");
+        s.selection = BTreeSet::from([ent]);
+        let feet = |e: &Entity| e.origin().map(|o| Aabb::new(o - DVec3::new(16.0, 16.0, 24.0), o + DVec3::new(16.0, 16.0, 32.0)));
+        s.drop_to_floor(&feet).unwrap();
+        assert_eq!(s.map.get(ent).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(250.0, 250.0, 56.0)), "its box's bottom lands");
+        assert!(s.map.get(shelf).is_some());
+        s.selection = BTreeSet::from([lost]);
+        assert!(matches!(s.drop_to_floor(&|_| None), Err(EngineError::Refused(_))), "nothing below anything selected");
+    }
+
+    #[test]
+    fn drop_to_floor_passes_triggers_and_rises_out_of_its_floor() {
+        let mut s = session();
+        s.create_brush(Aabb::new(DVec3::new(-512.0, -512.0, -256.0), DVec3::new(512.0, 512.0, -128.0))).unwrap();
+        s.create_brush(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0))).unwrap();
+        s.tex.material = "tools/trigger".into();
+        s.create_brush(Aabb::new(DVec3::new(-64.0, -64.0, 0.0), DVec3::new(64.0, 64.0, 128.0))).unwrap();
+        let ent = s.create_point_entity("info_player_start", DVec3::new(0.0, 0.0, 512.0), vec![]).unwrap();
+        let sunk = s.create_point_entity("info_target", DVec3::new(128.0, 128.0, 0.0), vec![]).unwrap();
+        s.selection = BTreeSet::from([ent, sunk]);
+        let centered = |e: &Entity| e.origin().map(|o| Aabb::new(o - DVec3::splat(8.0), o + DVec3::splat(8.0)));
+        assert_eq!(s.drop_to_floor(&centered).unwrap(), 0);
+        let origin = |id| s.map.get(id).unwrap().kind.entity().unwrap().origin();
+        assert_eq!(origin(ent), Some(DVec3::new(0.0, 0.0, 8.0)), "a zone trigger is not a floor");
+        assert_eq!(origin(sunk), Some(DVec3::new(128.0, 128.0, 8.0)), "a box half in its floor rises onto it");
+    }
+
+    #[test]
+    fn randomize_turns_each_object_about_itself_repeatably() {
+        let mut s = session();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 32.0, 32.0))).unwrap();
+        let b = s.create_brush(Aabb::new(DVec3::splat(512.0), DVec3::new(640.0, 544.0, 544.0))).unwrap();
+        let ent = s.create_point_entity("prop_static", DVec3::ZERO, vec![("angles".into(), "0 90 0".into())]).unwrap();
+        s.selection = BTreeSet::from([a, b, ent]);
+        let centers = |s: &Session| [a, b].map(|id| brush(s, id).bounds().unwrap().center());
+        let before = centers(&s);
+        let shape = brush(&s, a);
+        let r = Randomize { yaw: 90.0, tilt: 0.0, scale: 0.0, seed: 7 };
+        s.randomize_selection(&r, Some("randomize")).unwrap();
+        let once = s.map.clone();
+        for (c, was) in centers(&s).iter().zip(before) {
+            assert!(c.distance(was) < 1e-6, "each object turns about its own center");
+        }
+        assert_ne!(brush(&s, a), shape, "it turned");
+        let angles = s.map.get(ent).unwrap().kind.entity().unwrap().get("angles").unwrap().to_string();
+        assert_ne!(angles, "0 90 0");
+        assert!(s.cancel_coalesce("randomize"));
+        s.randomize_selection(&r, Some("randomize")).unwrap();
+        assert_eq!(s.map, once, "the same seed gives the same result");
     }
 
     #[test]
@@ -1107,6 +1502,33 @@ mod tests {
     }
 
     #[test]
+    fn brush_entity_origins_follow_their_brushes() {
+        let mut s = session();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 8.0, 128.0))).unwrap();
+        let door = s.tie_to_entity("func_door_rotating").unwrap();
+        let key = |s: &Session, id| s.map.get(id).unwrap().kind.entity().unwrap().get("origin").map(str::to_string);
+        assert_eq!(s.selected_brush_entities(), [door]);
+        s.selection = BTreeSet::from([b]);
+        assert_eq!(s.selected_brush_entities(), [door], "a selected brush counts its entity");
+        s.set_origins(&[door], Some(DVec3::new(0.0, 4.0, 0.0)), None).unwrap();
+        s.selection = BTreeSet::from([door]);
+        s.translate_selection(DVec3::new(32.0, 0.0, 0.0), None).unwrap();
+        assert_eq!(key(&s, door).as_deref(), Some("32 4 0"), "the hinge moves with the door");
+        s.rotate_selection(DVec3::Z, 90.0).unwrap();
+        let hinge = s.map.get(door).unwrap().kind.entity().unwrap().origin().unwrap();
+        let corner = s.bounds_of([door]).unwrap();
+        assert!((hinge.x - corner.max.x + 4.0).abs() < 1e-6 && (hinge.y - corner.min.y).abs() < 1e-6, "and turns with it: {hinge:?} in {corner:?}");
+        s.duplicate_selection(DVec3::new(0.0, 0.0, 256.0), None).unwrap();
+        let copy = *s.selection.iter().next().unwrap();
+        assert_eq!(s.map.get(copy).unwrap().kind.entity().unwrap().origin(), Some(hinge + DVec3::Z * 256.0), "and copies keep it in place");
+
+        s.selection = BTreeSet::from([door]);
+        crate::execute(&mut s, "tools.center_origins").unwrap();
+        assert_eq!(s.map.get(door).unwrap().kind.entity().unwrap().origin(), Some(s.bounds_of([door]).unwrap().center()));
+        assert_eq!(s.undo_label(), Some("Set origin"));
+    }
+
+    #[test]
     fn create_move_duplicate_delete() {
         let mut s = session();
         let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
@@ -1115,7 +1537,7 @@ mod tests {
         s.translate_selection(DVec3::new(16.0, 0.0, 0.0), None).unwrap();
         assert_eq!(s.map.get(ent).unwrap().kind.entity().unwrap().get("origin"), Some("48 32 0"));
         assert_eq!(s.map.get(b).unwrap().kind.brush().unwrap().bounds().unwrap().min.x, 16.0);
-        s.duplicate_selection(DVec3::new(0.0, 128.0, 0.0)).unwrap();
+        s.duplicate_selection(DVec3::new(0.0, 128.0, 0.0), None).unwrap();
         assert_eq!(s.selection.len(), 2);
         assert!(!s.selection.contains(&b));
         assert_eq!(s.map.len(), 5);
@@ -1215,20 +1637,23 @@ mod tests {
         let b = s.map.get(block).unwrap().kind.brush().unwrap().clone();
         let top = b.faces.iter().find(|f| f.plane().unwrap().normal.z > 0.99).unwrap().id;
         let faces = vec![(block, b.clone(), top)];
-        assert!(s.extrude(&faces, 16.0, ExtrudeMode::Resize, &[], Some("x")).unwrap().is_empty());
-        s.extrude(&faces, 32.0, ExtrudeMode::Resize, &[], Some("x")).unwrap();
+        assert!(s.extrude(&faces, Push::Distance(16.0), ExtrudeMode::Resize, &[], Some("x")).unwrap().is_empty());
+        s.extrude(&faces, Push::Distance(32.0), ExtrudeMode::Resize, &[], Some("x")).unwrap();
         assert_eq!(s.map.get(block).unwrap().kind.brush().unwrap().bounds().unwrap().max.z, 96.0);
-        assert!(s.extrude(&faces, -64.0, ExtrudeMode::Resize, &[], Some("x")).is_err());
+        assert!(s.extrude(&faces, Push::Distance(-64.0), ExtrudeMode::Resize, &[], Some("x")).is_err());
         s.end_coalesce();
         s.undo();
-        let made = s.extrude(&faces, 32.0, ExtrudeMode::Split, &[], Some("y")).unwrap();
-        let made = s.extrude(&faces, 48.0, ExtrudeMode::Split, &made, Some("y")).unwrap();
+        let made = s.extrude(&faces, Push::Distance(32.0), ExtrudeMode::Split, &[], Some("y")).unwrap();
+        let made = s.extrude(&faces, Push::Distance(48.0), ExtrudeMode::Split, &made, Some("y")).unwrap();
         assert_eq!(made.len(), 1);
         assert_eq!(s.map.get(made[0]).unwrap().kind.brush().unwrap().bounds().unwrap().min.z, 64.0);
         assert_eq!(s.map.get(block).unwrap().kind.brush().unwrap().bounds().unwrap().max.z, 64.0);
-        let inward = s.extrude(&faces, -16.0, ExtrudeMode::Split, &made, Some("y")).unwrap();
+        let inward = s.extrude(&faces, Push::Distance(-16.0), ExtrudeMode::Split, &made, Some("y")).unwrap();
         assert_eq!(s.map.get(block).unwrap().kind.brush().unwrap().bounds().unwrap().max.z, 48.0);
         assert_eq!(s.map.get(inward[0]).unwrap().kind.brush().unwrap().bounds().unwrap().min.z, 48.0);
+        let dragged = b.faces.iter().find(|f| f.id == top).unwrap();
+        let cut = s.map.get(block).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.id == top).unwrap().clone();
+        assert_eq!(Face { points: dragged.points, ..cut }, *dragged, "the cut face takes the dragged face's id and texture");
         s.end_coalesce();
         s.undo();
         assert_eq!(s.map.get(block).unwrap().kind.brush().unwrap().bounds().unwrap().max.z, 64.0);

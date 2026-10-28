@@ -1,4 +1,4 @@
-//! Imports SurfsUp SDK maps: a Godot pack (`.pck`) holding the level scene, or the text scene
+//! Imports SurfsUp SDK maps: a Godot pack (`.pck`) holding the level scene, or the scene
 //! itself. CSG shapes become brushes, zones become SurfsUp entities, and the sky and sun become a
 //! `light_environment`.
 
@@ -7,7 +7,9 @@ use std::ops::Range;
 
 use glam::{DAffine3, DMat3, DVec2, DVec3};
 
-use crate::mapcraft::plugin::types::{Brush, Entity, Group, Hull, Image, MaterialInfo, Output, Vec3};
+use crate::mapcraft::plugin::types::{BlendRole, Brush, Entity, Group, Hull, Image, MaterialInfo, Output, Surface, Vec3};
+use crate::scn;
+use crate::trimesh;
 use crate::tscn::{self, Section, Value};
 
 /// SurfsUp's scale: map units (inches) per Godot meter.
@@ -29,6 +31,16 @@ const BOUNDARY_MARGIN: f64 = 4096.0;
 const BOUNDARY_THICKNESS: f64 = 512.0;
 const CLIP: &str = "tools/clip";
 const TRIGGER: &str = "tools/trigger";
+/// Concave collision meshes may hold at most this many triangles in all.
+const MAX_TRIANGLES: usize = 200_000;
+/// Work the ramp splitter may spend on one import, in rough plane tests.
+const SPLIT_WORK: usize = 100_000_000;
+const MAX_VERTICES: usize = 1 << 20;
+/// Godot 4 mesh surface format bits; the layout version is 1 since Godot 4.2.
+const FORMAT_INDEX: u64 = 1 << 12;
+const FORMAT_2D: u64 = 1 << 25;
+const FORMAT_COMPRESSED: u64 = 1 << 29;
+const FORMAT_VERSION_SHIFT: u32 = 35;
 
 /// What an import made, and lines for the Output panel.
 pub struct Imported {
@@ -38,16 +50,18 @@ pub struct Imported {
 
 pub fn import(name: &str, data: &[u8]) -> Result<Imported, String> {
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
-    let mut doc = Doc { data, files: BTreeMap::new(), scenes: Vec::new(), by_path: BTreeMap::new() };
+    let mut doc = Doc { data, files: BTreeMap::new(), scenes: Vec::new(), by_path: BTreeMap::new(), broken: Vec::new() };
     let main = if data.starts_with(b"GDPC") {
         doc.files = pack_files(data)?;
         let path = level_scene(&doc.files)?;
-        doc.load(&path, 0).ok_or_else(|| format!("{path} is not a readable text scene"))?
+        doc.load(&path, 0)?
     } else if data.starts_with(b"[gd_scene") {
         let text = std::str::from_utf8(data).map_err(|_| "the scene is not UTF-8 text".to_string())?;
         doc.add(name.to_string(), tscn::parse(text)?, 0)
+    } else if scn::is_binary(data) {
+        doc.add(name.to_string(), scn::parse(data).map_err(|e| format!("{name}: {e}"))?, 0)
     } else {
-        return Err("not a Godot pack (.pck) or text scene (.tscn)".into());
+        return Err("not a Godot pack (.pck) or scene (.tscn, .scn)".into());
     };
     let nodes = doc.nodes(main)?;
     let mut b = Builder::new(&doc, &nodes, stem);
@@ -61,12 +75,20 @@ pub fn import(name: &str, data: &[u8]) -> Result<Imported, String> {
         b.entities.len() - b.zones,
         b.materials.infos.len()
     )];
+    log.extend(doc.broken.iter().map(|e| format!("{name}: could not read {e}")));
     if !b.skipped.is_empty() {
         let list: Vec<String> = b.skipped.iter().map(|(what, n)| format!("{n} {what}")).collect();
         log.push(format!("{name}: left out {}", list.join(", ")));
     }
     if b.clamped > 0 {
         log.push(format!("{name}: {} brushes reached past MapCraft's world and were cut to fit", b.clamped));
+    }
+    let r = &b.ramp_stats;
+    if r.shapes > 0 {
+        log.push(format!(
+            "{name}: {} concave collision meshes became {} brushes; {} of their {} triangles lie on a brush face",
+            r.shapes, r.brushes, r.on_face, r.triangles
+        ));
     }
     let output = Output { brushes: Vec::new(), entities: b.entities, groups: b.groups, materials: b.materials.infos };
     Ok(Imported { output, log })
@@ -111,21 +133,31 @@ fn pack_files(data: &[u8]) -> Result<BTreeMap<String, Range<usize>>, String> {
             files.insert(path, range);
         }
     }
+    // Exported packs keep converted scenes and resources under `.godot/exported`, named by `X.tscn.remap` files.
+    let remaps: Vec<(String, Range<usize>)> = files
+        .iter()
+        .filter_map(|(path, range)| {
+            let original = path.strip_suffix(".remap")?;
+            let text = std::str::from_utf8(data.get(range.clone())?).ok()?;
+            let target = tscn::parse(text).ok()?.first()?.prop("path")?.text()?.trim_start_matches("res://").to_string();
+            Some((original.to_string(), files.get(&target)?.clone()))
+        })
+        .collect();
+    files.extend(remaps);
     Ok(files)
 }
 
-/// The pack's level: a text scene under `Levels/` other than the game's utilities, the largest if
+/// The pack's level: a scene under `Levels/` other than the game's utilities, the largest if
 /// there are several.
 fn level_scene(files: &BTreeMap<String, Range<usize>>) -> Result<String, String> {
-    let scenes = || files.iter().filter(|(p, _)| p.ends_with(".tscn"));
+    let scenes = || files.iter().filter(|(p, _)| (p.ends_with(".tscn") || p.ends_with(".scn")) && !p.starts_with(".godot/"));
     let level = scenes().filter(|(p, _)| p.starts_with("Levels/") && !p.contains("/Utilities/")).max_by_key(|(_, r)| r.len());
-    if let Some((path, _)) = level.or_else(|| scenes().max_by_key(|(_, r)| r.len())) {
-        return Ok(path.clone());
-    }
-    if files.keys().any(|p| p.ends_with(".scn.remap") || p.ends_with(".scn")) {
-        return Err("the pack holds its level as a binary scene (.scn), which MapCraft cannot read; export it with text scenes".into());
-    }
-    Err("the pack holds no scene".into())
+    let (path, _) = level.or_else(|| scenes().max_by_key(|(_, r)| r.len())).ok_or("the pack holds no scene")?;
+    Ok(path.clone())
+}
+
+fn is_resource(path: &str) -> bool {
+    [".tscn", ".tres", ".scn", ".res"].iter().any(|e| path.ends_with(e))
 }
 
 struct Scene {
@@ -142,6 +174,8 @@ struct Doc<'a> {
     files: BTreeMap<String, Range<usize>>,
     scenes: Vec<Scene>,
     by_path: BTreeMap<String, usize>,
+    /// Resources in the pack that could not be read, with why.
+    broken: Vec<String>,
 }
 
 /// A node with its instanced scene merged in; each property remembers the scene its resources live in.
@@ -196,23 +230,30 @@ impl<'a> Doc<'a> {
         let index = self.scenes.len();
         self.by_path.insert(path.clone(), index);
         self.scenes.push(Scene { path, sections, ext: ext.clone(), sub });
-        for res in ext.into_values().filter(|p| p.ends_with(".tscn") || p.ends_with(".tres")) {
-            self.load(&res, depth + 1);
+        for res in ext.into_values().filter(|p| is_resource(p)) {
+            if self.files.contains_key(&res)
+                && let Err(e) = self.load(&res, depth + 1)
+                && !self.broken.contains(&e)
+            {
+                self.broken.push(e);
+            }
         }
         index
     }
 
-    /// Reads a text scene or resource from the pack once, with the resources it uses.
-    fn load(&mut self, path: &str, depth: usize) -> Option<usize> {
+    /// Reads a scene or resource, text or binary, from the pack once, with the resources it uses.
+    fn load(&mut self, path: &str, depth: usize) -> Result<usize, String> {
         if let Some(i) = self.by_path.get(path) {
-            return Some(*i);
+            return Ok(*i);
         }
         if depth > MAX_NESTING {
-            return None;
+            return Err(format!("{path}: nests too deeply"));
         }
-        let bytes = self.files.get(path).and_then(|r| self.data.get(r.clone()))?;
-        let sections = tscn::parse(std::str::from_utf8(bytes).ok()?).ok()?;
-        Some(self.add(path.to_string(), sections, depth))
+        let bytes = self.files.get(path).and_then(|r| self.data.get(r.clone())).ok_or_else(|| format!("{path}: not in the pack"))?;
+        let sections =
+            if scn::is_binary(bytes) { scn::parse(bytes) } else { std::str::from_utf8(bytes).map_err(|_| "not UTF-8 text".to_string()).and_then(tscn::parse) };
+        let sections = sections.map_err(|e| format!("{path}: {e}"))?;
+        Ok(self.add(path.to_string(), sections, depth))
     }
 
     /// The `[sub_resource]` or loaded `[resource]` a `SubResource` or `ExtResource` value names.
@@ -439,6 +480,30 @@ fn zone_class(kind: &str) -> Option<&'static str> {
     })
 }
 
+/// A concave collision mesh in map space, with the visual surface each triangle lies on.
+struct Ramp {
+    group: String,
+    triangles: Vec<[DVec3; 3]>,
+    names: Vec<String>,
+    surface: Vec<usize>,
+}
+
+#[derive(Default)]
+struct RampStats {
+    shapes: usize,
+    brushes: usize,
+    triangles: usize,
+    on_face: usize,
+}
+
+/// A `MeshInstance3D` drawing an `ArrayMesh`, its surfaces in map space.
+struct Visual<'a> {
+    node: &'a Node,
+    surfaces: Vec<Vec<[DVec3; 3]>>,
+    materials: Vec<Option<(&'a Value, usize)>>,
+    bounds: (DVec3, DVec3),
+}
+
 /// SurfsUp's default zone node names, which older maps rely on instead of metadata.
 fn named_zone(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -484,6 +549,12 @@ struct Builder<'a> {
     boundaries: Vec<(usize, f64)>,
     /// Extent of everything but zones, in map space.
     bounds: Option<(DVec3, DVec3)>,
+    /// Concave collision shapes by node path: a ramp to split, or none when CSG shapes baked it.
+    ramps: BTreeMap<String, Option<Ramp>>,
+    /// Visual meshes that come in through their collision.
+    paired: BTreeSet<String>,
+    work: usize,
+    ramp_stats: RampStats,
 }
 
 impl<'a> Builder<'a> {
@@ -504,11 +575,21 @@ impl<'a> Builder<'a> {
             zones: 0,
             boundaries: Vec::new(),
             bounds: None,
+            ramps: BTreeMap::new(),
+            paired: BTreeSet::new(),
+            work: SPLIT_WORK,
+            ramp_stats: RampStats::default(),
         }
     }
 
     fn skip(&mut self, what: &str) {
-        *self.skipped.entry(what.to_string()).or_default() += 1;
+        self.skip_many(what, 1);
+    }
+
+    fn skip_many(&mut self, what: &str, n: usize) {
+        if n > 0 {
+            *self.skipped.entry(what.to_string()).or_default() += n;
+        }
     }
 
     fn parent(&self, node: &Node) -> Option<&'a Node> {
@@ -524,6 +605,7 @@ impl<'a> Builder<'a> {
 
     fn run(&mut self) -> Result<(), String> {
         let baked = self.baked_collision();
+        self.find_ramps();
         let links: BTreeSet<String> = self
             .nodes
             .iter()
@@ -585,22 +667,108 @@ impl<'a> Builder<'a> {
 
     /// Bounds of static collision meshes, in Godot space: CSG with collision off inside one of them
     /// collides in the game, since SDK maps bake ramp collision into those meshes.
-    fn baked_collision(&mut self) -> Vec<(DVec3, DVec3)> {
+    fn baked_collision(&self) -> Vec<(DVec3, DVec3)> {
+        self.concave_shapes().iter().filter_map(|(_, tris)| aabb(tris.as_flattened())).collect()
+    }
+
+    /// Concave collision shapes of static bodies, with their triangles in Godot space.
+    fn concave_shapes(&self) -> Vec<(&'a Node, Vec<[DVec3; 3]>)> {
         let mut out = Vec::new();
-        for body in self.nodes.iter().filter(|n| n.kind == "StaticBody3D" && !n.hidden) {
+        let nodes: &'a [Node] = self.nodes;
+        for body in nodes.iter().filter(|n| n.kind == "StaticBody3D" && !n.hidden) {
             for shape in self.descendants(body).filter(|n| n.kind == "CollisionShape3D") {
                 let Some((s, section)) = shape.prop("shape").and_then(|(v, s)| self.doc.resolve(s, v)) else { continue };
                 if self.doc.kind(s, section) != "ConcavePolygonShape3D" {
                     continue;
                 }
                 let pts = section.prop("data").map(Value::numbers).unwrap_or_default();
-                let world: Vec<DVec3> = pts.as_chunks::<3>().0.iter().map(|c| shape.global.transform_point3(DVec3::from_array(*c))).collect();
-                if let Some(b) = aabb(&world) {
-                    out.push(b);
-                }
+                let tris = pts
+                    .as_chunks::<9>()
+                    .0
+                    .iter()
+                    .map(|&[a, b, c, d, e, f, g, h, i]| {
+                        [DVec3::new(a, b, c), DVec3::new(d, e, f), DVec3::new(g, h, i)].map(|p| shape.global.transform_point3(p))
+                    })
+                    .collect();
+                out.push((shape, tris));
             }
         }
         out
+    }
+
+    /// Pairs concave collision with the `ArrayMesh` of the same bounds; with none, CSG inside means it is their baked collision.
+    fn find_ramps(&mut self) {
+        let nodes: &'a [Node] = self.nodes;
+        let visuals: Vec<Visual<'a>> = nodes.iter().filter(|n| n.kind == "MeshInstance3D" && !n.hidden).filter_map(|n| self.visual(n)).collect();
+        let csg: Vec<(DVec3, DVec3)> = nodes
+            .iter()
+            .filter(|n| is_csg(&n.kind) && !n.hidden && self.parent(n).is_none_or(|p| !is_csg(&p.kind)))
+            .filter_map(|n| aabb(&self.csg_hulls(n)?.concat()))
+            .collect();
+        let mut total = 0usize;
+        for (shape, tris) in self.concave_shapes() {
+            if shape.hidden || shape.value("disabled") == Some(&Value::Bool(true)) {
+                continue;
+            }
+            total = total.saturating_add(tris.len());
+            let Some((lo, hi)) = aabb(tris.as_flattened()).filter(|_| total <= MAX_TRIANGLES) else { continue };
+            let map: Vec<[DVec3; 3]> = tris.iter().map(|t| t.map(to_map)).collect();
+            let (mlo, mhi) = (to_map(lo).min(to_map(hi)), to_map(lo).max(to_map(hi)));
+            let reach = 1.0 + 0.01 * mlo.distance(mhi);
+            let miss = |v: &Visual| (v.bounds.0 - mlo).abs().max_element().max((v.bounds.1 - mhi).abs().max_element());
+            let rank = |v: &Visual| (v.node.name != shape.name, miss(v));
+            let visual = visuals.iter().filter(|v| miss(v) <= reach).min_by(|a, b| rank(a).0.cmp(&rank(b).0).then(rank(a).1.total_cmp(&rank(b).1)));
+            let Some(v) = visual else {
+                let baked = csg.iter().any(|(a, b)| a.cmpge(lo - DVec3::splat(0.5)).all() && b.cmple(hi + DVec3::splat(0.5)).all());
+                let ramp = Ramp { group: self.group_name(shape), surface: vec![0; map.len()], triangles: map, names: vec![CLIP.into()] };
+                self.ramps.insert(shape.path.clone(), (!baked).then_some(ramp));
+                continue;
+            };
+            self.paired.insert(v.node.path.clone());
+            let names: Vec<String> = v.materials.iter().map(|m| self.material(*m)).collect();
+            let key = |t: &[DVec3; 3]| {
+                let mut k = t.map(|p| (p * 10.0).round().as_i64vec3().to_array());
+                k.sort();
+                k
+            };
+            let drawn: BTreeMap<[[i64; 3]; 3], usize> = v.surfaces.iter().enumerate().flat_map(|(i, s)| s.iter().map(move |t| (key(t), i))).collect();
+            let mut search = SPLIT_WORK / 10;
+            let surface = map
+                .iter()
+                .map(|t| {
+                    drawn.get(&key(t)).copied().unwrap_or_else(|| {
+                        search = search.saturating_sub(drawn.len());
+                        let c = (t[0] + t[1] + t[2]) / 3.0;
+                        let under = |s: &Vec<[DVec3; 3]>| s.iter().any(|v| covers(v, c));
+                        if search == 0 { 0 } else { v.surfaces.iter().position(under).unwrap_or(0) }
+                    })
+                })
+                .collect();
+            self.ramps.insert(shape.path.clone(), Some(Ramp { group: v.node.name.clone(), triangles: map, names, surface }));
+        }
+    }
+
+    fn visual(&self, node: &'a Node) -> Option<Visual<'a>> {
+        let (scene, mesh) = node.prop("mesh").and_then(|(v, s)| self.doc.resolve(s, v))?;
+        let Some(Value::List(list)) = mesh.prop("_surfaces").filter(|_| self.doc.kind(scene, mesh) == "ArrayMesh") else { return None };
+        let set = |v: Option<(&'a Value, usize)>| v.filter(|(v, _)| **v != Value::Nil);
+        let place = |p: DVec3| to_map(node.global.transform_point3(p));
+        let (mut surfaces, mut materials, mut corners) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, s) in list.iter().enumerate() {
+            let tris: Vec<[DVec3; 3]> = surface_triangles(s).unwrap_or_default().into_iter().map(|t| t.map(place)).collect();
+            if tris.is_empty()
+                && let &[x, y, z, w, h, d] = s.get("aabb").map(Value::numbers).unwrap_or_default().as_slice()
+            {
+                corners.extend(box_corners(DVec3::new(x, y, z), DVec3::new(x + w, y + h, z + d)).into_iter().map(place));
+            }
+            corners.extend(tris.as_flattened());
+            surfaces.push(tris);
+            let surface_material = s.get("material").map(|v| (v, scene));
+            materials.push(
+                set(node.prop("material_override")).or_else(|| set(node.prop(&format!("surface_material_override/{i}")))).or_else(|| set(surface_material)),
+            );
+        }
+        Some(Visual { node, surfaces, materials, bounds: aabb(&corners)? })
     }
 
     /// The group a node's brushes go in: its parent's when the parent is a plain spatial node
@@ -626,13 +794,18 @@ impl<'a> Builder<'a> {
 
     /// A convex brush around Godot space points, or none when they enclose no volume.
     fn hull(&mut self, points: &[DVec3], material: &str) -> Option<Brush> {
+        let pts: Vec<DVec3> = points.iter().map(|p| to_map(*p)).collect();
+        self.map_hull(&pts, material, Vec::new())
+    }
+
+    /// A convex brush around map space points, with materials for the faces facing `surfaces`.
+    fn map_hull(&mut self, points: &[DVec3], material: &str, surfaces: Vec<Surface>) -> Option<Brush> {
         let mut clamped = false;
         let pts: Vec<DVec3> = points
             .iter()
-            .map(|p| {
-                let m = to_map(*p);
+            .map(|m| {
                 let c = m.clamp(DVec3::splat(-WORLD), DVec3::splat(WORLD));
-                clamped |= c != m;
+                clamped |= c != *m;
                 c
             })
             .collect();
@@ -645,13 +818,13 @@ impl<'a> Builder<'a> {
         if material != TRIGGER {
             self.bounds = Some(self.bounds.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
         }
-        Some(Brush::Hull(Hull { points: pts.iter().map(|p| Vec3 { x: p.x, y: p.y, z: p.z }).collect(), material: material.to_string(), surfaces: Vec::new() }))
+        Some(Brush::Hull(Hull { points: pts.iter().map(|p| Vec3 { x: p.x, y: p.y, z: p.z }).collect(), material: material.to_string(), surfaces }))
     }
 
     fn point(&mut self, class: &str, node: &Node, mut properties: Vec<(String, String)>) {
         properties.insert(0, ("origin".into(), fmt_vec(to_map(node.global.translation))));
         properties.insert(1, ("angles".into(), angles(&node.global)));
-        self.entities.push(Entity { classname: class.into(), properties, brushes: Vec::new() });
+        self.entities.push(Entity { classname: class.into(), properties, connections: Vec::new(), brushes: Vec::new() });
     }
 
     fn zone(&mut self, class: &str, node: &'a Node) {
@@ -680,7 +853,7 @@ impl<'a> Builder<'a> {
             return;
         }
         self.zones += 1;
-        self.entities.push(Entity { classname: class.into(), properties, brushes });
+        self.entities.push(Entity { classname: class.into(), properties, connections: Vec::new(), brushes });
     }
 
     fn shape_points(&self, shape: &Node) -> Shape {
@@ -757,17 +930,21 @@ impl<'a> Builder<'a> {
     }
 
     fn place(&mut self, node: &Node, brushes: Vec<Brush>, solid: bool) {
+        let name = self.group_name(node);
+        self.place_in(&name, brushes, solid);
+    }
+
+    fn place_in(&mut self, name: &str, brushes: Vec<Brush>, solid: bool) {
         if brushes.is_empty() {
             return;
         }
-        let name = self.group_name(node);
-        let Some(group) = self.group(&name) else { return };
+        let Some(group) = self.group(name) else { return };
         if solid {
             group.brushes.extend(brushes);
         } else if let Some(e) = group.entities.iter_mut().find(|e| e.classname == "func_illusionary") {
             e.brushes.extend(brushes);
         } else {
-            group.entities.push(Entity { classname: "func_illusionary".into(), properties: Vec::new(), brushes });
+            group.entities.push(Entity { classname: "func_illusionary".into(), properties: Vec::new(), connections: Vec::new(), brushes });
         }
     }
 
@@ -881,6 +1058,9 @@ impl<'a> Builder<'a> {
     }
 
     fn mesh(&mut self, node: &'a Node) {
+        if self.paired.contains(&node.path) {
+            return;
+        }
         let Some((scene, section)) = node.prop("mesh").and_then(|(v, s)| self.doc.resolve(s, v)) else {
             self.skip("meshes that are not Godot primitives");
             return;
@@ -935,23 +1115,75 @@ impl<'a> Builder<'a> {
         })
     }
 
-    /// Collision without a mesh of its own becomes player clip; bodies with meshes collide through them.
+    /// Concave collision splits into convex brushes; other collision without a mesh of its own becomes player clip.
     fn static_body(&mut self, body: &'a Node) {
-        if self.descendants(body).any(|n| n.kind == "MeshInstance3D" || is_csg(&n.kind)) {
-            return;
-        }
+        let meshes = self.descendants(body).any(|n| n.kind == "MeshInstance3D" || is_csg(&n.kind));
         let shapes: Vec<&Node> = self.descendants(body).filter(|n| n.kind == "CollisionShape3D" && !n.hidden).collect();
         for shape in shapes {
-            match self.shape_points(shape) {
-                Shape::Hulls(hulls) => {
-                    let brushes: Vec<Brush> = hulls.iter().filter_map(|h| self.hull(h, CLIP)).collect();
-                    self.place(body, brushes, true);
+            match self.ramps.remove(&shape.path) {
+                Some(ramp) => {
+                    if let Some(ramp) = ramp {
+                        self.ramp(ramp);
+                    }
                 }
-                Shape::Skip("concave collision meshes in zones") => self.skip("collision meshes, rebuilt from the CSG they were baked from"),
-                Shape::Skip(what) => self.skip(what),
-                Shape::Boundary(_) => self.skip("world boundaries outside zones"),
+                None if meshes => {}
+                None => match self.shape_points(shape) {
+                    Shape::Hulls(hulls) => {
+                        let brushes: Vec<Brush> = hulls.iter().filter_map(|h| self.hull(h, CLIP)).collect();
+                        self.place(body, brushes, true);
+                    }
+                    Shape::Skip("concave collision meshes in zones") => self.skip("concave collision meshes"),
+                    Shape::Skip(what) => self.skip(what),
+                    Shape::Boundary(_) => self.skip("world boundaries outside zones"),
+                },
             }
         }
+    }
+
+    /// Each brush takes the material most of its surface draws with, and faces on other surfaces keep theirs.
+    fn ramp(&mut self, ramp: Ramp) {
+        let split = trimesh::split(&ramp.triangles, &mut self.work);
+        let mut left = split.left;
+        let mut brushes = Vec::new();
+        let area = |i: usize| ramp.triangles.get(i).map_or(0.0, |[a, b, c]| (*b - *a).cross(*c - *a).length());
+        let surface = |i: usize| ramp.surface.get(i).copied().unwrap_or(0);
+        let name = |s: usize| ramp.names.get(s).or(ramp.names.first()).cloned().unwrap_or_else(|| CLIP.into());
+        for piece in split.pieces {
+            if self.brush_count >= MAX_BRUSHES {
+                left += piece.faces.len();
+                continue;
+            }
+            let mut tally: BTreeMap<usize, f64> = BTreeMap::new();
+            for (i, _) in &piece.faces {
+                *tally.entry(surface(*i)).or_default() += area(*i);
+            }
+            let main = tally.iter().max_by(|a, b| a.1.total_cmp(b.1)).map_or(0, |(s, _)| *s);
+            let hints = piece
+                .faces
+                .iter()
+                .filter(|(i, _)| surface(*i) != main)
+                .map(|(i, n)| Surface { normal: Vec3 { x: n.x, y: n.y, z: n.z }, material: name(surface(*i)) })
+                .collect();
+            let Some(brush) = self.map_hull(&piece.points, &name(main), hints) else {
+                left += piece.faces.len();
+                continue;
+            };
+            if let Brush::Hull(h) = &brush {
+                let points: Vec<DVec3> = h.points.iter().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+                let on = |(i, n): &(usize, DVec3)| {
+                    ramp.triangles
+                        .get(*i)
+                        .is_some_and(|t| points.iter().all(|q| n.dot(*q - t[0]) <= 1.0) && t.iter().all(|c| points.iter().any(|q| q.distance(*c) < 0.1)))
+                };
+                self.ramp_stats.on_face += piece.faces.iter().filter(|f| on(f)).count();
+            }
+            brushes.push(brush);
+        }
+        self.ramp_stats.shapes += 1;
+        self.ramp_stats.brushes += brushes.len();
+        self.ramp_stats.triangles += ramp.triangles.len();
+        self.skip_many("collision triangles that could not become brushes", left);
+        self.place_in(&ramp.group, brushes, true);
     }
 
     /// The sky and sun, as the MapCraft Godot addon's `light_environment` keys.
@@ -983,7 +1215,7 @@ impl<'a> Builder<'a> {
             properties.push(("shadows".into(), if sun.value("shadow_enabled") == Some(&Value::Bool(true)) { "1" } else { "0" }.into()));
         }
         properties.insert(0, ("origin".into(), fmt_vec(origin)));
-        self.entities.push(Entity { classname: "light_environment".into(), properties, brushes: Vec::new() });
+        self.entities.push(Entity { classname: "light_environment".into(), properties, connections: Vec::new(), brushes: Vec::new() });
     }
 
     /// The MapCraft material for a Godot material: an SDK texture when it uses one from
@@ -1006,8 +1238,11 @@ impl<'a> Builder<'a> {
         let id = self.doc.ext_path(scene, value).map(|p| p.rsplit('/').next().unwrap_or(p).split('.').next().unwrap_or(p).to_string());
         let id = id.or_else(|| value.call("SubResource").and_then(|a| a.first()?.text().map(str::to_string))).unwrap_or_else(|| "material".into());
         let Some((s, section)) = self.doc.resolve(scene, value) else { return self.swatch(id, DVec3::splat(0.8)) };
-        if let Some(path) = section.prop("albedo_texture").and_then(|t| self.doc.ext_path(s, t)).and_then(sdk_texture) {
-            return path;
+        if let Some(texture) = section.prop("albedo_texture") {
+            if let Some(path) = self.doc.ext_path(s, texture).and_then(sdk_texture) {
+                return path;
+            }
+            self.skip("material pictures, shown as their color");
         }
         let rgb = match self.doc.kind(s, section) {
             "ShaderMaterial" => self.shader_color(s, section),
@@ -1048,6 +1283,9 @@ impl<'a> Builder<'a> {
                 pixels: Some(Image { width: 4, height: 4, rgba: px.repeat(16) }),
                 size: None,
                 pbr: None,
+                uv_scale: None,
+                pixelated: false,
+                blend: BlendRole::Layer,
             });
         }
         name
@@ -1078,6 +1316,54 @@ enum Shape {
     /// A level world boundary at this map height.
     Boundary(f64),
     Skip(&'static str),
+}
+
+/// Since Godot 4.2 positions lead the vertex data: three floats, or four 16 bit fractions of the box when compressed.
+fn surface_triangles(surface: &Value) -> Option<Vec<[DVec3; 3]>> {
+    let format = surface.get("format")?.num()? as u64;
+    if surface.get("primitive")?.num()? != 3.0 || format & FORMAT_2D != 0 || (format >> FORMAT_VERSION_SHIFT) & 0xFF != 1 {
+        return None;
+    }
+    let Value::Bytes(data) = surface.get("vertex_data")? else { return None };
+    let stated = surface.get("vertex_count")?.num()?.max(0.0) as usize;
+    let count = stated.min(MAX_VERTICES);
+    let compressed = format & FORMAT_COMPRESSED != 0;
+    let size = if compressed { 8 } else { 12 };
+    let (origin, extent) = match surface.get("aabb").map(Value::numbers).unwrap_or_default().as_slice() {
+        &[x, y, z, w, h, d] => (DVec3::new(x, y, z), DVec3::new(w, h, d)),
+        _ => (DVec3::ZERO, DVec3::ONE),
+    };
+    let vertex = |i: usize| -> Option<DVec3> {
+        let at = i.checked_mul(size).filter(|_| i < count)?;
+        let b = data.get(at..at.checked_add(size)?)?;
+        let half = |k: usize| Some(f64::from(u16::from_le_bytes(b.get(k..k + 2)?.try_into().ok()?)) / 65535.0);
+        let float = |k: usize| Some(f64::from(f32::from_le_bytes(b.get(k..k + 4)?.try_into().ok()?)));
+        let p = if compressed { origin + DVec3::new(half(0)?, half(2)?, half(4)?) * extent } else { DVec3::new(float(0)?, float(4)?, float(8)?) };
+        p.is_finite().then_some(p)
+    };
+    let indices: Vec<usize> = if format & FORMAT_INDEX != 0 {
+        let Value::Bytes(ix) = surface.get("index_data")? else { return None };
+        let wide = stated > 1 << 16;
+        let n = surface.get("index_count")?.num()?.max(0.0) as usize;
+        let read = |k: usize| -> Option<usize> {
+            if wide {
+                ix.get(k * 4..k * 4 + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).and_then(|i| usize::try_from(i).ok())
+            } else {
+                ix.get(k * 2..k * 2 + 2).and_then(|b| b.try_into().ok()).map(u16::from_le_bytes).map(usize::from)
+            }
+        };
+        (0..n.min(ix.len())).map_while(read).collect()
+    } else {
+        (0..count).collect()
+    };
+    Some(indices.as_chunks::<3>().0.iter().filter_map(|&[a, b, c]| Some([vertex(a)?, vertex(b)?, vertex(c)?])).collect())
+}
+
+/// Whether a map space point lies on a triangle, within a unit.
+fn covers([a, b, c]: &[DVec3; 3], p: DVec3) -> bool {
+    let n = (*b - *a).cross(*c - *a).normalize_or_zero();
+    let inside = [(a, b), (b, c), (c, a)].iter().all(|(x, y)| (**y - **x).cross(p - **x).dot(n) >= -1e-6);
+    n != DVec3::ZERO && n.dot(p - *a).abs() <= 1.0 && inside
 }
 
 fn box_corners(lo: DVec3, hi: DVec3) -> Vec<DVec3> {
@@ -1406,6 +1692,123 @@ shape = SubResource("plane")
         far.splice(32..40, u64::MAX.to_le_bytes());
         assert!(import("x.pck", &far).is_err(), "a directory past the end");
         assert!(import("x.pck", &pack(&[("a.txt", b"hi")])).is_err(), "a pack without a scene");
+    }
+
+    /// The test scenes exported the way Godot does: binary files under `.godot/exported`, named by `.remap` files.
+    fn binary_pack(compressed: bool, cut: usize) -> Vec<u8> {
+        let scene = tscn::parse(SCENE).unwrap();
+        let mut level = if compressed { scn::tests::encode_body(&scene, false, true) } else { scn::tests::encode(&scene, false, true) };
+        level.truncate(level.len() - cut);
+        let level = if compressed { scn::tests::compress(&level, 4096) } else { level };
+        let kill = scn::tests::encode(&tscn::parse(KILL_BOX).unwrap(), true, true);
+        let remap = |to: &str| format!("[remap]\n\npath=\"res://.godot/exported/1/{to}\"\n").into_bytes();
+        pack(&[
+            (".godot/exported/1/export-a-kill_box.scn", &kill),
+            (".godot/exported/1/export-b-test.scn", &level),
+            ("Levels/Utilities/kill_box.tscn.remap", &remap("export-a-kill_box.scn")),
+            ("Levels/test.tscn.remap", &remap("export-b-test.scn")),
+        ])
+    }
+
+    #[test]
+    fn binary_packs_import_like_text_ones() {
+        let text = import("test.pck", &pack(&[("Levels/Utilities/kill_box.tscn", KILL_BOX.as_bytes()), ("Levels/test.tscn", SCENE.as_bytes())])).unwrap();
+        for compressed in [false, true] {
+            let binary = import("test.pck", &binary_pack(compressed, 0)).unwrap();
+            assert_eq!(binary.log, text.log);
+            assert_eq!(format!("{:?}", binary.output.entities), format!("{:?}", text.output.entities));
+            assert_eq!(format!("{:?}", binary.output.groups), format!("{:?}", text.output.groups));
+            assert_eq!(format!("{:?}", binary.output.materials), format!("{:?}", text.output.materials));
+        }
+        let scn = scn::tests::encode(&tscn::parse(SCENE).unwrap(), false, false);
+        assert!(import("test.scn", &scn).is_ok_and(|i| i.output.groups.iter().any(|g| g.name == "Deck")), "a binary scene on its own");
+    }
+
+    #[test]
+    fn damaged_binary_scenes_are_named() {
+        let err = import("x.pck", &binary_pack(false, 40)).err().unwrap();
+        assert!(err.starts_with("Levels/test.tscn: damaged"), "{err}");
+        assert!(import("x.pck", &binary_pack(true, 40)).is_err());
+        let kill = scn::tests::encode(&tscn::parse(KILL_BOX).unwrap(), false, false);
+        let mut level = tscn::parse(SCENE).unwrap();
+        level[1].attrs[1].1 = Value::Str("res://Levels/Utilities/kill_box.scn".into());
+        let pck = pack(&[("Levels/Utilities/kill_box.scn", &kill[..kill.len() - 30]), ("Levels/test.scn", &scn::tests::encode(&level, false, false))]);
+        let imported = import("x.pck", &pck).unwrap();
+        assert!(imported.log.iter().any(|l| l.contains("could not read Levels/Utilities/kill_box.scn: damaged")), "{:?}", imported.log);
+    }
+
+    /// A prism ramp with collision, drawn with surf and side surfaces; `Glow` draws it again with no collision.
+    fn ramp_scene() -> String {
+        let ring = |z: f64| [DVec3::new(-3.0, 0.0, z), DVec3::new(3.0, 0.0, z), DVec3::new(0.0, 4.0, z)];
+        let (a, b) = (ring(0.0), ring(-10.0));
+        let quad = |p: DVec3, q: DVec3, r: DVec3, s: DVec3| [[p, q, r], [p, r, s]];
+        let surf = [quad(a[0], a[2], b[2], b[0]), quad(a[2], a[1], b[1], b[2])].concat();
+        let side = [quad(a[1], a[0], b[0], b[1]).to_vec(), vec![[a[0], a[1], a[2]], [b[0], b[2], b[1]]]].concat();
+        let list = |items: Vec<String>| items.join(", ");
+        let corners = |t: &[[DVec3; 3]]| t.as_flattened().to_vec();
+        let nums = |t: &[[DVec3; 3]]| list(corners(t).iter().map(|p| format!("{}, {}, {}", p.x, p.y, p.z)).collect());
+        let bytes =
+            |t: &[[DVec3; 3]]| list(corners(t).iter().flat_map(|p| p.to_array()).flat_map(|c| (c as f32).to_le_bytes()).map(|b| b.to_string()).collect());
+        let surface = |t: &[[DVec3; 3]], material: &str| {
+            format!(
+                "{{\n\"aabb\": AABB(-3, 0, -10, 6, 4, 10),\n\"format\": 34359738369,\n\"material\": SubResource(\"{material}\"),\n\"primitive\": 3,\n\"vertex_count\": {},\n\"vertex_data\": PackedByteArray({})\n}}",
+                t.len() * 3,
+                bytes(t)
+            )
+        };
+        format!(
+            r#"[gd_scene format=3]
+
+[sub_resource type="StandardMaterial3D" id="surf"]
+albedo_color = Color(0, 0, 1, 1)
+
+[sub_resource type="StandardMaterial3D" id="side"]
+albedo_color = Color(1, 1, 0, 1)
+
+[sub_resource type="ConcavePolygonShape3D" id="collision"]
+data = PackedVector3Array({})
+
+[sub_resource type="ArrayMesh" id="mesh"]
+_surfaces = [{}, {}]
+
+[node name="Map" type="Node3D"]
+
+[node name="Track" type="Node3D" parent="."]
+
+[node name="Ramp" type="MeshInstance3D" parent="Track"]
+mesh = SubResource("mesh")
+
+[node name="Glow" type="MeshInstance3D" parent="Track"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 50, 0)
+mesh = SubResource("mesh")
+
+[node name="Body" type="StaticBody3D" parent="Track"]
+
+[node name="Ramp" type="CollisionShape3D" parent="Track/Body"]
+shape = SubResource("collision")
+"#,
+            nums(&[surf.clone(), side.clone()].concat()),
+            surface(&surf, "surf"),
+            surface(&side, "side")
+        )
+    }
+
+    #[test]
+    fn concave_ramps_become_convex_brushes_in_text_and_binary_scenes() {
+        let text = ramp_scene();
+        let binary = scn::tests::encode(&tscn::parse(&text).unwrap(), false, true);
+        for imported in [import("ramp.tscn", text.as_bytes()).unwrap(), import("ramp.scn", &binary).unwrap()] {
+            let ramp = group(&imported.output, "Ramp");
+            assert_eq!(ramp.brushes.len(), 1, "a closed prism is one brush");
+            let Some(Brush::Hull(h)) = ramp.brushes.first() else { panic!("the ramp has no brush") };
+            assert_eq!(h.points.len(), 6);
+            assert_eq!(h.material, "ramp/surf", "the brush takes the material of most of its surface");
+            assert_eq!(h.surfaces.len(), 4, "the bottom and both ends keep theirs: {:?}", h.surfaces);
+            assert!(h.surfaces.iter().all(|s| s.material == "ramp/side"));
+            let log = &imported.log;
+            assert!(log.iter().any(|l| l.ends_with("1 concave collision meshes became 1 brushes; 8 of their 8 triangles lie on a brush face")), "{log:?}");
+            assert!(log.iter().any(|l| l.ends_with("left out 1 meshes that are not Godot primitives")), "only the mesh without collision is left out: {log:?}");
+        }
     }
 
     #[test]

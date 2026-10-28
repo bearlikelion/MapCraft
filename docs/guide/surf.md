@@ -6,7 +6,7 @@ Both stay editable after you place them.
 ## Place a ramp
 
 1. Press `B` for the Block tool, then click **Surf Ramp** in the top bar.
-2. Set **Turn**, or click **90°** to add a quarter turn.
+2. Set **Facing** in the inspector, or click the turn icon next to it to add a quarter turn.
 3. Click in a view to place it: on the ground or a face in the 3D view, or at the last block's depth in a 2D view.
 
 A yellow ghost shows where it will land, and stays where the pointer left it while you change settings.
@@ -57,7 +57,7 @@ Each shape also remembers the settings you last used, until you quit.
 | **Gap** | Breaks the ramp into pieces this far apart |
 | **End slope** | Straight only: the base reaches past the top at each end; negative undercuts, and length 0 makes a pyramid |
 | **Lead in**, **Lead out** | Straight runs before and after a curve |
-| **Surf**, **Side** and **Bottom material** | Empty uses the current material; **Use current** fills one in |
+| **Surf**, **Side** and **Bottom material** | Empty uses the current material; the bucket (**Use current material**) fills one in |
 
 ## Keep it surfable
 

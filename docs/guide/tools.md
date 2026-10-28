@@ -19,7 +19,7 @@ Click one or press its key; keys here are from the MapCraft preset (see [Keyboar
 12. **Path** `P`
 
 Hover a tool to see its key, and read the status bar for a hint on using it.
-`Escape` goes back to Select from any other tool.
+`Escape` goes back to Select from any other tool, and in Select it clears the selection.
 A whole drag is one undo step, so `Ctrl+Z` takes all of it back.
 
 ![The tool column with its twelve tools numbered from Select at the top to Path at the bottom](img/tools-column.webp)
@@ -28,9 +28,9 @@ A whole drag is one undo step, so `Ctrl+Z` takes all of it back.
 
 Right click in any view, without dragging, to open a menu of commands for what is selected, as in Blender.
 
-- **Objects selected:** Duplicate, Duplicate Linked, Delete, Hollow, Carve, Merge and Clip, then the **Brush Type**, **Transform**, **UV**, **Organize** and **Curves** submenus, then Focus, Hide, Isolate and Lock. A linked copy adds its linked copy commands.
+- **Objects selected:** Duplicate, Duplicate Linked, Delete, Hollow, Carve, Merge and Clip, then the **Brush Type**, **Transform** (which holds Drop to Floor and Randomize too), **UV**, **Organize** and **Curves** submenus, then Focus, Hide, Isolate and Lock. A linked copy adds its linked copy commands.
 - **Faces picked in the Face tool:** Apply Current Material, Copy Face, Paste Face, the **UV** submenu, Sweep Along Path and Spin.
-- **In the Vertex tool:** the select modes, Merge at Center and Bevel Edges come first.
+- **In the Vertex tool:** the select modes, Merge at Center, Bevel Edges and Delete Vertices (Dissolve Faces in face mode) come first, with Set Origin to Selected Corners when a brush entity is selected.
 - **Nothing selected:** **Add** (every Block shape and generator, Entity and Path), Select All, Show All, Unlock All, Frame All and Go to Origin.
 
 Each entry shows its shortcut, and entries that cannot run are grayed out.
@@ -52,7 +52,8 @@ Press `Q`.
 
 - Click an object to select it.
 - Click the same spot again to select the object behind it.
-- Ctrl+click or Shift+click adds an object, or takes it out.
+- Ctrl+click adds an object, or takes it out; Shift+click does too in a 2D view.
+- Shift+click a face in the 3D view to pick just that face in the [Face](#face) tool.
 - Click empty space to select nothing.
 
 What a click selects follows the selection mode on the top bar: **Groups** (`Alt+1`), **Objects** (`Alt+2`) or **Solids** (`Alt+3`).
@@ -63,14 +64,15 @@ See [Organizing](organizing.md#selection-modes).
 - Drag an object to move the selection.
 - Drag from empty space to draw a box; it selects everything fully inside.
 - Drag a white handle to resize the selection. The opposite side stays put, the moving sides turn red, and labels show the size.
-- The arrow keys nudge the selection one grid step.
+- Ctrl+drag moves a copy and leaves the original, in one undo step.
+- The arrow keys nudge the selection one grid step, Shift+arrow keys one unit, and Ctrl+arrow keys nudge a copy.
 
 A selection cannot shrink below one grid step.
 
 ![Resizing a ramp in the Top view: the moving side is red and labels show its size in every view](img/tools-select-resize.webp)
 
 Shift+drag a face of a selected brush to extrude it, as the [Extrude](#extrude) tool does.
-Ctrl+Shift+drag splits off a new brush, and Ctrl+Alt+Shift+drag stamps one.
+Ctrl+Shift+drag splits off a new brush, Ctrl+Alt+Shift+drag stamps one, and Alt+Shift+drag slides the face.
 In the 3D view, use Move to drag things.
 
 ## Move
@@ -78,7 +80,7 @@ In the 3D view, use Move to drag things.
 Press `W`.
 
 Move works like Select and adds three arrows at the selection's center in the 3D view.
-Drag the red, green or blue arrow to move along X, Y or Z.
+Drag the red, green or blue arrow to move along X, Y or Z, or Ctrl+drag it to move a copy.
 With **Snap** on, the selection's low side along that axis lands on the grid.
 
 ![The Move tool's red, green and blue arrows on a selected ramp in the 3D view](img/tools-move.webp)
@@ -88,30 +90,50 @@ With **Snap** on, the selection's low side along that axis lands on the grid.
 Press `E`.
 
 1. Select the brushes to work on.
-2. Hover a face: it turns red with a yellow outline. In a 2D view, it is the face seen edge on nearest the pointer.
+2. Hover a face: it turns red with a yellow outline.
 3. Drag to push or pull the face; the brush grows or shrinks with it.
 
-Faces of other selected brushes that lie in the same plane move along.
+Which face a drag takes:
 
-Pick how the face moves on the top bar:
+- In the 3D view, it is the face under the pointer.
+  Away from the brushes, the nearest outline edge takes the face hidden behind it, so you can pull a back or an underside without turning the camera.
+- In a 2D view, it is the face seen edge on nearest the pointer.
+  Away from the selection, the Extrude tool takes the nearest one however far off it is.
+- Faces of other selected brushes that lie in the same plane move along.
+- Where two selected brushes touch, the faces on both sides of the seam move together, so one brush grows as the other shrinks.
+  In the 3D view, point at the edge where the seam meets the surface to take it.
 
-- **Along normal**: the face moves straight out and keeps its shape, and new sides stand square to it, as in TrenchBroom.
-- **Stretch**: the face's plane slides, and the faces around it stretch to meet it.
+Pick how a drag moves the face on the top bar:
+
+- **Stretch**: the face's plane moves, and the faces around it stretch to meet it, as in TrenchBroom.
+  This is the default.
+- **Along normal**: the face moves straight out and keeps its shape, and new sides stand square to it.
 
 On a box both do the same; they differ on slanted faces, such as the slope of a ramp.
+MapCraft remembers the pick, and Shift+drag with the Select and Move tools uses it too.
 
 | Mouse | Does |
 |---|---|
 | Drag | Moves the face, resizing its brush |
-| Ctrl+drag | Adds a new brush in the dragged volume instead; dragged inward, it splits the brush in two |
+| Alt+drag | Slides the face: it keeps its shape and the faces around it tilt to follow; in a 2D view it moves freely, shearing the brush |
+| Ctrl+drag | Adds a new brush in the dragged volume instead; dragged inward, it cuts the brush in two |
 | Ctrl+Alt+drag | Stamps a new brush between the face and a moved copy of it |
+
+With the Select and Move tools, hold Shift as well.
 
 ![Extrude: the hovered top face of a platform in red, then the platform pulled taller](img/tools-extrude.webp)
 
-- The status bar shows how far you have dragged.
-- With **Snap** on, straight faces land on the grid and slanted faces move in whole grid steps.
-- A drag that would remove one of the brush's faces is refused.
-- After a split or stamp, the new brushes are selected.
+- The status bar shows how far you have dragged, and labels show the size of the selection.
+- With **Snap** on, the drag stops where a corner of the face lands on the grid, so straight faces land on grid lines.
+  A slide moves in whole grid steps along each axis.
+- Faces that stop bounding the brush drop out, and come back if you drag back before letting go.
+  A drag that would leave no volume is refused.
+- Stamps only go outward, and their sides keep the textures of the walls they continue.
+- Across a seam, Ctrl+drag moves the seam like a plain drag, and stamps are refused.
+- After an outward split or a stamp, the new brushes are selected.
+  After an inward split, the slab by the dragged face is a new brush and both pieces stay selected.
+- `Escape` cancels a drag and puts everything back.
+  A drag that ends where it started, or a split dragged past the whole brush, leaves nothing to undo.
 
 ## Rotate
 
@@ -170,14 +192,14 @@ Its depth matches the last block you drew; the first block is 64 units deep.
 
 1. Press on a face to start on that face, or on empty ground to start at height 0.
 2. Drag to size the base; the block rises as far as the last block you drew.
-3. Hold `Shift` while dragging to set the height instead; let go of `Shift` to size the base again.
+3. Hold `Shift` or `Alt` while dragging to set the height instead; let go to size the base again.
 4. Release the mouse button to make the block.
 
 ### Generator shapes
 
 Plugins add shapes to the bar, such as **Surf Ramp** and **Bhop Platforms** in the SurfsUp SDK.
 
-1. Click the shape. Its settings show in the inspector, with **Turn** to rotate it (the **90°** button adds a quarter turn).
+1. Click the shape. Its settings show in the inspector, with **Facing** to rotate it (the turn icon next to it adds a quarter turn).
 2. A yellow ghost follows the pointer: on the face or ground under it in the 3D view, or at the last block's depth in a 2D view.
 3. Click to place it.
 
@@ -213,16 +235,24 @@ Press `C`.
 1. Select the brushes to cut.
 2. Click two points, or press and drag a line, in any view. In a 2D view the cut runs straight back through the view; in the 3D view, start on a face and the cut runs straight into it.
 3. The points show as yellow squares, with their coordinates in the 2D views. Drag a point to move it.
-4. Check the preview: yellow parts stay, red parts go. The bigger part stays at first; press `Alt+C`, or click **Both**, **Front** or **Back** on the top bar, to change what stays.
-5. Press `Enter` to cut. `Escape` clears the points; press it again to leave the tool.
+4. Check the preview: yellow parts stay, red parts go. The bigger part stays at first; press `Ctrl+Enter` to cycle Front, Back and Both, as in TrenchBroom, or pick one on the top bar.
+5. Press `Enter` to cut. `Escape` or `Delete` takes back the last point; with no points left, `Escape` leaves the tool.
 
+`Delete` never deletes the selected brushes while the Clip tool is on; use **Edit > Delete** for that.
 After the cut, the pieces that stay are selected, and the Clip tool stays on for the next cut.
 
 ![Clipping a ramp diagonally in the Top view: two yellow points with their coordinates, the part that stays outlined in yellow, the part that goes in red, and Both, Front and Back on the top bar](img/tools-clip.webp)
 
 > [!TIP]
-> To cut at any angle, place two points, then click a third point on a face in the 3D view: the cut tilts to run through all three.
-> Clicking again after that, or after two points in a 2D view, starts a new line.
+> To cut at any angle, place two points, then click a third point in another view: two points in the Top view and one in the Front or Side view make a tilted cut.
+> A point placed in a 2D view sits halfway through the selection along that view's depth; in the 3D view it goes on the face under the pointer.
+> A third point in line with the first two is refused, and clicking again after three points, or after two in the 2D view that placed them, starts a new line.
+
+### Clip along a face
+
+Double-click a face in the 3D view to put the cut exactly on that face's plane.
+The cut uses the face's own plane, even an off-grid or slanted one, so a brush cut against another meets it with no gap.
+Check the preview, pick the side to keep and press `Enter` as usual.
 
 ## Vertex
 
@@ -236,7 +266,7 @@ Select brushes, then pick what to work on, as in Blender's edit mode:
 | Edge | `2` | Light blue squares on the edge middles |
 | Face | `3` | Green dots on the face centers |
 
-The mode buttons are on the top bar too, with **Merge** and **Bevel**.
+The mode buttons are on the top bar too, with **Merge**, **Bevel** and **Delete**.
 These keys only work in the Vertex tool, where they win over the same keys elsewhere.
 Switching mode keeps what the selected corners still fully cover, so two selected corners become their edge.
 
@@ -256,12 +286,21 @@ Each brush keeps its own selection, which follows the brush through edits.
 ### Moving
 
 Drag any selected handle to move the whole selection.
-In the 3D view the handles slide across the level plane; hold `Shift` to move them up and down.
+In the 3D view the handles slide across the level plane; hold `Shift` or `Alt` to move them up and down.
 For exact moves, hover a 2D view and press the arrow keys: the selected handles move one grid step at a time.
 
 - The brush always stays a solid convex shape around its corners.
 - A move that would break the brush is refused with "Cannot move there" in the status bar.
-- Handles snap to the grid and to other corners when **Snap** and **Corners** are on.
+- So is an edge or face move that would merge the edge or face into the faces around it, which would lose corners.
+- Corners snap to the grid and to other corners when **Snap** and **Corners** are on.
+- Edges and faces move in whole grid steps, so corners that start on the grid stay on it.
+
+### Delete
+
+`Delete` takes off the selected corners, or the corners of the selected edges, and the brush closes up around the corners left.
+In face mode it dissolves the selected faces instead: the faces around them grow to close the gap, so dissolving a bevel's faces brings back the sharp edge.
+A delete that would leave a flat or open brush is refused.
+In the Vertex tool `Delete` never deletes whole brushes; use **Edit > Delete** for that.
 
 ### Merge
 
@@ -303,24 +342,25 @@ Switching to Face picks every face of the selected brushes, so you can texture t
 Faces hidden between touching brushes, such as the joins between ramp pieces, are left out, and the status bar says how many.
 
 - Click a face in the 3D view to pick only that face.
+  Shift+click in the Select or Move tool does the same and switches here.
 - Ctrl+click or Shift+click adds a face, or takes it out.
 - Click empty space to pick nothing.
 
 Picked faces keep their real color, outlined, so you can judge their materials.
 The inspector shows the face panel: see [Materials](materials.md#the-face-panel) for texturing and [Terrain](displacements.md) for displacements.
 
-![A ramp's faces picked with the Face tool, outlined in cyan, and the face panel in the inspector](img/tools-face.webp)
+![A rock face picked with the Face tool, outlined in cyan, and the face panel in the inspector with its UV editor at the top](img/tools-face.webp)
 
 - `Ctrl+C` copies the active face's material and alignment, and `Ctrl+V` pastes them on the picked faces (see [Copying and pasting faces](materials.md#copying-and-pasting-faces)).
-- A view turned into the [UV editor](materials.md#the-uv-editor) shares the picks.
+- The [UV editor](materials.md#the-uv-editor) at the top of the face panel, and any view turned into one, shares the picks.
 - Leaving the Face tool drops the picks, except for the Sculpt tool, which keeps them to limit its strokes.
 
 ## Sculpt
 
 Press `D`.
 
-Drag on a displacement in any view to raise, lower, smooth, flatten or roughen it.
-The mode, radius and strength are on the top bar, and `Ctrl` swaps raise and lower.
+Drag on a displacement in any view to raise, lower, smooth, flatten or roughen it, or to paint a second material into it and blur the blend.
+The mode, radius, falloff and strength are on the top bar, and `Ctrl` swaps raise and lower.
 See [Terrain](displacements.md#the-sculpt-tool).
 
 ## Path
@@ -346,10 +386,11 @@ These work on the selection and are in the **Tools** menu.
 | **Rotate 90° Clockwise** | `Ctrl+R` | Turns the selection a quarter turn about Z through its center |
 | **Rotate 90° Counter-Clockwise** | `Ctrl+Shift+R` | The same, the other way |
 | **Snap Selection to Grid** | `Ctrl+B` | Moves each selected object, without reshaping it, so its lowest corner (or an entity's or prefab's origin) sits on the nearest grid point |
+| **Drop to Floor** | `End` | Moves each selected object straight down until it rests on the first solid brush below it, passing through triggers, clips and other `tools/` brushes; an object sunk into its floor rises onto it, and objects with nothing below stay put and the status bar says so |
 | **Transform** | `Ctrl+M` | Opens the Transform dialog |
 | **Array** | `Ctrl+Shift+D` | Opens the Array dialog |
+| **Randomize Transform** | none | Opens the Randomize Transform dialog |
 
-The brush inspector has **Carve** and **Hollow** buttons too.
 While texture lock is on, moves, turns, flips and scales keep textures stuck to the brushes (see [Texture lock](materials.md#texture-lock)).
 
 ### The Transform dialog
@@ -377,3 +418,16 @@ A spiral stair is both.
 The copies end up selected.
 
 ![The Array dialog with Copies, Offset, Turn and Pivot](img/tools-array.webp)
+
+### The Randomize Transform dialog
+
+Randomize Transform breaks up rows of props, rocks or crates so they stop looking copied.
+
+- **Turn up to**: the most each object turns about Z, either way.
+- **Tilt up to**: the most it tips about X and Y, either way.
+- **Scale up to**: the most a brush or group grows or shrinks, as a percentage.
+- **Seed**: the same seed gives the same result.
+
+Click **Randomize** to turn and scale each selected object about its own center, all in one undo step.
+Click it again for another roll, or change a value to redo the last roll with it, while the dialog stays open.
+Point entities such as props get new `angles` rather than moved origins, so they stay where they stand.

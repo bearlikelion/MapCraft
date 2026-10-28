@@ -151,6 +151,49 @@ fn drag_with(h: &mut Harness<MapCraftApp>, a: Pos2, b: Pos2, modifiers: Modifier
     h.event(Event::ModifiersChanged(Modifiers::NONE));
 }
 
+#[test]
+fn escape_leaves_the_tool_then_deselects() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state_mut().session_for_test().selection.len(), 1, "the first Esc only leaves the Vertex tool");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state_mut().session_for_test().selection.is_empty(), "the next Esc deselects");
+}
+
+#[test]
+fn ctrl_enter_cycles_the_clip_side_and_enter_cuts() {
+    use mapcraft_engine::ClipKeep;
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 64.0, 64.0))).unwrap();
+    h.state_mut().run_command_for_test("tool.clip");
+    h.run_steps(2);
+    let (a, b) = (h.state().screen_for_test(1, DVec3::new(32.0, -32.0, 0.0)), h.state().screen_for_test(1, DVec3::new(32.0, 96.0, 0.0)));
+    click(&mut h, a);
+    click(&mut h, b);
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(2);
+        seen.push(h.state().clip_keep_for_test());
+    }
+    assert_eq!(h.state().clip_points_for_test(), 2, "Ctrl+Enter changes the side without cutting");
+    assert!([ClipKeep::Front, ClipKeep::Back, ClipKeep::Both].iter().all(|k| seen.contains(k)), "three presses visit every side: {seen:?}");
+    while h.state().clip_keep_for_test() != ClipKeep::Both {
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Enter);
+        h.run_steps(2);
+    }
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(h.state_mut().session_for_test().selected_brushes().len(), 2, "Enter cuts and Both keeps the two halves");
+}
+
 fn bounds(h: &mut Harness<MapCraftApp>, id: mapcraft_map::NodeId) -> mapcraft_geom::Aabb {
     h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().bounds().unwrap()
 }
@@ -186,6 +229,116 @@ fn extrude_split_and_rotate_by_dragging() {
     drag_with(&mut h, from, to, Modifiers::NONE);
     let size = bounds(&mut h, id).size();
     assert!((size.x - 32.0).abs() < 1e-6 && (size.y - 128.0).abs() < 1e-6, "a quarter turn swaps the footprint: {size:?}");
+}
+
+#[test]
+fn escape_cancels_a_face_drag() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 32.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.extrude");
+    let from = h.state().screen_for_test(1, DVec3::new(64.0, 16.0, 0.0));
+    let to = h.state().screen_for_test(1, DVec3::new(126.0, 16.0, 0.0));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for i in 1..=8 {
+        h.hover_at(from + (to - from) * (i as f32 / 8.0));
+        h.run_steps(1);
+    }
+    assert_eq!(bounds(&mut h, id).max.x, 128.0, "the face follows the pointer");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(bounds(&mut h, id).max.x, 64.0, "Escape puts it back");
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(bounds(&mut h, id).max.x, 64.0);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Create brush"), "a cancelled drag leaves nothing to undo");
+
+    drag_with(&mut h, from, from + (to - from) * 0.5, Modifiers::NONE);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Extrude"), "the Extrude tool stays on after Escape");
+    h.state_mut().run_command_for_test("edit.undo");
+    let back = [from + (to - from) * 0.5, from];
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for p in back {
+        h.hover_at(p);
+        h.run_steps(1);
+    }
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Create brush"), "a drag that ends where it began leaves no step");
+    assert_eq!(bounds(&mut h, id).max.x, 64.0);
+
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.hover_at(to);
+    h.run_steps(1);
+    assert_eq!(bounds(&mut h, id).max.x, 128.0);
+    h.event(Event::WindowFocused(false));
+    h.run_steps(2);
+    assert_eq!(bounds(&mut h, id).max.x, 64.0, "leaving the window cancels the drag");
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+}
+
+#[test]
+fn extrude_grabs_outline_edges_and_seams_in_3d() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let a = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.extrude");
+    let off = egui::Vec2::new(15.0, 0.0);
+    let from = h.state().screen_for_test(0, DVec3::new(64.0, 0.0, 32.0)) + off;
+    let to = h.state().screen_for_test(0, DVec3::new(128.0, 0.0, 32.0)) + off;
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    assert!(bounds(&mut h, a).max.x > 64.0, "beside the brush the hidden +X face is grabbed by its outline edge");
+    h.state_mut().run_command_for_test("edit.undo");
+
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0))).unwrap();
+    h.state_mut().session_for_test().selection = std::collections::BTreeSet::from([a, b]);
+    h.run_steps(2);
+    let from = h.state().screen_for_test(0, DVec3::new(64.0, 0.0, 32.0));
+    let to = h.state().screen_for_test(0, DVec3::new(96.0, 0.0, 32.0));
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    assert_eq!(bounds(&mut h, a).max.x, 96.0, "the seam between two selected brushes wins over the face under the pointer");
+    assert_eq!(bounds(&mut h, b).min.x, 96.0, "and both sides move with it");
+}
+
+#[test]
+fn extrude_modifiers_slide_and_split() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 32.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.extrude");
+    let at = |h: &Harness<MapCraftApp>, x: f64, y: f64| h.state().screen_for_test(1, DVec3::new(x, y, 0.0));
+    let (from, to) = (at(&h, 64.0, 16.0), at(&h, 96.0, 48.0));
+    drag_with(&mut h, from, to, Modifiers::ALT);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Slide"));
+    let corners = h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().vertices().unwrap();
+    let moved: Vec<f64> = corners.iter().filter(|v| (v.x - 96.0).abs() < 1e-6).map(|v| v.y).collect();
+    assert!(moved.len() == 4 && moved.iter().all(|y| *y == 32.0 || *y == 64.0), "Alt slides the face in the view plane: {moved:?}");
+    h.state_mut().run_command_for_test("edit.undo");
+
+    let (from, to) = (at(&h, 64.0, 16.0), at(&h, 32.0, 16.0));
+    drag_with(&mut h, from, to, Modifiers::COMMAND);
+    assert_eq!(h.state_mut().session_for_test().selection.len(), 2, "an inward split keeps both parts selected");
+    assert_eq!(h.state().node_count_for_test(), 3);
+    h.state_mut().run_command_for_test("edit.undo");
+
+    let (from, to) = (at(&h, 64.0, 16.0), at(&h, -40.0, 16.0));
+    drag_with(&mut h, from, to, Modifiers::COMMAND);
+    assert_eq!(h.state().node_count_for_test(), 2);
+    assert_eq!(bounds(&mut h, id).max.x, 64.0);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Create brush"), "a split past the whole brush leaves no step");
 }
 
 #[test]
@@ -230,6 +383,42 @@ fn scene_tree_rows_drag_to_reorder() {
 }
 
 #[test]
+fn shift_click_on_a_tree_arrow_opens_and_closes_everything_below() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    s.group_selection().unwrap();
+    s.group_selection().unwrap();
+    h.run_steps(3);
+    let rows = |h: &Harness<MapCraftApp>, label: &str| -> Vec<egui::Rect> {
+        h.query_all_by_label(label).map(|n| n.rect()).filter(|r| r.right() < 320.0 && r.width() > 200.0).collect()
+    };
+    let arrow = |h: &Harness<MapCraftApp>| {
+        let outer = rows(h, "Group")[0];
+        egui::pos2(outer.left() + 2.0 + 14.0 + 8.0, outer.center().y)
+    };
+    let click_with = |h: &mut Harness<MapCraftApp>, at: Pos2, modifiers: Modifiers| {
+        h.event(Event::ModifiersChanged(modifiers));
+        h.hover_at(at);
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(2);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(1);
+    };
+    assert_eq!(rows(&h, "Group").len(), 1, "the outer group starts closed");
+    let at = arrow(&h);
+    click_with(&mut h, at, Modifiers::SHIFT);
+    assert_eq!((rows(&h, "Group").len(), rows(&h, "Brush").len()), (2, 1), "Shift opens every group below");
+    click_with(&mut h, at, Modifiers::SHIFT);
+    assert_eq!((rows(&h, "Group").len(), rows(&h, "Brush").len()), (1, 0), "Shift closes them all");
+    click_with(&mut h, at, Modifiers::NONE);
+    assert_eq!((rows(&h, "Group").len(), rows(&h, "Brush").len()), (2, 0), "a plain click opens only that group");
+}
+
+#[test]
 fn scene_tree_scrolls_to_the_selection() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();
@@ -241,6 +430,89 @@ fn scene_tree_scrolls_to_the_selection() {
     h.run_steps(3);
     let row = h.get_all_by_label("Group").map(|n| n.rect()).find(|r| r.right() < 320.0 && r.width() > 200.0);
     assert!(row.is_some_and(|r| r.bottom() < 1000.0), "the selected group's row is scrolled into view");
+}
+
+#[test]
+fn scene_tree_search_filters_and_steps_through_matches() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use std::collections::BTreeSet;
+    fn rows(h: &Harness<MapCraftApp>, label: &str) -> usize {
+        h.query_all_by_label(label).filter(|n| n.rect().right() < 320.0 && n.rect().width() > 200.0).count()
+    }
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(32.0))).unwrap();
+    s.tex.material = "tools/toolstrigger".into();
+    let a = s.create_brush(Aabb::new(DVec3::splat(64.0), DVec3::splat(96.0))).unwrap();
+    let b = s.create_brush(Aabb::new(DVec3::splat(128.0), DVec3::splat(160.0))).unwrap();
+    s.create_point_entity("info_teleport_destination", DVec3::splat(200.0), vec![("targetname".into(), "stage2".into())]).unwrap();
+    s.selection.clear();
+    h.run_steps(3);
+    assert_eq!(rows(&h, "Brush"), 3);
+
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::F);
+    h.run_steps(2);
+    h.event(Event::Text("TRIGGER".into()));
+    h.run_steps(2);
+    assert_eq!(rows(&h, "Brush"), 0, "the brush without the material is filtered out");
+    assert_eq!(rows(&h, "Brush (tools/toolstrigger)"), 2, "brushes match by material, ignoring case");
+    assert_eq!(rows(&h, "stage2 (info_teleport_destination)"), 0);
+
+    let selected = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().selection.clone();
+    let before = h.state().screen_for_test(0, DVec3::splat(80.0));
+    for (i, want) in [a, b, a].into_iter().enumerate() {
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(selected(&mut h), BTreeSet::from([want]), "Enter steps through the matches in tree order");
+        if i == 0 {
+            assert_ne!(h.state().screen_for_test(0, DVec3::splat(80.0)), before, "Enter focuses the views on the match");
+        }
+    }
+
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(2);
+    h.event(Event::Text("x".into()));
+    h.run_steps(2);
+    assert_eq!(rows(&h, "Brush (tools/toolstrigger)"), 2, "Down leaves the box and keeps the filter");
+
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::F);
+    h.run_steps(2);
+    h.event(Event::Text("stage".into()));
+    h.run_steps(2);
+    assert_eq!(rows(&h, "stage2 (info_teleport_destination)"), 1, "the shortcut selects the old text, and entities match by targetname");
+    assert_eq!(rows(&h, "World"), 1, "ancestors of matches stay in the tree");
+    assert_eq!(rows(&h, "Brush (tools/toolstrigger)"), 0);
+    h.event(Event::Text("zzz".into()));
+    h.run_steps(2);
+    assert_eq!(h.query_all_by_label("Nothing matches").count(), 1);
+
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(rows(&h, "Brush"), 3, "Escape clears the search");
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 6, "without the editor's Escape, which would drop the Face tool");
+}
+
+#[test]
+fn tag_eye_hides_and_shows_what_it_tags() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.state_mut().run_command_for_test("panel.tags");
+    h.run_steps(2);
+    h.get_by_label("Tag selection").click();
+    h.run_steps(2);
+    h.get_by_label("Hide").click();
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    assert!(!s.map.visible_nodes().contains(&b), "hiding the tag hides the tagged brush");
+    assert_eq!(s.undo_label(), Some("Hide tag"));
+    h.get_by_label("Show").click();
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    assert!(s.map.visible_nodes().contains(&b), "showing the tag brings the brush back");
+    assert_eq!(s.undo_label(), Some("Show tag"));
 }
 
 #[test]
@@ -365,6 +637,109 @@ fn displacements_sculpt_in_the_3d_view() {
     assert!(peak > 1.0, "sculpting works in the 2D views too: {peak}");
 }
 
+#[test]
+fn paint_mode_blends_the_current_material() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    s.tex.material = "nature/rock031".into();
+    let id = s.create_brush(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0))).unwrap();
+    let top = s.map.get(id).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.plane().unwrap().normal.z > 0.9).unwrap().id;
+    s.face_selection = std::collections::BTreeSet::from([(id, top)]);
+    s.displace_faces(3).unwrap();
+    s.face_selection.clear();
+    s.tex.material = "nature/grass01".into();
+    h.run_steps(2);
+    h.key_press(egui::Key::D);
+    h.run_steps(1);
+    h.key_press(egui::Key::Num6);
+    h.run_steps(2);
+    assert!(h.query_by_value("opacity 100%").is_some(), "Paint shows its opacity");
+    h.get_by_label("nature/grass01").hover();
+    h.run_steps(4);
+    assert!(h.query_by_label_contains("Ctrl paints the face's own material back").is_some(), "the material chip explains painting");
+
+    let face = |h: &mut Harness<MapCraftApp>| {
+        let b = h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().clone();
+        b.faces.into_iter().find(|f| f.id == top).unwrap().disp.unwrap()
+    };
+    let (from, to) = (h.state().screen_for_test(0, DVec3::new(-64.0, 0.0, 0.0)), h.state().screen_for_test(0, DVec3::new(64.0, 0.0, 0.0)));
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    let d = face(&mut h);
+    assert_eq!(d.blend_material.as_deref(), Some("nature/grass01"), "painting makes the current material the second layer");
+    assert!(d.blend.iter().any(|w| *w > 0.5), "and raises its share under the stroke: {:?}", d.blend);
+    assert!(d.heights.iter().all(|z| *z == 0.0), "painting never moves a vertex");
+
+    h.hover_at(h.state().screen_for_test(0, DVec3::new(0.0, 0.0, 0.0)));
+    h.run_steps(2);
+    assert!(h.state().hint_for_test().starts_with("rock031 + grass01: "), "the status bar reads the blend under the pointer: {}", h.state().hint_for_test());
+    h.state_mut().session_for_test().tex.material = "other".into();
+    let at = h.state().screen_for_test(0, DVec3::ZERO);
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::ALT });
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::ALT });
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert_eq!(h.state_mut().session_for_test().tex.material, "nature/grass01", "Alt+click picks the layer that shows most");
+
+    h.state_mut().session_for_test().undo();
+    let d = face(&mut h);
+    assert!(d.blend_material.is_none() && d.blend.is_empty(), "one undo takes back the stroke and the layer");
+
+    h.event(Event::ModifiersChanged(Modifiers::SHIFT));
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::SHIFT });
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::SHIFT });
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert_eq!(face(&mut h).blend_material.as_deref(), Some("nature/grass01"), "Shift+click paints forward; only Ctrl paints back");
+    h.state_mut().session_for_test().undo();
+
+    h.state_mut().session_for_test().tex.material = "nature/rock031".into();
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    assert!(h.state().status_for_test().contains("pick a second material"), "{}", h.state().status_for_test());
+}
+
+#[test]
+fn inspector_rows_anti_tile_brushes_and_blend_displacements() {
+    use egui::accesskit::Role;
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0))).unwrap();
+    h.run_steps(2);
+    let faces = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().faces.clone();
+    h.get_by_role_and_label(Role::ComboBox, "Anti-tiling").click_accesskit();
+    h.run_steps(2);
+    h.get_by_label("Variation").click_accesskit();
+    h.run_steps(2);
+    assert!(faces(&mut h).iter().all(|f| f.anti_tile() == mapcraft_map::AntiTile::Macro), "the Brushes row writes every face");
+    // An accesskit click leaves the list open.
+    h.get_by_label("Hex tiling").click_accesskit();
+    h.run_steps(2);
+    assert!(faces(&mut h).iter().all(|f| f.anti_tile() == mapcraft_map::AntiTile::Hex), "and offers hex tiling");
+    assert!(h.query_by_label_contains("Pixel textures").is_none(), "smooth textures keep hex tiling");
+
+    h.state_mut().run_command_for_test("tool.face");
+    let s = h.state_mut().session_for_test();
+    let top = s.map.get(id).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.plane().unwrap().normal.z > 0.9).unwrap().id;
+    s.face_selection = std::collections::BTreeSet::from([(id, top)]);
+    s.displace_faces(3).unwrap();
+    s.tex.material = "nature/grass01".into();
+    h.run_steps(3);
+    let disp = |h: &mut Harness<MapCraftApp>| faces(h).into_iter().find(|f| f.id == top).unwrap().disp.unwrap();
+    h.get_all_by_label("Apply current material").last().unwrap().click_accesskit();
+    h.run_steps(2);
+    assert_eq!(disp(&mut h).blend_material.as_deref(), Some("nature/grass01"), "the Blend material bucket blends the current material");
+    h.get_by_label("Fill blend").click_accesskit();
+    h.run_steps(2);
+    assert!(disp(&mut h).blend.iter().all(|w| *w == 1.0), "Fill blend at 100 % covers the face");
+    h.get_by_label("Remove Blend material").click_accesskit();
+    h.run_steps(2);
+    let d = disp(&mut h);
+    assert!(d.blend_material.is_none() && !d.blend.is_empty(), "removing the second material keeps the shares");
+}
+
 fn click(h: &mut Harness<MapCraftApp>, at: Pos2) {
     h.hover_at(at);
     h.run_steps(1);
@@ -390,6 +765,14 @@ fn mirror_groups_show_and_pick_their_copies() {
     click(&mut h, copy);
     assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([group]), "clicking the copy selects its mirror group");
     h.get_by_label("Make real");
+    let carry = |h: &mut Harness<MapCraftApp>| match &h.state_mut().session_for_test().map.get(group).unwrap().kind {
+        mapcraft_map::NodeKind::Group(g) => g.mirror.unwrap().texture_lock,
+        _ => panic!("not a group"),
+    };
+    let before = carry(&mut h);
+    h.get_by_label("Carry textures").click();
+    h.run_steps(2);
+    assert_ne!(carry(&mut h), before, "the row's checkbox carries its label");
 
     h.state_mut().run_command_for_test("edit.select_solids");
     click(&mut h, copy);
@@ -489,6 +872,126 @@ fn uv_editor_grabs_locks_and_cancels() {
 }
 
 #[test]
+fn uv_editor_drags_picked_faces() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    let first = *s.face_selection.first().unwrap();
+    s.face_selection.retain(|p| *p == first);
+    s.active_face = Some(first);
+    h.run_steps(3);
+    let offsets = |h: &mut Harness<MapCraftApp>| -> Vec<(f64, f64)> {
+        h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| (f.u.offset, f.v.offset)).collect()
+    };
+    let before = offsets(&mut h);
+    let at = h.state().uv_panel_for_test().0.center();
+    drag_with(&mut h, at, at + egui::vec2(30.0, 20.0), Modifiers::NONE);
+    let after = offsets(&mut h);
+    assert_eq!(after.iter().zip(&before).filter(|(a, b)| a != b).count(), 1, "dragging the picked face moves its texture alone: {after:?}");
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Move UVs"));
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 1, "the drag picks nothing");
+    h.state_mut().run_command_for_test("edit.undo");
+    assert_eq!(offsets(&mut h), before, "one undo step puts it back");
+
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.hover_at(at + egui::vec2(30.0, 0.0));
+    h.run_steps(2);
+    assert!(h.state().hint_for_test().starts_with("Moved "), "{}", h.state().hint_for_test());
+    h.hover_at(at);
+    h.run_steps(2);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(offsets(&mut h), before);
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Create brush"), "a drag that ends where it began leaves no step");
+}
+
+#[test]
+fn face_inspector_has_a_uv_editor() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let settings = tempfile::tempdir().unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    // Short enough that scrolling down would scroll the face panel.
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 640.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(3);
+    let (rect, fitted, center) = h.state().uv_panel_for_test();
+    assert!(rect.is_positive() && rect.width() > 200.0, "the Face tool's inspector shows a UV view: {rect:?}");
+    let at = rect.center();
+    let wheel = |h: &mut Harness<MapCraftApp>| {
+        h.hover_at(at);
+        h.run_steps(1);
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        });
+        h.run_steps(10);
+    };
+    wheel(&mut h);
+    assert_ne!(h.state().uv_panel_for_test().1, fitted, "scrolling over it zooms it");
+    assert_eq!(h.state().uv_panel_for_test().0, rect, "and leaves the inspector where it was");
+    h.get_by_label("Fit UV View").click();
+    h.run_steps(2);
+    assert_eq!(h.state().uv_panel_for_test().1, fitted, "Fit frames the picked faces again");
+    wheel(&mut h);
+    h.key_press(egui::Key::F);
+    h.run_steps(2);
+    assert_eq!(h.state().uv_panel_for_test().1, fitted, "so does F over it");
+
+    let offsets = |h: &mut Harness<MapCraftApp>| -> Vec<(f64, f64)> {
+        h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.iter().map(|f| (f.u.offset, f.v.offset)).collect()
+    };
+    let before = offsets(&mut h);
+    h.hover_at(at);
+    h.run_steps(2);
+    h.key_press(egui::Key::G);
+    h.run_steps(2);
+    h.hover_at(at + egui::vec2(30.0, 0.0));
+    h.run_steps(2);
+    click(&mut h, at + egui::vec2(30.0, 0.0));
+    assert_ne!(offsets(&mut h), before, "G over it grabs the picked faces' textures");
+    assert_eq!(h.state_mut().session_for_test().undo_label(), Some("Move UVs"));
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 6, "the click that applies picks nothing");
+    assert_eq!(h.state().uv_panel_for_test().2, center, "changing UVs leaves the view where it was");
+
+    h.get_by_label("UV").click();
+    h.run_steps(2);
+    assert!(!h.state().uv_panel_for_test().0.is_positive(), "folding the section hides it");
+    h.get_by_label("UV").click();
+    h.run_steps(2);
+    assert!(h.state().uv_panel_for_test().0.is_positive());
+
+    h.state_mut().run_command_for_test("tool.select");
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(2048.0, 0.0, 0.0), DVec3::new(2112.0, 64.0, 64.0))).unwrap();
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(3);
+    assert_ne!(h.state().uv_panel_for_test().2, center, "coming back on another brush fits its faces");
+}
+
+#[test]
+fn sky_toggles_from_the_3d_header() {
+    let (mut h, _settings) = editor();
+    assert_eq!(h.state().sky_for_test(), (true, Some(true)));
+    h.get_by_label("Sky").click();
+    h.run_steps(2);
+    assert_eq!(h.state().sky_for_test(), (false, Some(false)), "the 3D view draws without the sky");
+    h.state_mut().run_command_for_test("view.sky");
+    h.run_steps(2);
+    assert_eq!(h.state().sky_for_test(), (true, Some(true)), "View > Show Sky brings it back");
+}
+
+#[test]
 fn vertex_tool_bevels_edges_and_merges_corners() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();
@@ -564,6 +1067,322 @@ fn arrow_keys_nudge_picked_corners() {
     let b = bounds(&mut h, id);
     assert_eq!((b.min.x, b.max.x), (0.0, 80.0), "the picked corners move one grid step and the rest of the brush stays");
     assert!(h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().vertices().unwrap().iter().any(|v| *v == DVec3::new(80.0, 0.0, 64.0)));
+}
+
+#[test]
+fn clip_points_come_off_one_at_a_time_and_tilt_from_another_view() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 64.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.clip");
+    let (top, side) = (1, 3);
+    let (a, b) = (h.state().screen_for_test(top, DVec3::new(64.0, -32.0, 0.0)), h.state().screen_for_test(top, DVec3::new(64.0, 96.0, 0.0)));
+    click(&mut h, a);
+    click(&mut h, b);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert!(h.state_mut().session_for_test().map.get(id).is_some(), "Delete in the Clip tool leaves the brush alone");
+    assert_eq!(h.state().clip_points_for_test(), 1, "and takes back the last point");
+    click(&mut h, b);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().clip_points_for_test(), 1, "Esc takes back one point too");
+    click(&mut h, b);
+
+    let tilt = h.state().screen_for_test(side, DVec3::new(96.0, 0.0, 64.0));
+    click(&mut h, tilt);
+    assert_eq!(h.state().clip_points_for_test(), 3, "a point in another 2D view is the third");
+    h.get_by_label("Both").click();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    let mut xs: Vec<(f64, f64)> = s.map.nodes().filter_map(|(_, n)| n.kind.brush()?.bounds().ok()).map(|b| (b.min.x.round(), b.max.x.round())).collect();
+    xs.sort_by(|p, q| p.0.total_cmp(&q.0));
+    assert_eq!(xs, [(0.0, 96.0), (32.0, 128.0)], "the cut tilts through the selection's middle: x - z = 32");
+}
+
+#[test]
+fn double_clicking_a_face_clips_along_it() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let settings = tempfile::tempdir().unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    // Frames a 60th of a second apart, so two clicks land within the double-click time.
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let s = h.state_mut().session_for_test();
+    s.create_brush(Aabb::new(DVec3::new(-128.0, 0.0, 0.0), DVec3::new(-64.0, 64.0, 32.0))).unwrap();
+    s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(128.0, 64.0, 64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.clip");
+    let at = h.state().screen_for_test(0, DVec3::new(-96.0, 32.0, 32.0));
+    h.hover_at(at);
+    h.run_steps(1);
+    for _ in 0..2 {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert_eq!(h.state().clip_points_for_test(), 3, "the face's own plane points");
+    h.get_by_label("Both").click();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    let mut zs: Vec<(f64, f64)> =
+        s.map.nodes().filter_map(|(_, n)| n.kind.brush()?.bounds().ok()).filter(|b| b.min.x >= 0.0).map(|b| (b.min.z, b.max.z)).collect();
+    zs.sort_by(|p, q| p.0.total_cmp(&q.0));
+    assert_eq!(zs, [(0.0, 32.0), (32.0, 64.0)], "the selected brush is cut flush with the other brush's top");
+}
+
+#[test]
+fn edge_and_face_drags_keep_to_the_grid_and_their_shape() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 64.0, 48.0))).unwrap();
+    h.run_steps(2);
+    let corners = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().vertices().unwrap();
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.key_press(egui::Key::Num3);
+    h.run_steps(2);
+    let side = 3;
+    let (from, to) = (h.state().screen_for_test(side, DVec3::new(64.0, 32.0, 24.0)), h.state().screen_for_test(side, DVec3::new(96.0, 32.0, 24.0)));
+    drag(&mut h, from, to);
+    let moved: Vec<f64> = corners(&mut h).into_iter().filter(|v| v.x == 96.0).map(|v| v.z).collect();
+    assert!(moved.len() == 4 && moved.iter().all(|z| *z == 0.0 || *z == 48.0), "the face moves a whole grid step along X only: {moved:?}");
+    h.state_mut().run_command_for_test("edit.undo");
+
+    let pts: Vec<DVec3> = [0.0, 64.0]
+        .into_iter()
+        .flat_map(|y| [DVec3::new(0.0, y, 0.0), DVec3::new(64.0, y, 0.0), DVec3::new(0.0, y, 48.0), DVec3::new(48.0, y, 48.0), DVec3::new(64.0, y, 32.0)])
+        .collect();
+    let s = h.state_mut().session_for_test();
+    let shape = mapcraft_map::Brush::from_vertices(&pts, &[], &s.tex).unwrap();
+    s.set_kind(id, mapcraft_map::NodeKind::Brush(shape), "Shape", None).unwrap();
+    let chamfered = s.map.get(id).unwrap().kind.brush().unwrap().clone();
+    h.run_steps(2);
+    let (from, to) = (h.state().screen_for_test(side, DVec3::new(24.0, 32.0, 48.0)), h.state().screen_for_test(side, DVec3::new(24.0, 32.0, 16.0)));
+    drag(&mut h, from, to);
+    assert_eq!(
+        h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap(),
+        &chamfered,
+        "dragging the top face into the chamfer's foot is refused"
+    );
+    assert!(h.state().status_for_test().starts_with("Cannot move there"), "{}", h.state().status_for_test());
+}
+
+#[test]
+fn vertex_delete_and_alt_drags_up_in_3d() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.key_press(egui::Key::Num1);
+    h.run_steps(2);
+    let side = 3;
+    let corner = h.state().screen_for_test(side, DVec3::new(64.0, 32.0, 64.0));
+    click(&mut h, corner);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    let s = h.state_mut().session_for_test();
+    let b = s.map.get(id).expect("Delete in the Vertex tool keeps the brush").kind.brush().unwrap();
+    assert_eq!(b.vertices().unwrap().len(), 6, "and takes off the picked corners, leaving a wedge");
+    s.undo();
+    h.run_steps(2);
+
+    click(&mut h, corner);
+    let (from, to) = (h.state().screen_for_test(0, DVec3::splat(64.0)), h.state().screen_for_test(0, DVec3::new(64.0, 64.0, 96.0)));
+    drag_with(&mut h, from, to, Modifiers::ALT);
+    assert_eq!(bounds(&mut h, id).max.z, 96.0, "Alt drags the picked corners straight up in the 3D view");
+}
+
+#[test]
+fn entities_rest_on_faces_and_brush_entity_origins_drag() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let ground = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(-128.0, -128.0, -64.0), DVec3::new(128.0, 128.0, 0.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.entity");
+    let floor = h.state().screen_for_test(0, DVec3::ZERO);
+    click(&mut h, floor);
+    let s = h.state_mut().session_for_test();
+    let placed = *s.selection.iter().next().unwrap();
+    assert_eq!(s.map.get(placed).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(0.0, 0.0, 8.0)), "the 16 unit box sits on the floor");
+
+    s.selection = std::collections::BTreeSet::from([ground]);
+    s.duplicate_linked(DVec3::new(0.0, 0.0, 16.0)).unwrap();
+    h.run_steps(2);
+    let raised = h.state().screen_for_test(0, DVec3::new(0.0, 0.0, 16.0));
+    click(&mut h, raised);
+    let s = h.state_mut().session_for_test();
+    let placed = *s.selection.iter().next().unwrap();
+    assert_eq!(s.map.get(placed).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(0.0, 0.0, 24.0)), "and on a linked copy's top");
+
+    s.create_brush(Aabb::new(DVec3::new(256.0, 0.0, 0.0), DVec3::new(320.0, 8.0, 128.0))).unwrap();
+    let door = s.tie_to_entity("func_door_rotating").unwrap();
+    s.set_origins(&[door], Some(DVec3::new(256.0, 0.0, 0.0)), None).unwrap();
+    h.state_mut().run_command_for_test("tool.select");
+    // The inspector settles to the door's keys, which moves the views.
+    h.run_steps(6);
+    let top = 1;
+    let (from, to) = (h.state().screen_for_test(top, DVec3::new(256.0, 0.0, 0.0)), h.state().screen_for_test(top, DVec3::new(320.0, 0.0, 0.0)));
+    drag(&mut h, from, to);
+    let s = h.state_mut().session_for_test();
+    assert_eq!(s.map.get(door).unwrap().kind.entity().unwrap().origin(), Some(DVec3::new(320.0, 0.0, 0.0)), "the origin handle drags the hinge");
+    let leaf = *s.map.get(door).unwrap().children.first().unwrap();
+    assert_eq!(s.map.get(leaf).unwrap().kind.brush().unwrap().bounds().unwrap().min.x, 256.0, "and leaves the door where it is");
+
+    s.create_brush(Aabb::new(DVec3::new(512.0, 0.0, 0.0), DVec3::new(576.0, 8.0, 128.0))).unwrap();
+    let other = s.tie_to_entity("func_door_rotating").unwrap();
+    s.set_origins(&[other], Some(DVec3::new(512.0, 0.0, 0.0)), None).unwrap();
+    s.selection = std::collections::BTreeSet::from([door, other]);
+    h.state_mut().run_command_for_test("tool.vertex");
+    h.run_steps(6);
+    let corner = h.state().screen_for_test(top, DVec3::new(256.0, 8.0, 0.0));
+    click(&mut h, corner);
+    h.state_mut().run_command_for_test("vertex.origin_to_corners");
+    let s = h.state_mut().session_for_test();
+    let origin = |id| s.map.get(id).unwrap().kind.entity().unwrap().origin().unwrap();
+    assert_eq!((origin(door).x, origin(door).z), (256.0, 64.0), "Set Origin to Selected Corners hangs the door on the picked edge");
+    assert_eq!(origin(other), DVec3::new(512.0, 0.0, 0.0), "and leaves the other selected door alone");
+}
+
+fn key_with(h: &mut Harness<MapCraftApp>, key: egui::Key, modifiers: Modifiers) {
+    h.event(Event::ModifiersChanged(modifiers));
+    h.event(Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+    h.event(Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+}
+
+#[test]
+fn ctrl_drag_and_ctrl_arrows_move_copies() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    let top = 1;
+    let (from, to) = (h.state().screen_for_test(top, DVec3::new(32.0, 32.0, 0.0)), h.state().screen_for_test(top, DVec3::new(160.0, 32.0, 0.0)));
+    let back = h.state().screen_for_test(top, DVec3::new(96.0, 32.0, 0.0));
+    h.event(Event::ModifiersChanged(Modifiers::COMMAND));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::COMMAND });
+    for p in [back, from, back, to] {
+        h.hover_at(p);
+        h.run_steps(1);
+    }
+    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::COMMAND });
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert_eq!(h.state().node_count_for_test(), 3, "Ctrl+drag moves one copy, even through its start");
+    assert_eq!(bounds(&mut h, b).min.x, 0.0, "and leaves the original where it was");
+    let copy = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    assert_eq!(bounds(&mut h, copy).min.x, 128.0);
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert_eq!(h.state().node_count_for_test(), 2, "one undo takes back the copy and its move");
+
+    h.state_mut().session_for_test().selection = std::collections::BTreeSet::from([b]);
+    h.hover_at(from);
+    h.run_steps(2);
+    key_with(&mut h, egui::Key::ArrowRight, Modifiers::COMMAND);
+    assert_eq!(h.state().node_count_for_test(), 3, "Ctrl+arrow nudges a copy");
+    assert_eq!(bounds(&mut h, b).min.x, 0.0);
+    key_with(&mut h, egui::Key::ArrowRight, Modifiers::SHIFT);
+    let copy = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    assert_eq!(bounds(&mut h, copy).min.x, 17.0, "Shift+arrow nudges one unit");
+}
+
+#[test]
+fn shift_click_picks_a_face_from_the_select_tool() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    let at = h.state().screen_for_test(0, DVec3::new(32.0, 32.0, 64.0));
+    let click = |h: &mut Harness<MapCraftApp>, modifiers: Modifiers| {
+        h.event(Event::ModifiersChanged(modifiers));
+        h.hover_at(at);
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(2);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+    };
+    click(&mut h, Modifiers::SHIFT);
+    let s = h.state_mut().session_for_test();
+    assert!(s.selection.is_empty());
+    let picked: Vec<_> = s.face_selection.iter().copied().collect();
+    assert_eq!(picked.len(), 1, "Shift+click picks just the face under the pointer");
+    let top = s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.plane().unwrap().normal.z > 0.9).unwrap().id;
+    assert_eq!(picked[0], (b, top));
+    click(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(h.state_mut().session_for_test().face_selection.is_empty(), "now in the Face tool, Ctrl+Shift+click toggles faces");
+}
+
+#[test]
+fn leak_trails_fly_the_camera_along_them() {
+    use mapcraft_geom::DVec3;
+    let (mut h, settings) = editor();
+    let lin = settings.path().join("leak.lin");
+    std::fs::write(&lin, "0 0 0\n100 0 0\n100 100 0\n").unwrap();
+    h.state_mut().load_pointfile_for_test(&lin);
+    h.state_mut().run_command_for_test("run.point_next");
+    h.state_mut().run_command_for_test("run.point_next");
+    let (position, yaw, pitch) = h.state().camera_for_test(0);
+    assert_eq!(position, DVec3::new(100.0, 0.0, 0.0), "the second point");
+    assert!((yaw - 90.0).abs() < 1e-9 && pitch.abs() < 1e-9, "looking along the trail");
+    h.state_mut().run_command_for_test("run.point_prev");
+    assert_eq!(h.state().camera_for_test(0).0, DVec3::ZERO);
+    h.run_steps(2);
+}
+
+#[test]
+fn alt_right_drag_orbits_the_point_under_the_pointer() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::splat(-64.0), DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    let at = h.state().screen_for_test(0, DVec3::ZERO);
+    let (before, yaw, _) = h.state().camera_for_test(0);
+    let toward = (DVec3::ZERO - before).normalize();
+    let pivot = before + toward * Aabb::new(DVec3::splat(-64.0), DVec3::splat(64.0)).ray_hit(before, toward).unwrap();
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::ALT });
+    for k in 1..=8 {
+        h.hover_at(at + egui::vec2(k as f32 * 10.0, 0.0));
+        h.run_steps(1);
+    }
+    h.event(Event::PointerButton { pos: at + egui::vec2(80.0, 0.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.run_steps(1);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    let (after, turned, _) = h.state().camera_for_test(0);
+    assert!((turned - yaw).abs() > 5.0, "the camera turns");
+    assert!(after.distance(before) > 64.0, "and swings around the brush instead of turning in place");
+    assert!((after.distance(pivot) - before.distance(pivot)).abs() < 1e-6, "keeping its distance");
+    assert!(h.state().screen_for_test(0, pivot).distance(at) < 2.0, "with the pivot still under the pointer");
+}
+
+#[test]
+fn f3_searches_and_runs_commands() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.state_mut().session_for_test().selection.clear();
+    h.run_steps(2);
+    h.key_press(egui::Key::F3);
+    h.run_steps(2);
+    h.event(Event::Text("select all".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(h.state_mut().session_for_test().selection.len(), 1, "Enter runs the best match");
 }
 
 /// Connects to the editor's control channel the way `mapcraft-cli mcp` does, sending `token` or the real one.
@@ -689,4 +1508,148 @@ fn agents_build_with_the_maps_sdk() {
     let saved = mapcraft_format::load(&new_map).unwrap();
     assert!(saved.map.nodes().any(|(_, n)| n.kind.entity().is_some_and(|e| e.classname == "zone_start")));
     assert!(saved.map.nodes().any(|(_, n)| matches!(&n.kind, mapcraft_map::NodeKind::Group(g) if g.generator.is_some())));
+}
+
+fn message(h: &mut Harness<MapCraftApp>, id: mapcraft_map::NodeId) -> Option<String> {
+    h.state_mut().session_for_test().map.get(id).unwrap().kind.entity().unwrap().get("message").map(String::from)
+}
+
+#[test]
+fn inspector_edits_several_entities() {
+    use mapcraft_geom::DVec3;
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let a = s.create_point_entity("info_target", DVec3::ZERO, vec![("message".into(), "a".into())]).unwrap();
+    let b = s.create_point_entity("info_target", DVec3::splat(64.0), vec![("message".into(), "b".into())]).unwrap();
+    s.selection = std::collections::BTreeSet::from([a, b]);
+    h.run_steps(2);
+    h.get_by_label("message").focus();
+    h.run_steps(1);
+    h.get_by_label("message").type_text("c");
+    h.run_steps(3);
+    assert_eq!((message(&mut h, a).as_deref(), message(&mut h, b).as_deref()), (Some("c"), Some("c")), "typing into a mixed row sets every entity");
+    h.state_mut().session_for_test().undo();
+    assert_eq!((message(&mut h, a).as_deref(), message(&mut h, b).as_deref()), (Some("a"), Some("b")), "one undo takes the edit back");
+}
+
+#[test]
+fn separate_inspector_edits_are_separate_undo_steps() {
+    use mapcraft_geom::DVec3;
+    let (mut h, _settings) = editor();
+    let a = h.state_mut().session_for_test().create_point_entity("info_target", DVec3::ZERO, vec![("message".into(), "a".into())]).unwrap();
+    h.run_steps(2);
+    h.get_by_label("message").focus();
+    h.run_steps(1);
+    h.get_by_label("message").type_text("b");
+    h.run_steps(2);
+    let typed = message(&mut h, a);
+    assert_ne!(typed.as_deref(), Some("a"));
+    h.get_by_label("Remove message").click();
+    h.run_steps(2);
+    assert_eq!(message(&mut h, a), None);
+    h.state_mut().session_for_test().undo();
+    assert_eq!(message(&mut h, a), typed, "the first undo brings the key back");
+    h.state_mut().session_for_test().undo();
+    assert_eq!(message(&mut h, a).as_deref(), Some("a"), "the second undo takes back the typing");
+}
+
+#[test]
+fn showing_the_inspector_writes_nothing() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::{Connection, NodeKind};
+    let (mut h, _settings) = editor();
+    h.state_mut().run_command_for_test("file.switch_sdk");
+    h.run_steps(2);
+    h.get_by_label("Quake").click();
+    h.run_steps(3);
+    let s = h.state_mut().session_for_test();
+    let light = s.create_point_entity("light", DVec3::ZERO, Vec::new()).unwrap();
+    let mut e = s.map.get(light).unwrap().kind.entity().unwrap().clone();
+    let wire = Connection { output: "OnUser1".into(), target: "x".into(), input: "Toggle".into(), param: String::new(), delay: -1.0, times_to_fire: -1 };
+    e.connections.push(wire);
+    s.set_kind(light, NodeKind::Entity(e), "Wire", None).unwrap();
+    s.selection = std::collections::BTreeSet::from([light]);
+    let (kind, label) = (s.map.get(light).unwrap().kind.clone(), s.undo_label().map(String::from));
+    h.run_steps(3);
+    let s = h.state_mut().session_for_test();
+    assert_eq!(s.map.get(light).unwrap().kind, kind, "no spawnflags and the out of range delay stay as they are");
+    assert_eq!(s.undo_label().map(String::from), label);
+
+    let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    let mut brush = s.map.get(b).unwrap().kind.brush().unwrap().clone();
+    for f in &mut brush.faces {
+        (f.u.scale, f.v.scale) = (-1.0, -1.0);
+    }
+    s.set_kind(b, NodeKind::Brush(brush), "Flip", None).unwrap();
+    s.selection = std::collections::BTreeSet::from([b]);
+    let label = s.undo_label().map(String::from);
+    h.run_steps(3);
+    let s = h.state_mut().session_for_test();
+    assert!(s.map.get(b).unwrap().kind.brush().unwrap().faces.iter().all(|f| f.u.scale == -1.0 && f.v.scale == -1.0));
+    assert_eq!(s.undo_label().map(String::from), label);
+}
+
+fn type_keys(h: &mut Harness<MapCraftApp>, label: &str, keys: &[&str]) {
+    h.get_by_label(label).focus();
+    h.run_steps(1);
+    for k in keys {
+        h.get_by_label(label).type_text(k);
+        h.run_steps(1);
+    }
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+}
+
+#[test]
+fn face_fields_apply_what_was_typed() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let b = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("tool.face");
+    h.run_steps(2);
+    type_keys(&mut h, "Texture scale", &["0", ".", "5"]);
+    type_keys(&mut h, "Rotation", &["-", "4", "5"]);
+    let faces = h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.clone();
+    assert!(faces.iter().all(|f| f.u.scale == 0.5 && f.v.scale == 1.0), "a scale below 1 survives its leading 0");
+    assert!(faces.iter().all(|f| f.rotation == 315.0), "-45 lands on 315, not on what the first keystroke wrapped to");
+}
+
+#[test]
+fn add_key_keeps_a_key_that_is_already_set() {
+    use mapcraft_geom::DVec3;
+    let (mut h, _settings) = editor();
+    let a = h.state_mut().session_for_test().create_point_entity("info_target", DVec3::ZERO, vec![("message".into(), "a".into())]).unwrap();
+    h.run_steps(2);
+    let new_key = |n: &egui_kittest::kittest::AccessKitNode<'_>| n.placeholder() == Some("new key");
+    h.get_by(new_key).focus();
+    h.run_steps(1);
+    h.get_by(new_key).type_text("message");
+    h.run_steps(1);
+    h.get_by_label("Add key").click();
+    h.run_steps(2);
+    assert_eq!(message(&mut h, a).as_deref(), Some("a"));
+    assert_eq!(h.state().status_for_test(), "message is already set");
+}
+
+#[test]
+fn brush_rows_show_world_and_keep_flipped_textures() {
+    use egui_kittest::kittest::NodeT;
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::NodeKind;
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    let mut brush = s.map.get(b).unwrap().kind.brush().unwrap().clone();
+    for f in &mut brush.faces {
+        (f.u.scale, f.v.scale) = (-1.0, -1.0);
+    }
+    s.set_kind(b, NodeKind::Brush(brush), "Flip", None).unwrap();
+    s.selection = std::collections::BTreeSet::from([b]);
+    h.run_steps(2);
+    let world = h.query_all_by_label("World").filter_map(|n| n.accesskit_node().toggled()).collect::<Vec<_>>();
+    assert!(world.contains(&egui::accesskit::Toggled::True), "a world brush lights the World segment: {world:?}");
+    type_keys(&mut h, "Texture scale", &["2"]);
+    let faces = h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.clone();
+    assert!(faces.iter().all(|f| f.u.scale == -2.0 && f.v.scale == -2.0), "flipped textures stay flipped");
 }

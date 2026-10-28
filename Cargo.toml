@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
@@ -53,11 +53,13 @@ sha2 = "0.10"
 
 # gpu: the same wgpu egui-wgpu 0.36 uses
 wgpu = "30"
+naga = "30"
 pollster = "0.4"
 
 # ui
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 egui_kittest = "0.36"
 rfd = "0.17"
 

@@ -56,7 +56,7 @@ Hosting your own registry is covered in [SDK registries](../sdk-registry.md).
 - MapCraft finds the SDKs it ships with by itself.
 - SDKs you install or create in the SDK Manager go into the `sdks` folder of MapCraft's data folder: `~/.local/share/mapcraft/sdks` on Linux, `%LOCALAPPDATA%\mapcraft\sdks` on Windows, `~/Library/Application Support/mapcraft/sdks` on macOS.
 - To use SDKs kept somewhere else, add the folder that holds them under **Extra SDK folders** in **Edit > Preferences** (`Ctrl+Comma`).
-  **Add folder** and **Remove** rescan right away.
+  **Add folder** and **Remove** (the trash can) rescan right away.
 
 When two folders hold an SDK with the same id, the one found first wins.
 With a map that has no SDK, **File > SDK Settings** lists every folder searched.
@@ -93,13 +93,17 @@ Paths are saved per SDK, so every map made with that SDK shares them.
 The **Texture folders** list, below the SDK's own paths, adds more material folders to any SDK.
 
 - Type a folder and click **Add**, or click **Browse** to pick one.
-- A folder that does not exist turns red; **Remove** takes a folder off the list.
+- A folder that does not exist turns red; **Remove** (the trash can) takes a folder off the list.
 - Click **Apply**, or close the window, to reload the materials.
 
 Materials in an added folder are named by their path inside it without the extension, as in the SDK's own folders.
 The SDK's own folders are searched first, then the added ones in list order, so when two folders hold the same name the first one wins.
 Plugins read the added folders too, so the Godot plugin lists the `.tres` materials in them as well as their pictures.
 The list is saved per SDK, under `sdk_textures` in MapCraft's `config.toml`.
+
+For the SDK of the open map, **Folders shown in the Materials panel** lists its top-level material folders with a checkbox each, the same list as **Folders** in the [Materials panel](materials.md#the-materials-panel).
+Unticked folders are saved per SDK under `hidden_textures`.
+Pictures that imports bring in are kept per SDK too, so a Quake map's textures only show on the SDK it was imported with.
 
 > [!NOTE]
 > The game has to find the same names.
@@ -115,6 +119,7 @@ A profile builds or plays your map: it copies files and starts programs, one ste
 - A profile stops at the first step that fails, and a path left empty in SDK Settings stops it with an error.
 - `F9` (**Run Last Profile**) runs the last profile again, or the first one if none has run yet.
 - `Shift+F9` (**Run > Cancel**) stops a running profile.
+- When a compile leaks, the leak trail it writes is loaded and drawn in the views (see [Leak trails](views.md#leak-trails)).
 
 ![The Run menu with the SurfsUp profiles Play in SurfsUp project and Play in SurfsUp, then Run Last Profile and Cancel](img/sdks-run-menu.webp)
 

@@ -25,6 +25,10 @@ impl wad::Files for HostFiles {
     fn list(&self, extensions: &[&str]) -> Vec<String> {
         host::list_files(&extensions.iter().map(|e| e.to_string()).collect::<Vec<_>>())
     }
+
+    fn full_path(&self, path: &str) -> Option<String> {
+        host::file_path(path)
+    }
 }
 
 impl Guest for Quake {
@@ -57,7 +61,7 @@ impl Guest for Quake {
         Ok(import.output)
     }
 
-    fn export_file(exporter: String, mut map: MapData, _context: Context) -> Result<Vec<u8>, String> {
+    fn export_file(exporter: String, mut map: MapData, context: Context) -> Result<Vec<u8>, String> {
         if exporter != "map" {
             return Err(format!("unknown exporter {exporter}"));
         }
@@ -65,7 +69,7 @@ impl Guest for Quake {
             host::log(&format!("{}.map: the world has no wad key, so it names the WADs holding the map's textures: {wad}", map.name));
             map.world.push(("wad".into(), wad));
         }
-        let export = export::export(&map).map_err(|e| format!("{}.map: {e}", map.name))?;
+        let export = export::export(&map, &context.game).map_err(|e| format!("{}.map: {e}", map.name))?;
         for line in &export.warnings {
             host::log(&format!("{}.map: {line}", map.name));
         }
@@ -105,6 +109,9 @@ impl Guest for Quake {
                 positions: p.positions.into_iter().map(|[x, y, z]| Vec3 { x, y, z }).collect(),
                 uvs: p.uvs.into_iter().map(|[u, v]| (u, v)).collect(),
                 indices: p.indices,
+                material: p.material,
+                lightmap: p.lightmap.map(|l| l as u32),
+                lightmap_uvs: p.lightmap_uvs.into_iter().map(|[u, v]| (u, v)).collect(),
             })
             .collect();
         Ok(Model { parts, textures })

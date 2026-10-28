@@ -76,4 +76,19 @@ impl Winding {
     pub fn bounds(&self) -> Option<Aabb> {
         Aabb::from_points(self.0.iter().copied())
     }
+
+    /// Whether this polygon and `other`, lying in one plane facing either way, share some area.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let (n, c) = (other.area_vector().normalize_or_zero(), other.center());
+        other
+            .0
+            .iter()
+            .zip(other.0.iter().cycle().skip(1))
+            .try_fold(self.clone(), |w, (a, b)| {
+                let m = (*b - *a).cross(n).normalize_or_zero();
+                let out = if m.dot(c - *a) > 0.0 { -m } else { m };
+                w.clip_back(&Plane { normal: out, dist: out.dot(*a) })
+            })
+            .is_some()
+    }
 }

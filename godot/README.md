@@ -26,6 +26,14 @@ A C++ GDExtension that loads MapCraft maps (`.mcmap`) in Godot 4.4 and newer, fr
 A face's material name is looked up under the import option `material_root` (`res://Assets/Textures` by default): first `<name>.tres`, `.res` or `.material`, then an image (`png`, `jpg`, `webp`, `tga`, `bmp`) that becomes a `StandardMaterial3D`.
 Texture coordinates use the albedo texture's size, or 64 texels when the material has no texture, the same sizes MapCraft draws with.
 
+A face whose `attrs` set `anti_tile` to `macro` or `hex` gets its material wrapped in `shaders/mapcraft_single_<filter>.gdshader`, which multiplies albedo by low-frequency noise in map space, the same noise MapCraft's views draw.
+With `hex` the wrapper's `hex_tiling` also samples every map as randomly shifted and turned hex tiles over the UVs, as the views do, unless either material uses a Nearest filter, which keeps `macro`.
+The wrapper is a `ShaderMaterial` that copies the material's albedo, UV scale and offset, roughness, metallic, specular, normal and ambient occlusion maps and next pass; `<filter>` is `nearest` for Nearest, `nearest_mipmap` for both Nearest Mipmap filters and `linear` for the rest.
+Only a `StandardMaterial3D` with Godot's default modes (per-pixel shading, back-face culling, Mix blending, Burley diffuse, Schlick GGX specular, texture repeat), no transparency, fades, billboard or grow, no features beyond normal and ambient occlusion maps, and none of the flags that change shading (triplanar, vertex color, forced sRGB, no shadows and the like) can be wrapped; any other material is used as it is, with a warning naming the reason.
+Inside a prefab, the game places the noise by the prefab's own origin, so it repeats with each copy and differs from MapCraft's views.
+A displacement whose `disp` names a `blend_material` (other than empty, its own material or a `tools/` one) stores its `blend` weights in vertex color alpha and draws through `shaders/mapcraft_blend_<filter>.gdshader`, which copies both materials, keeps each one's texel density (`uv_ratio_b`) and mixes them by weight shaped by each texture's brightness; `<filter>` follows the face's own material, both materials must pass the rule above, and missing `blend` values read as 0.
+Meshes get a surface per material, blend layer and anti-tiling mode, named like `rock#macro`, `rock#hex` or `rock|grass`.
+
 ## Entity maps
 
 `classes` maps a classname to a dictionary:

@@ -363,7 +363,7 @@ mod tests {
         s.translate_selection(DVec3::new(0.0, 0.0, 64.0), None).unwrap();
         assert!((ends(&s).z - 72.0).abs() < 1e-6, "copies follow the path");
         s.selection = BTreeSet::from([arr]);
-        s.duplicate_selection(DVec3::X * 32.0).unwrap();
+        s.duplicate_selection(DVec3::X * 32.0, None).unwrap();
         let dup = *s.selection.first().unwrap();
         assert!(curve_of(&s.map.get(dup).unwrap().kind).is_none(), "a duplicate does not follow");
         assert!(s.map.get(ROOT).unwrap().children.contains(&dup));

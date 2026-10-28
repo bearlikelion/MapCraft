@@ -28,12 +28,12 @@ Move, turn, duplicate and delete it like any other object.
 
 Select an instance to see in the inspector:
 
-- the prefab's path;
-- **Origin** and **Pitch Yaw Roll**, which place it;
-- **Open prefab**, which opens the prefab's own file for editing (asking to save your map first);
-- **Make local**, described below.
+- the prefab's name in the header, with its path under it;
+- **Origin** and **Angles** in the **Transform** section, which place it;
+- **Open prefab**, the folder icon in the header, which opens the prefab's own file for editing (asking to save your map first);
+- **Make local**, the icon beside it, described below.
 
-If the prefab file cannot be loaded, the inspector says so in red.
+If the prefab file cannot be loaded, the inspector says so in a red note.
 
 ![A prefab instance, start_area.mcmap, selected in the scene tree, with its path, origin, angles, Open prefab, Make local and Overrides in the inspector](img/prefabs-instance.webp)
 
@@ -42,10 +42,10 @@ If the prefab file cannot be loaded, the inspector says so in red.
 The inspector's **Overrides** section lists each entity in the prefab with its keys, except `origin`.
 Change a value there to change it for this instance only.
 
-- Overridden keys show in bold.
-- The ↺ button next to an overridden key puts back the prefab's value.
+- Keys you have not overridden show dimmed; overridden keys show bright.
+- The curved arrow after an overridden key puts back the prefab's value.
 
-![The Overrides section with zone_start unfolded; play_sfx is overridden, so its reset button is lit](img/prefabs-overrides.webp)
+![The Overrides section under zone_start; play_sfx is overridden, so it shows its curved arrow](img/prefabs-overrides.webp)
 
 ## Make Prefab Local
 

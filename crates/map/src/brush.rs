@@ -14,6 +14,30 @@ pub struct TexAxis {
     pub scale: f64,
 }
 
+/// The face attribute that turns on anti-tiling.
+pub const ANTI_TILE: &str = "anti_tile";
+
+/// How a face hides its texture's repetition in the views and in Godot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AntiTile {
+    #[default]
+    Off,
+    /// Albedo times low-frequency noise in map space.
+    Macro,
+    /// Hex tiling on top of `Macro`.
+    Hex,
+}
+
+/// Hammer's convention: `tools/...` materials mark invisible brushes such as triggers and clips.
+pub fn is_tool_material(name: &str) -> bool {
+    name.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("tools/"))
+}
+
+/// The second layer a face of `material` shows: `layer`, unless it is empty, the face's own material or a tool material.
+pub fn blend_layer<'a>(material: &str, layer: Option<&'a str>) -> Option<&'a str> {
+    layer.filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case(material) && !is_tool_material(l))
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Face {
     #[serde(default)]
@@ -88,6 +112,30 @@ impl Face {
 
     pub fn plane(&self) -> Option<Plane> {
         Plane::from_points(self.points[0], self.points[1], self.points[2])
+    }
+
+    /// The displacement's second layer, when it has one that counts.
+    pub fn blend_layer(&self) -> Option<&str> {
+        blend_layer(&self.material, self.disp.as_ref()?.blend_material.as_deref())
+    }
+
+    pub fn anti_tile(&self) -> AntiTile {
+        let v = self.attrs.get(ANTI_TILE).map_or("", |v| v.trim());
+        if v.eq_ignore_ascii_case("macro") {
+            AntiTile::Macro
+        } else if v.eq_ignore_ascii_case("hex") {
+            AntiTile::Hex
+        } else {
+            AntiTile::Off
+        }
+    }
+
+    pub fn set_anti_tile(&mut self, mode: AntiTile) {
+        match mode {
+            AntiTile::Off => self.attrs.remove(ANTI_TILE),
+            AntiTile::Macro => self.attrs.insert(ANTI_TILE.into(), "macro".into()),
+            AntiTile::Hex => self.attrs.insert(ANTI_TILE.into(), "hex".into()),
+        };
     }
 
     /// Texture coordinates of a point in texels.
@@ -208,6 +256,15 @@ impl Face {
         self.rotation = src.rotation;
     }
 
+    /// Shifts the texture offsets so the texture stays put on the surface while the face moves by `t`.
+    fn lock_texture(&mut self, t: DVec3) {
+        for a in [&mut self.u, &mut self.v] {
+            if a.scale != 0.0 {
+                a.offset -= t.dot(a.axis) / a.scale;
+            }
+        }
+    }
+
     fn reversed(&self) -> Self {
         let mut f = self.clone();
         f.points = [self.points[2], self.points[1], self.points[0]];
@@ -304,7 +361,10 @@ impl Brush {
         let mut faces = Vec::with_capacity(hull.len());
         for pts in hull {
             let Some(plane) = Plane::from_points(pts[0], pts[1], pts[2]) else { continue };
-            let best = old.iter().max_by(|a, b| a.0.normal.dot(plane.normal).total_cmp(&b.0.normal.dot(plane.normal)));
+            let best = old
+                .iter()
+                .find(|(p, _)| p.approx_eq(&plane, 1e-3))
+                .or_else(|| old.iter().max_by(|a, b| a.0.normal.dot(plane.normal).total_cmp(&b.0.normal.dot(plane.normal))));
             let mut face = match best {
                 Some((p, f)) if p.approx_eq(&plane, 1e-3) && (f.id == FaceId(0) || used.insert(f.id)) => {
                     let mut f = (*f).clone();
@@ -414,22 +474,23 @@ impl Brush {
             .collect()
     }
 
-    /// The brush with face `id` moved `distance` along its outward normal, or `None` when that
-    /// would add or remove faces or leave no volume (TrenchBroom's extrude rules).
-    pub fn extrude_face(&self, id: FaceId, distance: f64) -> Option<Self> {
+    /// Face `id` moved `distance` along its normal, dropping faces that stop bounding the brush; `lock` keeps its texture in place.
+    pub fn extrude_face(&self, id: FaceId, distance: f64, lock: bool) -> Option<Self> {
         let mut b = self.clone();
         let face = b.faces.iter_mut().find(|f| f.id == id)?;
-        let n = face.plane()?.normal;
-        face.points = face.points.map(|p| p + n * distance);
-        let solid = b.solid().ok()?;
-        (solid.faces.iter().all(Option::is_some) && solid.volume() > EPSILON).then_some(b)
+        let t = face.plane()?.normal * distance;
+        face.points = face.points.map(|p| p + t);
+        if lock {
+            face.lock_texture(t);
+        }
+        Self::pruned(b.faces).ok()
     }
 
     /// Face `id` pushed `distance` along its normal keeping its shape: outward the brush gains the
     /// volume the face sweeps through, with new sides square to it; inward it is cut at the moved face.
-    pub fn sweep_face(&self, id: FaceId, distance: f64) -> Option<Self> {
+    pub fn sweep_face(&self, id: FaceId, distance: f64, lock: bool) -> Option<Self> {
         if distance <= 0.0 {
-            return self.extrude_face(id, distance);
+            return self.extrude_face(id, distance, lock);
         }
         let solid = self.solid().ok()?;
         let i = self.faces.iter().position(|f| f.id == id)?;
@@ -441,8 +502,57 @@ impl Brush {
         let mut b = Self::from_vertices(&pts, &self.faces, &tex).ok()?;
         let moved = b.faces.iter_mut().find(|f| f.plane().is_some_and(|p| p.normal.dot(n) > 1.0 - 1e-9))?;
         *moved = Face { points: moved.points, ..face.clone() };
+        if lock {
+            moved.lock_texture(n * distance);
+        }
         let solid = b.solid().ok()?;
         (solid.volume() > EPSILON).then_some(b)
+    }
+
+    /// Face `id` moved by `delta` keeping its shape while the faces around it tilt; `None` when a moved corner would be swallowed.
+    pub fn slide_face(&self, id: FaceId, delta: DVec3, lock: bool) -> Option<Self> {
+        let solid = self.solid().ok()?;
+        let i = self.faces.iter().position(|f| f.id == id)?;
+        let face = self.faces.get(i)?;
+        let plane = face.plane()?;
+        let moved: Vec<DVec3> = solid.faces.get(i)?.as_ref()?.0.iter().map(|p| *p + delta).collect();
+        let pts: Vec<DVec3> = solid.vertices().filter(|v| plane.distance(*v).abs() > EPSILON).chain(moved.iter().copied()).collect();
+        let tex = TexDefaults { material: face.material.clone(), scale: face.u.scale };
+        let mut b = Self::from_vertices(&pts, &self.faces, &tex).ok()?;
+        let corners = b.vertices().ok()?;
+        if !moved.iter().all(|m| corners.iter().any(|c| c.distance_squared(*m) < 1e-4)) {
+            return None;
+        }
+        b.adopt_face(face, delta, lock).then_some(b)
+    }
+
+    /// Gives the face lying on `face`'s plane moved by `t` the id and texture of `face`; false when there is none.
+    pub fn adopt_face(&mut self, face: &Face, t: DVec3, lock: bool) -> bool {
+        let Some(plane) = face.plane() else { return false };
+        let target = Plane { normal: plane.normal, dist: plane.dist + plane.normal.dot(t) };
+        let Some(slot) = self.faces.iter_mut().find(|f| f.plane().is_some_and(|p| p.approx_eq(&target, 1e-3))) else { return false };
+        *slot = Face { points: slot.points, ..face.clone() };
+        if lock {
+            slot.lock_texture(t);
+        }
+        true
+    }
+
+    /// Each corner of face `id` with how far it travels, along an edge leaving the face, per unit its plane moves along `along`.
+    pub fn corner_paths(&self, id: FaceId, along: DVec3) -> Vec<(DVec3, DVec3)> {
+        let (Some(plane), Ok(solid)) = (self.faces.iter().find(|f| f.id == id).and_then(Face::plane), self.solid()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for w in solid.faces.iter().flatten() {
+            for (a, b) in w.0.iter().zip(w.0.iter().cycle().skip(1)) {
+                for (c, o) in [(*a, *b), (*b, *a)] {
+                    let step = along.dot(o - c);
+                    if plane.distance(c).abs() < EPSILON && plane.distance(o).abs() > EPSILON && step.abs() > 1e-9 {
+                        out.push((c, (o - c) / step));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// A new brush between face `id` and a copy of it moved `distance` along its normal
@@ -466,7 +576,7 @@ impl Brush {
             pts.extend(b.vertices()?);
             faces.extend(b.faces.iter().cloned());
         }
-        Self::from_vertices(&pts, &faces, &TexDefaults::default()).map(Self::with_new_ids)
+        Self::from_vertices(&pts, &faces, &TexDefaults::default()).map(|b| b.with_new_ids().keep_unreshaped_grids(brushes))
     }
 
     pub fn planes(&self) -> Result<Vec<Plane>, BrushError> {
@@ -551,11 +661,7 @@ impl Brush {
                 d.start += t;
             }
             if lock {
-                for a in [&mut f.u, &mut f.v] {
-                    if a.scale != 0.0 {
-                        a.offset -= t.dot(a.axis) / a.scale;
-                    }
-                }
+                f.lock_texture(t);
             }
         }
         b
@@ -580,7 +686,8 @@ impl Brush {
                 back.push(cut.clone());
                 let mut front = self.clone().with_new_ids().faces;
                 front.push(cut.reversed());
-                Ok((Self::pruned(front).ok(), Self::pruned(back).ok()))
+                let part = |faces| Self::pruned(faces).ok().map(|b| b.keep_unreshaped_grids(std::slice::from_ref(self)));
+                Ok((part(front), part(back)))
             }
         }
     }
@@ -604,7 +711,7 @@ impl Brush {
                     let mut inside = rest.faces.clone();
                     inside.push(face.clone());
                     if let Ok(b) = Self::pruned(outside) {
-                        out.push(b.with_new_ids());
+                        out.push(b.with_new_ids().keep_unreshaped_grids(std::slice::from_ref(self)));
                     }
                     let Ok(b) = Self::pruned(inside) else { return Ok(out) };
                     rest_solid = b.solid()?;
@@ -613,6 +720,28 @@ impl Brush {
             }
         }
         Ok(out)
+    }
+
+    /// Flattens each displacement whose face lost the four corners of the face in `sources` it was copied from.
+    fn keep_unreshaped_grids(mut self, sources: &[Self]) -> Self {
+        if !self.has_displacement() {
+            return self;
+        }
+        let before: Vec<(&Displacement, Vec<DVec3>)> = sources
+            .iter()
+            .filter_map(|b| Some((b, b.solid().ok()?)))
+            .flat_map(|(b, s)| b.faces.iter().zip(s.faces).filter_map(|(f, w)| Some((f.disp.as_ref()?, w?.0))))
+            .collect();
+        let windings = self.solid().map(|s| s.faces).unwrap_or_default();
+        let same = |a: &[DVec3], b: &[DVec3]| a.len() == 4 && b.len() == 4 && a.iter().all(|p| b.iter().any(|q| p.distance_squared(*q) < 1e-6));
+        for (i, f) in self.faces.iter_mut().enumerate() {
+            let Some(d) = &f.disp else { continue };
+            let kept = windings.get(i).and_then(Option::as_ref).is_some_and(|w| before.iter().any(|(src, p)| *src == d && same(&w.0, p)));
+            if !kept {
+                f.disp = None;
+            }
+        }
+        self
     }
 
     pub fn intersect(&self, other: &Self) -> Option<Self> {
@@ -896,21 +1025,20 @@ mod tests {
             f.id = FaceId(i as u64 + 1);
         }
         let top = b.faces.iter().find(|f| f.plane().unwrap().normal.z > 0.99).unwrap().id;
-        let taller = b.extrude_face(top, 32.0).unwrap();
+        let taller = b.extrude_face(top, 32.0, false).unwrap();
         assert_eq!(taller.bounds().unwrap().max.z, 96.0);
-        assert!(b.extrude_face(top, -64.0).is_none(), "pushing a face through the brush is refused");
+        assert!(b.extrude_face(top, -64.0, false).is_none(), "pushing a face through the brush is refused");
         let mut w = Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap();
         for (i, f) in w.faces.iter_mut().enumerate() {
             f.id = FaceId(i as u64 + 1);
         }
         let bottom = w.faces.iter().find(|f| f.plane().unwrap().normal.z < -0.99).unwrap().id;
-        assert!(w.extrude_face(bottom, 16.0).is_some());
+        assert!(w.extrude_face(bottom, 16.0, false).is_some());
         let stamp = b.stamp_face(top, 16.0).unwrap();
         assert_eq!(stamp.bounds().unwrap(), Aabb::new(DVec3::new(0.0, 0.0, 64.0), DVec3::new(64.0, 64.0, 80.0)));
     }
 
-    /// TrenchBroom's face drag: the sloped face of a wedge moves out keeping its shape, and the
-    /// wedge grows by the slab it sweeps instead of stretching its other faces.
+    /// Along normal: the slope moves out keeping its shape and the wedge gains the slab it sweeps.
     #[test]
     fn sweep_keeps_the_face_shape() {
         let mut w = Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap();
@@ -920,13 +1048,66 @@ mod tests {
         }
         let slope = w.faces.iter().find(|f| f.plane().is_some_and(|p| p.normal.x > 0.1 && p.normal.z > 0.1)).unwrap().clone();
         let area = 64.0 * 64.0 * 2f64.sqrt();
-        let swept = w.sweep_face(slope.id, 16.0).unwrap();
+        let swept = w.sweep_face(slope.id, 16.0, false).unwrap();
         assert_eq!(swept.vertices().unwrap().len(), 10, "a wedge with a slab on its slope has five sides");
         let gain = swept.solid().unwrap().volume() - w.solid().unwrap().volume();
         assert!((gain - area * 16.0).abs() < 1e-6, "it grows by the face's area times the distance");
         let moved = swept.faces.iter().find(|f| f.id == slope.id).unwrap();
         assert_eq!((moved.u.offset, moved.material.as_str()), (7.0, slope.material.as_str()), "the moved face keeps its texture");
-        assert_eq!(w.sweep_face(slope.id, -8.0), w.extrude_face(slope.id, -8.0), "inward it cuts like a plain face drag");
+        assert_eq!(w.sweep_face(slope.id, -8.0, false), w.extrude_face(slope.id, -8.0, false), "inward it cuts like a plain face drag");
+    }
+
+    #[test]
+    fn face_drags_drop_faces_and_lock_textures() {
+        let tex = TexDefaults { material: "dev".into(), scale: 1.0 };
+        let corners: Vec<DVec3> =
+            cube(0.0, 64.0).vertices().unwrap().into_iter().filter(|v| *v != DVec3::new(64.0, 0.0, 64.0) && *v != DVec3::splat(64.0)).collect();
+        let cut = [DVec3::new(48.0, 0.0, 64.0), DVec3::new(48.0, 64.0, 64.0), DVec3::new(64.0, 0.0, 48.0), DVec3::new(64.0, 64.0, 48.0)];
+        let chamfered = numbered(Brush::from_vertices(&[corners, cut.to_vec()].concat(), &[], &tex).unwrap());
+        assert_eq!(chamfered.faces.len(), 7);
+        let top = chamfered.faces.iter().find(|f| f.plane().unwrap().normal.z > 0.99).unwrap().clone();
+        let lower = chamfered.extrude_face(top.id, -24.0, false).unwrap();
+        assert_eq!(lower.faces.len(), 6, "pushing the top below the chamfer drops it");
+        assert!((volume(&[lower]) - 64.0 * 64.0 * 40.0).abs() < 1e-6);
+
+        let mut b = numbered(cube(0.0, 64.0));
+        b.faces[4].u.axis = DVec3::new(1.0, 0.0, 1.0).normalize();
+        let id = b.faces[4].id;
+        let p = DVec3::new(10.0, 20.0, 64.0);
+        let face = |b: &Brush| b.faces.iter().find(|f| f.id == id).unwrap().clone();
+        assert!(face(&b.extrude_face(id, 16.0, true).unwrap()).texel(p + DVec3::Z * 16.0).abs_diff_eq(face(&b).texel(p), 1e-9));
+        assert!(!face(&b.extrude_face(id, 16.0, false).unwrap()).texel(p + DVec3::Z * 16.0).abs_diff_eq(face(&b).texel(p), 1e-9));
+    }
+
+    #[test]
+    fn slide_keeps_the_face_shape() {
+        let w = numbered(Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap());
+        let slope = w.faces.iter().find(|f| f.plane().is_some_and(|p| p.normal.x > 0.1 && p.normal.z > 0.1)).unwrap().clone();
+        let n = slope.plane().unwrap().normal;
+        let slid = w.slide_face(slope.id, n * 16.0, false).unwrap();
+        assert_eq!(slid.vertices().unwrap().len(), 6, "no faces are added");
+        let i = slid.faces.iter().position(|f| f.id == slope.id).unwrap();
+        let area = slid.solid().unwrap().faces[i].as_ref().unwrap().area();
+        assert!((area - 64.0 * 64.0 * 2f64.sqrt()).abs() < 1e-6, "the slope keeps its size");
+        let low = DVec3::new(64.0, 0.0, 0.0) + n * 16.0;
+        assert!(slid.vertices().unwrap().iter().any(|v| v.distance(low) < 1e-6), "its low edge lifts off the ground");
+
+        let c = numbered(cube(0.0, 64.0));
+        let side = c.faces[0].id;
+        let sheared = c.slide_face(side, DVec3::Z * 16.0, false).unwrap();
+        assert!((volume(std::slice::from_ref(&sheared)) - 64.0f64.powi(3)).abs() < 1e-6);
+        assert!(sheared.faces.iter().any(|f| f.id == side));
+        assert!(c.slide_face(c.faces[4].id, DVec3::Z * -80.0, false).is_none(), "the face cannot pass through the brush");
+    }
+
+    #[test]
+    fn slanted_drags_land_a_corner_on_the_grid() {
+        let w = numbered(Brush::wedge(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()).unwrap());
+        let slope = w.faces.iter().find(|f| f.plane().is_some_and(|p| p.normal.x > 0.1 && p.normal.z > 0.1)).unwrap();
+        let d = mapcraft_geom::snap_travel(&w.corner_paths(slope.id, slope.plane().unwrap().normal), 10.0, 16.0);
+        assert!((d - 16.0 / 2f64.sqrt()).abs() < 1e-9, "{d}");
+        let moved = w.extrude_face(slope.id, d, false).unwrap();
+        assert!(moved.vertices().unwrap().iter().any(|v| v.distance(DVec3::new(80.0, 0.0, 0.0)) < 1e-6), "the low edge lands on X 80");
     }
 
     #[test]
@@ -1097,5 +1278,89 @@ mod tests {
         let n = f.plane().unwrap().normal;
         assert!(f.u.axis.dot(n).abs() < 1e-9 && f.v.axis.dot(n).abs() < 1e-9);
         assert!(f.u.axis.cross(f.v.axis).abs_diff_eq(-n, 1e-9));
+    }
+
+    #[test]
+    fn anti_tile_reads_hostile_text_as_off() {
+        let mut f = cube(0.0, 64.0).faces[0].clone();
+        assert_eq!(f.anti_tile(), AntiTile::Off);
+        for (text, mode) in [("macro", AntiTile::Macro), (" HEX ", AntiTile::Hex), ("x", AntiTile::Off)] {
+            f.attrs.insert(ANTI_TILE.into(), text.into());
+            assert_eq!(f.anti_tile(), mode, "{text:?}");
+        }
+        f.set_anti_tile(AntiTile::Macro);
+        assert_eq!(f.attrs[ANTI_TILE], "macro");
+        f.set_anti_tile(AntiTile::Off);
+        assert!(f.attrs.is_empty(), "off removes the key");
+    }
+
+    /// `b` with its top face displaced at power 2, painted by `paint` at each vertex.
+    fn painted_top(mut b: Brush, paint: impl Fn(usize) -> f64) -> Brush {
+        let solid = b.solid().unwrap();
+        let (f, w) = b.faces.iter_mut().zip(&solid.faces).find(|(f, _)| f.plane().unwrap().normal.z > 0.9).unwrap();
+        let mut d = Displacement::new(2, w.as_ref().unwrap().0[0]);
+        d.heights = (0..25).map(|k| k as f64).collect();
+        d.set_blend((0..25).map(paint).collect());
+        d.blend_material = Some("grass".into());
+        f.disp = Some(d);
+        b
+    }
+
+    fn top_disp(b: &Brush) -> Option<&Displacement> {
+        b.faces.iter().find(|f| f.plane().unwrap().normal.z > 0.9)?.disp.as_ref()
+    }
+
+    #[test]
+    fn mirrors_keep_the_paint_in_place() {
+        let b = painted_top(cube(0.0, 64.0), |k| (k % 7) as f64 / 6.0);
+        let paint = |b: &Brush, flip: f64| {
+            let (i, grid) = b.displaced(&b.solid().unwrap()).remove(0);
+            let d = b.faces[i].disp.as_ref().unwrap();
+            let mut out: Vec<([i64; 3], i64)> = grid
+                .iter()
+                .enumerate()
+                .map(|(k, p)| ([(p.x * flip).round() as i64, p.y.round() as i64, p.z.round() as i64], (d.blend_at(k) * 1e6).round() as i64))
+                .collect();
+            out.sort();
+            out
+        };
+        let mirrored = b.transformed(&DMat4::from_scale(DVec3::new(-1.0, 1.0, 1.0)), true).unwrap();
+        assert_eq!(paint(&mirrored, -1.0), paint(&b, 1.0), "every world point keeps its weight");
+
+        let mut damaged = b.clone();
+        for f in &mut damaged.faces {
+            if let Some(d) = &mut f.disp {
+                (d.heights, d.blend) = (vec![1.0], vec![0.5; 3]);
+            }
+        }
+        let d = top_disp(&damaged.transformed(&DMat4::from_scale(DVec3::new(-1.0, 1.0, 1.0)), true).unwrap()).unwrap().clone();
+        assert_eq!((d.heights.len(), d.blend.len()), (25, 25), "short grids come back full length");
+    }
+
+    #[test]
+    fn blend_layers_skip_empty_own_and_tool_materials() {
+        assert_eq!(blend_layer("rock", Some("grass")), Some("grass"));
+        for layer in [None, Some(""), Some("ROCK"), Some("TOOLS/trigger")] {
+            assert_eq!(blend_layer("rock", layer), None, "{layer:?}");
+        }
+        let b = painted_top(cube(0.0, 64.0), |_| 0.0);
+        assert_eq!(top_disp(&b).map(|d| d.blend_material.as_deref()), Some(Some("grass")));
+        assert!(b.faces.iter().filter_map(Face::blend_layer).eq(["grass"]));
+    }
+
+    #[test]
+    fn reshaped_displacements_come_out_flat() {
+        let b = painted_top(cube(0.0, 64.0), |_| 1.0);
+        let pts = [DVec3::new(32.0, 1.0, 0.0), DVec3::new(32.0, 0.0, 0.0), DVec3::new(32.0, 0.0, 1.0)];
+        let (front, back) = b.split(pts, &TexDefaults::default()).unwrap();
+        assert!(top_disp(&front.unwrap()).is_none() && top_disp(&back.unwrap()).is_none(), "a cut top loses its grid");
+        let level = [DVec3::new(0.0, 1.0, 8.0), DVec3::new(0.0, 0.0, 8.0), DVec3::new(1.0, 0.0, 8.0)];
+        let (above, below) = b.split(level, &TexDefaults::default()).unwrap();
+        assert!([above, below].iter().flatten().any(|p| top_disp(p).is_some()), "a cut below the top keeps it");
+
+        let side = painted_top(Brush::cuboid(Aabb::new(DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0)), &TexDefaults::default()), |_| 1.0);
+        assert!(top_disp(&Brush::merge(&[b.clone(), side]).unwrap()).is_none(), "coplanar tops merge flat");
+        let under = Brush::cuboid(Aabb::new(DVec3::new(0.0, 0.0, -64.0), DVec3::new(64.0, 64.0, 0.0)), &TexDefaults::default());
+        assert_eq!(top_disp(&Brush::merge(&[b.clone(), under]).unwrap()), top_disp(&b), "an unchanged top keeps its grid");
     }
 }

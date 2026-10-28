@@ -4,11 +4,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use mapcraft_geom::{Aabb, DMat4, DVec3, Plane};
-use mapcraft_map::{Bevel, Cordon, CurveOp, EditError, FaceId, NodeId, NodeKind, PathPoint, ROOT};
+use mapcraft_map::{AntiTile, Bevel, Cordon, CurveOp, EditError, FaceId, NodeId, NodeKind, PathPoint, ROOT};
 use serde_json::{Value, json};
 
 use crate::curves::curve_of;
-use crate::{ClipKeep, EngineError, ExtrudeMode, Sculpt, SculptMode, Session, Severity, Shape, commands, execute, find_entities, validate};
+use crate::{
+    BlendFill, ClipKeep, EngineError, ExtrudeMode, Falloff, Push, Sculpt, SculptMode, Session, Severity, Shape, commands, execute, find_entities, validate,
+};
 
 /// The file in the data folder where a running editor writes its control port and token.
 pub const CONTROL_FILE: &str = "control.json";
@@ -69,7 +71,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "list_nodes",
-        description: "Children of `parent` (the world, id 0, when omitted) with id, kind, label and child count.",
+        description: "Children of `parent` (the world, id 1, when omitted) with id, kind, label and child count.",
         schema: || object(json!({"parent": id()}), &[]),
         run: |s, a| {
             let parent = if a.get("parent").is_some() { id_arg(a, "parent")? } else { ROOT };
@@ -185,7 +187,7 @@ An arch spans `arc` degrees starting `start` degrees off +X with walls `thicknes
     },
     Tool {
         name: "set_property",
-        description: "Sets an entity's key/value; key `classname` changes its class. Node 0 is worldspawn.",
+        description: "Sets an entity's key/value; key `classname` changes its class, and key `name` renames a group or layer. Node 1 is worldspawn.",
         schema: || object(json!({"id": id(), "key": string(), "value": string()}), &["id", "key", "value"]),
         run: |s, a| {
             s.set_property(id_arg(a, "id")?, str_arg(a, "key")?, str_arg(a, "value")?)?;
@@ -366,10 +368,12 @@ and with `scale` that texture scale (units per texel). Both become the defaults 
     },
     Tool {
         name: "face_texture",
-        description: "Sets the picked faces' texture `offset` [u, v] and `scale` [u, v], and turns it `rotate` degrees, as the face inspector does.",
+        description: "Sets the picked faces' texture `offset` [u, v] and `scale` [u, v], and turns it `rotate` degrees, as the face inspector does. \
+`anti_tile` `macro` hides a repeating texture under gentle light and dark patches in the views and in Godot, `hex` also breaks it into randomly shifted and turned hex tiles \
+(for rock, sand and grass, not bricks or tiles; pixel textures get `macro` instead), and `off` removes it.",
         schema: || {
             let uv = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
-            object(json!({"offset": uv, "scale": uv, "rotate": {"type": "number"}}), &[])
+            object(json!({"offset": uv, "scale": uv, "rotate": {"type": "number"}, "anti_tile": {"type": "string", "enum": ["off", "macro", "hex"]}}), &[])
         },
         run: |s, a| {
             let pair = |key| match a.get(key) {
@@ -383,7 +387,17 @@ and with `scale` that texture scale (units per texel). Both become the defaults 
             if scale.is_some_and(|(u, v)| u == 0.0 || v == 0.0) {
                 return Err(bad("scale", "non-zero"));
             }
+            let anti_tile = match a.get("anti_tile").map(Value::as_str) {
+                None => None,
+                Some(Some("off")) => Some(AntiTile::Off),
+                Some(Some("macro")) => Some(AntiTile::Macro),
+                Some(Some("hex")) => Some(AntiTile::Hex),
+                Some(_) => return Err(bad("anti_tile", "off, macro or hex")),
+            };
             s.edit_faces("Edit face", None, |f| {
+                if let Some(mode) = anti_tile {
+                    f.set_anti_tile(mode);
+                }
                 if let Some((u, v)) = offset {
                     (f.u.offset, f.v.offset) = (u, v);
                 }
@@ -400,10 +414,11 @@ and with `scale` that texture scale (units per texel). Both become the defaults 
     Tool {
         name: "extrude",
         description: "Pushes each picked face `distance` along its normal. `mode` resize moves the face (the default), normal keeps its shape adding square sides, \
-split adds a brush in the swept volume (or cuts when negative), stamp adds a brush between the face and its moved copy.",
+split adds a brush in the swept volume (or cuts when negative), stamp adds a brush between the face and its moved copy (outward only), \
+slide moves the face's corners by `offset` instead, keeping its shape while the faces around it tilt.",
         schema: || {
-            let mode = json!({"type": "string", "enum": ["resize", "normal", "split", "stamp"]});
-            object(json!({"distance": {"type": "number"}, "mode": mode}), &["distance"])
+            let mode = json!({"type": "string", "enum": ["resize", "normal", "split", "stamp", "slide"]});
+            object(json!({"distance": {"type": "number"}, "offset": vec3(), "mode": mode}), &[])
         },
         run: |s, a| {
             let mode = match a.get("mode").and_then(Value::as_str).unwrap_or("resize") {
@@ -411,14 +426,19 @@ split adds a brush in the swept volume (or cuts when negative), stamp adds a bru
                 "normal" => ExtrudeMode::AlongNormal,
                 "split" => ExtrudeMode::Split,
                 "stamp" => ExtrudeMode::Stamp,
-                _ => return Err(bad("mode", "resize, normal, split or stamp")),
+                "slide" => ExtrudeMode::Slide,
+                _ => return Err(bad("mode", "resize, normal, split, stamp or slide")),
             };
-            let distance = num_or(a, "distance", f64::NAN).and_then(|d| if d.is_finite() { Ok(d) } else { Err(bad("distance", "a number")) })?;
+            let push = if mode == ExtrudeMode::Slide {
+                Push::Offset(vec_arg(a, "offset")?)
+            } else {
+                Push::Distance(num_or(a, "distance", f64::NAN).and_then(|d| if d.is_finite() { Ok(d) } else { Err(bad("distance", "a number")) })?)
+            };
             let faces: Vec<_> = s.face_selection.iter().filter_map(|(id, f)| Some((*id, s.map.get(*id)?.kind.brush()?.clone(), *f))).collect();
             if faces.is_empty() {
                 return Err(EngineError::Refused("pick faces first"));
             }
-            Ok(json!({"created": s.extrude(&faces, distance, mode, &[], None)?}))
+            Ok(json!({"created": s.extrude(&faces, push, mode, &[], None)?}))
         },
     },
     Tool {
@@ -542,10 +562,17 @@ spin `angle`, `steps`, `axis`, `pivot`; array `count`, `spacing`, `yaw_only`.",
     Tool {
         name: "sculpt",
         description: "One dab of the Sculpt tool at `center` on the picked displacements, or every visible one when none are picked: \
-`mode` raise, lower, smooth, flatten (toward the center's height) or noise; `radius` (128); `amount` in units for raise, lower and noise (64), 0 to 1 for smooth and flatten (0.5).",
+`mode` raise, lower, smooth, flatten (toward the center's height), noise, paint or blur; `radius` (128); `falloff` smooth, linear, sharp or constant; \
+`amount` in units for raise, lower and noise (64), 0 to 1 for smooth, flatten, paint and blur (0.5). \
+Paint raises the share of `material` (the current material when omitted; \"\" paints weights only) up to `opacity` (0 to 1, default 1): \
+on a face that already blends it, or whose own material blends by itself; a plain face takes it as its second layer, unless it is the face's own material; \
+the face's own material paints a blend back; `invert` paints the other way and never adds a layer. Blur softens blend edges. Neither moves a vertex.",
         schema: || {
-            let mode = json!({"type": "string", "enum": ["raise", "lower", "smooth", "flatten", "noise"]});
-            object(json!({"mode": mode, "center": vec3(), "radius": {"type": "number"}, "amount": {"type": "number"}}), &["center"])
+            let mode = json!({"type": "string", "enum": ["raise", "lower", "smooth", "flatten", "noise", "paint", "blur"]});
+            let falloff = json!({"type": "string", "enum": ["smooth", "linear", "sharp", "constant"]});
+            let n = json!({"type": "number"});
+            let props = json!({"mode": mode, "center": vec3(), "radius": n, "amount": n, "falloff": falloff, "opacity": n, "invert": {"type": "boolean"}, "material": string()});
+            object(props, &["center"])
         },
         run: |s, a| {
             let (mode, amount) = match a.get("mode").and_then(Value::as_str).unwrap_or("raise") {
@@ -554,24 +581,109 @@ spin `angle`, `steps`, `axis`, `pivot`; array `count`, `spacing`, `yaw_only`.",
                 "smooth" => (SculptMode::Smooth, 0.5),
                 "flatten" => (SculptMode::Flatten, 0.5),
                 "noise" => (SculptMode::Noise, 64.0),
-                _ => return Err(bad("mode", "raise, lower, smooth, flatten or noise")),
+                "paint" => (SculptMode::Paint, 0.5),
+                "blur" => (SculptMode::Blur, 0.5),
+                _ => return Err(bad("mode", "raise, lower, smooth, flatten, noise, paint or blur")),
+            };
+            let falloff = match a.get("falloff").map(Value::as_str) {
+                None | Some(Some("smooth")) => Falloff::Smooth,
+                Some(Some("linear")) => Falloff::Linear,
+                Some(Some("sharp")) => Falloff::Sharp,
+                Some(Some("constant")) => Falloff::Constant,
+                Some(_) => return Err(bad("falloff", "smooth, linear, sharp or constant")),
             };
             let center = vec_arg(a, "center")?;
             let radius = num_or(a, "radius", 128.0)?;
             if radius <= 0.0 {
                 return Err(bad("radius", "more than 0"));
             }
-            let dab = Sculpt { mode, center, radius, amount: num_or(a, "amount", amount)?, level: center };
-            Ok(json!({"moved": s.sculpt(&dab, None)?}))
+            let painting = matches!(mode, SculptMode::Paint | SculptMode::Blur);
+            let amount = num_or(a, "amount", amount)?;
+            if painting && !(0.0..=1.0).contains(&amount) {
+                return Err(bad("amount", "0 to 1 for paint and blur"));
+            }
+            let opacity = num_or(a, "opacity", 1.0)?;
+            if !(0.0..=1.0).contains(&opacity) {
+                return Err(bad("opacity", "0 to 1"));
+            }
+            let invert = match a.get("invert") {
+                None => false,
+                Some(v) => v.as_bool().ok_or_else(|| bad("invert", "true or false"))?,
+            };
+            if let Some(m) = a.get("material") {
+                if mode != SculptMode::Paint {
+                    return Err(bad("material", "only with mode paint"));
+                }
+                s.tex.material = m.as_str().ok_or_else(|| bad("material", "a string"))?.into();
+            }
+            let dab = Sculpt { mode, center, radius, amount, level: center, falloff, opacity, invert };
+            let changed = s.sculpt(&dab, None)?;
+            Ok(if painting { json!({"painted": changed}) } else { json!({"moved": changed}) })
+        },
+    },
+    Tool {
+        name: "blend",
+        description: "Blends a second material into the picked displacements, or every visible one when none are picked. \
+`material` sets it as their second layer (\"\" removes it; their weights are kept) and runs before `fill`, which writes every vertex's share of that layer: \
+`value` (`value` 0 to 1, default 1), `invert`, `slope` (from 0 at `from` to 1 at `to` degrees, 30 and 45 by default; swap them for flat ground), \
+`height` (`from` and `to` in world Z) or `noise` (`size` in units, 256; `seed`; `from` 0.45 and `to` 0.55 of the noise). \
+Give `material`, `fill` or both; returns how many faces changed.",
+        schema: || {
+            let n = json!({"type": "number"});
+            let fill = json!({"type": "string", "enum": ["value", "invert", "slope", "height", "noise"]});
+            let props = json!({"material": string(), "fill": fill, "value": n, "from": n, "to": n, "size": n, "seed": {"type": "integer", "minimum": 0}});
+            object(props, &[])
+        },
+        run: |s, a| {
+            let fill = match a.get("fill").map(Value::as_str) {
+                None => None,
+                Some(Some("value")) => {
+                    let v = num_or(a, "value", 1.0)?;
+                    if !(0.0..=1.0).contains(&v) {
+                        return Err(bad("value", "0 to 1"));
+                    }
+                    Some(BlendFill::Value(v))
+                }
+                Some(Some("invert")) => Some(BlendFill::Invert),
+                Some(Some("slope")) => Some(BlendFill::Slope { from: num_or(a, "from", 30.0)?, to: num_or(a, "to", 45.0)? }),
+                Some(Some("height")) => {
+                    let need = |key| a.get(key).and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(key, "a number for a height fill"));
+                    Some(BlendFill::Height { from: need("from")?, to: need("to")? })
+                }
+                Some(Some("noise")) => {
+                    let size = num_or(a, "size", 256.0)?;
+                    if size < 1.0 {
+                        return Err(bad("size", "1 or more"));
+                    }
+                    let seed = match a.get("seed") {
+                        None => 0,
+                        Some(v) => v.as_u64().and_then(|v| u32::try_from(v).ok()).ok_or_else(|| bad("seed", "a whole number from 0 to 4294967295"))?,
+                    };
+                    Some(BlendFill::Noise { size, seed, from: num_or(a, "from", 0.45)?, to: num_or(a, "to", 0.55)? })
+                }
+                Some(_) => return Err(bad("fill", "value, invert, slope, height or noise")),
+            };
+            let material = match a.get("material") {
+                None => None,
+                Some(v) => Some(v.as_str().ok_or_else(|| bad("material", "a string"))?),
+            };
+            if material.is_none() && fill.is_none() {
+                return Err(EngineError::Argument("give `material`, `fill` or both".into()));
+            }
+            let faces = s.blend(material.map(|m| Some(m).filter(|m| !m.is_empty())), fill)?;
+            Ok(json!({"faces": faces}))
         },
     },
     Tool {
         name: "heightmap",
         description: "Shapes the picked displacements (or every visible one) from a grayscale grid stretched over them together: \
-`values` row by row from the far (+Y) side, `width` values per row, 0 at `low` (0) and 1 at `high` (256).",
+`values` row by row from the far (+Y) side, `width` values per row, 0 at `low` (0) and 1 at `high` (256). \
+With `channel` `blend` the gray becomes each vertex's share of the second layer instead, and `low` and `high` are ignored.",
         schema: || {
             let n = json!({"type": "number"});
-            object(json!({"width": {"type": "integer", "minimum": 2}, "values": {"type": "array", "items": n}, "low": n, "high": n}), &["width", "values"])
+            let channel = json!({"type": "string", "enum": ["height", "blend"]});
+            let props = json!({"width": {"type": "integer", "minimum": 2}, "values": {"type": "array", "items": n}, "low": n, "high": n, "channel": channel});
+            object(props, &["width", "values"])
         },
         run: |s, a| {
             let gray: Vec<f32> = a
@@ -581,7 +693,11 @@ spin `angle`, `steps`, `axis`, `pivot`; array `count`, `spacing`, `yaw_only`.",
                 .ok_or_else(|| bad("values", "an array of numbers"))?;
             let width =
                 a.get("width").and_then(Value::as_u64).and_then(|w| usize::try_from(w).ok()).filter(|w| *w >= 2).ok_or_else(|| bad("width", "2 or more"))?;
-            s.apply_heightmap(&gray, width, gray.len() / width, num_or(a, "low", 0.0)?, num_or(a, "high", 256.0)?)?;
+            match a.get("channel").map(Value::as_str) {
+                None | Some(Some("height")) => s.apply_heightmap(&gray, width, gray.len() / width, num_or(a, "low", 0.0)?, num_or(a, "high", 256.0)?)?,
+                Some(Some("blend")) => s.apply_blend_mask(&gray, width, gray.len() / width)?,
+                Some(_) => return Err(bad("channel", "height or blend")),
+            }
             Ok(info(s))
         },
     },
@@ -731,7 +847,14 @@ pub fn tools() -> Vec<Value> {
 /// Runs a tool by name; a panic inside it becomes an error and the map is kept.
 pub fn call(session: &mut Session, name: &str, args: &Value) -> Result<Value, EngineError> {
     let tool = TOOLS.iter().find(|t| t.name == name).ok_or_else(|| EngineError::UnknownCommand(name.to_string()))?;
-    catch_unwind(AssertUnwindSafe(|| (tool.run)(session, args))).unwrap_or(Err(EngineError::Panic(tool.name)))
+    let out = catch_unwind(AssertUnwindSafe(|| (tool.run)(session, args))).unwrap_or(Err(EngineError::Panic(tool.name)));
+    match (out, session.notice.take()) {
+        (Ok(Value::Object(mut o)), Some(notice)) => {
+            o.insert("notice".into(), notice.into());
+            Ok(Value::Object(o))
+        }
+        (out, _) => out,
+    }
 }
 
 /// Runs a batch's calls through `each`, which may be the editor's own dispatcher.
@@ -1006,6 +1129,13 @@ mod tests {
         let copies: Vec<u64> = s.selection.iter().map(|id| id.0).collect();
         call(&mut s, "move_to", &json!({"ids": copies, "parent": layer})).unwrap();
         assert_eq!(s.map.get(NodeId(layer)).unwrap().children.len(), 3);
+        call(&mut s, "set_property", &json!({"id": layer, "key": "name", "value": "Copies"})).unwrap();
+        assert_eq!(s.map.get(NodeId(layer)).unwrap().kind.label(), "Copies");
+        call(&mut s, "run_command", &json!({"id": "tools.group"})).unwrap();
+        let group = s.selection.iter().next().copied().unwrap();
+        call(&mut s, "set_property", &json!({"id": group.0, "key": "name", "value": "Ramps"})).unwrap();
+        assert_eq!(s.map.get(group).unwrap().kind.label(), "Ramps");
+        assert!(call(&mut s, "set_property", &json!({"id": b, "key": "name", "value": "x"})).is_err());
 
         call(&mut s, "select", &json!({"ids": [b]})).unwrap();
         call(&mut s, "tie_to_entity", &json!({"classname": "trigger_multiple"})).unwrap();
@@ -1034,7 +1164,13 @@ mod tests {
         assert_eq!(call(&mut s, "displace", &json!({"power": 2})).unwrap()["faces"], 1);
         assert_eq!(call(&mut s, "sculpt", &json!({"center": [256, 256, 0], "radius": 256})).unwrap()["moved"], true);
         call(&mut s, "heightmap", &json!({"width": 2, "values": [0, 1, 0, 1], "high": 64})).unwrap();
-        call(&mut s, "face_texture", &json!({"offset": [8, 0], "rotate": 90})).unwrap();
+        call(&mut s, "face_texture", &json!({"offset": [8, 0], "rotate": 90, "anti_tile": "macro"})).unwrap();
+        let top = |s: &Session| s.face_selection.iter().find_map(|(id, f)| s.map.get(*id)?.kind.brush()?.faces.iter().find(|x| x.id == *f).cloned()).unwrap();
+        assert_eq!(top(&s).anti_tile(), AntiTile::Macro);
+        call(&mut s, "face_texture", &json!({"anti_tile": "off"})).unwrap();
+        assert!(top(&s).attrs.is_empty(), "off leaves no attribute behind");
+        call(&mut s, "face_texture", &json!({"anti_tile": "hex"})).unwrap();
+        assert_eq!(top(&s).anti_tile(), AntiTile::Hex);
 
         call(&mut s, "create_brush", &json!({"min": [0, 0, 0], "max": [16, 64, 64]})).unwrap();
         call(&mut s, "pick_faces", &json!({"faces": "+x"})).unwrap();
@@ -1050,6 +1186,10 @@ mod tests {
         call(&mut s, "pick_faces", &json!({"faces": "-y"})).unwrap();
         call(&mut s, "extrude", &json!({"distance": 32})).unwrap();
         assert_eq!(bounds(&s, b).min.y, -32.0);
+        call(&mut s, "extrude", &json!({"mode": "slide", "offset": [0, -16, 0]})).unwrap();
+        assert_eq!(bounds(&s, b).min.y, -48.0);
+        call(&mut s, "extrude", &json!({"mode": "slide", "offset": [0, 16, 0]})).unwrap();
+        assert!(call(&mut s, "extrude", &json!({"mode": "slide", "distance": 8})).is_err(), "a slide takes an offset");
         call(&mut s, "bevel", &json!({"edges": [[[0, -32, 0], [64, -32, 0]]], "width": 8})).unwrap();
         assert!(s.map.get(NodeId(b)).unwrap().kind.brush().unwrap().faces.len() > 6);
 
@@ -1067,6 +1207,47 @@ mod tests {
         assert!(call(&mut s, "find", &json!({"query": "zone_start"})).unwrap().as_array().unwrap().is_empty());
         call(&mut s, "make_prefab_local", &json!({})).unwrap();
         assert_eq!(call(&mut s, "find", &json!({"query": "zone_start"})).unwrap().as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn blend_tools() {
+        let mut s = Session::default();
+        call(&mut s, "create_brush", &json!({"min": [0, 0, -64], "max": [512, 512, 0], "material": "rock"})).unwrap();
+        call(&mut s, "pick_faces", &json!({"faces": "top"})).unwrap();
+        call(&mut s, "displace", &json!({"power": 2})).unwrap();
+        let disp =
+            |s: &Session| s.face_selection.iter().find_map(|(id, f)| s.map.get(*id)?.kind.brush()?.faces.iter().find(|x| x.id == *f)?.disp.clone()).unwrap();
+        let dab = json!({"mode": "paint", "center": [256, 256, 0], "radius": 200, "material": "grass", "falloff": "constant", "opacity": 0.5});
+        assert_eq!(call(&mut s, "sculpt", &dab).unwrap()["painted"], true);
+        assert_eq!((s.tex.material.as_str(), disp(&s).blend_material.as_deref(), disp(&s).blend_at(12)), ("grass", Some("grass"), 0.25));
+        assert_eq!(call(&mut s, "sculpt", &json!({"mode": "blur", "center": [256, 256, 0], "radius": 300, "amount": 1})).unwrap()["painted"], true);
+        assert!(disp(&s).heights.iter().all(|h| *h == 0.0), "neither moves a vertex");
+
+        assert_eq!(call(&mut s, "blend", &json!({"material": ""})).unwrap()["faces"], 1);
+        assert!(disp(&s).blend_material.is_none());
+        for fill in [
+            json!({"fill": "value", "value": 0.25}),
+            json!({"fill": "invert"}),
+            json!({"fill": "slope", "from": 10, "to": 0}),
+            json!({"fill": "height", "from": -10, "to": 10}),
+            json!({"fill": "noise", "size": 64, "seed": 3}),
+        ] {
+            call(&mut s, "blend", &fill).unwrap();
+        }
+        assert_eq!(call(&mut s, "blend", &json!({"material": "sand", "fill": "value"})).unwrap()["faces"], 1);
+        assert_eq!(disp(&s).blend_material.as_deref(), Some("sand"));
+        assert!(disp(&s).blend_values().iter().all(|w| *w == 1.0));
+        s.undo();
+        assert!(disp(&s).blend_material.is_none(), "material and fill are one undo step");
+        s.redo();
+        assert_eq!(call(&mut s, "blend", &json!({"material": "dirt", "fill": "value"})).unwrap()["faces"], 1, "a face either half changes counts");
+
+        call(&mut s, "heightmap", &json!({"width": 2, "values": [0, 1, 0, 1], "channel": "blend"})).unwrap();
+        let w = disp(&s).blend_values();
+        assert!(w.contains(&0.0) && w.contains(&1.0) && disp(&s).heights.iter().all(|h| *h == 0.0), "{w:?}");
+
+        let cut = call(&mut s, "clip", &json!({"point": [256, 0, 0], "normal": [1, 0, 0], "keep": "both"})).unwrap();
+        assert_eq!(cut["notice"], "1 displacement changed shape and came out flat");
     }
 
     #[test]
@@ -1101,6 +1282,17 @@ mod tests {
             ("bevel", json!({"edges": [[1, 2]]})),
             ("move_vertices", json!({"moves": "all"})),
             ("face_texture", json!({"scale": [0, 1]})),
+            ("face_texture", json!({"anti_tile": "tiles"})),
+            ("sculpt", json!({"center": [0, 0, 0], "mode": "paint", "opacity": 2})),
+            ("sculpt", json!({"center": [0, 0, 0], "mode": "blur", "amount": 2})),
+            ("sculpt", json!({"center": [0, 0, 0], "falloff": "soft"})),
+            ("sculpt", json!({"center": [0, 0, 0], "material": "x"})),
+            ("blend", json!({})),
+            ("blend", json!({"fill": "melt"})),
+            ("blend", json!({"fill": "noise", "size": 0})),
+            ("blend", json!({"fill": "value", "value": 2})),
+            ("blend", json!({"fill": "height", "from": 0})),
+            ("heightmap", json!({"width": 2, "values": [0, 1, 0, 1], "channel": "color"})),
             ("cordon", json!({"name": "c"})),
             ("tag", json!({"name": "none", "remove": true})),
             ("make_prefab_local", json!({})),

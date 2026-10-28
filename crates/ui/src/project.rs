@@ -9,7 +9,7 @@ use mapcraft_render::{EntityStyle, Renderer};
 use mapcraft_sdk::{Sdk, Vfs};
 
 /// A material in the browser: an image to show and texture with, or else a flat sRGB color.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Material {
     pub name: String,
     pub image: Option<PathBuf>,
@@ -19,6 +19,10 @@ pub struct Material {
     /// The texture's own size when the picture is a smaller preview.
     pub size: Option<[u32; 2]>,
     pub pbr: Option<Pbr>,
+    /// How many times the game repeats the texture across its own size, as Godot's `uv1_scale`.
+    pub uv_scale: Option<[f32; 2]>,
+    pub pixelated: bool,
+    pub blend: mapcraft_map::BlendRole,
 }
 
 /// Real texture sizes of cached imported pictures that were shrunk, by material name.
@@ -116,7 +120,7 @@ impl Project {
                 p.materials = vfs
                     .list(&sdk.manifest.textures.extensions)
                     .into_iter()
-                    .map(|(name, path)| Material { name, image: Some(path), color: None, pixels: None, size: None, pbr: None })
+                    .map(|(name, path)| Material { name, image: Some(path), ..Material::default() })
                     .collect();
                 p.vfs = vfs;
             }
@@ -190,6 +194,9 @@ impl Project {
                                 pixels: m.pixels,
                                 size: m.size,
                                 pbr: m.pbr,
+                                uv_scale: m.uv_scale,
+                                pixelated: m.pixelated,
+                                blend: m.blend,
                             })
                             .filter(|m| m.image.is_some() || m.color.is_some() || m.pixels.is_some()),
                     ),
@@ -219,7 +226,7 @@ impl Project {
         let sizes = read_sizes(dir);
         self.materials.extend(named.filter(|(n, _)| !have.contains(n)).map(|(name, path)| {
             let size = sizes.get(&name).copied();
-            Material { name, image: Some(path), color: None, pixels: None, size, pbr: None }
+            Material { name, image: Some(path), size, ..Material::default() }
         }));
         self.materials.sort_by(|a, b| a.name.cmp(&b.name));
     }
@@ -253,6 +260,16 @@ impl Project {
         self.sdk.as_ref().map(|s| s.manifest.id.as_str())
     }
 
+    /// The SDK's textures draw without smoothing, as retro games draw them.
+    pub fn pixelated(&self) -> bool {
+        self.sdk.as_ref().is_some_and(|s| s.manifest.textures.pixelated)
+    }
+
+    /// Either of the face's materials draws without smoothing, so hex tiling falls back to Variation.
+    pub fn pixel_face(&self, face: &mapcraft_map::Face) -> bool {
+        self.pixelated() || [Some(face.material.as_str()), face.blend_layer()].into_iter().flatten().any(|n| self.material(n).is_some_and(|m| m.pixelated))
+    }
+
     /// Paths the SDK asks for that the user has not set yet.
     pub fn missing_paths(&self) -> Vec<String> {
         let Some(sdk) = &self.sdk else { return Vec::new() };
@@ -279,7 +296,7 @@ impl Project {
             return Some(m.clone());
         }
         let path = self.vfs.find_material(name, &self.sdk.as_ref()?.manifest.textures.extensions)?;
-        Some(Material { name: name.to_string(), image: Some(path), color: None, pixels: None, size: None, pbr: None })
+        Some(Material { name: name.to_string(), image: Some(path), ..Material::default() })
     }
 
     /// Decodes and uploads every material in `names` the renderer does not have yet; returns how many failed.
@@ -292,8 +309,10 @@ impl Project {
             let Some(m) = self.find_material(name) else { continue };
             let sky = skies.iter().any(|p| !p.is_empty() && name.len() >= p.len() && name.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
             if upload(renderer, name, &m, sky) {
-                if let Some(size) = m.size {
-                    renderer.set_material_size(name, size);
+                if let Some([w, h]) = m.size.or_else(|| renderer.material_size(name)) {
+                    let [sx, sy] = m.uv_scale.unwrap_or([1.0, 1.0]);
+                    let tiled = |side: u32, scale: f32| (f64::from(side) / f64::from(scale)).round().max(1.0) as u32;
+                    renderer.set_material_size(name, [tiled(w, sx), tiled(h, sy)]);
                 }
                 if let Some(pbr) = &m.pbr {
                     let (normal, orm) = pack(pbr, &|path| self.picture(path));
@@ -394,7 +413,9 @@ fn pack(pbr: &Pbr, load: &dyn Fn(&str) -> Option<RgbaImage>) -> (RgbaImage, Rgba
 
 /// Uploads one material's picture, file or color swatch; a material with none of them counts as done.
 fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool {
-    let mut put = |w: u32, h: u32, rgba: &[u8]| if sky { renderer.upload_sky(name, w, h, rgba) } else { renderer.upload_material(name, w, h, rgba) };
+    let mut put = |w: u32, h: u32, rgba: &[u8]| {
+        if sky { renderer.upload_sky(name, w, h, rgba, m.pixelated) } else { renderer.upload_material_with(name, w, h, rgba, m.pixelated) }
+    };
     if let Some(p) = &m.pixels {
         return put(p.width, p.height, &p.rgba);
     }

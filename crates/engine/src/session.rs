@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Changes, FaceId, Map, NodeId, NodeKind, ROOT, TexDefaults};
+use mapcraft_map::{BlendRole, Changes, FaceId, Map, NodeId, NodeKind, ROOT, TexDefaults};
 use serde_json::Value;
 
 use crate::EngineError;
@@ -62,6 +62,12 @@ pub struct Session {
     /// Where new nodes go: the world, a layer or a group.
     pub active_parent: NodeId,
     pub default_solid_entity: String,
+    /// How the project's materials blend; a key ending in `*` covers every material starting with the rest.
+    pub blend_roles: BTreeMap<String, BlendRole>,
+    /// A paint stroke's coalesce key and, per face, the weights it started from and its coverage per vertex.
+    pub(crate) paint_stroke: Option<(String, BTreeMap<(NodeId, FaceId), (Vec<f64>, Vec<f64>)>)>,
+    /// Something the last edit wants the user to know, such as displacements it flattened.
+    pub notice: Option<String>,
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     next_serial: u64,
@@ -91,6 +97,9 @@ impl Session {
             grid: 16.0,
             active_parent: ROOT,
             default_solid_entity: "func_detail".into(),
+            blend_roles: BTreeMap::new(),
+            paint_stroke: None,
+            notice: None,
             undo: Vec::new(),
             redo: Vec::new(),
             next_serial: 1,
@@ -158,6 +167,8 @@ impl Session {
         if changes.is_empty() {
             return;
         }
+        // Any edit makes a paint stroke's starting weights stale; paint_blend restores its own after storing.
+        self.paint_stroke = None;
         let before = self.selection.clone();
         let mut touched: BTreeSet<NodeId> = changes.nodes.keys().copied().collect();
         let mut inverse = self.map.apply(changes);
@@ -188,12 +199,28 @@ impl Session {
 
     /// Ends a coalescing run so the next edit starts a new undo step.
     pub fn end_coalesce(&mut self) {
+        self.paint_stroke = None;
         if let Some(top) = self.undo.last_mut() {
             top.coalesce = None;
         }
     }
 
+    /// Reverts the run of edits under `key` without a redo step, as when a drag is cancelled; false when the last edit is not under it.
+    pub fn cancel_coalesce(&mut self, key: &str) -> bool {
+        self.paint_stroke = None;
+        let mut cancelled = false;
+        while self.undo.last().is_some_and(|t| t.coalesce.as_deref() == Some(key)) {
+            let Some(t) = self.undo.pop() else { break };
+            self.map.apply(t.inverse);
+            self.selection = t.selection;
+            cancelled = true;
+        }
+        self.prune_selection();
+        cancelled
+    }
+
     pub fn undo(&mut self) -> bool {
+        self.paint_stroke = None;
         let Some(t) = self.undo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);
         let after = std::mem::replace(&mut self.selection, t.selection);
@@ -203,6 +230,7 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.paint_stroke = None;
         let Some(t) = self.redo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);
         let before = std::mem::replace(&mut self.selection, t.selection);
@@ -222,11 +250,11 @@ impl Session {
 
     /// Selects the nodes a click on `hit` reaches in the current mode; `additive` toggles instead of replacing.
     pub fn click(&mut self, hit: Option<NodeId>, additive: bool) {
-        let target = hit.map(|h| pick_target(&self.map, h, self.select_mode));
+        let target = hit.filter(|h| self.map.editable_nodes().contains(h)).map(|h| pick_target(&self.map, h, self.select_mode));
         if !additive {
             self.selection.clear();
         }
-        if let Some(t) = target.filter(|t| self.map.get(*t).is_some_and(|n| !n.locked && !n.hidden))
+        if let Some(t) = target
             && !self.selection.remove(&t)
         {
             self.selection.insert(t);
@@ -246,7 +274,8 @@ impl Session {
                 None => {}
             }
         }
-        out.retain(|id| map.get(*id).is_some_and(|n| !n.hidden && !n.locked));
+        let editable = map.editable_nodes();
+        out.retain(|id| editable.contains(id));
         self.selection = out;
     }
 
@@ -308,6 +337,26 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_run_leaves_no_step() {
+        let mut s = Session::default();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let original = s.map.clone();
+        for _ in 0..2 {
+            let moved = s.map.get(b).unwrap().kind.brush().unwrap().translated(DVec3::X * 8.0, true);
+            let mut e = s.map.edit();
+            e.set_kind(b, NodeKind::Brush(moved)).unwrap();
+            let c = e.finish();
+            s.apply_coalesced("Move", c, Some("drag"));
+        }
+        assert!(!s.cancel_coalesce("other"));
+        assert!(s.cancel_coalesce("drag"));
+        assert_eq!(s.map, original);
+        assert_eq!(s.undo_label(), Some("Create brush"));
+        assert!(!s.can_redo());
+        assert!(!s.cancel_coalesce("drag"), "the run is gone");
+    }
+
+    #[test]
     fn selection_modes() {
         let mut s = Session::default();
         let mut e = s.map.edit();
@@ -325,6 +374,29 @@ mod tests {
         assert!(s.selection.is_empty());
         s.select_all();
         assert_eq!(s.selection, BTreeSet::from([g]));
+    }
+
+    #[test]
+    fn locked_and_hidden_layers_keep_their_contents_out_of_reach() {
+        let mut s = Session::default();
+        let layer = s.create_layer("Reference").unwrap();
+        s.active_parent = layer;
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        s.set_locked(&[layer], true).unwrap();
+        s.click(Some(b), false);
+        assert!(s.selection.is_empty(), "a brush in a locked layer cannot be clicked");
+        s.select_all();
+        assert!(s.selection.is_empty(), "nor selected with Select All");
+        s.set_locked(&[layer], false).unwrap();
+        s.set_hidden(&[layer], true).unwrap();
+        s.select_all();
+        assert!(s.selection.is_empty(), "Select All skips a hidden layer's children");
+        s.set_hidden(&[layer], false).unwrap();
+        s.select_all();
+        assert_eq!(s.selection, BTreeSet::from([b]));
+        s.edit_cordons(vec![mapcraft_map::Cordon { name: "c".into(), bounds: Aabb::new(DVec3::splat(500.0), DVec3::splat(600.0)), active: true }], "Cordon");
+        s.select_all();
+        assert!(s.selection.is_empty(), "Select All skips what a cordon leaves out");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{Channel, ChannelMap, Pbr};
+use mapcraft::plugin::types::{BlendRole, Channel, ChannelMap, Pbr};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -44,6 +44,33 @@ const METAL: &[&str] = &["metalness", "metallic"];
 const AO: &[&str] = &["ambientocclusion", "ao"];
 /// Occlusion, roughness and metallic in red, green and blue.
 const PACKED: &[&str] = &["orm", "arm"];
+/// Material properties with the only value the MapCraft addon's shader wrapper keeps; Godot writes a property only when it differs from its default.
+const WRAPPED: &[(&str, &str)] = &[
+    ("shading_mode", "1"),
+    ("cull_mode", "0"),
+    ("transparency", "0"),
+    ("blend_mode", "0"),
+    ("diffuse_mode", "0"),
+    ("specular_mode", "0"),
+    ("billboard_mode", "0"),
+    ("distance_fade_mode", "0"),
+    ("texture_repeat", "true"),
+    ("grow", "false"),
+    ("no_depth_test", "false"),
+    ("use_point_size", "false"),
+    ("fixed_size", "false"),
+    ("uv1_triplanar", "false"),
+    ("uv1_world_triplanar", "false"),
+    ("ao_on_uv2", "false"),
+    ("vertex_color_use_as_albedo", "false"),
+    ("albedo_texture_force_srgb", "false"),
+    ("albedo_texture_msdf", "false"),
+    ("disable_receive_shadows", "false"),
+    ("disable_ambient_light", "false"),
+    ("shadow_to_opacity", "false"),
+    ("use_particle_trails", "false"),
+    ("disable_fog", "false"),
+];
 
 fn folder(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(d, _)| d)
@@ -106,6 +133,9 @@ struct Resource {
     albedo: Option<String>,
     color: Option<(u8, u8, u8)>,
     pbr: Pbr,
+    uv_scale: Option<(f32, f32)>,
+    pixelated: bool,
+    blend: BlendRole,
 }
 
 /// Godot's texture channel numbers: red, green, blue, alpha, then grayscale.
@@ -128,11 +158,19 @@ fn parse(text: &str) -> Resource {
     let mut textures: Vec<(String, String)> = Vec::new();
     let mut props: BTreeMap<&str, &str> = BTreeMap::new();
     let (mut albedo_id, mut color) = (None, None);
+    let class = text.lines().next().and_then(|h| attr(h, "type")).unwrap_or_default();
+    let mut in_resource = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with("[ext_resource") && attr(line, "type").is_some_and(|t| t.contains("Texture")) {
             if let (Some(id), Some(path)) = (attr(line, "id"), attr(line, "path")) {
                 textures.push((id.to_string(), path.to_string()));
             }
+            continue;
+        }
+        if line.starts_with('[') {
+            in_resource = line.starts_with("[resource]");
+        }
+        if !in_resource {
             continue;
         }
         let Some((key, value)) = line.split_once('=').map(|(k, v)| (k.trim(), v.trim())) else { continue };
@@ -165,8 +203,25 @@ fn parse(text: &str) -> Resource {
         metallic_value: number("metallic", 0.0),
         ao: map("ao").filter(|_| on("ao_enabled")),
     };
+    let scale: Vec<f32> = prop("uv1_scale").and_then(call_args).into_iter().flat_map(|a| a.split(',')).filter_map(|n| n.trim().parse().ok()).collect();
+    let uv_scale = match scale[..] {
+        [x, y, ..] if (x, y) != (1.0, 1.0) && !on("uv1_triplanar") => Some((x, y)),
+        _ => None,
+    };
+    let wraps = class == "StandardMaterial3D"
+        && WRAPPED.iter().all(|&(k, v)| prop(k).is_none_or(|p| p == v))
+        && prop("depth_draw_mode") != Some("2")
+        && props.iter().all(|(k, v)| !k.ends_with("_enabled") || *v != "true" || ["normal_enabled", "ao_enabled"].contains(k));
     let found = albedo_id.and_then(|id| textures.iter().find(|(i, _)| *i == id)).or(textures.first());
-    Resource { albedo: found.map(|(_, p)| p.clone()), textures: textures.iter().map(|(_, p)| p.clone()).collect(), color, pbr }
+    Resource {
+        albedo: found.map(|(_, p)| p.clone()),
+        textures: textures.iter().map(|(_, p)| p.clone()).collect(),
+        color,
+        pbr,
+        uv_scale,
+        pixelated: matches!(prop("texture_filter"), Some("0" | "2" | "4")),
+        blend: if wraps { BlendRole::Layer } else { BlendRole::Unblendable },
+    }
 }
 
 /// The asset-folder path of a `res://` file: the longest tail of it that exists in `files`.
@@ -224,7 +279,17 @@ impl Guest for Godot {
             let at = |m: Option<ChannelMap>| m.and_then(|m| Some(ChannelMap { path: locate(&m.path, &images)?, channel: m.channel }));
             let p = res.pbr;
             let pbr = Pbr { normal: p.normal.and_then(|n| locate(&n, &images)), roughness: at(p.roughness), metallic: at(p.metallic), ao: at(p.ao), ..p };
-            out.push(MaterialInfo { name, image: res.albedo.and_then(|t| locate(&t, &images)), color: res.color, pixels: None, size: None, pbr: Some(pbr) });
+            out.push(MaterialInfo {
+                name,
+                image: res.albedo.and_then(|t| locate(&t, &images)),
+                color: res.color,
+                pixels: None,
+                size: None,
+                pbr: Some(pbr),
+                uv_scale: res.uv_scale,
+                pixelated: res.pixelated,
+                blend: res.blend,
+            });
         }
         // Images no material uses are materials of their own, except the extra maps of a folder
         // that already has a material or a color image.
@@ -244,7 +309,18 @@ impl Guest for Godot {
             }
             let set = if map { None } else { sets.get(&(folder(img), split_end(img, COLORS).unwrap_or_else(|| stem(img)))) };
             let name = img.rsplit_once('.').map_or(img.as_str(), |(n, _)| n).to_string();
-            out.push(MaterialInfo { name, image: Some(img.clone()), color: None, pixels: None, size: None, pbr: set.and_then(|s| loose_pbr(s)) });
+            let pbr = set.and_then(|s| loose_pbr(s));
+            out.push(MaterialInfo {
+                name,
+                image: Some(img.clone()),
+                color: None,
+                pixels: None,
+                size: None,
+                pbr,
+                uv_scale: None,
+                pixelated: false,
+                blend: BlendRole::Layer,
+            });
         }
         Ok(out)
     }
@@ -294,6 +370,25 @@ mod tests {
         assert_eq!((p.roughness_value, p.metallic_value), (1.0, 0.88), "unstated values keep Godot's defaults");
         assert!(p.metallic.is_none() && p.ao.is_none(), "ao_texture needs ao_enabled");
         assert!(parse(&tres.replace("normal_enabled = true\n", "")).pbr.normal.is_none(), "normal_texture needs normal_enabled");
+    }
+
+    #[test]
+    fn reads_scale_filter_and_blend_role() {
+        let tres = |props: &str| parse(&format!("[gd_resource type=\"StandardMaterial3D\" format=3]\n[resource]\n{props}\n"));
+        assert_eq!(tres("uv1_scale = Vector3(2, 2, 1)").uv_scale, Some((2.0, 2.0)));
+        assert_eq!(tres("uv1_scale = Vector3(0.01, 0.01, 0.01)\nuv1_triplanar = true").uv_scale, None, "triplanar scales are in world space");
+        assert_eq!(tres("uv1_scale = Vector3(1, 1, 1)").uv_scale, None);
+        let pixelated: Vec<bool> = ["0", "2", "4", "5"].iter().map(|f| tres(&format!("texture_filter = {f}")).pixelated).collect();
+        assert_eq!(pixelated, [true, true, true, false]);
+        assert!(!tres("").pixelated, "Godot's default filter is smooth");
+        assert_eq!(tres("normal_enabled = true\nao_enabled = true\ntexture_filter = 0").blend, BlendRole::Layer);
+        for refused in ["emission_enabled = true", "shading_mode = 0", "cull_mode = 2", "uv1_triplanar = true", "depth_draw_mode = 2"] {
+            assert_eq!(tres(refused).blend, BlendRole::Unblendable, "{refused}");
+        }
+        let shader = parse("[gd_resource type=\"ShaderMaterial\" format=3]\n[resource]\nshader_parameter/base_color = Color(1, 0.4, 0, 1)\n");
+        assert_eq!(shader.blend, BlendRole::Unblendable);
+        let noise = tres("albedo_texture = SubResource(\"1\")\n[sub_resource type=\"FastNoiseLite\" id=\"2\"]\ndomain_warp_enabled = true");
+        assert_eq!(noise.blend, BlendRole::Layer, "only the material's own properties count");
     }
 
     #[test]

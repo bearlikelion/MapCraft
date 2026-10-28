@@ -61,3 +61,25 @@ fn added_texture_folders_reach_the_material_list_and_plugins() {
     let names = listed(&mut h);
     assert!(!names.iter().any(|n| n == "metal/plate" || n == "painted"), "{names:?}");
 }
+
+#[test]
+fn imported_pictures_stay_with_their_sdk() {
+    let (settings, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::create_dir_all(project.path().join("Assets/Textures")).unwrap();
+    for (sdk, name) in [("surfsup", "kept"), ("quake", "quake_only")] {
+        let dir = settings.path().join("data/materials").join(sdk);
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::new(2, 2).save(dir.join(format!("{name}.png"))).unwrap();
+    }
+
+    let map = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
+    let options = Options {
+        settings_dir: Some(settings.path().to_path_buf()),
+        open: Some(map.into()),
+        sdk_vars: vec![("project".into(), project.path().to_string_lossy().into_owned())],
+        ..Options::default()
+    };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    let names = listed(&mut h);
+    assert!(names.iter().any(|n| n == "kept") && !names.iter().any(|n| n == "quake_only"), "{names:?}");
+}

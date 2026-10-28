@@ -190,6 +190,24 @@ impl<'a> Library<'a> {
         Vec::new()
     }
 
+    /// Whether the material mixes two textures by vertex alpha itself, as a WorldVertexTransition does.
+    pub fn blends(&self, material: &str) -> bool {
+        let mut name = material.to_string();
+        for _ in 0..MAX_INCLUDES {
+            let Some((vmt, _)) = self.find(&format!("materials/{name}.vmt"), usize::MAX) else { return false };
+            let text = String::from_utf8_lossy(&vmt);
+            let tokens = tokens(&text);
+            match (tokens.first(), value(&tokens, "include")) {
+                (Some(Token::Text(s)), Some(include)) if s.eq_ignore_ascii_case("patch") => {
+                    name = normalize(include).trim_start_matches("materials/").trim_end_matches(".vmt").to_string();
+                }
+                (Some(Token::Text(s)), _) => return s.eq_ignore_ascii_case("worldvertextransition"),
+                _ => return false,
+            }
+        }
+        false
+    }
+
     /// The material's picture, no wider or taller than `max`, where its texture was found, and
     /// the texture's full size.
     pub fn picture(&self, material: &str, max: usize) -> Option<Found> {
@@ -280,6 +298,30 @@ mod tests {
         assert_eq!(value(&patch, "$basetexture"), None);
         assert_eq!(tokens("{\"unterminated"), [Token::Open, Token::Text("unterminated")]);
         assert_eq!(tokens("k \"{\" a}"), [Token::Text("k"), Token::Text("{"), Token::Text("a"), Token::Close]);
+    }
+
+    struct Loose(HashMap<String, Vec<u8>>);
+
+    impl Files for Loose {
+        fn read(&self, path: &str) -> Option<Vec<u8>> {
+            self.0.get(path).cloned()
+        }
+
+        fn read_range(&self, _path: &str, _offset: u64, _length: u64) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn knows_materials_that_blend_themselves() {
+        let files = Loose(HashMap::from([
+            ("materials/nature/blend.vmt".to_string(), b"\"WorldVertexTransition\" { \"$basetexture\" \"a\" \"$basetexture2\" \"b\" }".to_vec()),
+            ("materials/nature/patched.vmt".to_string(), b"patch { include \"materials/nature/blend.vmt\" insert { } }".to_vec()),
+            ("materials/brick/wall.vmt".to_string(), b"LightmappedGeneric { $basetexture brick/wall }".to_vec()),
+        ]));
+        let library = Library::new(&[], &files);
+        assert!(library.blends("nature/blend") && library.blends("nature/patched"));
+        assert!(!library.blends("brick/wall") && !library.blends("missing"));
     }
 
     #[test]

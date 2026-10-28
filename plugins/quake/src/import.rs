@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::map::{self, MapEntity};
-use crate::mapcraft::plugin::types::{Brush, Entity, Face, Group, Image, MaterialInfo, Output};
+use crate::mapcraft::plugin::types::{BlendRole, Brush, Entity, Face, Group, Image, MaterialInfo, Output};
 use crate::wad::{Files, Library, Picture};
 
 /// Deeper nesting than this is a broken file, not a mapper's work.
@@ -23,6 +23,9 @@ pub fn material(name: String, picture: Picture) -> MaterialInfo {
         size: Some(picture.full),
         pixels: Some(Image { width: picture.width, height: picture.height, rgba: picture.rgba }),
         pbr: None,
+        uv_scale: None,
+        pixelated: false,
+        blend: BlendRole::Layer,
     }
 }
 
@@ -93,7 +96,7 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
             let parent = parent_of(&e);
             let brushes = brushes(&mut e);
             let properties = e.properties.into_iter().filter(|(k, _)| k != "classname" && !k.starts_with("_tb_")).collect();
-            entities.push((parent, Entity { classname, properties, brushes }));
+            entities.push((parent, Entity { classname, properties, connections: Vec::new(), brushes }));
         }
     }
 
@@ -153,7 +156,7 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
     log.extend(failed.into_iter().take(10).map(|f| format!("texture {f}")));
     let materials = pictures.into_iter().map(|(name, p)| material(name, p)).collect();
     if !world_keys.is_empty() {
-        top.push(Entity { classname: "worldspawn".into(), properties: world_keys, brushes: Vec::new() });
+        top.push(Entity { classname: "worldspawn".into(), properties: world_keys, connections: Vec::new(), brushes: Vec::new() });
     }
     Ok(Import { output: Output { brushes: world, entities: top, groups, materials }, log })
 }

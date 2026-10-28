@@ -1,9 +1,12 @@
+use egui::{Align, Layout};
 use mapcraft_geom::DVec3;
 use mapcraft_map::{Generator, NodeId};
-use mapcraft_plugin_host::{CommandSpec, Context, ParamKind, ParamSpec};
-use serde_json::{Value, json};
+use mapcraft_plugin_host::{CommandSpec, Context};
+use serde_json::Value;
 
 use crate::app::MapCraftApp;
+use crate::chrome::icon_button;
+use crate::inspect::{self, Note, Prop, Section, Title};
 
 /// A plugin command waiting for its parameters before it runs.
 pub(crate) struct PluginDialog {
@@ -22,71 +25,14 @@ pub(crate) struct PluginShape {
     ghost: Option<(Value, Vec<[DVec3; 2]>)>,
 }
 
-/// Parameter widgets generated from the command's specs; true when a value changed.
-fn param_widgets(ui: &mut egui::Ui, salt: impl std::hash::Hash + std::fmt::Debug, specs: &[ParamSpec], values: &mut Value, current_material: &str) -> bool {
-    if !values.is_object() {
-        *values = json!({});
-    }
-    let mut changed = false;
-    egui::Grid::new(("params", salt)).num_columns(2).striped(true).show(ui, |ui| {
-        for p in specs {
-            let r = ui.label(&p.label);
-            if !p.help.is_empty() {
-                r.on_hover_text(&p.help);
-            }
-            let v = values.get(&p.id).cloned().unwrap_or_else(|| p.initial.clone());
-            let new = match &p.kind {
-                ParamKind::Number { min, max, step } => {
-                    let mut n = v.as_f64().unwrap_or(*min);
-                    ui.add(egui::DragValue::new(&mut n).range(*min..=*max).speed(*step)).changed().then(|| json!(n))
-                }
-                ParamKind::Integer { min, max } => {
-                    let mut n = v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)).unwrap_or(*min);
-                    ui.add(egui::DragValue::new(&mut n).range(*min..=*max)).changed().then(|| json!(n))
-                }
-                ParamKind::Toggle => {
-                    let mut on = v.as_bool().unwrap_or(false);
-                    ui.checkbox(&mut on, "").changed().then(|| json!(on))
-                }
-                ParamKind::Choice(options) => {
-                    let mut s = v.as_str().unwrap_or_default().to_string();
-                    egui::ComboBox::from_id_salt(("choice", &p.id)).selected_text(&s).show_ui(ui, |ui| {
-                        for o in options {
-                            ui.selectable_value(&mut s, o.clone(), o);
-                        }
-                    });
-                    (Some(s.as_str()) != v.as_str()).then(|| json!(s))
-                }
-                ParamKind::Text => {
-                    let mut s = v.as_str().unwrap_or_default().to_string();
-                    ui.text_edit_singleline(&mut s).changed().then(|| json!(s))
-                }
-                ParamKind::Material => {
-                    let mut s = v.as_str().unwrap_or_default().to_string();
-                    ui.horizontal(|ui| {
-                        let typed = ui.add(egui::TextEdit::singleline(&mut s).hint_text("current material").desired_width(140.0)).changed();
-                        let picked = ui.small_button("Use current").on_hover_text("The material picked in the browser").clicked();
-                        if picked {
-                            s = current_material.to_string();
-                        }
-                        (typed || picked).then(|| json!(s))
-                    })
-                    .inner
-                }
-            };
-            if let (Some(n), Some(obj)) = (new, values.as_object_mut()) {
-                obj.insert(p.id.clone(), n);
-                changed = true;
-            }
-            ui.end_row();
-        }
-    });
-    changed
-}
-
 impl MapCraftApp {
     fn plugin_context(&self) -> Context {
-        Context { grid: self.session.grid, material: self.session.tex.material.clone(), scale: self.session.tex.scale }
+        Context {
+            grid: self.session.grid,
+            material: self.session.tex.material.clone(),
+            scale: self.session.tex.scale,
+            game: self.project.sdk.as_ref().map(|s| s.manifest.name.clone()).unwrap_or_default(),
+        }
     }
 
     /// Runs a command of a loaded plugin, passing its log lines on to the Output panel.
@@ -114,7 +60,7 @@ impl MapCraftApp {
             }
             for (plugin, c) in commands {
                 let label = c.menu.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&c.label).to_string();
-                if ui.button(format!("{label}…")).clicked() {
+                if ui.add(crate::icons::button(Some("jigsaw_piece"), format!("{label}…"))).clicked() {
                     let params = c.defaults();
                     self.plugin_dialog = Some(PluginDialog { plugin, command: c, params });
                 }
@@ -131,9 +77,13 @@ impl MapCraftApp {
         let mut open = true;
         let mut create = false;
         let material = self.session.tex.material.clone();
+        let (project, thumbs) = (&self.project, &mut self.thumbs);
+        let mut thumb = |name: &str| inspect::material_thumb(project, thumbs, ctx, name);
         egui::Window::new(&d.command.label).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            ui.set_width(320.0);
             egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                param_widgets(ui, ("dialog", &d.command.id), &d.command.params, &mut d.params, &material);
+                ui.spacing_mut().item_spacing.y = inspect::ROW_GAP;
+                inspect::param_rows(ui, ("dialog", &d.command.id), &d.command.params, &mut d.params, &material, &mut thumb);
             });
             if d.command.generator {
                 ui.label(egui::RichText::new("Makes a group you can change later from the inspector.").weak().small());
@@ -170,9 +120,9 @@ impl MapCraftApp {
         let importers: Vec<(String, mapcraft_plugin_host::ImporterSpec)> =
             self.project.plugins.iter().flat_map(|p| p.manifest.importers.iter().map(|i| (p.manifest.id.clone(), i.clone()))).collect();
         ui.add_enabled_ui(!importers.is_empty(), |ui| {
-            ui.menu_button("Import", |ui| {
+            ui.menu_button((crate::icons::slot(Some("file_arrow_down")), "Import"), |ui| {
                 for (plugin, importer) in importers {
-                    if ui.button(format!("{}…", importer.label)).clicked() {
+                    if ui.add(crate::icons::button(None, format!("{}…", importer.label))).clicked() {
                         self.import_file(&plugin, &importer);
                     }
                 }
@@ -186,9 +136,9 @@ impl MapCraftApp {
     pub(crate) fn export_menu(&mut self, ui: &mut egui::Ui) {
         let exporters: Vec<mapcraft_plugin_host::ImporterSpec> = self.project.plugins.iter().flat_map(|p| p.manifest.exporters.clone()).collect();
         ui.add_enabled_ui(!exporters.is_empty(), |ui| {
-            ui.menu_button("Export", |ui| {
+            ui.menu_button((crate::icons::slot(Some("file_arrow_up")), "Export"), |ui| {
                 for exporter in exporters {
-                    if ui.button(format!("{}…", exporter.label)).clicked() {
+                    if ui.add(crate::icons::button(None, format!("{}…", exporter.label))).clicked() {
                         self.export_dialog(&exporter);
                     }
                 }
@@ -212,16 +162,11 @@ impl MapCraftApp {
         }
     }
 
-    /// Writes the map, with prefabs and mirrors resolved, through the exporter `id` into `path`.
-    pub(crate) fn export_to(&mut self, id: &str, path: &std::path::Path) -> Result<(), String> {
+    /// The map, with prefabs and mirrors resolved, as the exporter `id` writes it; what the plugin says goes in `log`.
+    pub(crate) fn export_bytes(&mut self, id: &str, log: &mut Vec<String>) -> Result<Vec<u8>, String> {
         let ctx = self.plugin_context();
         let name = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
         let map = self.view_map().clone();
-        let displaced = map.nodes().filter_map(|(_, n)| n.kind.brush()).filter(|b| b.has_displacement()).count();
-        let connections: usize = map.nodes().filter_map(|(_, n)| n.kind.entity()).map(|e| e.connections.len()).sum();
-        if displaced + connections > 0 {
-            self.output.push(format!("Exporters do not get displacements or entity outputs yet: {displaced} displaced brushes are written flat and {connections} outputs are left out"));
-        }
         let plugin = self
             .project
             .plugins
@@ -229,7 +174,15 @@ impl MapCraftApp {
             .find(|p| p.manifest.exporters.iter().any(|e| e.id == id))
             .ok_or_else(|| format!("no loaded plugin exports `{id}`"))?;
         let result = plugin.export(id, &map, &name, &ctx).map_err(|e| e.to_string());
-        self.output.extend(plugin.take_log());
+        log.extend(plugin.take_log());
+        result
+    }
+
+    /// Writes the map, with prefabs and mirrors resolved, through the exporter `id` into `path`.
+    pub(crate) fn export_to(&mut self, id: &str, path: &std::path::Path) -> Result<(), String> {
+        let mut log = Vec::new();
+        let result = self.export_bytes(id, &mut log);
+        self.output.extend(log);
         let bytes = result?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
@@ -281,6 +234,8 @@ impl MapCraftApp {
         let imported = match result {
             Ok(i) => i,
             Err(e) => {
+                self.output.push(format!("Cannot import {name}: {e}"));
+                self.show_bottom = true;
                 self.status = e;
                 return;
             }
@@ -317,21 +272,36 @@ impl MapCraftApp {
         });
     }
 
-    /// The picked generator's parameters, shown in the inspector while the block tool is placing it.
-    pub(crate) fn plugin_shape_inspector(&mut self, ui: &mut egui::Ui) {
-        let material = self.session.tex.material.clone();
-        let Some(shape) = &mut self.plugin_shape else { return };
-        ui.label(egui::RichText::new(&shape.command.label).heading());
-        ui.label(egui::RichText::new("Click in a view to place it; it stays editable from the inspector.").weak().small());
-        ui.horizontal(|ui| {
-            ui.label("Turn");
-            ui.add(egui::DragValue::new(&mut shape.yaw).range(-360.0..=360.0).speed(15.0).suffix("°"));
-            if ui.small_button("90°").on_hover_text("Turn a quarter turn counter-clockwise").clicked() {
-                shape.yaw = (shape.yaw + 90.0) % 360.0;
-            }
+    pub(crate) fn shape_header(&mut self, ui: &mut egui::Ui) {
+        let Some(shape) = &self.plugin_shape else { return };
+        let label = shape.command.label.clone();
+        inspect::header(ui, ("magic_wand", crate::icons::GENERATOR), Title::Fixed(&label), "", &[], |ui| {
+            inspect::weak(ui, "Click in a view to place it");
         });
-        ui.separator();
-        param_widgets(ui, ("shape", &shape.command.id), &shape.command.params, &mut shape.params, &material);
+    }
+
+    /// The picked generator's placement and parameters while the block tool is placing it.
+    pub(crate) fn shape_body(&mut self, ui: &mut egui::Ui) {
+        let Some(mut shape) = self.plugin_shape.take() else { return };
+        if self.section(ui, &Section { key: "shape.placement", title: "Placement", ..Default::default() }) {
+            inspect::row(ui, &Prop { label: "Facing", key: "yaw", tip: "Degrees the shape turns about Z", ..Default::default() }, |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if icon_button(ui, "arrow_counterclockwise", "Turn 90°", 22.0, false).on_hover_text("Turn a quarter turn counter-clockwise").clicked() {
+                        shape.yaw = (shape.yaw + 90.0) % 360.0;
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| inspect::num(ui, &mut shape.yaw, -360.0..=360.0, 15.0, "°", None)).inner
+                })
+                .inner
+            });
+        }
+        if self.section(ui, &Section { key: "shape.params", title: "Parameters", ..Default::default() }) {
+            let material = self.session.tex.material.clone();
+            let ctx = ui.ctx().clone();
+            let (project, thumbs) = (&self.project, &mut self.thumbs);
+            let mut thumb = |name: &str| inspect::material_thumb(project, thumbs, &ctx, name);
+            inspect::param_rows(ui, ("shape", &shape.command.id), &shape.command.params, &mut shape.params, &material, &mut thumb);
+        }
+        self.plugin_shape = Some(shape);
         self.refresh_ghost();
         if self.ghost_at.is_none() {
             self.ghost_at = Some((0, self.placement_point()));
@@ -390,17 +360,24 @@ impl MapCraftApp {
     }
 
     /// Parameters of a generator group; editing one runs the plugin again.
-    pub(crate) fn generator_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, generator: Generator) {
+    pub(crate) fn generator_section(&mut self, ui: &mut egui::Ui, id: NodeId, generator: Generator) {
         let spec = self.project.plugin(&generator.plugin).and_then(|p| p.manifest.commands.iter().find(|c| c.id == generator.command).cloned());
         let Some(spec) = spec else {
-            ui.colored_label(egui::Color32::YELLOW, format!("Made by {} / {}, which this SDK does not load.", generator.plugin, generator.command));
-            ui.label("Its brushes stay as they are and can still be edited by hand.");
+            let text = format!("Made by {} / {}, which this SDK does not load. Its brushes stay editable by hand.", generator.plugin, generator.command);
+            inspect::note(ui, Note::Warn, &text);
             return;
         };
-        ui.label(egui::RichText::new(format!("{} parameters", spec.label)).strong());
+        let tip = format!("Made by {}; changing a value runs it again", generator.plugin);
+        let section = Section { key: "generator", title: &spec.label, tip: &tip, icon: Some(("magic_wand", crate::icons::GENERATOR)), ..Default::default() };
+        if !self.section(ui, &section) {
+            return;
+        }
         let mut params = generator.params.clone();
         let material = self.session.tex.material.clone();
-        if !param_widgets(ui, ("gen", id.0), &spec.params, &mut params, &material) {
+        let ctx = ui.ctx().clone();
+        let (project, thumbs) = (&self.project, &mut self.thumbs);
+        let mut thumb = |name: &str| inspect::material_thumb(project, thumbs, &ctx, name);
+        if !inspect::param_rows(ui, ("gen", id.0), &spec.params, &mut params, &material, &mut thumb) {
             return;
         }
         match self.run_plugin(&generator.plugin, &generator.command, &params) {

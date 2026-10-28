@@ -49,24 +49,25 @@ fn dv(p: &Vec3) -> DVec3 {
 }
 
 fn face(out: &mut String, f: &Face, long_names: &mut BTreeSet<String>) -> Result<(), String> {
-    let name = &f.material;
-    if name.is_empty() || name.contains(|c: char| c.is_whitespace() || c == '"') {
+    // A face without a material goes out as TrenchBroom writes one, which qbsp reports as a missing texture.
+    let name = if f.material.is_empty() { "__TB_empty" } else { f.material.as_str() };
+    if name.contains(|c: char| c.is_whitespace() || c == '"') {
         return Err(format!("the material `{name}` cannot be written to a .map"));
     }
     if name.len() > MAX_TEXTURE_NAME {
-        long_names.insert(name.clone());
+        long_names.insert(name.to_string());
     }
     let (p0, p1, p2) = &f.points;
     // Faces without axes get Quake's own world alignment.
     let normal = (dv(p0) - dv(p1)).cross(dv(p2) - dv(p1)).normalize_or_zero();
     let (u, v) = f.uv.unwrap_or_else(|| standard_axes(normal, [0.0, 0.0, 0.0, 1.0, 1.0]));
-    let line = [point(p0)?, point(p1)?, point(p2)?, name.clone(), axis(&u)?, axis(&v)?, "0".into(), number(u.scale)?, number(v.scale)?];
+    let line = [point(p0)?, point(p1)?, point(p2)?, name.to_string(), axis(&u)?, axis(&v)?, "0".into(), number(u.scale)?, number(v.scale)?];
     out.push_str(&line.join(" "));
     out.push('\n');
     Ok(())
 }
 
-/// A `wad` key for a world that has none: the file names of the WADs holding the map's textures, for qbsp's `-wadpath`.
+/// A `wad` key for a world that has none, naming the WADs that hold the map's textures.
 pub fn default_wad(map: &MapData, files: &dyn Files) -> Option<String> {
     if map.world.iter().any(|(k, _)| k == "wad") {
         return None;
@@ -80,7 +81,7 @@ pub fn default_wad(map: &MapData, files: &dyn Files) -> Option<String> {
         })
         .flatten()
         .collect();
-    Some(Library::open(files, "").wad_key(&used)).filter(|key| !key.is_empty())
+    Some(Library::open(files, "").wad_key(files, &used)).filter(|key| !key.is_empty())
 }
 
 pub struct Export {
@@ -88,7 +89,8 @@ pub struct Export {
     pub warnings: Vec<String>,
 }
 
-pub fn export(map: &MapData) -> Result<Export, String> {
+/// The map as `.map` text whose header names TrenchBroom's `game`, Quake when empty.
+pub fn export(map: &MapData, game: &str) -> Result<Export, String> {
     let count = map.nodes.len();
     let (mut owners, mut parents) = (Vec::with_capacity(count), Vec::with_capacity(count));
     // The brushes each node owns, by node index; brushes at the top belong to the world.
@@ -115,8 +117,9 @@ pub fn export(map: &MapData) -> Result<Export, String> {
         parents.push(parent);
     }
 
-    let mut out = String::from("// Game: Quake\n// Format: Valve\n// entity 0\n{\n");
-    let (mut long_names, mut skipped) = (BTreeSet::new(), 0);
+    let game = Some(game.trim()).filter(|g| !g.is_empty() && !g.contains(['\n', '\r'])).unwrap_or("Quake");
+    let mut out = format!("// Game: {game}\n// Format: Valve\n// entity 0\n{{\n");
+    let (mut long_names, mut skipped, mut displaced, mut anti_tiled) = (BTreeSet::new(), 0, 0, 0);
     let mut write_brushes = |out: &mut String, list: &[usize]| -> Result<(), String> {
         for (n, solid) in list
             .iter()
@@ -131,6 +134,12 @@ pub fn export(map: &MapData) -> Result<Export, String> {
                 continue;
             }
             out.push_str(&format!("// brush {n}\n{{\n"));
+            displaced += solid.faces.iter().filter(|f| f.disp.is_some()).count();
+            anti_tiled += solid
+                .faces
+                .iter()
+                .filter(|f| f.attrs.iter().any(|(k, v)| k == "anti_tile" && matches!(v.trim().to_ascii_lowercase().as_str(), "macro" | "hex")))
+                .count();
             for f in &solid.faces {
                 face(out, f, &mut long_names)?;
             }
@@ -183,12 +192,20 @@ pub fn export(map: &MapData) -> Result<Export, String> {
     }
 
     let mut warnings = Vec::new();
-    if !long_names.is_empty() {
+    // Loose image textures, as in func_godot games, have no name limit.
+    let wads = map.world.iter().any(|(k, v)| k == "wad" && !v.trim().is_empty());
+    if wads && !long_names.is_empty() {
         let names: Vec<String> = long_names.into_iter().collect();
         warnings.push(format!("texture names longer than {MAX_TEXTURE_NAME} characters do not fit Quake's WADs and BSPs: {}", names.join(", ")));
     }
     if skipped > 0 {
         warnings.push(format!("left out {skipped} brushes with fewer than four faces"));
+    }
+    if displaced > 0 {
+        warnings.push(format!("{displaced} displaced faces are written flat; Quake maps have no displacements"));
+    }
+    if anti_tiled > 0 {
+        warnings.push(format!("{anti_tiled} faces use anti-tiling, which Quake cannot show; they export plain"));
     }
     Ok(Export { text: out, warnings })
 }
@@ -220,7 +237,7 @@ mod tests {
     }
 
     fn entity(nodes: &mut Vec<MapNode>, parent: Option<usize>, e: &crate::mapcraft::plugin::types::Entity) {
-        nodes.push(node(parent, MapNodeKind::Entity(Ent { classname: e.classname.clone(), properties: e.properties.clone() })));
+        nodes.push(node(parent, MapNodeKind::Entity(Ent { classname: e.classname.clone(), properties: e.properties.clone(), connections: Vec::new() })));
         let at = nodes.len() - 1;
         nodes.extend(e.brushes.iter().map(|b| node(Some(at), solid(b))));
     }
@@ -273,7 +290,7 @@ mod tests {
                 }
                 (Some(classname), _) => {
                     let properties = e.properties.iter().filter(|(k, _)| k != "classname").cloned().collect();
-                    nodes.push(node(parent(&e, &ids), MapNodeKind::Entity(Ent { classname: classname.into(), properties })));
+                    nodes.push(node(parent(&e, &ids), MapNodeKind::Entity(Ent { classname: classname.into(), properties, connections: Vec::new() })));
                 }
                 _ => panic!("entity with no classname"),
             }
@@ -310,7 +327,11 @@ mod tests {
     }
 
     fn ent(classname: &str, properties: &[(&str, &str)]) -> MapNodeKind {
-        MapNodeKind::Entity(Ent { classname: classname.into(), properties: properties.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() })
+        MapNodeKind::Entity(Ent {
+            classname: classname.into(),
+            properties: properties.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            connections: Vec::new(),
+        })
     }
 
     #[test]
@@ -336,7 +357,7 @@ mod tests {
         if let MapNodeKind::Brush(s) = &mut map.nodes[0].kind {
             s.faces[5].uv = None;
         }
-        let export = export(&map).unwrap();
+        let export = export(&map, "Quake").unwrap();
         let text = &export.text;
         assert!(text.starts_with("// Game: Quake\n// Format: Valve\n// entity 0\n{\n\"classname\" \"worldspawn\"\n\"mapversion\" \"220\"\n\"wad\" \"a.wad;b.wad\"\n\"message\" \"Demo\"\n"), "{text}");
         assert!(text.contains("( 0 32 32 ) ( 0 0 32 ) ( 0 0 0 ) ewall1 [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1\n"), "{text}");
@@ -381,6 +402,65 @@ mod tests {
         assert_eq!(default_wad(&MapData { name: "x".into(), world: Vec::new(), nodes: Vec::new() }, &files), None);
     }
 
+    struct Placed(Mem);
+
+    impl Files for Placed {
+        fn read_range(&self, path: &str, offset: u64, length: u64) -> Option<Vec<u8>> {
+            self.0.read_range(path, offset, length)
+        }
+
+        fn list(&self, extensions: &[&str]) -> Vec<String> {
+            self.0.list(extensions)
+        }
+
+        fn full_path(&self, path: &str) -> Option<String> {
+            Some(if path == "a.wad" { format!("/odd;dir/{path}") } else { format!("/quake/{path}") })
+        }
+    }
+
+    #[test]
+    fn names_wads_by_full_path_so_qbsp_finds_them_outside_its_wadpath() {
+        let files = Placed(Mem(HashMap::from([
+            ("a.wad".to_string(), wad(b"WAD2", &[("ewall1", 0x44, miptex("ewall1", 16, 16, None))])),
+            ("rooftop/src/B.WAD".to_string(), wad(b"WAD2", &[("*water1", 0x44, miptex("*water1", 16, 16, None))])),
+        ])));
+        let map = MapData { name: "x".into(), world: Vec::new(), nodes: vec![node(None, brush(0.0, "ewall1")), node(None, brush(64.0, "*water1"))] };
+        assert_eq!(default_wad(&map, &files).as_deref(), Some("a.wad;/quake/rooftop/src/B.WAD"), "a path with a semicolon would split the key");
+    }
+
+    #[test]
+    fn writes_a_face_without_a_material_as_trenchbroom_does() {
+        let map = MapData { name: "x".into(), world: Vec::new(), nodes: vec![node(None, with_face(|f| f.material.clear()))] };
+        assert!(export(&map, "Quake").unwrap().text.contains(" __TB_empty "));
+    }
+
+    #[test]
+    fn writes_a_displaced_face_flat_with_a_warning() {
+        use crate::mapcraft::plugin::types::Displacement;
+        let v = Vec3 { x: 0.0, y: 0.0, z: 32.0 };
+        let disp = Displacement { power: 2, corners: (v, v, v, v), heights: vec![8.0; 25], blend: Vec::new(), blend_material: None };
+        let map = MapData { name: "x".into(), world: Vec::new(), nodes: vec![node(None, with_face(|f| f.disp = Some(disp.clone())))] };
+        let export = export(&map, "Quake").unwrap();
+        assert_eq!(export.warnings, ["1 displaced faces are written flat; Quake maps have no displacements"]);
+        assert_eq!(export.text.lines().filter(|l| l.starts_with('(')).count(), 6, "the brush keeps its six faces");
+    }
+
+    #[test]
+    fn names_the_sdk_as_the_game_and_leaves_long_names_alone_without_wads() {
+        let map =
+            MapData { name: "x".into(), world: Vec::new(), nodes: vec![node(None, with_face(|f| f.material = "textures/a_texture_name_too_long".into()))] };
+        let export = export(&map, "BloodthiefMapping").unwrap();
+        assert!(export.text.starts_with("// Game: BloodthiefMapping\n// Format: Valve\n"), "{}", export.text);
+        assert!(export.warnings.is_empty(), "{:?}", export.warnings);
+        assert!(super::export(&map, "").unwrap().text.starts_with("// Game: Quake\n"));
+    }
+
+    #[test]
+    fn warns_that_anti_tiling_exports_plain() {
+        let map = MapData { name: "x".into(), world: Vec::new(), nodes: vec![node(None, with_face(|f| f.attrs = vec![("anti_tile".into(), "Hex".into())]))] };
+        assert_eq!(export(&map, "Quake").unwrap().warnings, ["1 faces use anti-tiling, which Quake cannot show; they export plain"]);
+    }
+
     #[test]
     fn refuses_what_a_map_cannot_hold() {
         let world = |nodes: Vec<MapNode>| MapData { name: "x".into(), world: Vec::new(), nodes };
@@ -394,17 +474,16 @@ mod tests {
             world(vec![node(None, ent("", &[]))]),
             world(vec![node(None, ent("worldspawn", &[]))]),
             world(vec![node(None, with_face(|f| f.material = "has space".into()))]),
-            world(vec![node(None, with_face(|f| f.material.clear()))]),
             world(vec![node(None, with_face(|f| f.points.1.y = f64::NAN))]),
             world(vec![node(None, with_face(|f| f.uv.as_mut().unwrap().0.scale = f64::INFINITY))]),
             MapData { name: "x".into(), world: vec![("wad".into(), "\"".into())], nodes: Vec::new() },
         ];
         for map in &bad {
-            assert!(export(map).is_err());
+            assert!(export(map, "Quake").is_err());
         }
         let mut thin = square(0.0, "a");
         thin.truncate(3);
-        let export = export(&world(vec![node(None, MapNodeKind::Brush(Solid { faces: thin, vertices: Vec::new() }))])).unwrap();
+        let export = export(&world(vec![node(None, MapNodeKind::Brush(Solid { faces: thin, vertices: Vec::new() }))]), "Quake").unwrap();
         assert_eq!(export.warnings, ["left out 1 brushes with fewer than four faces"]);
         assert!(!export.text.contains("// brush"));
     }
@@ -422,14 +501,14 @@ mod tests {
             let mut world = worldspawn(&text);
             world.retain(|(k, _)| k != "classname");
             let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-            let exported = export(&editor_map(&name, world.clone(), &first, None)).unwrap();
+            let exported = export(&editor_map(&name, world.clone(), &first, None), "Quake").unwrap();
             let again = import(&exported.text, &no_files()).unwrap().output;
             assert_eq!(fingerprint(&again), fingerprint(&first), "{}", path.display());
             let mut expected: Vec<(String, String)> = vec![("classname".into(), "worldspawn".into()), ("mapversion".into(), "220".into())];
             expected.extend(world.into_iter().filter(|(k, _)| k != "mapversion"));
             assert_eq!(worldspawn(&exported.text), expected);
             // Inside the layer an import makes, everything comes back in that layer.
-            let layered = import(&export(&editor_map(&name, Vec::new(), &first, Some("Imported"))).unwrap().text, &no_files()).unwrap().output;
+            let layered = import(&export(&editor_map(&name, Vec::new(), &first, Some("Imported")), "Quake").unwrap().text, &no_files()).unwrap().output;
             assert!(layered.brushes.is_empty() && layered.entities.is_empty());
             assert_eq!(layered.groups[0].name, "Imported");
             assert_eq!(format!("{:?}{:?}", layered.groups[0].brushes, layered.groups[0].entities), format!("{:?}{:?}", first.brushes, placed(&first.entities)));
@@ -523,7 +602,7 @@ mod tests {
             assert_solid(brush);
         }
         let start = Instant::now();
-        let exported = export(&trenchbroom_map_data(parsed.entities)).unwrap();
+        let exported = export(&trenchbroom_map_data(parsed.entities), "Quake").unwrap();
         let elapsed = start.elapsed();
         let again = import(&exported.text, &no_files()).unwrap().output;
         let count =
@@ -542,7 +621,7 @@ mod tests {
         let names: Vec<&str> = again.groups.iter().map(|g| g.name.as_str()).take(3).collect();
         assert_eq!(names, ["Layer 0", "Layer 0 / Group 0", "Layer 0 / Group 0 / Sub"]);
         // The flat groups an import makes come back under the same names.
-        let flat = export(&editor_map("big", Vec::new(), &first, None)).unwrap();
+        let flat = export(&editor_map("big", Vec::new(), &first, None), "Quake").unwrap();
         assert_eq!(fingerprint(&import(&flat.text, &no_files()).unwrap().output), fingerprint(&first));
         eprintln!("{} bytes in, {} out; import {imported:?}, export {elapsed:?} (debug build)", text.len(), exported.text.len());
     }
@@ -602,7 +681,7 @@ mod tests {
         let first = import(&text, &no_files()).unwrap().output;
         let mut world = worldspawn(&text);
         world.retain(|(k, _)| k != "classname");
-        let exported = export(&editor_map("exported", world, &first, Some("mc_q30th_bearlikelion.map"))).unwrap();
+        let exported = export(&editor_map("exported", world, &first, Some("mc_q30th_bearlikelion.map")), "Quake").unwrap();
         let dir = std::env::temp_dir().join(format!("mapcraft-quake-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (original, ours) = (compiled(&qbsp(&dir, "original", &text)), compiled(&qbsp(&dir, "exported", &exported.text)));

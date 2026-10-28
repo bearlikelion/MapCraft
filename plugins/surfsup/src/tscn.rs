@@ -3,6 +3,8 @@
 
 /// Nested values deeper than this are refused, so hostile files cannot exhaust the stack.
 const MAX_DEPTH: usize = 64;
+/// Byte arrays longer than this are read as empty.
+pub const MAX_BYTES: usize = 16 << 20;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -15,6 +17,8 @@ pub enum Value {
     Call(String, Vec<Value>),
     List(Vec<Value>),
     Dict(Vec<(Value, Value)>),
+    /// A `PackedByteArray`, such as a mesh's vertex data.
+    Bytes(Vec<u8>),
 }
 
 impl Value {
@@ -250,7 +254,11 @@ impl Parser<'_> {
                     return Err(self.error(&format!("unknown value `{name}`")));
                 }
                 self.i += 1;
-                Ok(Value::Call(name, self.items(b')', depth)?))
+                let items = self.items(b')', depth)?;
+                if name == "PackedByteArray" {
+                    return Ok(Value::Bytes(bytes(&items)));
+                }
+                Ok(Value::Call(name, items))
             }
             _ => Err(self.error("expected a value")),
         }
@@ -331,6 +339,35 @@ impl Parser<'_> {
     }
 }
 
+/// A text `PackedByteArray`: base64 since Godot 4.3, a list of numbers before.
+fn bytes(items: &[Value]) -> Vec<u8> {
+    match items {
+        [Value::Str(text)] => base64(text).filter(|b| b.len() <= MAX_BYTES).unwrap_or_default(),
+        _ if items.len() <= MAX_BYTES => items.iter().map(|v| v.num().unwrap_or(0.0) as u8).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn base64(text: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for chunk in text.trim_end_matches('=').as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (k, c) in chunk.iter().enumerate() {
+            n |= u32::from(digit(*c)?) << (18 - 6 * k);
+        }
+        out.extend(n.to_be_bytes().get(1..chunk.len()).unwrap_or_default());
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +411,14 @@ path_node = NodePath("../P")
         assert_eq!(root.prop("bus").unwrap().text(), Some("Music"));
         assert_eq!(root.prop("path_node").unwrap().text(), Some("../P"));
         assert_eq!(s[5].attr("instance").unwrap().call("ExtResource").unwrap()[0].text(), Some("kill"));
+    }
+
+    #[test]
+    fn reads_byte_arrays_in_both_forms() {
+        let s = parse("[a]\nnew = PackedByteArray(\"AAEC/w==\")\nold = PackedByteArray(0, 1, 2, 255)\nbad = PackedByteArray(\"*\")\n").unwrap();
+        assert_eq!(s[0].prop("new"), Some(&Value::Bytes(vec![0, 1, 2, 255])));
+        assert_eq!(s[0].prop("old"), s[0].prop("new"));
+        assert_eq!(s[0].prop("bad"), Some(&Value::Bytes(Vec::new())));
     }
 
     #[test]

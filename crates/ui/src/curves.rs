@@ -3,14 +3,14 @@
 
 use std::collections::BTreeSet;
 
-use egui::{Color32, Pos2, Rect, RichText, Stroke, Vec2};
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use mapcraft_geom::DVec3;
 use mapcraft_geom::curve::Measured;
 use mapcraft_map::{CurveOp, NodeId, NodeKind, Path, PathPoint};
 use mapcraft_render::{LineVertex, SELECTED_EDGE};
 
 use crate::app::MapCraftApp;
-use crate::chrome::TEXT_WEAK;
+use crate::inspect::{self, Action, Note, Prop, Section, Title};
 use crate::measure::units;
 use crate::viewport::{Drag, Tool, closest_on_axis, dvec, segment_distance};
 
@@ -99,10 +99,10 @@ impl MapCraftApp {
     /// The visible path whose line passes under the pointer, as a node of the real map.
     pub(crate) fn pick_path(&self, index: usize, rect: Rect, pos: Pos2) -> Option<NodeId> {
         let map = self.view_map();
-        let visible = map.visible_nodes();
+        let editable = map.editable_nodes();
         let mut best: Option<(f32, NodeId)> = None;
         for (id, n) in map.nodes() {
-            let (Some(p), true, false) = (path_of(&n.kind), visible.contains(&id), n.locked) else { continue };
+            let (Some(p), true) = (path_of(&n.kind), editable.contains(&id)) else { continue };
             let pts: Vec<Option<Pos2>> = p.polyline(24).into_iter().map(|q| self.screen(index, rect, q)).collect();
             for w in pts.windows(2) {
                 if let [Some(a), Some(b)] = w {
@@ -223,7 +223,7 @@ impl MapCraftApp {
         });
         let (_, _, d) = cam.view.axes();
         let anchor = nearest.unwrap_or(start);
-        self.drag = Drag::Move { view: index, start, anchor: anchor - d * (anchor - start).dot(d), applied: DVec3::ZERO };
+        self.drag = Drag::Move { view: index, start, anchor: anchor - d * (anchor - start).dot(d), applied: DVec3::ZERO, clone: false };
         true
     }
 
@@ -359,84 +359,112 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    pub(crate) fn path_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, p: Path) {
-        ui.heading("Path");
+    pub(crate) fn path_header(&mut self, ui: &mut egui::Ui, p: &Path) {
         let len = Measured::new(&p.spans()).length();
-        ui.label(format!("{} points, {} units long", p.points.len(), units(len)));
-        let mut closed = p.closed;
-        if ui.checkbox(&mut closed, "Closed").on_hover_text("Join the last point back to the first").changed() {
-            if let Err(e) = self.session.set_kind(id, NodeKind::Path(Path { closed, ..p }), "Close path", None) {
-                self.status = e.to_string();
-            }
-            self.mark_changed();
-        }
-        let hint = format!(
+        let tip = format!(
             "Drag points and handles in any view; Alt+drag a point pulls out its handles, Alt+drag a handle turns it alone. Pick faces with the Face tool and Sweep ({}), or select objects with the path and Array Along Path ({}).",
             self.chord("tools.sweep"),
             self.chord("tools.array_path")
         );
-        ui.label(RichText::new(hint).color(TEXT_WEAK).small());
+        let icon = self.node_icon_of(&NodeKind::Path(Path::default()));
+        inspect::header(ui, icon, Title::Fixed(&format!("{} point path", p.points.len())), &tip, &[], |ui| {
+            inspect::weak(ui, &format!("{} units long", units(len)));
+        });
+    }
+
+    pub(crate) fn path_body(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let Some(NodeKind::Path(p)) = self.session.map.get(id).map(|n| n.kind.clone()) else { return };
+        if self.section(ui, &Section { key: "path", title: "Shape", ..Default::default() }) {
+            let mut closed = p.closed;
+            let out = inspect::row(ui, &Prop { label: "Closed", key: "closed", tip: "Join the last point back to the first", ..Default::default() }, |ui| {
+                inspect::toggle(ui, &mut closed, false, "Closed")
+            });
+            if out.changed {
+                if let Err(e) = self.session.set_kind(id, NodeKind::Path(Path { closed, ..p }), "Close path", None) {
+                    self.status = e.to_string();
+                }
+                self.mark_changed();
+            }
+        }
+        inspect::note(ui, Note::Info, "Drag points in any view; Alt+drag a point pulls out its handles.");
     }
 
     /// Blender's adjust last operation for a curve group: changing a setting rebuilds it in place.
-    pub(crate) fn curve_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, op: CurveOp) {
+    pub(crate) fn curve_section(&mut self, ui: &mut egui::Ui, id: NodeId, op: CurveOp) {
+        let (icon, title) = match &op {
+            CurveOp::Sweep { .. } => ("road", "Sweep"),
+            CurveOp::Spin { .. } => ("orbit", "Spin"),
+            CurveOp::Array { .. } => ("files", "Array along path"),
+        };
+        if !self.section(ui, &Section { key: "curve", title, icon: Some((icon, PATH_COLOR)), ..Default::default() }) {
+            return;
+        }
+        let map = &self.session.map;
+        let label = |p: &NodeId| map.get(*p).map_or("a deleted path".to_string(), |n| format!("{} {}", n.kind.label(), p.0));
+        let mut source = match &op {
+            CurveOp::Sweep { path, faces, .. } => format!("Sweeps {} along {}", plural(faces.len(), "face"), label(path)),
+            CurveOp::Spin { faces, .. } => format!("Spins {}", plural(faces.len(), "face")),
+            CurveOp::Array { path, nodes, .. } => format!("Copies {} along {}", plural(nodes.len(), "object"), label(path)),
+        };
+        let gone = op.sources().iter().filter(|s| map.get(**s).is_none()).count();
+        inspect::row(ui, &Prop { label: "Source", key: "source", readonly: Some(""), ..Default::default() }, |ui| inspect::text(ui, &mut source, "", false));
         let mut edited = op.clone();
-        let label = |p: &NodeId| self.session.map.get(*p).map_or("a deleted path".to_string(), |n| format!("{} {}", n.kind.label(), p.0));
-        egui::Grid::new(("curve", id.0)).num_columns(2).show(ui, |ui| match &mut edited {
-            CurveOp::Sweep { path, faces, segments, twist, scale, .. } => {
-                ui.label(RichText::new(format!("Sweeps {} along {}", plural(faces.len(), "face"), label(path))).strong());
-                ui.end_row();
-                ui.label("Segments");
-                ui.add(egui::DragValue::new(segments).range(1..=64)).on_hover_text("Brushes per curved span; straight spans take one");
-                ui.end_row();
-                ui.label("Twist");
-                ui.add(egui::DragValue::new(twist).speed(1.0).suffix("°"))
-                    .on_hover_text("Turns the cross-section by the end; a closed path turns in whole turns");
-                ui.end_row();
-                ui.label("End scale");
-                ui.add(egui::DragValue::new(scale).range(0.01..=100.0).speed(0.01)).on_hover_text("Size of the cross-section at the end of an open path");
-                ui.end_row();
+        let row = |ui: &mut egui::Ui, label: &str, tip: &str, value: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| {
+            inspect::row(ui, &Prop { label, key: label, tip, ..Default::default() }, |ui| value(ui));
+        };
+        match &mut edited {
+            CurveOp::Sweep { segments, twist, scale, .. } => {
+                row(ui, "Segments", "Brushes per curved span; straight spans take one", &mut |ui: &mut egui::Ui| {
+                    inspect::num(ui, segments, 1..=64, 1.0, "", None)
+                });
+                row(ui, "Twist", "Turns the cross-section by the end; a closed path turns in whole turns", &mut |ui: &mut egui::Ui| {
+                    inspect::num(ui, twist, -inspect::ANGLE_LIMIT..=inspect::ANGLE_LIMIT, 1.0, "°", None)
+                });
+                row(ui, "End scale", "Size of the cross-section at the end of an open path", &mut |ui: &mut egui::Ui| {
+                    inspect::num(ui, scale, 0.01..=100.0, 0.01, "", None)
+                });
             }
-            CurveOp::Spin { faces, axis, pivot, angle, steps } => {
-                ui.label(RichText::new(format!("Spins {}", plural(faces.len(), "face"))).strong());
-                ui.end_row();
-                ui.label("Angle");
-                ui.add(egui::DragValue::new(angle).range(-360.0..=360.0).speed(1.0).suffix("°"));
-                ui.end_row();
-                ui.label("Steps");
-                ui.add(egui::DragValue::new(steps).range(1..=256));
-                ui.end_row();
-                ui.label("Axis");
+            CurveOp::Spin { axis, pivot, angle, steps, .. } => {
+                row(ui, "Angle", "Degrees the faces turn in all", &mut |ui: &mut egui::Ui| inspect::num(ui, angle, -360.0..=360.0, 1.0, "°", None));
+                row(ui, "Steps", "Brushes around the turn", &mut |ui: &mut egui::Ui| inspect::num(ui, steps, 1..=256, 1.0, "", None));
                 let mut pick = (0..3).find(|i| axis.abs_diff_eq(DVec3::AXES[*i], 1e-9)).unwrap_or(3);
-                if Self::segmented(ui, &mut pick, &[(0, "X", "Turn about X"), (1, "Y", "Turn about Y"), (2, "Z", "Turn about Z")]) {
+                let mut turned = false;
+                row(ui, "Axis", "The axis the faces turn about", &mut |ui: &mut egui::Ui| {
+                    let axes = [(0, "X", "Turn about X"), (1, "Y", "Turn about Y"), (2, "Z", "Turn about Z")];
+                    let mut r = ui.scope(|ui| turned = Self::segmented(ui, &mut pick, &axes)).response;
+                    if turned {
+                        r.mark_changed();
+                    }
+                    r
+                });
+                if turned {
                     *axis = DVec3::AXES.get(pick).copied().unwrap_or(DVec3::Z);
                 }
-                ui.end_row();
-                ui.label("Pivot");
-                ui.horizontal(|ui| {
-                    for v in pivot.as_mut() {
-                        ui.add(egui::DragValue::new(v).speed(1.0));
-                    }
+                inspect::row(ui, &Prop { label: "Pivot", key: "pivot", tip: "The point the turn goes through", wide: true, ..Default::default() }, |ui| {
+                    inspect::vec(ui, pivot.as_mut(), inspect::XYZ, -inspect::LIMIT..=inspect::LIMIT, 1.0, "", [false; 3]).0
                 });
-                ui.end_row();
             }
-            CurveOp::Array { path, nodes, count, spacing, yaw_only, .. } => {
-                ui.label(RichText::new(format!("Copies {} along {}", plural(nodes.len(), "object"), label(path))).strong());
-                ui.end_row();
-                ui.label("Count");
-                ui.add_enabled(*spacing <= 0.0, egui::DragValue::new(count).range(1..=256));
-                ui.end_row();
-                ui.label("Spacing");
-                ui.add(egui::DragValue::new(spacing).range(0.0..=65536.0).speed(1.0)).on_hover_text("Units between copies; 0 spreads Count evenly");
-                ui.end_row();
-                ui.label("Turn");
-                Self::segmented(ui, yaw_only, &[(false, "Follow", "Turn with the path"), (true, "Yaw only", "Turn about Z only, staying upright")]);
-                ui.end_row();
+            CurveOp::Array { count, spacing, yaw_only, .. } => {
+                let readonly = (*spacing > 0.0).then_some("Spacing sets the count; set Spacing to 0 to type one.");
+                inspect::row(ui, &Prop { label: "Count", key: "count", tip: "Copies along the path", readonly, ..Default::default() }, |ui| {
+                    inspect::num(ui, count, 1..=256, 1.0, "", None)
+                });
+                row(ui, "Spacing", "Units between copies; 0 spreads Count evenly", &mut |ui: &mut egui::Ui| {
+                    inspect::num(ui, spacing, 0.0..=65536.0, 1.0, "", None)
+                });
+                row(ui, "Turn", "How each copy turns with the path", &mut |ui: &mut egui::Ui| {
+                    let turns = [(false, "Follow", "Turn with the path"), (true, "Yaw only", "Turn about Z only, staying upright")];
+                    let mut changed = false;
+                    let mut r = ui.scope(|ui| changed = Self::segmented(ui, yaw_only, &turns)).response;
+                    if changed {
+                        r.mark_changed();
+                    }
+                    r
+                });
             }
-        });
-        let gone = op.sources().iter().filter(|s| self.session.map.get(**s).is_none()).count();
+        }
         if gone > 0 {
-            ui.colored_label(Color32::LIGHT_RED, format!("{gone} of its sources are gone, so it no longer follows them."));
+            inspect::note(ui, Note::Warn, &format!("{gone} of its sources are gone, so it no longer follows them."));
         }
         if edited != op {
             if let Err(e) = self.session.set_curve(id, edited, Some(&format!("curve:{}", id.0))) {
@@ -444,7 +472,8 @@ impl MapCraftApp {
             }
             self.mark_changed();
         }
-        if ui.button("Make real").on_hover_text("Keep the brushes and stop following the path and faces").clicked() {
+        let tip = format!("Keep the brushes and stop following the path and faces  ({})", self.chord("tools.curve_make_real"));
+        if inspect::actions(ui, &[Action { icon: "Unlinked", label: "Make real", tip: &tip, enabled: true }]).is_some() {
             self.run_action("tools.curve_make_real");
         }
     }

@@ -1,6 +1,6 @@
 {
   "format": "mapcraft.map",
-  "schema_version": 1,
+  "schema_version": 2,
   "generator": "MapCraft 0.1.0",
   "sdk": "surfsup",
   "map": {
@@ -16,14 +16,16 @@
             {
               "id": 900,
               "points": [[1344, 128, 0], [1280, 128, 0], [1280, 192, 0]],
-              "material": "ramps-orange1",
+              "material": "checker",
               "u": {"axis": [1, 0, 0], "offset": 0, "scale": 1},
               "v": {"axis": [0, -1, 0], "offset": 0, "scale": 1},
               "rotation": 0,
               "disp": {
                 "power": 2,
                 "start": [1024, -128, 0],
-                "heights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                "heights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                "blend": [0, 0.25, 0.5, 0.75, 1, 0, 0.25, 0.5, 0.75, 1, 0, 0.25, 0.5, 0.75, 1, 0, 0.25, 0.5, 0.75, 1, 0, 0.25, 0.5, 0.75, 1],
+                "blend_material": "stripes"
               },
               "polygon": [
                 [1280, -128, 0],
@@ -208,10 +210,11 @@
             {
               "id": 12,
               "points": [[496, -256, 240], [496, -256, -16], [496, 256, -16]],
-              "material": "ramps-orange1",
+              "material": "glow",
               "u": {"axis": [0, 1, 0], "offset": 0, "scale": 1},
               "v": {"axis": [0, 0, -1], "offset": 0, "scale": 1},
               "rotation": 0,
+              "attrs": {"anti_tile": "macro"},
               "polygon": [
                 [496, -256, -16],
                 [496, -256, 240],
@@ -298,10 +301,11 @@
             {
               "id": 18,
               "points": [[-496, 256, -16], [-496, -256, -16], [-496, -256, 240]],
-              "material": "ramps-orange1",
+              "material": "nearest_mip",
               "u": {"axis": [0, 1, 0], "offset": 0, "scale": 1},
               "v": {"axis": [0, 0, -1], "offset": 0, "scale": 1},
               "rotation": 0,
+              "attrs": {"anti_tile": "macro"},
               "polygon": [
                 [-496, 256, -16],
                 [-496, 256, 240],
@@ -576,10 +580,11 @@
             {
               "id": 36,
               "points": [[-512, 256, 224], [-512, -256, 224], [512, -256, 224]],
-              "material": "ramps-orange1",
+              "material": "shader",
               "u": {"axis": [1, 0, 0], "offset": 0, "scale": 1},
               "v": {"axis": [0, -1, 0], "offset": 0, "scale": 1},
               "rotation": 0,
+              "attrs": {"anti_tile": "macro"},
               "polygon": [
                 [496, 240, 224],
                 [496, -240, 224],
@@ -596,10 +601,11 @@
             {
               "id": 37,
               "points": [[-512, 256, -16], [-512, -256, -16], [512, -256, -16]],
-              "material": "ramps-orange1",
+              "material": "nearest",
               "u": {"axis": [1, 0, 0], "offset": 0, "scale": 1},
               "v": {"axis": [0, -1, 0], "offset": 0, "scale": 1},
               "rotation": 0,
+              "attrs": {"anti_tile": "hex"},
               "polygon": [
                 [496, 240, -16],
                 [496, -240, -16],
@@ -1181,6 +1187,7 @@
                   "u": {"axis": [1, 0, 0], "offset": 0, "scale": 1},
                   "v": {"axis": [0, -1, 0], "offset": 0, "scale": 1},
                   "rotation": 0,
+                  "attrs": {"anti_tile": "hex"},
                   "polygon": [
                     [64, 164, 0],
                     [64, 100, 0],
@@ -1240,10 +1247,11 @@
                 {
                   "id": 74,
                   "points": [[-256, -64, 96], [-256, 64, 96], [-128, 64, 0]],
-                  "material": "ramps-orange1",
+                  "material": "checker",
                   "u": {"axis": [1, 0, 0], "offset": 0, "scale": 1},
                   "v": {"axis": [0, -1, 0], "offset": 0, "scale": 1},
                   "rotation": 0,
+                  "attrs": {"anti_tile": "macro"},
                   "polygon": [
                     [-256, 64, 96],
                     [-256, -64, 96],

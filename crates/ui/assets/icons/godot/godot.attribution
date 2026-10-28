@@ -1,0 +1,6 @@
+asset: crates/ui/assets/icons/godot/*.svg
+title: Godot editor icons, fill changed to currentColor
+author: Godot Engine contributors, Juan Linietsky, Ariel Manzur
+source: https://github.com/godotengine/godot editor/icons at 001aa128b1cd80dc4e47e823c360bccf45ed6bad (4.6.2-stable; COPYRIGHT.txt "Files: *", Expat)
+license: MIT
+added: 2026-10-27

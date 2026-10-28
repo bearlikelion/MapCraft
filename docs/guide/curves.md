@@ -31,7 +31,7 @@ Select a path, then use the Select, Move or Path tool:
 - Click a path's line to select it, and drag the line in a 2D view to move the whole path.
 
 Drags snap to the grid and to corners like every other drag; in the 3D view `Shift` moves points up and down.
-The inspector shows the path's length and a **Closed** box.
+The inspector's header shows the path's length, and its **Shape** section has a **Closed** box.
 Selected paths are red with their handles; other paths are pink.
 
 ## Sweep along a path

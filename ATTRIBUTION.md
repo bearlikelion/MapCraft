@@ -5,10 +5,13 @@ Third-party assets also have an `.attribution` file next to them with the full d
 
 | Asset | Title | Author | License |
 |---|---|---|---|
+| `crates/ui/assets/icons/at-icons/*.svg` (127 icons) | @icons, node variant | Valentin Fossati (Voxybuns) and contributors, 2026-present | MIT |
+| `crates/ui/assets/icons/godot/*.svg` (9 icons) | Godot editor icons | Godot Engine contributors, Juan Linietsky, Ariel Manzur, 2007-present | MIT |
 | `apps/mapcraft/assets/mapcraft.svg` | MapCraft app icon (Block M) | Mark Arneman | MIT |
 | `apps/mapcraft/assets/mapcraft-256.png` | MapCraft app icon, 256 px | Mark Arneman | MIT |
 | `apps/mapcraft/assets/mapcraft-512.png` | MapCraft app icon, 512 px | Mark Arneman | MIT |
 | `godot/test/Assets/Textures/checker.png` | Checker test texture | Mark Arneman | MIT |
+| `godot/test/Assets/Textures/stripes.png` | Stripes test texture | Mark Arneman | MIT |
 | `godot/test/Assets/Models/box.glb` | Box test model | Mark Arneman | MIT |
 | `site/assets/mapcraft.svg` | MapCraft app icon (Block M) | Mark Arneman | MIT |
 | `site/assets/hero.webp` | MapCraft editor with a curved surf ramp selected | Mark Arneman | MIT |

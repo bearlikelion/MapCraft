@@ -28,7 +28,7 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 | `D` | Sculpt |
 | `P` | Path |
 
-`Escape` goes back to Select from any tool.
+`Escape` goes back to Select from any tool, and in Select it clears the selection.
 
 ## Get around
 
@@ -42,6 +42,7 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 | Middle or right drag | Pans a 2D view |
 | Right drag + `W` `A` `S` `D` | Flies the 3D camera; `Q` and `E` go down and up, `Shift` goes faster |
 | Right drag + scroll | Changes how fast you fly |
+| `Alt` + right drag | Orbits the point under the pointer in the 3D view |
 
 ## Select and edit
 
@@ -49,10 +50,12 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 |---|---|
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo |
 | `Ctrl+D` | Duplicates the selection |
-| `Delete` | Deletes the selection |
+| `Delete` | Deletes the selection; in the Clip tool it takes back the last clip point, and in the Vertex tool it deletes the picked corners |
 | `Ctrl+A`, `Ctrl+Shift+A` | Selects everything, or nothing |
 | `Alt+1`, `Alt+2`, `Alt+3` | Clicks pick whole groups, objects, or single brushes |
-| Arrow keys | Nudge the selection one grid step in the 2D view under the pointer |
+| Arrow keys | Nudge the selection one grid step in the 2D view under the pointer; `Shift` nudges one unit and `Ctrl` nudges a copy |
+| `Ctrl` + drag | Moves a copy of the selection |
+| `End` | Drops the selection onto the floor below it |
 | `Ctrl+G`, `Ctrl+U` | Group, ungroup |
 | `H`, `I`, `U` | Hide the selection, show only the selection, show everything |
 
@@ -71,6 +74,8 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 | `Ctrl+S` | Saves the map |
 | `F9` | Runs the last Run profile, such as playing the map in your game |
 | `F1` | Lists every shortcut, with a search box |
+| `F3` | Searches every command by name and runs the one you pick |
+| `F5` | Rereads the SDK's entities, materials and models from disk |
 
 ## Coming from Hammer or TrenchBroom
 

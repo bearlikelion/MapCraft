@@ -164,7 +164,7 @@ mod tests {
         fn entity(&mut self, class: &str, props: &[(&str, &str)], bounds: Option<(DVec3, DVec3)>) {
             let at = self.0.len() as u32;
             let properties = props.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            self.0.push(MapNode { parent: None, kind: MapNodeKind::Entity(MapEntity { classname: class.into(), properties }) });
+            self.0.push(MapNode { parent: None, kind: MapNodeKind::Entity(MapEntity { classname: class.into(), properties, connections: Vec::new() }) });
             if let Some((lo, hi)) = bounds {
                 let vertices = [lo, hi].iter().map(|p| Vec3 { x: p.x, y: p.y, z: p.z }).collect();
                 self.0.push(MapNode { parent: Some(at), kind: MapNodeKind::Brush(Solid { faces: Vec::new(), vertices }) });

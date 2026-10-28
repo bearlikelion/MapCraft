@@ -12,3 +12,4 @@ crate-type = ["cdylib"]
 [dependencies]
 wit-bindgen = { workspace = true }
 glam = { workspace = true }
+ruzstd = { version = "0.8", default-features = false, features = ["std"] }

@@ -1,8 +1,13 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use egui::RichText;
 use mapcraft_geom::{DMat4, DQuat, DVec3};
+use mapcraft_map::NodeId;
 
 use crate::app::MapCraftApp;
+use crate::chrome::TEXT_WEAK;
+use crate::icons;
 use crate::shortcuts::Preset;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -44,6 +49,45 @@ pub(crate) struct ReplaceDialog {
     selected_only: bool,
 }
 
+/// The F3 popup that runs any action by name.
+pub(crate) struct CommandSearch {
+    query: String,
+    cursor: usize,
+    /// Set the frame it opens, so the click that opened it does not close it.
+    fresh: bool,
+}
+
+impl Default for CommandSearch {
+    fn default() -> Self {
+        Self { query: String::new(), cursor: 0, fresh: true }
+    }
+}
+
+/// Lower is better: label prefix, inside the label, inside the menu path, then the query's letters in order; `None` for no match.
+fn search_rank(query: &str, label: &str, path: &str) -> Option<u8> {
+    let (q, l) = (query.trim().to_lowercase(), label.to_lowercase());
+    let mut letters = l.chars();
+    Some(if l.starts_with(&q) {
+        0
+    } else if l.contains(&q) {
+        1
+    } else if path.to_lowercase().contains(&q) {
+        2
+    } else if q.chars().filter(|c| !c.is_whitespace()).all(|c| letters.any(|x| x == c)) {
+        3
+    } else {
+        return None;
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct RandomizeDialog {
+    pub open: bool,
+    ranges: mapcraft_engine::Randomize,
+    /// What the dialog last applied and to which selection; changing a range redoes that step.
+    applied: Option<(mapcraft_engine::Randomize, BTreeSet<NodeId>)>,
+}
+
 #[derive(Default)]
 pub(crate) struct Dialogs {
     pub preferences: bool,
@@ -58,21 +102,55 @@ pub(crate) struct Dialogs {
     pub replace: ReplaceDialog,
     /// Autosaves left behind by a session that did not close cleanly.
     pub recovery: Vec<PathBuf>,
+    /// This editor's running marker, locked while it stays open.
+    pub running: Option<std::fs::File>,
     pub switch_sdk: bool,
+    pub search: Option<CommandSearch>,
+    /// Actions run from the search, newest first, listed first.
+    pub recent_commands: Vec<String>,
+    pub randomize: RandomizeDialog,
+    /// Asking before File > Revert throws away unsaved changes.
+    pub revert: bool,
 }
 
-/// Marks a running editor; finding it at startup means the last session did not close cleanly.
+/// Prefix of each editor's `running-<pid>` marker, locked while it runs; finding one unlocked means that session did not close cleanly.
 const RUNNING: &str = "running";
 
-/// Autosaves to offer back when the previous session crashed, and marks this one as running.
-pub(crate) fn start_session(data: &Path) -> Vec<PathBuf> {
-    let marker = data.join(RUNNING);
-    let crashed = marker.exists();
-    if let Err(e) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(&marker, std::process::id().to_string())) {
-        log::warn!("{}: {e}", marker.display());
+/// The process an autosave named by `autosave_name` belongs to.
+pub(crate) fn autosave_owner(name: &str) -> Option<&str> {
+    name.strip_suffix(".autosave.mcmap")?.rsplit_once('-').map(|(_, pid)| pid)
+}
+
+/// Autosaves to offer back when an earlier session crashed, leaving out those of editors still running, and this session's marker to keep open.
+pub(crate) fn start_session(data: &Path) -> (Vec<PathBuf>, Option<std::fs::File>) {
+    let mut live = BTreeSet::new();
+    let mut crashed = false;
+    for entry in std::fs::read_dir(data).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix(RUNNING) else { continue };
+        let held = std::fs::File::open(entry.path()).is_ok_and(|f| matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        if held {
+            live.insert(pid.trim_start_matches('-').to_string());
+        } else {
+            crashed = true;
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
+    let marker = data.join(format!("{RUNNING}-{}", std::process::id()));
+    let running = match std::fs::create_dir_all(data).and_then(|()| std::fs::File::options().create(true).append(true).open(&marker)) {
+        Ok(f) => {
+            if let Err(e) = f.try_lock() {
+                log::warn!("{}: {e}", marker.display());
+            }
+            Some(f)
+        }
+        Err(e) => {
+            log::warn!("{}: {e}", marker.display());
+            None
+        }
+    };
     if !crashed {
-        return Vec::new();
+        return (Vec::new(), running);
     }
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(data.join("autosave"))
         .into_iter()
@@ -80,14 +158,15 @@ pub(crate) fn start_session(data: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == mapcraft_format::EXTENSION))
+        .filter(|p| !p.file_name().and_then(|n| n.to_str()).and_then(autosave_owner).is_some_and(|pid| live.contains(pid)))
         .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
         .collect();
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
-    found.into_iter().map(|(_, p)| p).collect()
+    (found.into_iter().map(|(_, p)| p).collect(), running)
 }
 
 pub(crate) fn end_session(data: &Path) {
-    let _ = std::fs::remove_file(data.join(RUNNING));
+    let _ = std::fs::remove_file(data.join(format!("{RUNNING}-{}", std::process::id())));
 }
 
 impl MapCraftApp {
@@ -111,6 +190,168 @@ impl MapCraftApp {
         self.shortcuts_dialog(ctx);
         self.recovery_dialog(ctx);
         self.switch_sdk_dialog(ctx);
+        self.randomize_dialog(ctx);
+        self.revert_dialog(ctx);
+        self.command_search(ctx);
+    }
+
+    fn command_search(&mut self, ctx: &egui::Context) {
+        const ROWS: usize = 14;
+        let Some(mut search) = self.dialogs.search.take() else { return };
+        let prefs = self.prefs.get().clone();
+        let recent = &self.dialogs.recent_commands;
+        let mut rows: Vec<(u8, usize, &'static str, &'static str)> = crate::shortcuts::actions()
+            .filter_map(|(id, label)| {
+                let rank = search_rank(&search.query, label, mapcraft_engine::find(id).map_or("", |c| c.menu))?;
+                Some((rank, recent.iter().position(|r| r == id).unwrap_or(usize::MAX), id, label))
+            })
+            .collect();
+        rows.sort_by_key(|r| (r.0, r.1));
+        rows.truncate(ROWS);
+        let none = egui::Modifiers::NONE;
+        let (down, up, enter, escape) = ctx.input_mut(|i| {
+            (
+                i.consume_key(none, egui::Key::ArrowDown),
+                i.consume_key(none, egui::Key::ArrowUp),
+                i.consume_key(none, egui::Key::Enter),
+                i.consume_key(none, egui::Key::Escape),
+            )
+        });
+        if down {
+            search.cursor += 1;
+        }
+        if up {
+            search.cursor = search.cursor.saturating_sub(1);
+        }
+        search.cursor = search.cursor.min(rows.len().saturating_sub(1));
+        let mut run = rows.get(search.cursor).filter(|_| enter).map(|r| r.2);
+        let area = egui::Area::new(egui::Id::new("command-search"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 72.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(460.0);
+                    let edit = ui.add(egui::TextEdit::singleline(&mut search.query).hint_text("Search commands").desired_width(f32::INFINITY));
+                    edit.request_focus();
+                    if edit.changed() {
+                        search.cursor = 0;
+                    }
+                    ui.separator();
+                    if rows.is_empty() {
+                        ui.label(RichText::new("No command matches").color(TEXT_WEAK));
+                    }
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        for (i, (_, _, id, label)) in rows.iter().enumerate() {
+                            let spec = mapcraft_engine::find(id);
+                            let enabled = spec.is_none_or(|c| (c.enabled)(&self.session));
+                            let chord = crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts).unwrap_or_default();
+                            let row = icons::selectable(i == search.cursor, icons::action_icon(id), *label).shortcut_text(chord);
+                            let r = ui.add_enabled(enabled, row);
+                            let r = match spec {
+                                Some(c) => r.on_hover_text(c.menu.replace('/', " > ")),
+                                None => r,
+                            };
+                            if r.clicked() {
+                                run = Some(id);
+                            }
+                        }
+                    });
+                });
+            });
+        let close = escape || (!search.fresh && area.response.clicked_elsewhere());
+        search.fresh = false;
+        match run {
+            Some(id) => {
+                self.dialogs.recent_commands.retain(|r| r != id);
+                self.dialogs.recent_commands.insert(0, id.to_string());
+                self.dialogs.recent_commands.truncate(10);
+                self.run_action(id);
+            }
+            None if !close => self.dialogs.search = Some(search),
+            None => {}
+        }
+    }
+
+    /// Ranges for Randomize Transform; changing one while the dialog is open redoes its last step.
+    fn randomize_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.randomize.open;
+        if !open {
+            return;
+        }
+        let any = !self.session.selection.is_empty();
+        let mut roll = false;
+        egui::Window::new("Randomize Transform").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+            let r = &mut self.dialogs.randomize.ranges;
+            egui::Grid::new("randomize-grid").num_columns(2).show(ui, |ui| {
+                ui.label("Turn up to");
+                crate::inspect::number(ui, egui::DragValue::new(&mut r.yaw).range(0.0..=180.0).suffix("°"));
+                ui.end_row();
+                ui.label("Tilt up to");
+                crate::inspect::number(ui, egui::DragValue::new(&mut r.tilt).range(0.0..=90.0).suffix("°"));
+                ui.end_row();
+                ui.label("Scale up to");
+                let mut percent = r.scale * 100.0;
+                if crate::inspect::number(ui, egui::DragValue::new(&mut percent).range(0.0..=90.0).suffix("%")).changed() {
+                    r.scale = percent / 100.0;
+                }
+                ui.end_row();
+                ui.label("Seed");
+                crate::inspect::number(ui, egui::DragValue::new(&mut r.seed));
+                ui.end_row();
+            });
+            ui.label(RichText::new("Each object turns and scales about its own center by up to these amounts either way.").color(TEXT_WEAK));
+            roll = ui.add_enabled(any, icons::button(Some("dice"), "Randomize")).on_hover_text("Click again for another roll").clicked();
+        });
+        let d = &mut self.dialogs.randomize;
+        let moved_on = d.applied.as_ref().is_some_and(|(_, sel)| *sel != self.session.selection);
+        if moved_on || !open {
+            d.applied = None;
+        }
+        if roll && d.applied.is_some() {
+            d.ranges.seed = d.ranges.seed.wrapping_add(1);
+        }
+        let redo = d.applied.as_ref().is_some_and(|(r, _)| *r != d.ranges);
+        let (ranges, replace) = (d.ranges, d.applied.is_some());
+        d.open = open;
+        if moved_on || !open {
+            self.session.end_coalesce();
+        }
+        if !(roll || redo) {
+            return;
+        }
+        if replace {
+            self.session.cancel_coalesce("randomize");
+        }
+        match self.session.randomize_selection(&ranges, Some("randomize")) {
+            Ok(()) => self.dialogs.randomize.applied = Some((ranges, self.session.selection.clone())),
+            Err(e) => self.status = e.to_string(),
+        }
+        self.mark_changed();
+    }
+
+    fn revert_dialog(&mut self, ctx: &egui::Context) {
+        if !self.dialogs.revert {
+            return;
+        }
+        let mut choice = None;
+        egui::Modal::new(egui::Id::new("revert")).show(ctx, |ui| {
+            ui.heading("Revert to the saved map?");
+            ui.label("Unsaved changes and the undo history are lost.");
+            ui.horizontal(|ui| {
+                if ui.button("Revert").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        if let Some(revert) = choice {
+            self.dialogs.revert = false;
+            if let (true, Some(p)) = (revert, self.session.path.clone()) {
+                self.open_now(&p);
+            }
+        }
     }
 
     fn switch_sdk_dialog(&mut self, ctx: &egui::Context) {
@@ -133,13 +374,14 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 23] = [
+            const FIXED: [(&str, &str); 34] = [
                 ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
                 ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
-                ("Cancel the current drag or tool step", "Escape"),
+                ("Cancel the current drag or tool step, leave the tool, then deselect", "Escape"),
                 ("Apply the clip", "Enter"),
                 ("Extrude a face", "Shift+Drag"),
+                ("Slide a face, keeping its shape", "Alt+Shift+Drag"),
                 ("Extrude into a new brush", "Ctrl+Shift+Drag"),
                 ("Stamp a copy along a face", "Ctrl+Alt+Shift+Drag"),
                 ("Pick a face's material", "Alt+Click"),
@@ -150,13 +392,23 @@ impl MapCraftApp {
                 ("Snap a UV grab, rotate or scale", "Ctrl"),
                 ("Apply a UV grab, rotate or scale", "Click, Enter"),
                 ("Cancel a UV grab, rotate or scale", "Escape, Right Click"),
+                ("Move the picked faces' UVs", "Drag a picked face in a UV editor"),
+                ("Scale UVs; Shift keeps a corner's aspect", "Drag a square handle in a UV editor"),
+                ("Rotate UVs", "Drag the round handle in a UV editor"),
                 ("Change a bevel's segments while sizing it", "Scroll"),
                 ("Apply a bevel being sized", "Click, Enter"),
                 ("Cancel a bevel being sized", "Escape, Right Click"),
-                ("Move a 3D vertex handle up and down", "Shift+Drag"),
-                ("Add a third clip point that tilts the cut", "Click in the 3D view"),
+                ("Move a 3D vertex handle or block height up and down", "Shift+Drag, Alt+Drag"),
+                ("Add a third clip point that tilts the cut", "Click in another view"),
+                ("Clip along a face", "Double-click the face in the 3D view"),
                 ("Move a clip point", "Drag the point"),
+                ("Move a brush entity's origin", "Drag its handle in a 2D view"),
                 ("Nudge the selection one grid step, or the picked handles in the Vertex tool", "Arrow keys"),
+                ("Nudge the selection one unit", "Shift+Arrow keys"),
+                ("Nudge a copy of the selection, leaving the original", "Ctrl+Arrow keys"),
+                ("Move a copy of the selection, leaving the original", "Ctrl+Drag"),
+                ("Pick a face from the Select or Move tool", "Shift+Click in the 3D view"),
+                ("Orbit the 3D camera around the point under the pointer", "Alt+Right Drag"),
             ];
             let bound = crate::shortcuts::actions().filter_map(|(id, label)| Some((label, crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts)?)));
             let rows: Vec<(&str, String)> = bound
@@ -183,8 +435,10 @@ impl MapCraftApp {
         egui::Window::new("Transform").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             let d = &mut self.dialogs.transform;
             ui.horizontal(|ui| {
-                for (m, label) in [(TransformMode::Move, "Move"), (TransformMode::Rotate, "Rotate"), (TransformMode::Scale, "Scale")] {
-                    if ui.selectable_label(d.mode == m, label).clicked() && d.mode != m {
+                for (m, label, icon) in
+                    [(TransformMode::Move, "Move", "arrow_cross"), (TransformMode::Rotate, "Rotate", "rotate"), (TransformMode::Scale, "Scale", "resize")]
+                {
+                    if ui.add(crate::icons::selectable(d.mode == m, Some(icon), label)).clicked() && d.mode != m {
                         d.mode = m;
                         d.values = if m == TransformMode::Scale { [1.0; 3] } else { [0.0; 3] };
                     }
@@ -193,7 +447,7 @@ impl MapCraftApp {
             ui.horizontal(|ui| {
                 for (v, axis) in d.values.iter_mut().zip(["X", "Y", "Z"]) {
                     ui.label(axis);
-                    ui.add(egui::DragValue::new(v).speed(if d.mode == TransformMode::Scale { 0.01 } else { 1.0 }));
+                    crate::inspect::number(ui, egui::DragValue::new(v).speed(if d.mode == TransformMode::Scale { 0.01 } else { 1.0 }));
                 }
             });
             ui.label(match d.mode {
@@ -240,12 +494,12 @@ impl MapCraftApp {
             let d = &mut self.dialogs.array;
             egui::Grid::new("array-grid").num_columns(4).show(ui, |ui| {
                 ui.label("Copies");
-                ui.add(egui::DragValue::new(&mut d.copies).range(1..=256));
+                crate::inspect::number(ui, egui::DragValue::new(&mut d.copies).range(1..=256));
                 ui.end_row();
                 for (label, values, speed) in [("Offset", &mut d.offset, 1.0), ("Turn", &mut d.rotation, 1.0), ("Pivot", &mut d.pivot, 1.0)] {
                     ui.label(label);
                     for (v, axis) in values.iter_mut().zip(["X", "Y", "Z"]) {
-                        ui.add(egui::DragValue::new(v).speed(speed).prefix(format!("{axis} ")));
+                        crate::inspect::number(ui, egui::DragValue::new(v).speed(speed).prefix(format!("{axis} ")));
                     }
                     ui.end_row();
                 }
@@ -315,13 +569,29 @@ impl MapCraftApp {
         egui::Window::new("Preferences").open(&mut open).default_width(460.0).show(ctx, |ui| {
             egui::Grid::new("prefs-grid").num_columns(2).show(ui, |ui| {
                 ui.label("Grid size");
-                ui.add(egui::DragValue::new(&mut prefs.view.grid).range(0.125..=4096.0));
+                crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.grid).range(0.125..=4096.0));
                 ui.end_row();
                 ui.label("Autosave every");
-                ui.add(egui::DragValue::new(&mut prefs.view.autosave_minutes).range(0..=120).suffix(" min"));
+                crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.autosave_minutes).range(0..=120).suffix(" min"));
+                ui.end_row();
+                ui.label("Keep backups");
+                crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.backups).range(0..=20))
+                    .on_hover_text("Earlier versions kept in a backups folder beside the map each time it is saved");
+                ui.end_row();
+                ui.label("Color by Slope");
+                ui.horizontal(|ui| {
+                    crate::inspect::number(
+                        ui,
+                        egui::DragValue::new(&mut prefs.view.slope_walkable).range(0.0..=90.0).speed(0.1).prefix("walkable to ").suffix("°"),
+                    );
+                    crate::inspect::number(
+                        ui,
+                        egui::DragValue::new(&mut prefs.view.slope_surfable).range(0.0..=90.0).speed(0.1).prefix("surfable to ").suffix("°"),
+                    );
+                });
                 ui.end_row();
                 ui.label("Fly speed");
-                ui.add(egui::DragValue::new(&mut prefs.view.fly_speed).range(16.0..=8192.0).suffix(" units/s"));
+                crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.fly_speed).range(16.0..=8192.0).suffix(" units/s"));
                 ui.end_row();
                 ui.label("Materials");
                 ui.checkbox(&mut prefs.view.apply_on_click, "Clicking a material applies it to the selection");
@@ -340,7 +610,7 @@ impl MapCraftApp {
             for (i, d) in prefs.sdk_dirs.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.monospace(d);
-                    if ui.small_button("Remove").clicked() {
+                    if crate::chrome::icon_button(ui, "trash_can", "Remove", 20.0, false).on_hover_text("Remove this folder").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -361,7 +631,7 @@ impl MapCraftApp {
             for (i, r) in prefs.registries.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.monospace(r);
-                    if ui.small_button("Remove").clicked() {
+                    if crate::chrome::icon_button(ui, "trash_can", "Remove", 20.0, false).on_hover_text("Remove this registry").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -395,7 +665,9 @@ impl MapCraftApp {
                             if r.changed() {
                                 prefs.shortcuts.insert(id.to_string(), text);
                             }
-                            if ui.add_enabled(prefs.shortcuts.contains_key(id), egui::Button::new("Reset").small()).clicked() {
+                            let reset =
+                                ui.add_enabled_ui(prefs.shortcuts.contains_key(id), |ui| crate::chrome::icon_button(ui, "recover", "Reset", 20.0, false)).inner;
+                            if reset.on_hover_text("Back to the preset's chord").clicked() {
                                 prefs.shortcuts.remove(id);
                             }
                             ui.end_row();
@@ -411,6 +683,7 @@ impl MapCraftApp {
             }
             self.session.grid = prefs.view.grid;
             self.prefs.update(|p| *p = prefs);
+            self.mark_changed();
         }
         if rescan {
             self.rescan_sdks();
@@ -445,6 +718,7 @@ impl MapCraftApp {
             // A recovered map is unsaved work, not the autosave file itself.
             self.session.path = None;
             self.session.mark_unsaved();
+            self.recovered = Some(p);
             self.dialogs.recovery.clear();
         } else if discard {
             for p in self.dialogs.recovery.drain(..) {
@@ -461,13 +735,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn command_search_ranks_prefixes_then_words_then_paths_then_letters() {
+        assert_eq!(search_rank("", "Undo", "Edit/Undo"), Some(0));
+        assert_eq!(search_rank("dup", "Duplicate", "Edit/Duplicate"), Some(0));
+        assert_eq!(search_rank("linked", "Duplicate Linked", ""), Some(1));
+        assert_eq!(search_rank("curves", "Spin", "Tools/Curves/Spin"), Some(2));
+        assert_eq!(search_rank("dtf", "Drop to Floor", ""), Some(3));
+        assert_eq!(search_rank("zzz", "Drop to Floor", "Tools/Drop to Floor"), None);
+    }
+
+    #[test]
     fn crash_leaves_autosaves_to_recover() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(start_session(dir.path()).is_empty());
+        assert!(start_session(dir.path()).0.is_empty());
         std::fs::create_dir_all(dir.path().join("autosave")).unwrap();
         std::fs::write(dir.path().join("autosave/level.autosave.mcmap"), "{}").unwrap();
-        assert_eq!(start_session(dir.path()).len(), 1, "the marker survived, so the last run crashed");
+        assert_eq!(start_session(dir.path()).0.len(), 1, "the marker was left unlocked, so the last run crashed");
         end_session(dir.path());
-        assert!(start_session(dir.path()).is_empty());
+        assert!(start_session(dir.path()).0.is_empty());
+    }
+
+    #[test]
+    fn a_running_editor_keeps_its_autosaves() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, running) = start_session(dir.path());
+        let autosave = dir.path().join("autosave");
+        std::fs::create_dir_all(&autosave).unwrap();
+        std::fs::write(autosave.join(format!("untitled-{}.autosave.mcmap", std::process::id())), "{}").unwrap();
+        std::fs::write(dir.path().join("running-4000000000"), "").unwrap();
+        std::fs::write(autosave.join("level-00ff-4000000000.autosave.mcmap"), "{}").unwrap();
+        assert_eq!(start_session(dir.path()).0, vec![autosave.join("level-00ff-4000000000.autosave.mcmap")], "only the crashed editor's");
+        drop(running);
     }
 }

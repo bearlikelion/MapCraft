@@ -12,7 +12,7 @@ The other half appears, mirrored left and right across a plane at a fixed X.
 
 - The selection goes into a new group named Mirror. If you selected one group, that group becomes the mirror group instead.
 - The plane goes through the edge of your half nearest the map's origin, or through 0 when your half spans the origin.
-- The group's texture lock starts as the top bar's **Texture lock** setting.
+- The group's **Carry textures** starts as the top bar's **Texture lock** setting.
 
 ![A curved surf ramp made into a mirror group: its mirrored copy completes an arch in the 3D and Top views, with the mirror plane drawn between the halves](img/mirror-group.webp)
 
@@ -34,10 +34,10 @@ Select the mirror group to change it in the inspector.
 |---|---|
 | **Axis** | X mirrors left and right, Y front and back, Z up and down. Changing it moves the plane to that axis's default spot. |
 | **Plane at** | Where the plane sits along the axis |
-| **Texture lock** | On, copies carry their textures across the plane. Off, they keep the originals' texture alignment. |
+| **Carry textures** | On, copies carry their textures across the plane. Off, they keep the originals' texture alignment. |
 | **Make real** | Turns the mirrored half into ordinary objects (below) |
 
-![The Mirror section of the inspector: Axis X, Y or Z, Plane at, Texture lock and Make real](img/mirror-settings.webp)
+![The Mirror section of the inspector: Axis X, Y or Z, Plane at, Carry textures and Make real](img/mirror-settings.webp)
 
 ### How the copy is made
 

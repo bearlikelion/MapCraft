@@ -19,12 +19,12 @@ mod vertex;
 
 pub use commands::{CommandSpec, commands, execute, find};
 pub use generate::generator_transform;
-pub use issues::{Fix, Issue, Severity, validate};
-pub use ops::{ClipKeep, ExtrudeMode, Shape};
+pub use issues::{Fix, Issue, LINK_KEYS, Severity, is_broken_link, is_unresolved, target_names, validate};
+pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape};
 pub use organize::{entities_of, find_entities};
 pub use prefab::{expand_instance, flatten, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
-pub use terrain::{Sculpt, SculptMode};
+pub use terrain::{BlendFill, Falloff, Sculpt, SculptMode};
 pub use uv::{FacePick, face_polygons, uv_islands};
 
 #[derive(Debug, thiserror::Error)]

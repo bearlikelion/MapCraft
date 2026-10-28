@@ -56,3 +56,5 @@ The other half follows every edit, and the saved map holds both halves so the ga
 ## Terrain
 
 Turn the top faces of floor brushes into displacements with the Face tool's Displacement section, then shape them with the Sculpt tool (D) or a heightmap image.
+Paint a second material into them with the Sculpt tool's Paint mode (6), or fill it by slope in the Displacement section, such as rock on the steep parts of a hill.
+Set **Anti-tiling** to **Variation** in the Brushes section on big ramps and floors so their textures stop showing a grid.

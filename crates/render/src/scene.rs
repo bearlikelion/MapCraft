@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mapcraft_geom::{DMat3, DMat4, DVec2, DVec3};
-use mapcraft_map::{Entity, Face, FaceId, Map, NodeId, NodeKind, TexAxis};
+pub use mapcraft_map::is_tool_material;
+use mapcraft_map::{AntiTile, Entity, Face, FaceId, Map, NodeId, NodeKind, TexAxis};
 
 use crate::model::{Model, entity_transform, placed_bounds};
 
@@ -15,6 +16,10 @@ pub struct MeshVertex {
     pub tint: [f32; 4],
     /// Where the texture's u grows, with w the sign that makes `cross(normal, tangent) * w` point up the picture.
     pub tangent: [f32; 4],
+    /// Texture coordinates of a blended displacement's second layer.
+    pub blend_uv: [f32; 2],
+    /// Second layer share at a displaced vertex; 0 elsewhere.
+    pub blend: f32,
 }
 
 #[repr(C)]
@@ -100,11 +105,28 @@ impl EntityStyle for NoStyle {
     }
 }
 
-/// CPU-side geometry for the whole map, grouped by material.
+/// What a batch of triangles is drawn with.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BatchKey {
+    /// `""` is untextured.
+    pub material: String,
+    /// The second layer of blended displacements; empty for one layer.
+    pub blend: String,
+    pub anti_tile: AntiTile,
+}
+
+impl From<&str> for BatchKey {
+    fn from(material: &str) -> Self {
+        Self { material: material.to_string(), ..Self::default() }
+    }
+}
+
+/// CPU-side geometry for the whole map, grouped by what it is drawn with.
 #[derive(Clone, Debug, Default)]
 pub struct SceneData {
-    /// Material name to triangles; `""` is untextured.
-    pub batches: BTreeMap<String, Vec<MeshVertex>>,
+    pub batches: BTreeMap<BatchKey, Vec<MeshVertex>>,
+    /// Point entity boxes and models by material, which a baked map leaves in place.
+    pub points: BTreeMap<BatchKey, Vec<MeshVertex>>,
     pub edges: Vec<LineVertex>,
     /// Drawn over everything.
     pub selected_edges: Vec<LineVertex>,
@@ -128,11 +150,6 @@ pub struct Sky {
     pub ambient: f32,
 }
 
-/// Hammer's convention: `tools/...` materials mark invisible brushes such as triggers and clips.
-pub fn is_tool_material(name: &str) -> bool {
-    name.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("tools/"))
-}
-
 const TOOL_ALPHA: f32 = 0.3;
 
 pub const WORLD_EDGE: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
@@ -142,6 +159,8 @@ const PICKED_FACE_EDGE: [f32; 4] = [0.0, 0.8, 1.0, 1.0];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const SOLID_ENTITY: [u8; 3] = [220, 30, 220];
 const POINT_ENTITY: [u8; 3] = [80, 220, 80];
+/// Half the size of the cross marking a brush entity's origin.
+const ORIGIN_MARK: f64 = 8.0;
 
 fn linear(c: [u8; 3]) -> [f32; 4] {
     let f = |v: u8| (f32::from(v) / 255.0).powf(2.2);
@@ -180,8 +199,36 @@ fn tangent(face: &Face, normal: DVec3) -> [f32; 4] {
     t.as_vec3().extend(w).to_array()
 }
 
+/// Limits in degrees from flat for coloring faces by slope: walkable up to `walkable`, surfable up to `surfable`, then wall, then ceiling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slope {
+    pub walkable: f64,
+    pub surfable: f64,
+}
+
+impl Slope {
+    pub const WALKABLE: [f32; 4] = [0.2, 0.75, 0.25, 1.0];
+    pub const SURFABLE: [f32; 4] = [0.15, 0.45, 1.0, 1.0];
+    pub const WALL: [f32; 4] = [0.9, 0.5, 0.15, 1.0];
+    pub const CEILING: [f32; 4] = [0.55, 0.25, 0.65, 1.0];
+
+    /// The band color of a surface facing `normal`.
+    pub fn tint(&self, normal: DVec3) -> [f32; 4] {
+        let angle = normal.normalize_or(DVec3::Z).z.clamp(-1.0, 1.0).acos().to_degrees();
+        if angle > 90.0 + 1e-6 {
+            Self::CEILING
+        } else if angle <= self.walkable {
+            Self::WALKABLE
+        } else if angle <= self.surfable {
+            Self::SURFABLE
+        } else {
+            Self::WALL
+        }
+    }
+}
+
 /// Builds the scene. `texture_size` gives the texel size used to normalize UVs; with `colorize`
-/// each world brush's edges get their own color.
+/// each world brush's edges get their own color, and with `slope` faces are tinted by steepness.
 pub fn build_scene(
     map: &Map,
     selection: &BTreeSet<NodeId>,
@@ -189,6 +236,7 @@ pub fn build_scene(
     texture_size: &dyn Fn(&str) -> Option<[u32; 2]>,
     style: &dyn EntityStyle,
     colorize: bool,
+    slope: Option<Slope>,
 ) -> SceneData {
     let mut scene = SceneData::default();
     let visible = map.visible_nodes();
@@ -212,32 +260,50 @@ pub fn build_scene(
                     let plane_normal = face.plane().map_or(DVec3::Z, |p| p.normal);
                     let normal = plane_normal.as_vec3().to_array();
                     let tangent = tangent(face, plane_normal);
-                    let size = texture_size(&face.material).map_or(DVec2::splat(64.0), |s| DVec2::new(f64::from(s[0]), f64::from(s[1])));
+                    let size_of = |m: &str| texture_size(m).map_or(DVec2::splat(64.0), |s| DVec2::new(f64::from(s[0]), f64::from(s[1])));
+                    let size = size_of(&face.material);
                     let face_selected = faces.contains(&(id, face.id));
                     let tool = is_tool_material(&face.material);
                     // Picked faces keep their true color so materials can be judged; the outline marks them.
-                    let tint = match (selected || face_selected, tool) {
-                        (true, false) if selected && !face_selected => SELECTED_TINT,
-                        (_, false) => WHITE,
-                        (true, true) => [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], TOOL_ALPHA + 0.15],
-                        (false, true) => {
+                    let band = |s: Slope, n: DVec3| {
+                        let t = s.tint(n);
+                        if selected && !face_selected { std::array::from_fn(|i| t[i] * SELECTED_TINT[i]) } else { t }
+                    };
+                    let tint = match (selected || face_selected, tool, slope) {
+                        (_, false, Some(s)) => band(s, plane_normal),
+                        (true, false, None) if selected && !face_selected => SELECTED_TINT,
+                        (_, false, None) => WHITE,
+                        (true, true, _) => [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], TOOL_ALPHA + 0.15],
+                        (false, true, _) => {
                             let c = entity_color.unwrap_or([0.8, 0.5, 0.1, 1.0]);
                             [c[0], c[1], c[2], TOOL_ALPHA]
                         }
                     };
-                    let verts = if tool { &mut scene.translucent } else { scene.batches.entry(face.material.clone()).or_default() };
+                    let layer = face.blend_layer().filter(|_| displaced.contains_key(&index));
+                    let key = BatchKey { blend: layer.unwrap_or_default().to_string(), anti_tile: face.anti_tile(), ..BatchKey::from(face.material.as_str()) };
+                    let verts = if tool { &mut scene.translucent } else { scene.batches.entry(key).or_default() };
                     let edges = if selected || face_selected { &mut scene.selected_edges } else { &mut scene.edges };
                     let edge = if face_selected { PICKED_FACE_EDGE } else { edge };
                     if let (Some(grid), Some(d)) = (displaced.get(&index), &face.disp) {
                         let normals = d.normals(grid, plane_normal);
+                        let size_b = layer.map(size_of);
                         let v = |k: usize| MeshVertex {
                             pos: grid[k].as_vec3().to_array(),
                             normal: normals[k].as_vec3().to_array(),
                             uv: face.uv(grid[k], size).as_vec2().to_array(),
                             tint,
                             tangent,
+                            blend_uv: size_b.map_or([0.0; 2], |s| face.uv(grid[k], s).as_vec2().to_array()),
+                            blend: if tool { 0.0 } else { d.blend_at(k) as f32 },
                         };
-                        verts.extend(d.triangles().into_iter().flat_map(|[a, b, c]| [v(a), v(b), v(c)]));
+                        let slope_tint = |[a, b, c]: [usize; 3]| {
+                            let n = (grid[b] - grid[a]).cross(grid[c] - grid[a]);
+                            slope.filter(|_| !tool).map(|s| band(s, if n.dot(plane_normal) < 0.0 { -n } else { n }))
+                        };
+                        verts.extend(d.triangles().into_iter().flat_map(|t| {
+                            let tinted = |k| MeshVertex { tint: slope_tint(t).unwrap_or(tint), ..v(k) };
+                            [tinted(t[0]), tinted(t[1]), tinted(t[2])]
+                        }));
                         let n = d.size();
                         for k in 0..n * n {
                             for next in [(k % n + 1 < n).then_some(k + 1), (k + n < n * n).then_some(k + n)].into_iter().flatten() {
@@ -247,7 +313,15 @@ pub fn build_scene(
                         }
                         continue;
                     }
-                    let v = |p: DVec3| MeshVertex { pos: p.as_vec3().to_array(), normal, uv: face.uv(p, size).as_vec2().to_array(), tint, tangent };
+                    let v = |p: DVec3| MeshVertex {
+                        pos: p.as_vec3().to_array(),
+                        normal,
+                        uv: face.uv(p, size).as_vec2().to_array(),
+                        tint,
+                        tangent,
+                        blend_uv: [0.0; 2],
+                        blend: 0.0,
+                    };
                     for i in 1..w.0.len().saturating_sub(1) {
                         verts.extend([v(w.0[0]), v(w.0[i]), v(w.0[i + 1])]);
                     }
@@ -263,12 +337,12 @@ pub fn build_scene(
                 let (min, max) = entity_bounds(style, e);
                 let edge = if selected { SELECTED_EDGE } else { color };
                 if let Some(model) = style.model(e) {
-                    push_model(&mut scene.batches, &mut scene.edges, &model, &entity_transform(e), selected, edge);
+                    push_model(&mut scene.points, &mut scene.edges, &model, &entity_transform(e), selected, edge);
                     if selected {
                         box_lines(&mut scene.selected_edges, min, max, SELECTED_EDGE);
                     }
                 } else {
-                    push_box(scene.batches.entry(String::new()).or_default(), min, max, if selected { SELECTED_TINT } else { color });
+                    push_box(scene.points.entry(BatchKey::default()).or_default(), min, max, if selected { SELECTED_TINT } else { color });
                     let out = if selected { &mut scene.selected_edges } else { &mut scene.edges };
                     box_lines(out, min, max, edge);
                     if ["angles", "angle"].iter().any(|k| !numbers(e.get(k).unwrap_or_default()).is_empty()) {
@@ -286,7 +360,15 @@ pub fn build_scene(
                 }
             }
             NodeKind::Entity(e) => {
-                child_color = Some(linear(style.color(&e.classname).unwrap_or(SOLID_ENTITY)));
+                let color = linear(style.color(&e.classname).unwrap_or(SOLID_ENTITY));
+                child_color = Some(color);
+                if let Some(o) = e.origin() {
+                    let (out, edge) = if selected { (&mut scene.selected_edges, SELECTED_EDGE) } else { (&mut scene.edges, color) };
+                    for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+                        out.push(LineVertex::new(o - axis * ORIGIN_MARK, edge));
+                        out.push(LineVertex::new(o + axis * ORIGIN_MARK, edge));
+                    }
+                }
             }
             _ => {}
         }
@@ -411,12 +493,19 @@ fn read_quake_world(world: &Entity, scene: &mut SceneData) {
 }
 
 /// Adds a placed model's triangles to the batches of its textures, and its wireframe.
-fn push_model(batches: &mut BTreeMap<String, Vec<MeshVertex>>, edges: &mut Vec<LineVertex>, model: &Model, at: &DMat4, selected: bool, edge: [f32; 4]) {
+pub(crate) fn push_model(
+    batches: &mut BTreeMap<BatchKey, Vec<MeshVertex>>,
+    edges: &mut Vec<LineVertex>,
+    model: &Model,
+    at: &DMat4,
+    selected: bool,
+    edge: [f32; 4],
+) {
     let turn = DMat3::from_mat4(*at);
     for part in &model.parts {
         let tint = if selected { std::array::from_fn(|i| part.color[i] * SELECTED_TINT[i]) } else { part.color };
         let world: Vec<DVec3> = part.positions.iter().map(|p| at.transform_point3(DVec3::from_array(p.map(f64::from)))).collect();
-        let verts = batches.entry(model.texture_name(part.texture)).or_default();
+        let verts = batches.entry(BatchKey::from(model.texture_name(part.texture).as_str())).or_default();
         verts.extend(part.indices.iter().filter_map(|i| {
             let i = *i as usize;
             let n = (turn * DVec3::from_array(part.normals.get(i)?.map(f64::from))).normalize_or(DVec3::Z);
@@ -427,6 +516,8 @@ fn push_model(batches: &mut BTreeMap<String, Vec<MeshVertex>>, edges: &mut Vec<L
                 tint,
                 // Any tangent across the normal does, since model textures carry no normal maps.
                 tangent: n.any_orthonormal_vector().as_vec3().extend(1.0).to_array(),
+                blend_uv: [0.0; 2],
+                blend: 0.0,
             })
         }));
         for [a, b] in &part.edges {
@@ -462,7 +553,15 @@ fn push_box(out: &mut Vec<MeshVertex>, min: DVec3, max: DVec3, tint: [f32; 4]) {
         (-DVec3::Z, [DVec3::new(min.x, max.y, min.z), DVec3::new(max.x, max.y, min.z), DVec3::new(max.x, min.y, min.z), DVec3::new(min.x, min.y, min.z)]),
     ];
     for (n, q) in faces {
-        let v = |p: DVec3| MeshVertex { pos: p.as_vec3().to_array(), normal: n.as_vec3().to_array(), uv: [0.0, 0.0], tint, tangent: [1.0, 0.0, 0.0, 1.0] };
+        let v = |p: DVec3| MeshVertex {
+            pos: p.as_vec3().to_array(),
+            normal: n.as_vec3().to_array(),
+            uv: [0.0, 0.0],
+            tint,
+            tangent: [1.0, 0.0, 0.0, 1.0],
+            blend_uv: [0.0; 2],
+            blend: 0.0,
+        };
         out.extend([v(q[0]), v(q[1]), v(q[2]), v(q[0]), v(q[2]), v(q[3])]);
     }
 }
@@ -485,26 +584,104 @@ mod tests {
         e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
         map.apply(e.finish());
 
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| Some([64, 64]), &NoStyle, false);
-        assert_eq!(scene.batches["a"].len(), 6 * 2 * 3);
-        assert_eq!(scene.batches[""].len(), 36);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| Some([64, 64]), &NoStyle, false, None);
+        assert_eq!(scene.batches[&BatchKey::from("a")].len(), 6 * 2 * 3);
+        assert_eq!(scene.points[&BatchKey::default()].len(), 36);
         assert_eq!(scene.edges.len(), 6 * 4 * 2 + 24);
         assert!(scene.selected_edges.is_empty());
         assert!(scene.lights.is_empty());
-        let uv_max = scene.batches["a"].iter().map(|v| v.uv[0].abs().max(v.uv[1].abs())).fold(0.0f32, f32::max);
+        let uv_max = scene.batches[&BatchKey::from("a")].iter().map(|v| v.uv[0].abs().max(v.uv[1].abs())).fold(0.0f32, f32::max);
         assert!((uv_max - 1.0).abs() < 1e-6);
-        let frame = |n: [f32; 3]| scene.batches["a"].iter().find(|v| v.normal == n).unwrap().tangent;
+        let frame = |n: [f32; 3]| scene.batches[&BatchKey::from("a")].iter().find(|v| v.normal == n).unwrap().tangent;
         assert_eq!(frame([0.0, 0.0, 1.0]), [1.0, 0.0, 0.0, 1.0], "on a floor u runs along +X and the picture's top faces +Y");
         assert_eq!(frame([0.0, 1.0, 0.0]), [1.0, 0.0, 0.0, -1.0], "world aligned textures mirror on the far wall");
         assert_eq!(frame([0.0, -1.0, 0.0]), [1.0, 0.0, 0.0, 1.0]);
 
-        let scene = build_scene(&map, &BTreeSet::from([b]), &BTreeSet::new(), &|_| None, &NoStyle, true);
+        let scene = build_scene(&map, &BTreeSet::from([b]), &BTreeSet::new(), &|_| None, &NoStyle, true, None);
         assert_eq!(scene.selected_edges.len(), 48);
 
         let face = map.get(b).unwrap().kind.brush().unwrap().faces[0].id;
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::from([(b, face)]), &|_| None, &NoStyle, true);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::from([(b, face)]), &|_| None, &NoStyle, true, None);
         assert_eq!(scene.selected_edges.len(), 8, "a picked face is outlined");
-        assert!(scene.batches["a"].iter().all(|v| v.tint == WHITE), "and keeps its true color");
+        assert!(scene.batches[&BatchKey::from("a")].iter().all(|v| v.tint == WHITE), "and keeps its true color");
+
+        let slope = Slope { walkable: 45.573, surfable: 72.0 };
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, Some(slope));
+        let tint = |n: [f32; 3]| scene.batches[&BatchKey::from("a")].iter().find(|v| v.normal == n).unwrap().tint;
+        assert_eq!(tint([0.0, 0.0, 1.0]), Slope::WALKABLE);
+        assert_eq!(tint([1.0, 0.0, 0.0]), Slope::WALL);
+        assert_eq!(tint([0.0, 0.0, -1.0]), Slope::CEILING);
+        assert_eq!(slope.tint(DVec3::new(0.0, 0.8, 0.6)), Slope::SURFABLE, "53 degrees surfs");
+        assert_eq!(slope.tint(DVec3::new(0.0, 0.7, 0.71)), Slope::WALKABLE, "normal z 0.7 and up stands");
+        assert_eq!(slope.tint(DVec3::new(0.0, 0.97, 0.24)), Slope::WALL, "76 degrees is too steep");
+    }
+
+    #[test]
+    fn brush_entities_mark_their_origin() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: "a".into(), scale: 1.0 };
+        let mut door = Entity::new("func_door_rotating");
+        door.set("origin", "0 0 0");
+        let door = e.insert(ROOT, NodeKind::Entity(door)).unwrap();
+        e.insert(door, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &tex))).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
+        assert_eq!(scene.edges.len(), 6 * 4 * 2 + 6, "the brush's edges and a cross at the origin");
+        let scene = build_scene(&map, &BTreeSet::from([door]), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
+        assert_eq!(scene.selected_edges.len(), 6 * 4 * 2 + 6);
+    }
+
+    #[test]
+    fn blended_displacements_get_a_two_layer_batch() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        for (x, material, layer) in [(0.0, "a", "b"), (128.0, "a", "A"), (256.0, "tools/trigger", "b")] {
+            let tex = TexDefaults { material: material.into(), scale: 1.0 };
+            let mut b = Brush::cuboid(Aabb::new(DVec3::new(x, 0.0, -16.0), DVec3::new(x + 64.0, 64.0, 0.0)), &tex);
+            let solid = b.solid().unwrap();
+            let (top, w) = b.faces.iter_mut().zip(&solid.faces).find(|(f, _)| f.plane().unwrap().normal.z > 0.9).unwrap();
+            let mut d = mapcraft_map::Displacement::new(1, w.as_ref().unwrap().0[0]);
+            d.set_blend((0..9).map(|k| k as f64 / 8.0).collect());
+            d.blend_material = Some(layer.into());
+            top.disp = Some(d);
+            e.insert(ROOT, NodeKind::Brush(b)).unwrap();
+        }
+        map.apply(e.finish());
+        let size = |m: &str| Some(if m == "b" { [32, 16] } else { [64, 64] });
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &size, &NoStyle, false, None);
+
+        let blended = &scene.batches[&BatchKey { blend: "b".into(), ..BatchKey::from("a") }];
+        assert_eq!(blended.len(), 8 * 3);
+        let b = map.nodes().find_map(|(_, n)| n.kind.brush()).unwrap();
+        let face = b.faces.iter().find(|f| f.disp.is_some()).unwrap();
+        for v in blended {
+            let texel = face.texel(DVec3::from_array(v.pos.map(f64::from)));
+            assert!((DVec2::from_array(v.blend_uv.map(f64::from)) - texel / DVec2::new(32.0, 16.0)).length() < 1e-4, "layer b tiles by its own size");
+        }
+        assert!(blended.iter().any(|v| v.blend == 1.0) && blended.iter().any(|v| v.blend == 0.0));
+        let own = &scene.batches[&BatchKey::from("a")];
+        assert!(own.iter().any(|v| v.blend > 0.0) && own.iter().all(|v| v.blend_uv == [0.0; 2]), "its own material in other case stays one layer");
+        assert_eq!(scene.batches.len(), 2, "tool faces ignore both");
+        assert!(scene.translucent.iter().all(|v| v.blend == 0.0));
+    }
+
+    #[test]
+    fn anti_tiled_faces_get_their_own_batch() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        for material in ["a", "tools/trigger"] {
+            let mut b = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults { material: material.into(), scale: 1.0 });
+            b.faces[0].set_anti_tile(AntiTile::Hex);
+            e.insert(ROOT, NodeKind::Brush(b)).unwrap();
+        }
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
+        let hex = BatchKey { anti_tile: AntiTile::Hex, ..BatchKey::from("a") };
+        assert_eq!(scene.batches[&hex].len(), 6);
+        assert_eq!(scene.batches[&BatchKey::from("a")].len(), 30);
+        assert_eq!(scene.batches.len(), 2, "tool faces stay see-through whatever they ask for");
+        assert_eq!(scene.translucent.len(), 36);
     }
 
     #[test]
@@ -516,7 +693,7 @@ mod tests {
         e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
         e.insert(ROOT, NodeKind::Entity(Entity::new("info_target"))).unwrap();
         map.apply(e.finish());
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
         assert_eq!(scene.edges.len(), 24 * 2 + 6, "only the entity with a facing gets an arrow");
         assert!(
             scene.edges.iter().any(|v| DVec3::from(v.pos.map(f64::from)).abs_diff_eq(DVec3::new(0.0, 16.0, 8.0), 1e-4)),
@@ -541,7 +718,7 @@ mod tests {
             e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
         }
         map.apply(e.finish());
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
         let find = |w: f32, falloff: f32| *scene.lights.iter().find(|l| l.pos[3] == w && l.color[3] == falloff).unwrap();
         let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
 
@@ -581,7 +758,7 @@ mod tests {
         }
         e.insert(ROOT, NodeKind::Entity(torch)).unwrap();
         map.apply(e.finish());
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
         let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
 
         let torch = scene.lights.iter().find(|l| l.pos[3] == 1.0).unwrap();
@@ -607,7 +784,7 @@ mod tests {
         ent.set("sky_top_color", "255 0 0");
         e.insert(ROOT, NodeKind::Entity(ent)).unwrap();
         map.apply(e.finish());
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false);
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
         let sun = scene.lights[0];
         assert!(sun.pos[3] == 0.0 && (sun.pos[2] - 1.0).abs() < 1e-4, "pitch 90 shines straight down");
         assert!((sun.color[0] - 2.0).abs() < 1e-4, "the default white sun at energy 2");
@@ -646,12 +823,12 @@ mod tests {
         let (min, max) = entity_bounds(&style, &prop);
         assert!(min.abs_diff_eq(DVec3::new(100.0, 20.0, 0.0), 1e-4) && max.abs_diff_eq(DVec3::new(110.0, 20.0, 10.0), 1e-4), "{min} {max}");
 
-        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &style, false);
-        assert_eq!(scene.batches["quad.glb#0"].len(), 6, "two triangles under the model's texture");
-        assert!(!scene.batches.contains_key(""), "no box");
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &style, false, None);
+        assert_eq!(scene.points[&BatchKey::from("quad.glb#0")].len(), 6, "two triangles under the model's texture");
+        assert!(!scene.points.contains_key(&BatchKey::default()), "no box");
         assert_eq!(scene.edges.len(), 10, "five wireframe edges");
 
-        let scene = build_scene(&map, &BTreeSet::from([id]), &BTreeSet::new(), &|_| None, &style, false);
+        let scene = build_scene(&map, &BTreeSet::from([id]), &BTreeSet::new(), &|_| None, &style, false, None);
         assert_eq!(scene.selected_edges.len(), 24, "a selected model is boxed");
     }
 }

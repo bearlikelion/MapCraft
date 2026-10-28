@@ -16,6 +16,8 @@
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/sky.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/classes/static_body3d.hpp>
@@ -33,11 +35,56 @@ const char *MATERIAL_EXTENSIONS[] = { "tres", "res", "material" };
 const char *IMAGE_EXTENSIONS[] = { "png", "jpg", "jpeg", "webp", "tga", "bmp" };
 const double DEFAULT_TEXTURE_SIZE = 64.0;
 const int MAX_DEPTH = 256;
+// The editor's MACRO_AMOUNT in mapcraft_geom::noise.
+const double MACRO_AMOUNT = 0.15;
+const char *SHADER_DIR = "res://addons/mapcraft/shaders/";
 
 // Column form of (x, y, z) -> (x, z, -y), a rotation, so windings keep their sense.
 const Basis TO_GODOT(Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(0, 1, 0));
 
 using Surfaces = HashMap<String, Ref<SurfaceTool>>;
+
+enum class AntiTile {
+	OFF,
+	MACRO,
+	HEX,
+};
+
+const struct {
+	BaseMaterial3D::Feature feature;
+	const char *name;
+} FEATURE_NAMES[] = {
+	{ BaseMaterial3D::FEATURE_EMISSION, "emission" },
+	{ BaseMaterial3D::FEATURE_RIM, "rim" },
+	{ BaseMaterial3D::FEATURE_CLEARCOAT, "clearcoat" },
+	{ BaseMaterial3D::FEATURE_ANISOTROPY, "anisotropy" },
+	{ BaseMaterial3D::FEATURE_HEIGHT_MAPPING, "heightmap" },
+	{ BaseMaterial3D::FEATURE_SUBSURFACE_SCATTERING, "subsurface scattering" },
+	{ BaseMaterial3D::FEATURE_SUBSURFACE_TRANSMITTANCE, "transmittance" },
+	{ BaseMaterial3D::FEATURE_BACKLIGHT, "backlight" },
+	{ BaseMaterial3D::FEATURE_REFRACTION, "refraction" },
+	{ BaseMaterial3D::FEATURE_DETAIL, "detail" },
+};
+
+const struct {
+	BaseMaterial3D::Flags flag;
+	const char *name;
+} FLAG_NAMES[] = {
+	{ BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, "no depth test" },
+	{ BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, "vertex color" },
+	{ BaseMaterial3D::FLAG_USE_POINT_SIZE, "point size" },
+	{ BaseMaterial3D::FLAG_FIXED_SIZE, "fixed size" },
+	{ BaseMaterial3D::FLAG_UV1_USE_TRIPLANAR, "triplanar" },
+	{ BaseMaterial3D::FLAG_UV1_USE_WORLD_TRIPLANAR, "triplanar" },
+	{ BaseMaterial3D::FLAG_AO_ON_UV2, "ambient occlusion on UV2" },
+	{ BaseMaterial3D::FLAG_ALBEDO_TEXTURE_FORCE_SRGB, "forced sRGB" },
+	{ BaseMaterial3D::FLAG_DONT_RECEIVE_SHADOWS, "no shadows" },
+	{ BaseMaterial3D::FLAG_DISABLE_AMBIENT_LIGHT, "no ambient light" },
+	{ BaseMaterial3D::FLAG_USE_SHADOW_TO_OPACITY, "shadow to opacity" },
+	{ BaseMaterial3D::FLAG_PARTICLE_TRAILS_MODE, "particle trails" },
+	{ BaseMaterial3D::FLAG_ALBEDO_TEXTURE_MSDF, "MSDF" },
+	{ BaseMaterial3D::FLAG_DISABLE_FOG, "no fog" },
+};
 
 Vector3 read_vec3(const Variant &p_value) {
 	if (p_value.get_type() != Variant::ARRAY) {
@@ -128,6 +175,183 @@ Vector3 newell_normal(const PackedVector3Array &p_points) {
 	return n.normalized();
 }
 
+AntiTile anti_tile_of(const Dictionary &p_face) {
+	Dictionary attrs = p_face.get("attrs", Dictionary());
+	const String mode = String(attrs.get("anti_tile", "")).strip_edges();
+	if (mode.nocasecmp_to("macro") == 0) {
+		return AntiTile::MACRO;
+	}
+	return mode.nocasecmp_to("hex") == 0 ? AntiTile::HEX : AntiTile::OFF;
+}
+
+// Rust's eq_ignore_ascii_case, which leaves non-ASCII letters unfolded.
+bool equal_ignore_ascii_case(const String &p_a, const String &p_b) {
+	if (p_a.length() != p_b.length()) {
+		return false;
+	}
+	const auto fold = [](char32_t c) { return c >= 'A' && c <= 'Z' ? char32_t(c - 'A' + 'a') : c; };
+	for (int64_t i = 0; i < p_a.length(); i++) {
+		if (fold(p_a[i]) != fold(p_b[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// The map crate's blend_layer rule.
+String blend_layer_of(const String &p_material, const Dictionary &p_disp) {
+	const Variant layer = p_disp.get("blend_material", Variant());
+	if (layer.get_type() != Variant::STRING) {
+		return String();
+	}
+	const String name = layer;
+	if (name.is_empty() || equal_ignore_ascii_case(name, p_material) || equal_ignore_ascii_case(name.substr(0, 6), "tools/")) {
+		return String();
+	}
+	return name;
+}
+
+String anti_tile_suffix(AntiTile p_mode) {
+	switch (p_mode) {
+		case AntiTile::MACRO:
+			return "#macro";
+		case AntiTile::HEX:
+			return "#hex";
+		default:
+			return "";
+	}
+}
+
+// Escaped so a material name holding '|' or '#' cannot land on another face's surface.
+String surface_key(const String &p_a, const String &p_b, AntiTile p_mode) {
+	const auto escape = [](const String &p_name) {
+		return p_name.replace("\\", "\\\\").replace("|", "\\|").replace("#", "\\#");
+	};
+	return escape(p_a) + (p_b.is_empty() ? String() : String("|") + escape(p_b)) + anti_tile_suffix(p_mode);
+}
+
+// Why the shader wrapper would drop part of a material's look, or empty when it would not.
+String wrap_refusal(const Ref<Material> &p_material) {
+	if (p_material.is_null()) {
+		return "not found";
+	}
+	StandardMaterial3D *m = Object::cast_to<StandardMaterial3D>(p_material.ptr());
+	if (m == nullptr) {
+		return p_material->get_class();
+	}
+	if (m->get_shading_mode() == BaseMaterial3D::SHADING_MODE_UNSHADED) {
+		return "unshaded";
+	}
+	if (m->get_shading_mode() != BaseMaterial3D::SHADING_MODE_PER_PIXEL) {
+		return "per-vertex shading";
+	}
+	if (m->get_cull_mode() != BaseMaterial3D::CULL_BACK) {
+		return "cull mode";
+	}
+	if (m->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED) {
+		return "transparency";
+	}
+	if (m->get_blend_mode() != BaseMaterial3D::BLEND_MODE_MIX) {
+		return "blend mode";
+	}
+	if (m->get_depth_draw_mode() == BaseMaterial3D::DEPTH_DRAW_DISABLED) {
+		return "depth draw";
+	}
+	if (m->get_diffuse_mode() != BaseMaterial3D::DIFFUSE_BURLEY) {
+		return "diffuse mode";
+	}
+	if (m->get_specular_mode() != BaseMaterial3D::SPECULAR_SCHLICK_GGX) {
+		return "specular mode";
+	}
+	if (m->get_billboard_mode() != BaseMaterial3D::BILLBOARD_DISABLED) {
+		return "billboard";
+	}
+	if (m->get_distance_fade() != BaseMaterial3D::DISTANCE_FADE_DISABLED) {
+		return "distance fade";
+	}
+	if (m->is_proximity_fade_enabled()) {
+		return "proximity fade";
+	}
+	if (m->is_grow_enabled()) {
+		return "grow";
+	}
+	if (!m->get_flag(BaseMaterial3D::FLAG_USE_TEXTURE_REPEAT)) {
+		return "no texture repeat";
+	}
+	for (const auto &known : FLAG_NAMES) {
+		if (m->get_flag(known.flag)) {
+			return known.name;
+		}
+	}
+	for (int i = 0; i < BaseMaterial3D::FEATURE_MAX; i++) {
+		const BaseMaterial3D::Feature feature = BaseMaterial3D::Feature(i);
+		if (feature == BaseMaterial3D::FEATURE_NORMAL_MAPPING || feature == BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION || !m->get_feature(feature)) {
+			continue;
+		}
+		for (const auto &known : FEATURE_NAMES) {
+			if (known.feature == feature) {
+				return known.name;
+			}
+		}
+		return "feature " + itos(i);
+	}
+	return String();
+}
+
+String filter_group(BaseMaterial3D::TextureFilter p_filter) {
+	switch (p_filter) {
+		case BaseMaterial3D::TEXTURE_FILTER_NEAREST:
+			return "nearest";
+		case BaseMaterial3D::TEXTURE_FILTER_NEAREST_WITH_MIPMAPS:
+		case BaseMaterial3D::TEXTURE_FILTER_NEAREST_WITH_MIPMAPS_ANISOTROPIC:
+			return "nearest_mipmap";
+		default:
+			return "linear";
+	}
+}
+
+Vector4 channel_vector(BaseMaterial3D::TextureChannel p_channel) {
+	switch (p_channel) {
+		case BaseMaterial3D::TEXTURE_CHANNEL_RED:
+			return Vector4(1, 0, 0, 0);
+		case BaseMaterial3D::TEXTURE_CHANNEL_GREEN:
+			return Vector4(0, 1, 0, 0);
+		case BaseMaterial3D::TEXTURE_CHANNEL_BLUE:
+			return Vector4(0, 0, 1, 0);
+		case BaseMaterial3D::TEXTURE_CHANNEL_ALPHA:
+			return Vector4(0, 0, 0, 1);
+		default:
+			return Vector4(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 0);
+	}
+}
+
+// Missing maps stay null, so the uniforms' defaults make them no-ops.
+void copy_layer(const Ref<ShaderMaterial> &p_to, StandardMaterial3D *p_from, const String &p_suffix) {
+	auto set = [&](const char *p_name, const Variant &p_value) {
+		p_to->set_shader_parameter(String(p_name) + p_suffix, p_value);
+	};
+	set("albedo", p_from->get_albedo());
+	set("albedo_texture", p_from->get_texture(BaseMaterial3D::TEXTURE_ALBEDO));
+	set("uv1_scale", p_from->get_uv1_scale());
+	set("uv1_offset", p_from->get_uv1_offset());
+	set("roughness", p_from->get_roughness());
+	set("roughness_texture", p_from->get_texture(BaseMaterial3D::TEXTURE_ROUGHNESS));
+	set("roughness_channel", channel_vector(p_from->get_roughness_texture_channel()));
+	set("metallic", p_from->get_metallic());
+	set("metallic_texture", p_from->get_texture(BaseMaterial3D::TEXTURE_METALLIC));
+	set("metallic_channel", channel_vector(p_from->get_metallic_texture_channel()));
+	set("specular", p_from->get_specular());
+	if (p_from->get_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING)) {
+		set("normal_texture", p_from->get_texture(BaseMaterial3D::TEXTURE_NORMAL));
+		set("normal_scale", p_from->get_normal_scale());
+	}
+	if (p_from->get_feature(BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION)) {
+		set("ao_texture", p_from->get_texture(BaseMaterial3D::TEXTURE_AMBIENT_OCCLUSION));
+		set("ao_channel", channel_vector(p_from->get_ao_texture_channel()));
+		set("ao_light_affect", p_from->get_ao_light_affect());
+	}
+}
+
 // A convex hull, or with `triangles` a triangle soup such as a displaced surface.
 struct Shape {
 	PackedVector3Array points;
@@ -151,6 +375,9 @@ class Builder {
 	Vector<AABB> cordons;
 	HashMap<String, Ref<Material>> materials;
 	HashMap<String, Vector2> sizes;
+	HashMap<String, Ref<Material>> surface_materials;
+	HashMap<String, Ref<Material>> variants;
+	bool warned_missing_shaders = false;
 	Surfaces world_surfaces;
 	Vector<Shape> world_hulls;
 	PackedVector3Array world_triangles;
@@ -174,9 +401,10 @@ class Builder {
 	}
 
 	Ref<Material> material(const String &p_name, Vector2 &r_size);
+	Ref<Material> variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size);
 	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
 	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
-	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_name);
+	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_key, const Ref<Material> &p_material);
 	void walk(const Dictionary &p_node, int p_depth);
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
@@ -234,14 +462,74 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 	return mat;
 }
 
-Ref<SurfaceTool> Builder::surface_for(Surfaces &p_surfaces, const String &p_name) {
-	if (!p_surfaces.has(p_name)) {
+Ref<Material> Builder::variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size) {
+	Ref<Material> base = material(p_a, r_size);
+	if ((p_b.is_empty() && p_mode == AntiTile::OFF) || base.is_null()) {
+		return base;
+	}
+	const String key = surface_key(p_a, p_b, p_mode);
+	if (variants.has(key)) {
+		return variants[key];
+	}
+	variants[key] = base;
+	Vector2 size_b;
+	const Ref<Material> layer_b = p_b.is_empty() ? Ref<Material>() : material(p_b, size_b);
+	String refused = p_a;
+	String refusal = wrap_refusal(base);
+	if (refusal.is_empty() && !p_b.is_empty()) {
+		refused = p_b;
+		refusal = wrap_refusal(layer_b);
+	}
+	if (!refusal.is_empty()) {
+		UtilityFunctions::push_warning("MapCraft: ", refused, " cannot blend or hide tiling (", refusal, "); drawn as is");
+		return base;
+	}
+	StandardMaterial3D *a = Object::cast_to<StandardMaterial3D>(base.ptr());
+	StandardMaterial3D *b = Object::cast_to<StandardMaterial3D>(layer_b.ptr());
+	const String filter = filter_group(a->get_texture_filter());
+	const String filter_b = b != nullptr ? filter_group(b->get_texture_filter()) : filter;
+	if (filter_b != filter) {
+		UtilityFunctions::push_warning("MapCraft: ", p_b, " is drawn with ", p_a, "'s filtering in this blend");
+	}
+	const String path = String(SHADER_DIR) + String(b != nullptr ? "mapcraft_blend_" : "mapcraft_single_") + filter + ".gdshader";
+	Ref<Shader> shader;
+	if (ResourceLoader::get_singleton()->exists(path)) {
+		shader = ResourceLoader::get_singleton()->load(path);
+	}
+	if (shader.is_null()) {
+		if (!warned_missing_shaders) {
+			UtilityFunctions::push_warning("MapCraft: ", path, " is missing; update the MapCraft addon");
+			warned_missing_shaders = true;
+		}
+		return base;
+	}
+	Ref<ShaderMaterial> wrapped;
+	wrapped.instantiate();
+	wrapped->set_shader(shader);
+	wrapped->set_next_pass(base->get_next_pass());
+	copy_layer(wrapped, a, "_a");
+	if (b != nullptr) {
+		copy_layer(wrapped, b, "_b");
+		// UVs are in layer A's texels; layer B keeps its own density.
+		wrapped->set_shader_parameter("uv_ratio_b", r_size / size_b);
+	}
+	wrapped->set_shader_parameter("macro_amount", p_mode == AntiTile::OFF ? 0.0 : MACRO_AMOUNT);
+	// Three blended taps of big nearest texels read as double images.
+	wrapped->set_shader_parameter("hex_tiling", p_mode == AntiTile::HEX && filter == "linear" && filter_b == "linear");
+	wrapped->set_shader_parameter("map_units", options.units_per_meter > 0.0 ? options.units_per_meter : 39.37);
+	variants[key] = wrapped;
+	return wrapped;
+}
+
+Ref<SurfaceTool> Builder::surface_for(Surfaces &p_surfaces, const String &p_key, const Ref<Material> &p_material) {
+	surface_materials[p_key] = p_material;
+	if (!p_surfaces.has(p_key)) {
 		Ref<SurfaceTool> st;
 		st.instantiate();
 		st->begin(Mesh::PRIMITIVE_TRIANGLES);
-		p_surfaces[p_name] = st;
+		p_surfaces[p_key] = st;
 	}
-	return p_surfaces[p_name];
+	return p_surfaces[p_key];
 }
 
 void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles) {
@@ -275,9 +563,22 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 	if (p_surfaces == nullptr || name.to_lower().begins_with("tools/")) {
 		return;
 	}
+	const AntiTile mode = anti_tile_of(p_face);
+	const Dictionary disp = p_face.get("disp", Dictionary());
+	const String layer = blend_layer_of(name, disp);
 	Vector2 size;
-	material(name, size);
-	Ref<SurfaceTool> st = surface_for(*p_surfaces, name);
+	const Ref<Material> mat = variant(name, layer, mode, size);
+	Ref<SurfaceTool> st = surface_for(*p_surfaces, surface_key(name, layer, mode), mat);
+	Vector<float> weights;
+	// A blend that fell back draws the face's own material, which may read COLOR itself.
+	if (!layer.is_empty() && mat != materials[name]) {
+		const Array blend = disp.get("blend", Array());
+		weights.resize(p_grid.size());
+		for (int k = 0; k < p_grid.size(); k++) {
+			const double w = k < blend.size() ? double(blend[k]) : 0.0;
+			weights.write[k] = Math::is_finite(w) ? CLAMP(w, 0.0, 1.0) : 0.0;
+		}
+	}
 	Dictionary u = p_face.get("u", Dictionary());
 	Dictionary v = p_face.get("v", Dictionary());
 	Vector3 u_axis = read_vec3(u.get("axis", Array()));
@@ -293,6 +594,9 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 		const Vector3 &m = map_points[k];
 		st->set_normal(du.cross(dv).normalized());
 		st->set_uv(Vector2((m.dot(u_axis) / u_scale + u_offset) / size.x, (m.dot(v_axis) / v_scale + v_offset) / size.y));
+		if (!weights.is_empty()) {
+			st->set_color(Color(1, 1, 1, weights[k]));
+		}
 		st->add_vertex(points[k]);
 	}
 }
@@ -359,9 +663,9 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			continue;
 		}
 
+		const AntiTile mode = anti_tile_of(face);
 		Vector2 size;
-		material(name, size);
-		Ref<SurfaceTool> st = surface_for(*p_surfaces, name);
+		Ref<SurfaceTool> st = surface_for(*p_surfaces, surface_key(name, String(), mode), variant(name, String(), mode, size));
 		Dictionary u = face.get("u", Dictionary());
 		Dictionary v = face.get("v", Dictionary());
 		Vector3 u_axis = read_vec3(u.get("axis", Array()));
@@ -409,10 +713,9 @@ MeshInstance3D *Builder::make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset
 		kv.value->commit(mesh);
 		int surface = mesh->get_surface_count() - 1;
 		mesh->surface_set_name(surface, kv.key);
-		Vector2 size;
-		Ref<Material> mat = material(kv.key, size);
-		if (mat.is_valid()) {
-			mesh->surface_set_material(surface, mat);
+		const Ref<Material> *mat = surface_materials.getptr(kv.key);
+		if (mat != nullptr && mat->is_valid()) {
+			mesh->surface_set_material(surface, *mat);
 		}
 	}
 	MeshInstance3D *mi = memnew(MeshInstance3D);

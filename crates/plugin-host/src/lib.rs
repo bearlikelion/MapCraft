@@ -28,6 +28,11 @@ pub struct MaterialInfo {
     /// The texture's own size when the preview is smaller.
     pub size: Option<[u32; 2]>,
     pub pbr: Option<Pbr>,
+    /// How many times the texture repeats across its own size, as Godot's `uv1_scale` without mirroring; finite and positive.
+    pub uv_scale: Option<[f32; 2]>,
+    /// The game draws it with nearest filtering.
+    pub pixelated: bool,
+    pub blend: mapcraft_map::BlendRole,
 }
 
 /// Metallic-roughness maps for the Lit view, as asset paths the editor reads when a map uses the material.
@@ -90,11 +95,19 @@ pub struct PluginModelPart {
     pub positions: Vec<mapcraft_geom::DVec3>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    /// The SDK material a compiled map names, which the Lit view shows in place of `texture`.
+    pub material: Option<String>,
+    /// Index into the textures of baked light; `lightmap_uvs` has one coordinate per position when it is set.
+    pub lightmap: Option<usize>,
+    pub lightmap_uvs: Vec<[f32; 2]>,
 }
 
 mod bindings {
     wasmtime::component::bindgen!({ path: "../../wit", world: "plugin" });
 }
+
+/// The `wit/plugin.wit` package version plugins must import.
+const API: &str = "0.2.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};
@@ -136,6 +149,8 @@ pub enum PluginError {
     UnknownCommand(String, String),
     #[error("cannot read {0}: {1}")]
     Io(String, std::io::Error),
+    #[error("built for plugin API {0}; rebuild it against {API}")]
+    OldApi(String),
 }
 
 fn wasm_err(e: impl std::fmt::Display) -> PluginError {
@@ -179,6 +194,10 @@ impl host::Host for State {
         }
         self.vfs.read_range(&path, offset, length).ok_or_else(|| format!("{path} not found"))
     }
+
+    fn file_path(&mut self, path: String) -> Option<String> {
+        Some(self.vfs.find(&path)?.to_string_lossy().into_owned())
+    }
 }
 
 /// Compiles plugins; one is shared by every plugin the editor loads.
@@ -218,6 +237,11 @@ impl Host {
 
     pub fn load(&self, bytes: &[u8], vfs: Vfs) -> Result<Plugin, PluginError> {
         let component = Component::new(&self.engine, bytes).map_err(wasm_err)?;
+        let ty = component.component_type();
+        let mut versions = ty.imports(&self.engine).filter_map(|(name, _)| name.strip_prefix("mapcraft:plugin/")?.split_once('@').map(|(_, v)| v.to_string()));
+        if let Some(v) = versions.find(|v| v != API) {
+            return Err(PluginError::OldApi(v));
+        }
         let state = State {
             wasi: WasiCtx::builder().build(),
             table: ResourceTable::new(),
@@ -265,6 +289,15 @@ impl Plugin {
         PluginError::Failed { plugin: self.manifest.id.clone(), message: message.into() }
     }
 
+    /// The fragments, logging how many displacements were invalid and left flat.
+    fn flat_note(&mut self, (frags, flat): (Vec<mapcraft_format::Fragment>, usize)) -> Vec<mapcraft_format::Fragment> {
+        if flat > 0 {
+            let line = format!("{flat} displacements from {} were invalid and came in flat", self.manifest.id);
+            self.store.data_mut().log.push(line);
+        }
+        frags
+    }
+
     fn trapped(&mut self, e: wasmtime::Error) -> PluginError {
         self.broken = true;
         let out_of_fuel = matches!(e.downcast_ref::<wasmtime::Trap>(), Some(wasmtime::Trap::OutOfFuel));
@@ -276,11 +309,11 @@ impl Plugin {
         let spec =
             self.manifest.commands.iter().find(|c| c.id == command).ok_or_else(|| PluginError::UnknownCommand(self.manifest.id.clone(), command.into()))?;
         let params = convert::params(spec, params);
-        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone(), game: ctx.game.clone() };
         self.begin()?;
         let result = self.bindings.call_run_command(&mut self.store, command, &params, &wit_ctx);
         match result {
-            Ok(Ok(out)) => Ok(convert::output(out, ctx)),
+            Ok(Ok(out)) => Ok(self.flat_note(convert::output(out, ctx))),
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),
         }
@@ -291,7 +324,7 @@ impl Plugin {
         if !self.manifest.importers.iter().any(|i| i.id == importer) {
             return Err(PluginError::UnknownCommand(self.manifest.id.clone(), importer.into()));
         }
-        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone(), game: ctx.game.clone() };
         // The plugin holds the whole file, so big maps need more than the usual cap; wasm32 tops out at 4 GiB.
         let cap = data.len().saturating_add(IMPORT_HEADROOM).clamp(MEMORY, 4 << 30);
         self.store.data_mut().limits = StoreLimitsBuilder::new().memory_size(cap).instances(16).build();
@@ -300,7 +333,7 @@ impl Plugin {
         match self.bindings.call_import_file(&mut self.store, importer, name, data, &wit_ctx) {
             Ok(Ok(mut out)) => {
                 let materials = convert::images(std::mem::take(&mut out.materials));
-                Ok(Imported { nodes: convert::output(out, ctx), materials })
+                Ok(Imported { nodes: self.flat_note(convert::output(out, ctx)), materials })
             }
             Ok(Err(message)) => Err(self.failed(message)),
             Err(e) => Err(self.trapped(e)),
@@ -344,8 +377,11 @@ impl Plugin {
         if !self.manifest.exporters.iter().any(|i| i.id == exporter) {
             return Err(PluginError::UnknownCommand(self.manifest.id.clone(), exporter.into()));
         }
-        let data = convert::map_data(map, name);
-        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone() };
+        let (data, flat) = convert::map_data(map, name);
+        if flat > 0 {
+            self.store.data_mut().log.push(format!("{flat} displacements were not four-cornered or were damaged and were exported flat"));
+        }
+        let wit_ctx = types::Context { grid: ctx.grid, material: ctx.material.clone(), game: ctx.game.clone() };
         self.begin()?;
         self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
         match self.bindings.call_export_file(&mut self.store, exporter, &data, &wit_ctx) {
@@ -360,7 +396,7 @@ impl Plugin {
         if !self.manifest.validates {
             return Ok(Vec::new());
         }
-        let (data, ids) = convert::map_data_with_ids(map, name);
+        let (data, ids, _) = convert::map_data_with_ids(map, name);
         self.begin()?;
         match self.bindings.call_validate(&mut self.store, &data) {
             Ok(list) => Ok(list
@@ -389,6 +425,9 @@ impl Plugin {
                     color: m.color.map(|(r, g, b)| [r, g, b]),
                     size: m.size.map(|(w, h)| [w, h]),
                     pbr: m.pbr.map(convert::pbr),
+                    uv_scale: m.uv_scale.map(|(x, y)| [x.abs(), y.abs()]).filter(|s| s.iter().all(|v| v.is_finite() && *v > 0.0)),
+                    pixelated: m.pixelated,
+                    blend: convert::blend_role(m.blend),
                 })
                 .collect()),
             Ok(Err(message)) => Err(self.failed(message)),

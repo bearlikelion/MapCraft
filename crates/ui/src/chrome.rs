@@ -10,6 +10,7 @@ use mapcraft_geom::DVec3;
 use mapcraft_render::{Camera, RenderMode, View};
 
 use crate::app::MapCraftApp;
+use crate::icons;
 use crate::viewport::{Drag, Tool};
 
 pub const BG: Color32 = Color32::from_rgb(18, 19, 22);
@@ -24,6 +25,8 @@ pub const TEXT_WEAK: Color32 = Color32::from_rgb(132, 139, 150);
 pub const ACCENT: Color32 = Color32::from_rgb(242, 140, 40);
 pub const ACCENT_DIM: Color32 = Color32::from_rgb(110, 66, 24);
 pub const MIRROR: Color32 = Color32::from_rgb(90, 220, 200);
+pub const WARN: Color32 = Color32::from_rgb(240, 190, 80);
+pub const ERROR: Color32 = Color32::from_rgb(240, 100, 100);
 pub const AXIS: [Color32; 3] = [Color32::from_rgb(232, 76, 76), Color32::from_rgb(110, 200, 80), Color32::from_rgb(80, 140, 240)];
 
 const ROTATE_HINT: &str = "it snaps to 15 degree steps while Snap is on";
@@ -32,6 +35,7 @@ const ROTATE_HINT: &str = "it snaps to 15 degree steps while Snap is on";
 const STATUS_TIME: Duration = Duration::from_secs(8);
 
 pub fn apply_theme(ctx: &egui::Context) {
+    egui_extras::install_image_loaders(ctx);
     let mut v = egui::Visuals::dark();
     v.panel_fill = PANEL;
     v.window_fill = PANEL;
@@ -65,255 +69,50 @@ fn tool_style() -> IconButtonStyle {
         normal: flat(Color32::TRANSPARENT, TEXT_WEAK),
         hovered: flat(HOVER, TEXT),
         pressed: Some(flat(PRESSED, TEXT)),
-        selected: ButtonVisuals { fill: ACCENT_DIM, stroke: Stroke::new(1.0, ACCENT), icon: Color32::WHITE },
+        selected: flat(Color32::from_rgb(72, 53, 36), ACCENT),
         corner_radius: CornerRadius::same(5),
         focus_stroke: Stroke::new(1.0, ACCENT),
     }
 }
 
-/// Painted icons, so they stay crisp at any scale and need no font or image assets.
-pub mod icons {
-    use super::*;
+/// A flat disclosure triangle, pointing down when open.
+pub fn chevron(p: &Painter, r: Rect, c: Color32, open: bool) {
+    let m = r.center();
+    let pts = if open {
+        vec![m + vec2(-4.0, -2.0), m + vec2(4.0, -2.0), m + vec2(0.0, 3.0)]
+    } else {
+        vec![m + vec2(-2.0, -4.0), m + vec2(3.0, 0.0), m + vec2(-2.0, 4.0)]
+    };
+    p.add(Shape::convex_polygon(pts, c, Stroke::NONE));
+}
 
-    fn line(p: &Painter, pts: &[Pos2], c: Color32) {
-        p.add(Shape::line(pts.to_vec(), Stroke::new(1.6, c)));
-    }
+/// A flat icon-only button; `label` stays its accessible name, so tests and the snapshot tool find it.
+pub(crate) fn icon_button(ui: &mut egui::Ui, name: &str, label: &str, size: f32, selected: bool) -> egui::Response {
+    let icon = if size < 22.0 { 14.0 } else { icons::SIZE };
+    IconButton::new(label, Vec2::splat(size), &tool_style()).selected(selected).show(ui, |ui, r, c| icons::paint(ui, name, r, icon, c))
+}
 
-    fn at(r: Rect, x: f32, y: f32) -> Pos2 {
-        // Icons are drawn on a 16 unit grid centered in the button.
-        let s = r.width().min(r.height()) / 26.0;
-        r.center() + vec2((x - 8.0) * s, (y - 8.0) * s)
-    }
-
-    pub fn select(p: &Painter, r: Rect, c: Color32) {
-        let pts: Vec<Pos2> =
-            [(3.0, 1.0), (3.0, 14.0), (6.5, 10.5), (9.0, 15.5), (11.0, 14.5), (8.5, 9.5), (13.0, 9.5)].iter().map(|(x, y)| at(r, *x, *y)).collect();
-        p.add(Shape::convex_polygon(pts.clone(), c.gamma_multiply(0.25), Stroke::NONE));
-        p.add(Shape::closed_line(pts, Stroke::new(1.4, c)));
-    }
-
-    fn arrow(p: &Painter, from: Pos2, to: Pos2, c: Color32) {
-        let d = (to - from).normalized();
-        let side = vec2(-d.y, d.x);
-        let s = (to - from).length() * 0.3;
-        line(p, &[from, to], c);
-        line(p, &[to - d * s + side * s * 0.7, to, to - d * s - side * s * 0.7], c);
-    }
-
-    pub fn move_arrows(p: &Painter, r: Rect, c: Color32) {
-        let m = at(r, 8.0, 8.0);
-        for (x, y) in [(8.0, 1.5), (14.5, 8.0), (8.0, 14.5), (1.5, 8.0)] {
-            arrow(p, m, at(r, x, y), c);
-        }
-    }
-
-    pub fn extrude(p: &Painter, r: Rect, c: Color32) {
-        let base = [at(r, 2.0, 11.0), at(r, 10.0, 11.0), at(r, 14.0, 14.5), at(r, 6.0, 14.5)];
-        p.add(Shape::convex_polygon(base.to_vec(), c.gamma_multiply(0.35), Stroke::new(1.4, c)));
-        arrow(p, at(r, 8.0, 12.5), at(r, 8.0, 1.5), ACCENT);
-    }
-
-    pub fn rotate(p: &Painter, r: Rect, c: Color32) {
-        let pts: Vec<Pos2> = (0..=16)
-            .map(|i| {
-                let a = std::f32::consts::PI * (0.3 + 1.5 * i as f32 / 16.0);
-                at(r, 8.0 + 6.0 * a.cos(), 8.0 - 6.0 * a.sin())
-            })
-            .collect();
-        let tip = pts[pts.len() - 1];
-        let before = pts[pts.len() - 3];
-        line(p, &pts, c);
-        arrow(p, before, tip, c);
-    }
-
-    pub fn scale(p: &Painter, r: Rect, c: Color32) {
-        line(p, &[at(r, 2.0, 6.0), at(r, 2.0, 14.0), at(r, 10.0, 14.0), at(r, 10.0, 6.0), at(r, 2.0, 6.0)], c.gamma_multiply(0.7));
-        arrow(p, at(r, 6.0, 10.0), at(r, 14.5, 1.5), c);
-    }
-
-    pub fn block(p: &Painter, r: Rect, c: Color32) {
-        let (a, b, d, e) = (at(r, 8.0, 1.5), at(r, 14.0, 4.5), at(r, 8.0, 7.5), at(r, 2.0, 4.5));
-        let (bb, db, eb) = (at(r, 14.0, 11.5), at(r, 8.0, 14.5), at(r, 2.0, 11.5));
-        p.add(Shape::convex_polygon(vec![a, b, d, e], c.gamma_multiply(0.3), Stroke::NONE));
-        line(p, &[a, b, d, e, a], c);
-        line(p, &[e, eb, db, bb, b], c);
-        line(p, &[d, db], c);
-    }
-
-    pub fn entity(p: &Painter, r: Rect, c: Color32) {
-        let center = at(r, 8.0, 6.0);
-        let s = r.width().min(r.height()) / 26.0;
-        p.circle_stroke(center, 4.0 * s, Stroke::new(1.6, c));
-        p.circle_filled(center, 1.6 * s, c);
-        line(p, &[at(r, 5.2, 9.0), at(r, 8.0, 15.0), at(r, 10.8, 9.0)], c);
-    }
-
-    pub fn clip(p: &Painter, r: Rect, c: Color32) {
-        line(p, &[at(r, 2.0, 2.0), at(r, 14.0, 2.0), at(r, 14.0, 14.0), at(r, 2.0, 14.0), at(r, 2.0, 2.0)], c.gamma_multiply(0.7));
-        p.add(Shape::line_segment([at(r, 0.0, 15.0), at(r, 16.0, 1.0)], Stroke::new(2.0, ACCENT)));
-    }
-
-    pub fn vertex(p: &Painter, r: Rect, c: Color32) {
-        let corners = [at(r, 3.0, 3.0), at(r, 13.0, 3.0), at(r, 13.0, 13.0), at(r, 3.0, 13.0)];
-        line(p, &[corners[0], corners[1], corners[2], corners[3], corners[0]], c.gamma_multiply(0.6));
-        let s = r.width().min(r.height()) / 26.0;
-        for k in corners {
-            p.rect_filled(Rect::from_center_size(k, Vec2::splat(4.0 * s)), 0.0, c);
-        }
-    }
-
-    pub fn sculpt(p: &Painter, r: Rect, c: Color32) {
-        let hill: Vec<Pos2> = (0..=12).map(|i| i as f32 / 12.0).map(|t| at(r, 1.0 + t * 14.0, 13.0 - 7.0 * (std::f32::consts::PI * t).sin().powi(2))).collect();
-        line(p, &hill, c);
-        p.circle_stroke(at(r, 8.0, 3.0), r.width().min(r.height()) / 26.0 * 2.2, Stroke::new(1.4, c));
-    }
-
-    pub fn path(p: &Painter, r: Rect, c: Color32) {
-        let k = [(2.0, 13.0), (14.0, 13.0), (2.0, 3.0), (14.0, 3.0)];
-        let bez = |t: f32| {
-            let w = [(1.0 - t).powi(3), 3.0 * (1.0 - t).powi(2) * t, 3.0 * (1.0 - t) * t * t, t.powi(3)];
-            k.iter().zip(w).fold((0.0, 0.0), |(x, y), ((kx, ky), w)| (x + kx * w, y + ky * w))
-        };
-        let curve: Vec<Pos2> = (0..=16).map(|i| bez(i as f32 / 16.0)).map(|(x, y)| at(r, x, y)).collect();
-        line(p, &curve, c);
-        for (x, y) in [k[0], k[3]] {
-            p.rect_filled(Rect::from_center_size(at(r, x, y), Vec2::splat(3.5)), 0.0, c);
-        }
-    }
-
-    pub fn face(p: &Painter, r: Rect, c: Color32) {
-        let q = |x: f32, y: f32| at(r, 2.0 + x * 12.0 - y * 2.0, 3.0 + y * 10.0);
-        for i in 0..3 {
-            for j in 0..3 {
-                if (i + j) % 2 == 0 {
-                    let (x0, y0, x1, y1) = (i as f32 / 3.0, j as f32 / 3.0, (i + 1) as f32 / 3.0, (j + 1) as f32 / 3.0);
-                    p.add(Shape::convex_polygon(vec![q(x0, y0), q(x1, y0), q(x1, y1), q(x0, y1)], c.gamma_multiply(0.55), Stroke::NONE));
-                }
+/// A row of icon toggles of which one is on, like Godot's toolbar modes.
+pub(crate) fn icon_toggles<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str, &str, &str)]) -> bool {
+    let mut changed = false;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.0;
+        for (value, icon, label, tip) in options {
+            let on = *current == *value;
+            if icon_button(ui, icon, label, 24.0, on).on_hover_text(*tip).clicked() && !on {
+                *current = *value;
+                changed = true;
             }
         }
-        line(p, &[q(0.0, 0.0), q(1.0, 0.0), q(1.0, 1.0), q(0.0, 1.0), q(0.0, 0.0)], c);
-    }
+    });
+    changed
+}
 
-    pub fn undo(p: &Painter, r: Rect, c: Color32) {
-        let pts: Vec<Pos2> = (0..=10)
-            .map(|i| {
-                let a = std::f32::consts::PI * (0.15 + 1.1 * i as f32 / 10.0);
-                at(r, 8.5 + 5.0 * a.cos(), 9.0 - 5.0 * a.sin())
-            })
-            .collect();
-        let tip = pts[pts.len() - 1];
-        line(p, &pts, c);
-        let s = r.width().min(r.height()) / 26.0;
-        line(p, &[tip + vec2(-2.5, -2.5) * s, tip, tip + vec2(2.5, -2.0) * s], c);
-    }
-
-    pub fn redo(p: &Painter, r: Rect, c: Color32) {
-        let pts: Vec<Pos2> = (0..=10)
-            .map(|i| {
-                let a = std::f32::consts::PI * (0.85 - 1.1 * i as f32 / 10.0);
-                at(r, 7.5 + 5.0 * a.cos(), 9.0 - 5.0 * a.sin())
-            })
-            .collect();
-        let tip = pts[pts.len() - 1];
-        line(p, &pts, c);
-        let s = r.width().min(r.height()) / 26.0;
-        line(p, &[tip + vec2(2.5, -2.5) * s, tip, tip + vec2(-2.5, -2.0) * s], c);
-    }
-
-    /// A flat disclosure triangle, pointing down when open.
-    pub fn chevron(p: &Painter, r: Rect, c: Color32, open: bool) {
-        let m = r.center();
-        let pts = if open {
-            vec![m + vec2(-4.0, -2.0), m + vec2(4.0, -2.0), m + vec2(0.0, 3.0)]
-        } else {
-            vec![m + vec2(-2.0, -4.0), m + vec2(3.0, 0.0), m + vec2(-2.0, 4.0)]
-        };
-        p.add(Shape::convex_polygon(pts, c, Stroke::NONE));
-    }
-
-    /// An open eye, or a closed one for hidden nodes.
-    pub fn eye(p: &Painter, r: Rect, c: Color32, open: bool) {
-        let m = r.center();
-        let lid: Vec<Pos2> = (0..=12)
-            .map(|i| {
-                let t = i as f32 / 12.0 * std::f32::consts::PI;
-                m + vec2(-6.0 * t.cos(), -3.5 * t.sin())
-            })
-            .collect();
-        if open {
-            let low: Vec<Pos2> = lid.iter().map(|q| pos2(q.x, 2.0 * m.y - q.y)).collect();
-            p.add(Shape::line(lid, Stroke::new(1.2, c)));
-            p.add(Shape::line(low, Stroke::new(1.2, c)));
-            p.circle_filled(m, 1.8, c);
-        } else {
-            let low: Vec<Pos2> = lid.iter().map(|q| pos2(q.x, 2.0 * m.y - q.y + 1.0)).collect();
-            p.add(Shape::line(low, Stroke::new(1.2, c)));
-        }
-    }
-
-    /// What kind of node a scene tree row is.
-    pub fn node_kind(p: &Painter, r: Rect, kind: &mapcraft_map::NodeKind, entity_color: Option<Color32>) {
-        use mapcraft_map::NodeKind as K;
-        let m = r.center();
-        let stroke = |c| Stroke::new(1.2, c);
-        match kind {
-            K::World(_) => {
-                p.circle_stroke(m, 5.0, stroke(TEXT_WEAK));
-                p.line_segment([m + vec2(-5.0, 0.0), m + vec2(5.0, 0.0)], stroke(TEXT_WEAK));
-            }
-            K::Layer(_) => {
-                for dy in [-3.0, 0.0, 3.0] {
-                    p.line_segment([m + vec2(-5.0, dy), m + vec2(5.0, dy)], stroke(Color32::from_rgb(150, 170, 200)));
-                }
-            }
-            K::Group(g) => {
-                let c = if g.generator.is_some() {
-                    ACCENT
-                } else if g.curve.is_some() {
-                    crate::curves::PATH_COLOR
-                } else {
-                    Color32::from_rgb(200, 180, 120)
-                };
-                p.rect_stroke(Rect::from_center_size(m + vec2(0.0, 1.0), vec2(10.0, 7.0)), 1.0, stroke(c), egui::StrokeKind::Middle);
-                p.line_segment([m + vec2(-5.0, -3.5), m + vec2(-1.0, -3.5)], stroke(c));
-                if g.mirror.is_some() {
-                    p.line_segment([m + vec2(0.0, -4.5), m + vec2(0.0, 6.5)], stroke(MIRROR));
-                }
-            }
-            K::Entity(_) => {
-                let c = entity_color.unwrap_or(Color32::from_rgb(110, 210, 110));
-                let pts = vec![m + vec2(0.0, -5.0), m + vec2(5.0, 0.0), m + vec2(0.0, 5.0), m + vec2(-5.0, 0.0)];
-                p.add(Shape::convex_polygon(pts, c.gamma_multiply(0.35), stroke(c)));
-            }
-            K::Brush(_) => {
-                p.rect_stroke(Rect::from_center_size(m, vec2(9.0, 9.0)), 1.0, stroke(TEXT_WEAK), egui::StrokeKind::Middle);
-            }
-            K::Prefab(_) => {
-                p.circle_stroke(m + vec2(-2.0, 0.0), 3.0, stroke(Color32::from_rgb(120, 200, 230)));
-                p.circle_stroke(m + vec2(2.5, 0.0), 3.0, stroke(Color32::from_rgb(120, 200, 230)));
-            }
-            K::Path(_) => {
-                let pts = vec![m + vec2(-5.0, 4.0), m + vec2(-2.0, -4.0), m + vec2(2.0, 4.0), m + vec2(5.0, -4.0)];
-                p.add(Shape::line(pts, stroke(crate::curves::PATH_COLOR)));
-            }
-        }
-    }
-
-    /// Two chain links: the 2D views zoom together.
-    pub fn link(p: &Painter, r: Rect, c: Color32) {
-        let m = r.center();
-        for dx in [-2.5, 2.5] {
-            p.rect_stroke(Rect::from_center_size(m + vec2(dx, 0.0), vec2(7.0, 4.5)), 2.0, Stroke::new(1.3, c), egui::StrokeKind::Middle);
-        }
-    }
-
-    pub fn maximize(p: &Painter, r: Rect, c: Color32) {
-        line(p, &[at(r, 3.0, 3.0), at(r, 13.0, 3.0), at(r, 13.0, 13.0), at(r, 3.0, 13.0), at(r, 3.0, 3.0)], c);
-    }
-
-    pub fn restore(p: &Painter, r: Rect, c: Color32) {
-        line(p, &[at(r, 5.0, 2.0), at(r, 14.0, 2.0), at(r, 14.0, 11.0)], c);
-        line(p, &[at(r, 2.0, 5.0), at(r, 11.0, 5.0), at(r, 11.0, 14.0), at(r, 2.0, 14.0), at(r, 2.0, 5.0)], c);
+/// A 0 to 1 value edited as a percentage from `min` to 100.
+fn percent(ui: &mut egui::Ui, value: &mut f64, min: f64, prefix: &str, tip: &str) {
+    let mut p = *value * 100.0;
+    if crate::inspect::number(ui, egui::DragValue::new(&mut p).range(min..=100.0).max_decimals(0).prefix(prefix).suffix("%")).on_hover_text(tip).changed() {
+        *value = p / 100.0;
     }
 }
 
@@ -335,15 +134,21 @@ impl MapCraftApp {
         if let Some(m) = &self.vertex.bevel {
             return m.hint();
         }
+        let painting = self.tool == Tool::Sculpt && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
+        if let Some(r) = self.blend_readout.as_ref().filter(|_| painting) {
+            return r.clone();
+        }
         match &self.drag {
             Drag::None => {}
-            Drag::Extrude { distance, mode, .. } => {
-                let what = match mode {
-                    mapcraft_engine::ExtrudeMode::Resize | mapcraft_engine::ExtrudeMode::AlongNormal => "Extruding",
-                    mapcraft_engine::ExtrudeMode::Split => "Splitting",
-                    mapcraft_engine::ExtrudeMode::Stamp => "Stamping",
+            Drag::Extrude { offset, normal, mode, .. } => {
+                use mapcraft_engine::ExtrudeMode as M;
+                let (what, amount) = match mode {
+                    M::Resize | M::AlongNormal => ("Extruding", offset.dot(*normal)),
+                    M::Split => ("Splitting", offset.dot(*normal)),
+                    M::Stamp => ("Stamping", offset.dot(*normal)),
+                    M::Slide => ("Sliding", offset.length().copysign(offset.dot(*normal))),
                 };
-                return format!("{what} {distance} units; release to finish");
+                return format!("{what} {} units; release to finish, Esc cancels", crate::measure::units(amount));
             }
             Drag::Rotate { applied, .. } => return format!("Turned {applied} degrees; release to finish"),
             _ => return "Release to finish; Ctrl+Z undoes the whole drag".into(),
@@ -353,32 +158,43 @@ impl MapCraftApp {
                 "Click to select, click again to pick the object behind; drag to move, drag the white handles to resize; Shift+drag a face extrudes".into()
             }
             Tool::Move => "Drag in a 2D view or along the arrows in the 3D view to move the selection".into(),
-            Tool::Extrude => "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt stamps one".into(),
+            Tool::Extrude => {
+                "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt stamps one, Alt slides the face keeping its shape".into()
+            }
             Tool::Rotate => format!("Drag in a 2D view to turn the selection about its center, or drag a ring in the 3D view; {ROTATE_HINT}"),
             Tool::Scale => "Drag the white handles in a 2D view or the square handles in the 3D view to stretch the selection".into(),
             Tool::Block if self.plugin_shape.is_some() => "Click in a view to place it; its parameters are in the inspector".into(),
             Tool::Block => format!("Drag in a 2D view to draw a {}; its depth matches the last brush", shape_name(self.shape)),
-            Tool::Entity => format!("Click in a view to place {}; pick the class in the Entities tab", self.entity_class),
+            Tool::Entity => format!(
+                "Click in a view to place {}; in the 3D view it rests on the face under the pointer; pick the class in the Entities tab",
+                self.entity_class
+            ),
             Tool::Clip if self.session.selected_brushes().is_empty() => "Select the brushes to clip first".into(),
             Tool::Clip if self.clip_points.len() == 2 => format!(
-                "Enter clips, Esc clears the points; yellow stays, red goes; {} picks the side to keep; drag a point to move it, or click a third in the 3D view to tilt the cut",
+                "Enter clips, Esc or Delete takes back a point; yellow stays, red goes; {} picks the side to keep; drag a point to move it, or click a third in another view to tilt the cut",
                 self.chord("clip.next_side")
             ),
             Tool::Clip if self.clip_points.len() == 3 => {
                 format!(
-                    "Enter clips through the three points, Esc clears them; {} picks the side to keep; drag a point to move it",
+                    "Enter clips through the three points, Esc or Delete takes back the last; {} picks the side to keep; drag a point to move it",
                     self.chord("clip.next_side")
                 )
             }
-            Tool::Clip => "Click two points, or drag a line, in any view; in the 3D view the cut runs straight into the face".into(),
+            Tool::Clip => {
+                "Click two points, or drag a line, in any view; in the 3D view the cut runs straight into the face; double-click a face to cut along it".into()
+            }
             Tool::Vertex => format!(
-                "Click or box select corners, edges or faces ({} {} {}), Shift adds; drag to move them, Shift drags up and down in the 3D view; {} merges, {} bevels",
+                "Click or box select corners, edges or faces ({} {} {}), Shift adds; drag to move them, Shift or Alt drags up and down in the 3D view; {} merges, {} bevels, {} deletes",
                 self.chord("vertex.mode_vertex"),
                 self.chord("vertex.mode_edge"),
                 self.chord("vertex.mode_face"),
                 self.chord("vertex.merge"),
-                self.chord("vertex.bevel")
+                self.chord("vertex.bevel"),
+                self.chord("vertex.delete")
             ),
+            Tool::Sculpt if painting => {
+                "Drag on a displacement to paint the current material, or to soften blend edges with Blur; Ctrl paints the face's own material back, Alt+click picks the material under the pointer".into()
+            }
             Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
             Tool::Face => {
                 "Click faces in the 3D view; Ctrl+C copies a face and Ctrl+V pastes it on the picked faces; Alt+click picks, Alt+right click applies".into()
@@ -391,31 +207,30 @@ impl MapCraftApp {
     }
 
     pub(crate) fn tool_palette(&mut self, ui: &mut egui::Ui) {
-        let style = tool_style();
         ui.add_space(4.0);
-        type Icon = fn(&Painter, Rect, Color32);
-        let tools: [(Tool, &str, &str, Icon); 12] = [
-            (Tool::Select, "Select", "tool.select", icons::select),
-            (Tool::Move, "Move", "tool.move", icons::move_arrows),
-            (Tool::Extrude, "Extrude", "tool.extrude", icons::extrude),
-            (Tool::Rotate, "Rotate", "tool.rotate", icons::rotate),
-            (Tool::Scale, "Scale", "tool.scale", icons::scale),
-            (Tool::Block, "Block", "tool.block", icons::block),
-            (Tool::Entity, "Entity", "tool.entity", icons::entity),
-            (Tool::Clip, "Clip", "tool.clip", icons::clip),
-            (Tool::Vertex, "Vertex", "tool.vertex", icons::vertex),
-            (Tool::Face, "Face", "tool.face", icons::face),
-            (Tool::Sculpt, "Sculpt", "tool.sculpt", icons::sculpt),
-            (Tool::Path, "Path", "tool.path", icons::path),
+        let tools: [(Tool, &str, &str); 12] = [
+            (Tool::Select, "Select", "tool.select"),
+            (Tool::Move, "Move", "tool.move"),
+            (Tool::Extrude, "Extrude", "tool.extrude"),
+            (Tool::Rotate, "Rotate", "tool.rotate"),
+            (Tool::Scale, "Scale", "tool.scale"),
+            (Tool::Block, "Block", "tool.block"),
+            (Tool::Entity, "Entity", "tool.entity"),
+            (Tool::Clip, "Clip", "tool.clip"),
+            (Tool::Vertex, "Vertex", "tool.vertex"),
+            (Tool::Face, "Face", "tool.face"),
+            (Tool::Sculpt, "Sculpt", "tool.sculpt"),
+            (Tool::Path, "Path", "tool.path"),
         ];
         ui.vertical_centered(|ui| {
-            for (tool, label, id, icon) in tools {
+            for (tool, label, id) in tools {
                 let chord = self.chord(id);
                 let tip = if chord.is_empty() { label.to_string() } else { format!("{label}  ({chord})") };
                 let block = tool == Tool::Block;
                 let tip = if block { format!("{tip}; right click for shapes") } else { tip };
-                let r = IconButton::new(label, Vec2::splat(32.0), &style).selected(self.tool == tool).show(ui, |ui, rect, c| {
-                    icon(ui.painter(), rect, c);
+                let name = icons::action_icon(id).unwrap_or("help");
+                let r = IconButton::new(label, Vec2::splat(32.0), &tool_style()).selected(self.tool == tool).show(ui, |ui, rect, c| {
+                    icons::paint(ui, name, rect, icons::SIZE, c);
                     if block {
                         let corner = rect.right_bottom() - Vec2::splat(3.0);
                         ui.painter().add(Shape::convex_polygon(vec![corner, corner - Vec2::new(5.0, 0.0), corner - Vec2::new(0.0, 5.0)], c, Stroke::NONE));
@@ -424,22 +239,7 @@ impl MapCraftApp {
                 let r = r.on_hover_text(tip);
                 let mut pick = None;
                 if block {
-                    r.context_menu(|ui| {
-                        for (shape, label) in block_shapes() {
-                            if ui.button(label).clicked() {
-                                pick = Some((Some(shape), None));
-                            }
-                        }
-                        let generators = self.generator_shapes();
-                        if !generators.is_empty() {
-                            ui.separator();
-                        }
-                        for (plugin, command) in generators {
-                            if ui.button(&command.label).clicked() {
-                                pick = Some((None, Some((plugin, command))));
-                            }
-                        }
-                    });
+                    r.context_menu(|ui| pick = self.shape_menu(ui));
                 }
                 if let Some((shape, generator)) = pick {
                     self.pick_block_shape(shape, generator);
@@ -455,6 +255,26 @@ impl MapCraftApp {
         });
     }
 
+    /// The built-in block shapes and plugin generators as menu items; returns the one clicked.
+    pub(crate) fn shape_menu(&mut self, ui: &mut egui::Ui) -> Option<BlockPick> {
+        let mut pick = None;
+        for (shape, label, icon) in block_shapes() {
+            if ui.add(icons::button(Some(icon), label)).clicked() {
+                pick = Some((Some(shape), None));
+            }
+        }
+        let generators = self.generator_shapes();
+        if !generators.is_empty() {
+            ui.separator();
+        }
+        for (plugin, command) in generators {
+            if ui.add(icons::button(Some("jigsaw_piece"), &command.label)).clicked() {
+                pick = Some((None, Some((plugin, command))));
+            }
+        }
+        pick
+    }
+
     pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str, &str)]) -> bool {
         let mut changed = false;
         ui.scope(|ui| {
@@ -463,7 +283,10 @@ impl MapCraftApp {
                 let on = *current == *value;
                 let text = if on { RichText::new(*label).color(Color32::WHITE) } else { RichText::new(*label) };
                 let button = egui::Button::new(text).fill(if on { ACCENT_DIM } else { WIDGET }).corner_radius(CornerRadius::ZERO);
-                if ui.add(button).on_hover_text(*tip).clicked() && !on {
+                let enabled = ui.is_enabled();
+                let r = ui.add(button);
+                r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, *label));
+                if r.on_hover_text(*tip).clicked() && !on {
                     *current = *value;
                     changed = true;
                 }
@@ -473,60 +296,57 @@ impl MapCraftApp {
     }
 
     pub(crate) fn top_bar(&mut self, ui: &mut egui::Ui) {
-        let style = tool_style();
         ui.horizontal(|ui| {
-            let undo = format!("Undo {}", self.session.undo_label().unwrap_or_default());
-            let r = ui
-                .add_enabled_ui(self.session.can_undo(), |ui| {
-                    IconButton::new("Undo", Vec2::splat(24.0), &style).show(ui, |ui, r, c| icons::undo(ui.painter(), r, c))
-                })
-                .inner;
-            if r.on_hover_text(format!("{}  ({})", undo.trim(), self.chord("edit.undo"))).clicked() {
-                self.run_action("edit.undo");
-            }
-            let redo = format!("Redo {}", self.session.redo_label().unwrap_or_default());
-            let r = ui
-                .add_enabled_ui(self.session.can_redo(), |ui| {
-                    IconButton::new("Redo", Vec2::splat(24.0), &style).show(ui, |ui, r, c| icons::redo(ui.painter(), r, c))
-                })
-                .inner;
-            if r.on_hover_text(format!("{}  ({})", redo.trim(), self.chord("edit.redo"))).clicked() {
-                self.run_action("edit.redo");
+            for (id, label, can, what) in [
+                ("edit.undo", "Undo", self.session.can_undo(), self.session.undo_label().map(str::to_string)),
+                ("edit.redo", "Redo", self.session.can_redo(), self.session.redo_label().map(str::to_string)),
+            ] {
+                let name = icons::action_icon(id).unwrap_or("help");
+                let r = ui.add_enabled_ui(can, |ui| icon_button(ui, name, label, 24.0, false)).inner;
+                let tip = format!("{label} {}", what.unwrap_or_default());
+                if r.on_hover_text(format!("{}  ({})", tip.trim(), self.chord(id))).clicked() {
+                    self.run_action(id);
+                }
             }
             ui.separator();
 
             use mapcraft_engine::SelectMode as M;
             let modes = [
-                (M::Groups, "Groups", "Clicks select whole groups"),
-                (M::Objects, "Objects", "Clicks select entities and loose brushes, ignoring groups"),
-                (M::Solids, "Solids", "Clicks select single brushes"),
+                (M::Groups, icons::select_mode_icon(M::Groups), "Groups", "Clicks select whole groups"),
+                (M::Objects, icons::select_mode_icon(M::Objects), "Objects", "Clicks select entities and loose brushes, ignoring groups"),
+                (M::Solids, icons::select_mode_icon(M::Solids), "Solids", "Clicks select single brushes"),
             ];
-            Self::segmented(ui, &mut self.session.select_mode, &modes);
+            icon_toggles(ui, &mut self.session.select_mode, &modes);
             ui.separator();
 
-            ui.label(RichText::new("Grid").color(TEXT_WEAK));
-            if ui.small_button("-").on_hover_text(format!("Smaller grid  ({})", self.chord("view.grid_smaller"))).clicked() {
-                self.run_action("view.grid_smaller");
-            }
-            ui.label(RichText::new(format!("{}", self.session.grid)).strong().monospace());
-            if ui.small_button("+").on_hover_text(format!("Larger grid  ({})", self.chord("view.grid_larger"))).clicked() {
-                self.run_action("view.grid_larger");
-            }
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let grid = self.session.grid;
+                let mut step = |ui: &mut egui::Ui, id: &str, label: &str| {
+                    if icon_button(ui, icons::action_icon(id).unwrap_or("help"), label, 24.0, false)
+                        .on_hover_text(format!("{label}  ({})", self.chord(id)))
+                        .clicked()
+                    {
+                        self.run_action(id);
+                    }
+                };
+                step(ui, "view.grid_smaller", "Smaller grid");
+                ui.label(RichText::new(grid.to_string()).strong().monospace()).on_hover_text("Grid size");
+                step(ui, "view.grid_larger", "Larger grid");
+            });
             let view = self.prefs.get().view.clone();
+            let lock = self.session.texture_lock;
             for (on, label, id, tip) in [
                 (view.snap_grid, "Snap", "view.snap_grid", "Snap to the grid"),
                 (view.snap_vertices, "Corners", "view.snap_vertices", "Snap dragged points to nearby brush corners and entity origins"),
+                (lock, "Texture lock", "tools.toggle_texture_lock", "Keep textures fixed to brushes as they move"),
             ] {
-                let text = RichText::new(label).color(if on { Color32::WHITE } else { TEXT_WEAK });
-                if ui.add(egui::Button::new(text).selected(on)).on_hover_text(format!("{tip}  ({})", self.chord(id))).clicked() {
+                let name = if id == "tools.toggle_texture_lock" && !on { "unlock" } else { icons::action_icon(id).unwrap_or("help") };
+                let chord = self.chord(id);
+                let tip = if chord.is_empty() { tip.to_string() } else { format!("{tip}  ({chord})") };
+                if icon_button(ui, name, label, 24.0, on).on_hover_text(tip).clicked() {
                     self.run_action(id);
                 }
-            }
-            let lock = self.session.texture_lock;
-            let lock_text = RichText::new("Texture lock").color(if lock { Color32::WHITE } else { TEXT_WEAK });
-            let r = ui.add(egui::Button::new(lock_text).selected(lock)).on_hover_text("Keep textures fixed to brushes as they move");
-            if r.clicked() {
-                self.run_action("tools.toggle_texture_lock");
             }
             ui.separator();
             self.material_chip(ui);
@@ -534,7 +354,8 @@ impl MapCraftApp {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.run_button(ui);
-                if ui.button("Check").on_hover_text(format!("Check the map for problems  ({})", self.chord("tools.check_problems"))).clicked() {
+                let tip = format!("Check the map for problems  ({})", self.chord("tools.check_problems"));
+                if icon_button(ui, "list_checkboxes", "Check", 24.0, false).on_hover_text(tip).clicked() {
                     self.run_action("tools.check_problems");
                 }
             });
@@ -543,8 +364,7 @@ impl MapCraftApp {
 
     fn material_chip(&mut self, ui: &mut egui::Ui) {
         let name = if self.session.tex.material.is_empty() { "No material".to_string() } else { self.session.tex.material.clone() };
-        let thumb = self.project.material(&self.session.tex.material).cloned().and_then(|m| self.thumbs.get(ui.ctx(), &m).map(|t| t.id()));
-        ui.label(RichText::new("Material").color(TEXT_WEAK));
+        let thumb = crate::inspect::material_thumb(&self.project, &mut self.thumbs, ui.ctx(), &self.session.tex.material);
         let r = ui
             .horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::hover());
@@ -560,7 +380,12 @@ impl MapCraftApp {
                 ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate().sense(egui::Sense::click()))
             })
             .inner;
-        if r.on_hover_text(format!("The material new faces get; click to browse  ({})", self.chord("panel.materials"))).clicked() {
+        let tip = if self.tool == Tool::Sculpt && self.sculpt.0 == mapcraft_engine::SculptMode::Paint {
+            "Paints this material; Ctrl paints the face's own material back, and Alt+click on a face picks another".to_string()
+        } else {
+            format!("The material new faces get; click to browse  ({})", self.chord("panel.materials"))
+        };
+        if r.on_hover_text(tip).clicked() {
             self.run_action("panel.materials");
         }
     }
@@ -574,20 +399,17 @@ impl MapCraftApp {
             let generators = self.generator_shapes();
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
-                let picked = |label: &str, on: bool, ui: &mut egui::Ui| {
-                    let text = if on { RichText::new(label).color(Color32::WHITE) } else { RichText::new(label) };
-                    ui.add(egui::Button::new(text).fill(if on { ACCENT_DIM } else { WIDGET }).corner_radius(CornerRadius::ZERO)).clicked() && !on
-                };
-                for (shape, label) in shapes {
+                for (shape, label, icon) in shapes {
                     let same = self.plugin_shape.is_none() && std::mem::discriminant(&self.shape) == std::mem::discriminant(&shape);
-                    if picked(label, same, ui) {
+                    if icon_button(ui, icon, label, 24.0, same).on_hover_text(label).clicked() && !same {
                         self.shape = shape;
                         self.pick_plugin_shape(None);
                     }
                 }
+                ui.add_space(4.0);
                 for (plugin, command) in generators {
                     let same = self.plugin_shape.as_ref().is_some_and(|s| s.plugin == plugin && s.command.id == command.id);
-                    if picked(&command.label, same, ui) {
+                    if ui.add(icons::selectable(same, Some("jigsaw_piece"), &command.label)).clicked() && !same {
                         self.pick_plugin_shape(Some((plugin, command)));
                     }
                 }
@@ -600,9 +422,9 @@ impl MapCraftApp {
                 S::Sphere(n) => sides_stepper(ui, n, 4, 32),
                 S::Arch { sides, arc, start, thickness } => {
                     sides_stepper(ui, sides, 1, 64);
-                    ui.add(egui::DragValue::new(arc).range(1.0..=360.0).prefix("arc ").suffix("°"));
-                    ui.add(egui::DragValue::new(start).range(0.0..=360.0).prefix("start ").suffix("°"));
-                    ui.add(egui::DragValue::new(thickness).range(1.0..=4096.0).prefix("wall "));
+                    crate::inspect::number(ui, egui::DragValue::new(arc).range(1.0..=360.0).prefix("arc ").suffix("°"));
+                    crate::inspect::number(ui, egui::DragValue::new(start).range(0.0..=360.0).prefix("start ").suffix("°"));
+                    crate::inspect::number(ui, egui::DragValue::new(thickness).range(1.0..=4096.0).prefix("wall "));
                 }
                 S::Block | S::Wedge => {}
             }
@@ -617,17 +439,46 @@ impl MapCraftApp {
                 tip("Even out bumps", "sculpt.smooth"),
                 tip("Level toward where the stroke began", "sculpt.flatten"),
                 tip("Roughen the surface", "sculpt.noise"),
+                tip("Paint the current material onto the terrain", "sculpt.paint"),
+                tip("Soften blend edges", "sculpt.blur"),
             ];
             let modes = [
-                (M::Raise, "Raise", tips[0].as_str()),
-                (M::Lower, "Lower", tips[1].as_str()),
-                (M::Smooth, "Smooth", tips[2].as_str()),
-                (M::Flatten, "Flatten", tips[3].as_str()),
-                (M::Noise, "Noise", tips[4].as_str()),
+                (M::Raise, "arrow_up", "Raise", tips[0].as_str()),
+                (M::Lower, "arrow_down", "Lower", tips[1].as_str()),
+                (M::Smooth, "wave", "Smooth", tips[2].as_str()),
+                (M::Flatten, "arrow_down_to_line", "Flatten", tips[3].as_str()),
+                (M::Noise, "dice", "Noise", tips[4].as_str()),
+                (M::Paint, "brush", "Paint", tips[5].as_str()),
+                (M::Blur, "circle_half_filled", "Blur", tips[6].as_str()),
             ];
-            Self::segmented(ui, &mut self.sculpt.0, &modes);
-            ui.add(egui::DragValue::new(&mut self.sculpt.1).range(8.0..=4096.0).speed(4.0).prefix("radius "));
-            ui.add(egui::DragValue::new(&mut self.sculpt.2).range(1.0..=4096.0).speed(4.0).prefix("strength "));
+            icon_toggles(ui, &mut self.sculpt.0, &modes);
+            crate::inspect::number(ui, egui::DragValue::new(&mut self.sculpt.1).range(8.0..=4096.0).speed(4.0).prefix("radius "));
+            use mapcraft_engine::Falloff as F;
+            let falloffs = [(F::Smooth, "Smooth"), (F::Linear, "Linear"), (F::Sharp, "Sharp"), (F::Constant, "Constant")];
+            let shown = falloffs.iter().find(|(f, _)| *f == self.sculpt_falloff).map_or("", |(_, l)| l);
+            egui::ComboBox::from_id_salt("sculpt-falloff")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (f, label) in falloffs {
+                        ui.selectable_value(&mut self.sculpt_falloff, f, label);
+                    }
+                })
+                .response
+                .on_hover_text("How the brush fades from its center to its edge");
+            if !matches!(self.sculpt.0, M::Paint | M::Blur) {
+                crate::inspect::number(ui, egui::DragValue::new(&mut self.sculpt.2).range(1.0..=4096.0).speed(4.0).prefix("strength "));
+            } else {
+                percent(ui, &mut self.paint.flow, 1.0, "flow ", "How much one dab paints, or how fast Blur softens");
+                if self.sculpt.0 == M::Paint {
+                    percent(ui, &mut self.paint.opacity, 1.0, "opacity ", "The most one stroke changes the blend");
+                    percent(ui, &mut self.paint.spacing, 5.0, "spacing ", "Distance between dabs along a stroke, as a share of the radius");
+                }
+                let on = self.paint.show_weights;
+                if icon_button(ui, "eye", "Show weights", 24.0, on).on_hover_text("Show weights: tint the terrain cyan where the second material is").clicked()
+                {
+                    self.paint.show_weights = !on;
+                }
+            }
         }
         if self.tool == Tool::Vertex {
             self.vertex_options(ui);
@@ -635,10 +486,23 @@ impl MapCraftApp {
         if self.tool == Tool::Extrude {
             ui.separator();
             let modes = [
-                (true, "Along normal", "Push the face out keeping its shape; new sides stand square to it"),
-                (false, "Stretch", "Slide the face's plane; the faces around it stretch to meet it"),
+                (
+                    false,
+                    "arrow_double_vertical",
+                    "Stretch",
+                    "A drag moves the face's plane and the faces around it stretch to meet it; Alt+drag slides the face instead",
+                ),
+                (
+                    true,
+                    "arrow_up_from_line",
+                    "Along normal",
+                    "A drag pushes the face out keeping its shape, with new sides square to it; Alt+drag slides the face instead",
+                ),
             ];
-            Self::segmented(ui, &mut self.extrude_along_normal, &modes);
+            let mut along = self.prefs.get().view.extrude_along_normal;
+            if icon_toggles(ui, &mut along, &modes) {
+                self.prefs.update(|p| p.view.extrude_along_normal = along);
+            }
         }
         if self.tool == Tool::Clip {
             ui.separator();
@@ -652,20 +516,37 @@ impl MapCraftApp {
     fn run_button(&mut self, ui: &mut egui::Ui) {
         let profiles: Vec<String> = self.project.sdk.iter().flat_map(|s| s.manifest.compile.iter().map(|p| p.name.clone())).collect();
         let running = self.compile.is_some();
-        let text = RichText::new(if running { "Running…" } else { "Run" }).color(Color32::BLACK).strong();
         let tip = if profiles.is_empty() {
             "This SDK has no compile profiles".to_string()
+        } else if running {
+            "Running; click for Cancel".to_string()
         } else {
             format!("Compile and play the map; {} runs the last profile again", self.chord("run.again"))
         };
-        let r = ui.add_enabled(!profiles.is_empty(), egui::Button::new(text).fill(ACCENT).min_size(vec2(64.0, 22.0))).on_hover_text(tip);
+        let flat = |fill| ButtonVisuals { fill, stroke: Stroke::NONE, icon: Color32::BLACK };
+        let style = IconButtonStyle {
+            normal: flat(ACCENT),
+            hovered: flat(Color32::from_rgb(255, 165, 75)),
+            pressed: Some(flat(Color32::from_rgb(210, 115, 25))),
+            selected: flat(ACCENT),
+            corner_radius: CornerRadius::same(5),
+            focus_stroke: Stroke::new(1.0, Color32::WHITE),
+        };
+        let r = ui
+            .add_enabled_ui(!profiles.is_empty(), |ui| {
+                IconButton::new("Run", vec2(40.0, 24.0), &style)
+                    .show(ui, |ui, r, c| icons::paint(ui, if running { "hourglass" } else { "play" }, r, icons::SIZE, c))
+            })
+            .inner
+            .on_hover_text(&tip)
+            .on_disabled_hover_text(&tip);
         egui::Popup::menu(&r).show(|ui| {
             for (i, name) in profiles.iter().enumerate() {
-                if ui.add_enabled(!running, egui::Button::new(name)).clicked() {
+                if ui.add_enabled(!running, icons::button(Some("play"), name)).clicked() {
                     self.start_compile(i);
                 }
             }
-            if running && ui.button("Cancel").clicked() {
+            if running && ui.add(icons::button(Some("square"), "Cancel")).clicked() {
                 self.cancel_compile();
             }
         });
@@ -676,20 +557,19 @@ impl MapCraftApp {
         ui.painter().rect_filled(header, 0.0, HEADER);
         let mut header_ui =
             ui.new_child(egui::UiBuilder::new().max_rect(header.shrink2(vec2(4.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let style = tool_style();
         let Some((cam, uv)) = self.panes.get(index).map(|p| (p.camera, p.uv)) else { return };
         let ui = &mut header_ui;
         let title = RichText::new(if uv.is_some() { "UV" } else { short_label(cam.view) }).color(if active { ACCENT } else { TEXT }).strong();
         ui.menu_button(title, |ui| {
             for v in View::ALL {
-                if ui.selectable_label(uv.is_none() && cam.view == v, v.label()).clicked()
+                if ui.add(icons::selectable(uv.is_none() && cam.view == v, None, v.label())).clicked()
                     && let Some(p) = self.panes.get_mut(index)
                 {
                     p.camera = Camera { view: v, ..p.camera };
                     p.uv = None;
                 }
             }
-            if ui.selectable_label(uv.is_some(), "UV Editor").on_hover_text("The picked faces laid out over their texture").clicked()
+            if ui.add(icons::selectable(uv.is_some(), Some("unwrap"), "UV Editor")).on_hover_text("The picked faces laid out over their texture").clicked()
                 && let Some(p) = self.panes.get_mut(index)
             {
                 p.uv = Some(crate::uv::UvCamera::default());
@@ -715,29 +595,39 @@ impl MapCraftApp {
             }
             (None, None) => {
                 let mode = self.render_mode;
-                let label = match mode {
-                    RenderMode::Textured => "Textured",
-                    RenderMode::Flat => "Flat",
-                    RenderMode::Wireframe => "Wireframe",
-                    RenderMode::Lit => "Lit",
-                };
-                ui.menu_button(RichText::new(label).color(TEXT_WEAK), |ui| {
-                    for (m, l) in
-                        [(RenderMode::Textured, "Textured"), (RenderMode::Flat, "Flat"), (RenderMode::Wireframe, "Wireframe"), (RenderMode::Lit, "Lit")]
-                    {
-                        if ui.selectable_label(mode == m, l).clicked() {
+                let modes = [
+                    (RenderMode::Textured, "Textured", "view.render_textured"),
+                    (RenderMode::Flat, "Flat", "view.render_flat"),
+                    (RenderMode::Wireframe, "Wireframe", "view.render_wireframe"),
+                    (RenderMode::Lit, "Lit", "view.render_lit"),
+                ];
+                let (label, id) = modes.iter().find(|(m, ..)| *m == mode).map_or(("Textured", "view.render_textured"), |(_, l, id)| (*l, *id));
+                let current = icons::icon(icons::action_icon(id).unwrap_or("help")).tint(TEXT_WEAK).alt_text(label);
+                ui.menu_button(current, |ui| {
+                    for (m, l, id) in modes {
+                        if ui.add(icons::selectable(mode == m, icons::action_icon(id), l)).clicked() {
                             self.render_mode = m;
                         }
                     }
-                });
+                })
+                .response
+                .on_hover_text(format!("Render mode: {label}"));
+                let sky = self.prefs.get().view.sky;
+                let chord = self.chord("view.sky");
+                let tip = if sky { "Sky shown; click to hide it and draw sky faces flat" } else { "Sky hidden; click to show it" };
+                let tip = if chord.is_empty() { tip.to_string() } else { format!("{tip}  ({chord})") };
+                let drawn = matches!(mode, RenderMode::Textured | RenderMode::Lit);
+                let r = ui.add_enabled_ui(drawn, |ui| icon_button(ui, icons::action_icon("view.sky").unwrap_or("help"), "Sky", 20.0, sky)).inner;
+                if r.on_hover_text(tip).on_disabled_hover_text("Flat and Wireframe draw no sky").clicked() {
+                    self.run_action("view.sky");
+                }
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let maximized = self.maximized.is_some();
             let linked = self.prefs.get().view.link_zoom;
             let label = if maximized { "Restore" } else { "Maximize" };
-            let r = IconButton::new(label, Vec2::splat(18.0), &style)
-                .show(ui, |ui, r, c| if maximized { icons::restore(ui.painter(), r, c) } else { icons::maximize(ui.painter(), r, c) });
+            let r = icon_button(ui, if maximized { "windows" } else { "expand" }, label, 20.0, false);
             if r.on_hover_text(format!("{label}  ({})", self.chord("view.maximize"))).clicked() {
                 self.maximized = if maximized { None } else { Some(index) };
                 if maximized {
@@ -745,7 +635,7 @@ impl MapCraftApp {
                 }
             }
             if cam.is_2d() && uv.is_none() {
-                let r = IconButton::new("Link zoom", Vec2::splat(18.0), &style).selected(linked).show(ui, |ui, r, c| icons::link(ui.painter(), r, c));
+                let r = icon_button(ui, "link", "Link zoom", 20.0, linked);
                 let tip = if linked { "2D views zoom together; click to zoom each on its own" } else { "Click to zoom all 2D views together" };
                 if r.on_hover_text(tip).clicked() {
                     self.run_action("view.link_zoom");
@@ -789,7 +679,7 @@ impl MapCraftApp {
     /// when it already looks down it.
     fn look_along_axis(&mut self, index: usize, axis: usize) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
-        let dist = self.pick(cam.position, cam.forward()).map_or(1024.0, |(_, t)| t);
+        let dist = self.pick(cam.position, cam.forward(), true).map_or(1024.0, |(_, t)| t);
         let pivot = cam.position + cam.forward() * dist;
         let down = cam.forward().dot(-[DVec3::X, DVec3::Y, DVec3::Z][axis.min(2)]) > 0.999;
         // Pitch stops short of 90 degrees, where the view's up direction is undefined.
@@ -826,28 +716,39 @@ impl MapCraftApp {
             ui.ctx().request_repaint_after(STATUS_TIME);
         }
         ui.horizontal(|ui| {
-            let item = |ui: &mut egui::Ui, name: &str, value: String| {
-                ui.label(RichText::new(name).color(TEXT_WEAK));
-                ui.label(RichText::new(value).color(TEXT));
+            let item = |ui: &mut egui::Ui, icon: &str, tint: Color32, tip: &str, value: &str| {
+                let r = ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add(icons::icon(icon).tint(tint));
+                    if !value.is_empty() {
+                        ui.label(RichText::new(value).color(TEXT));
+                    }
+                });
+                r.response.on_hover_text(tip);
                 ui.add_space(8.0);
             };
             ui.label(RichText::new(self.selection_summary()).color(TEXT).strong());
             ui.add_space(8.0);
             if let Some(p) = self.cursor_world {
-                item(ui, "Cursor", format!("{:.0} {:.0} {:.0}", p.x, p.y, p.z));
+                item(ui, "reticle", TEXT_WEAK, "Cursor", &format!("{:.0} {:.0} {:.0}", p.x, p.y, p.z));
             }
-            item(ui, "Grid", format!("{}", self.session.grid));
-            item(ui, "Mode", format!("{:?}", self.session.select_mode).to_lowercase());
-            item(ui, "Texture lock", if self.session.texture_lock { "on".into() } else { "off".into() });
-            ui.label(RichText::new("SDK").color(TEXT_WEAK));
+            item(ui, "grid_coarse", TEXT_WEAK, "Grid", &self.session.grid.to_string());
+            let mode = format!("{:?}", self.session.select_mode).to_lowercase();
+            item(ui, icons::select_mode_icon(self.session.select_mode), TEXT_WEAK, "Selection mode", &mode);
+            let lock = self.session.texture_lock;
+            let (icon, tint, tip) = if lock { ("lock", ACCENT, "Texture lock on") } else { ("unlock", TEXT_WEAK, "Texture lock off") };
+            item(ui, icon, tint, tip, "");
             let name = self.project.sdk.as_ref().map(|s| s.manifest.name.clone()).or_else(|| self.session.sdk.clone()).unwrap_or("none".into());
-            ui.menu_button(RichText::new(format!("{name} ⏷")).color(TEXT), |ui| {
+            ui.menu_button((icons::icon("delivery_box").tint(TEXT_WEAK), RichText::new(name).color(TEXT)), |ui| {
                 self.sdk_choices(ui);
             })
             .response
             .on_hover_text("Switch the map's SDK");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.selectable_label(self.show_bottom, "Output").on_hover_text(self.chord("panel.output")).clicked() {
+                if icon_button(ui, "window_terminal", "Output", 20.0, self.show_bottom)
+                    .on_hover_text(format!("Output  ({})", self.chord("panel.output")))
+                    .clicked()
+                {
                     self.run_action("panel.output");
                 }
                 ui.separator();
@@ -880,15 +781,19 @@ pub(crate) fn next_shape(shape: mapcraft_engine::Shape) -> mapcraft_engine::Shap
     }
 }
 
-/// A shape's side count as a labelled `- n +` stepper like the grid's; the number still drags.
+/// A shape's side count as a `- n +` stepper after a hexagon icon; the number still drags.
 fn sides_stepper(ui: &mut egui::Ui, n: &mut usize, min: usize, max: usize) {
     ui.separator();
-    ui.label(RichText::new("Sides").color(TEXT_WEAK));
-    if ui.add_enabled(*n > min, egui::Button::new("-").small()).on_hover_text("Fewer sides").clicked() {
+    let (r, hover) = ui.allocate_exact_size(Vec2::splat(icons::SIZE), egui::Sense::hover());
+    icons::paint(ui, "hexagon", r, icons::SIZE, TEXT_WEAK);
+    hover.on_hover_text("Sides");
+    let fewer = ui.add_enabled_ui(*n > min, |ui| icon_button(ui, "dash_in_square", "Fewer sides", 20.0, false)).inner;
+    if fewer.on_hover_text("Fewer sides").clicked() {
         *n -= 1;
     }
-    ui.add(egui::DragValue::new(n).range(min..=max).speed(0.1));
-    if ui.add_enabled(*n < max, egui::Button::new("+").small()).on_hover_text("More sides").clicked() {
+    crate::inspect::number(ui, egui::DragValue::new(n).range(min..=max).speed(0.1));
+    let more = ui.add_enabled_ui(*n < max, |ui| icon_button(ui, "plus_sign_in_square", "More sides", 20.0, false)).inner;
+    if more.on_hover_text("More sides").clicked() {
         *n += 1;
     }
 }
@@ -918,9 +823,19 @@ impl MapCraftApp {
     }
 }
 
-/// The Block tool's built-in shapes with their default settings.
-pub(crate) fn block_shapes() -> [(mapcraft_engine::Shape, &'static str); 6] {
+/// A block shape or a plugin generator picked from a shape menu.
+pub(crate) type BlockPick = (Option<mapcraft_engine::Shape>, Option<(String, mapcraft_plugin_host::CommandSpec)>);
+
+/// The Block tool's built-in shapes with their default settings, names and icons.
+pub(crate) fn block_shapes() -> [(mapcraft_engine::Shape, &'static str, &'static str); 6] {
     use mapcraft_engine::Shape as S;
     let arch = S::Arch { sides: 8, arc: 180.0, start: 0.0, thickness: 16.0 };
-    [(S::Block, "Box"), (S::Wedge, "Wedge"), (S::Cylinder(8), "Cylinder"), (S::Spike(4), "Spike"), (S::Sphere(8), "Sphere"), (arch, "Arch")]
+    [
+        (S::Block, "Box", "box"),
+        (S::Wedge, "Wedge", "prism"),
+        (S::Cylinder(8), "Cylinder", "cylinder"),
+        (S::Spike(4), "Spike", "pyramid"),
+        (S::Sphere(8), "Sphere", "sphere"),
+        (arch, "Arch", "doorway"),
+    ]
 }

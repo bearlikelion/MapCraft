@@ -4,6 +4,7 @@ use egui::RichText;
 
 use crate::app::MapCraftApp;
 use crate::chrome::TEXT_WEAK;
+use crate::icons;
 use crate::viewport::Tool;
 
 impl MapCraftApp {
@@ -23,17 +24,17 @@ impl MapCraftApp {
 
     fn uv_menu(&mut self, ui: &mut egui::Ui, index: usize) {
         let can = !self.session.face_selection.is_empty() || !self.session.selected_brushes().is_empty();
-        ui.menu_button("UV", |ui| {
+        ui.menu_button((icons::slot(Some("unwrap")), "UV"), |ui| {
             for (id, label) in
                 [("uv.unwrap", "Unwrap"), ("uv.project_from_view", "Project from View"), ("uv.cube_projection", "Cube Projection"), ("uv.reset", "Reset")]
             {
-                let button = egui::Button::new(label).shortcut_text(self.chord(id));
+                let button = icons::button(icons::action_icon(id), label).shortcut_text(self.chord(id));
                 if ui.add_enabled(can, button).clicked() {
                     self.uv_action(id);
                 }
             }
             ui.separator();
-            if ui.add_enabled(can, egui::Button::new("Edit UVs in This View")).clicked() {
+            if ui.add_enabled(can, icons::button(None, "Edit UVs in This View")).clicked() {
                 if self.session.face_selection.is_empty() {
                     self.run_action("tool.face");
                 }
@@ -47,10 +48,11 @@ impl MapCraftApp {
     fn face_menu(&mut self, ui: &mut egui::Ui, index: usize) {
         ui.label(RichText::new(format!("{} faces", self.session.face_selection.len())).color(TEXT_WEAK));
         self.menu_item(ui, "tools.apply_material", "Apply Current Material");
-        if ui.add(egui::Button::new("Copy Face").shortcut_text("Ctrl+C")).clicked() {
+        self.menu_item(ui, "tools.clear_material", "Clear Material");
+        if ui.add(icons::button(Some("ActionCopy"), "Copy Face").shortcut_text("Ctrl+C")).clicked() {
             self.copy_face();
         }
-        if ui.add_enabled(self.picked_face.is_some(), egui::Button::new("Paste Face").shortcut_text("Ctrl+V")).clicked() {
+        if ui.add_enabled(self.picked_face.is_some(), icons::button(Some("clipboard"), "Paste Face").shortcut_text("Ctrl+V")).clicked() {
             self.paste_face();
         }
         self.uv_menu(ui, index);
@@ -60,26 +62,31 @@ impl MapCraftApp {
     }
 
     fn vertex_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Select Mode", |ui| {
+        ui.menu_button((icons::slot(None), "Select Mode"), |ui| {
             self.menu_item(ui, "vertex.mode_vertex", "Vertex");
             self.menu_item(ui, "vertex.mode_edge", "Edge");
             self.menu_item(ui, "vertex.mode_face", "Face");
         });
         self.menu_item(ui, "vertex.merge", "Merge at Center");
         self.menu_item(ui, "vertex.bevel", "Bevel Edges");
+        let delete = if self.vertex.mode == crate::vertex::HandleKind::Face { "Dissolve Faces" } else { "Delete Vertices" };
+        self.menu_item(ui, "vertex.delete", delete);
+        if !self.session.selected_brush_entities().is_empty() {
+            self.menu_item(ui, "vertex.origin_to_corners", "Set Origin to Selected Corners");
+        }
     }
 
     fn brush_type_menu(&mut self, ui: &mut egui::Ui) {
         let classes: Vec<&str> =
             ["func_detail", "func_illusionary", "func_wall"].into_iter().filter(|c| self.project.game.class(c).is_some_and(|d| d.kind.is_solid())).collect();
         let any = !self.session.selected_brushes().is_empty();
-        ui.menu_button("Brush Type", |ui| {
+        ui.menu_button((icons::slot(None), "Brush Type"), |ui| {
             let mut pick = None;
-            if ui.add_enabled(any, egui::Button::new("World")).clicked() {
+            if ui.add_enabled(any, icons::button(Some("globe"), "World")).clicked() {
                 pick = Some(None);
             }
             for c in classes {
-                if ui.add_enabled(any, egui::Button::new(c)).clicked() {
+                if ui.add_enabled(any, icons::button(Some("cube"), c)).clicked() {
                     pick = Some(Some(c));
                 }
             }
@@ -98,32 +105,38 @@ impl MapCraftApp {
         self.menu_item(ui, "edit.duplicate_linked", "Duplicate Linked");
         self.menu_item(ui, "edit.delete", "Delete");
         ui.separator();
+        self.menu_item(ui, "tools.apply_material", "Apply Current Material");
+        self.menu_item(ui, "tools.clear_material", "Clear Material");
+        ui.separator();
         self.menu_item(ui, "tools.hollow", "Hollow");
         self.menu_item(ui, "tools.carve", "Subtract (Carve)");
         self.menu_item(ui, "tools.merge", "Merge Brushes");
         self.menu_item(ui, "tool.clip", "Clip");
         self.brush_type_menu(ui);
-        ui.menu_button("Transform", |ui| {
+        ui.menu_button((icons::slot(Some("gimbal")), "Transform"), |ui| {
             self.menu_item(ui, "tools.rotate_cw", "Rotate 90° Clockwise");
             self.menu_item(ui, "tools.rotate_ccw", "Rotate 90° Counter-Clockwise");
             self.menu_item(ui, "tools.flip_x", "Flip X");
             self.menu_item(ui, "tools.flip_y", "Flip Y");
             self.menu_item(ui, "tools.flip_z", "Flip Z");
             self.menu_item(ui, "tools.snap_to_grid", "Snap to Grid");
+            self.menu_item(ui, "tools.drop_to_floor", "Drop to Floor");
             ui.separator();
             self.menu_item(ui, "tools.transform", "Transform…");
             self.menu_item(ui, "tools.array", "Array…");
+            self.menu_item(ui, "tools.randomize", "Randomize…");
         });
         self.uv_menu(ui, index);
-        ui.menu_button("Organize", |ui| {
+        ui.menu_button((icons::slot(Some("folder")), "Organize"), |ui| {
             self.menu_item(ui, "tools.group", "Group");
             self.menu_item(ui, "tools.ungroup", "Ungroup");
             self.menu_item(ui, "tools.tie_to_entity", "Tie to Entity");
             self.menu_item(ui, "tools.move_to_world", "Move to World");
+            self.menu_item(ui, "tools.center_origins", "Center Origins");
             self.menu_item(ui, "tools.mirror", "Make Mirror Group");
             self.menu_item(ui, "tools.zone_from_selection", "Zone from Selection");
         });
-        ui.menu_button("Curves", |ui| {
+        ui.menu_button((icons::slot(Some("itinerary")), "Curves"), |ui| {
             self.menu_item(ui, "tools.array_path", "Array Along Path");
             self.menu_item(ui, "tools.curve_make_real", "Make Curve Real");
         });
@@ -142,22 +155,8 @@ impl MapCraftApp {
     }
 
     fn empty_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Add", |ui| {
-            let mut pick = None;
-            for (shape, label) in crate::chrome::block_shapes() {
-                if ui.button(label).clicked() {
-                    pick = Some((Some(shape), None));
-                }
-            }
-            let generators = self.generator_shapes();
-            if !generators.is_empty() {
-                ui.separator();
-            }
-            for (plugin, command) in generators {
-                if ui.button(&command.label).clicked() {
-                    pick = Some((None, Some((plugin, command))));
-                }
-            }
+        ui.menu_button((icons::slot(Some("plus")), "Add"), |ui| {
+            let pick = self.shape_menu(ui);
             ui.separator();
             self.menu_item(ui, "tool.entity", "Entity");
             self.menu_item(ui, "tool.path", "Path");

@@ -7,6 +7,10 @@ pub trait Files {
     fn read_range(&self, path: &str, offset: u64, length: u64) -> Option<Vec<u8>>;
     /// Files with one of the extensions, as `/`-separated relative paths.
     fn list(&self, extensions: &[&str]) -> Vec<String>;
+    /// Where a listed file is on the user's disk, when the host says.
+    fn full_path(&self, _path: &str) -> Option<String> {
+        None
+    }
 }
 
 const MAX_LUMPS: u64 = 1 << 16;
@@ -27,7 +31,7 @@ fn u32_at(b: &[u8], at: usize) -> u32 {
 }
 
 /// A fixed-size name field up to its first zero, lowercased.
-fn name_at(b: &[u8], at: usize, len: usize) -> String {
+pub(crate) fn name_at(b: &[u8], at: usize, len: usize) -> String {
     let field = b.get(at..at + len).unwrap_or_default();
     let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
     String::from_utf8_lossy(field.get(..end).unwrap_or_default()).to_ascii_lowercase()
@@ -209,10 +213,15 @@ impl Library {
         Library { wads, palette: palette(files, &listed), problems }
     }
 
-    /// The file names of the first WADs holding these textures, in lookup order, as a `wad` key.
-    pub fn wad_key(&self, names: &BTreeSet<&str>) -> String {
+    /// The first WADs holding these textures as a `wad` key, by full path where the host gives one, since qbsp searches a single `-wadpath`.
+    pub fn wad_key(&self, files: &dyn Files, names: &BTreeSet<&str>) -> String {
         let needed: BTreeSet<usize> = names.iter().filter_map(|n| self.wads.iter().position(|w| w.lumps.iter().any(|l| l.name == *n))).collect();
-        needed.into_iter().filter_map(|i| self.wads.get(i)).map(|w| file_name(&w.path)).collect::<Vec<_>>().join(";")
+        needed
+            .into_iter()
+            .filter_map(|i| self.wads.get(i))
+            .map(|w| files.full_path(&w.path).filter(|p| !p.contains(';')).unwrap_or_else(|| file_name(&w.path).to_string()))
+            .collect::<Vec<_>>()
+            .join(";")
     }
 
     /// Pictures of the named textures, or of every texture with `None`, and why some could not be decoded.

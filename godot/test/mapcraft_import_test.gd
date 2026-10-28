@@ -4,6 +4,7 @@ extends SceneTree
 const MAP: String = "res://course.mcmap"
 const PACKED_MAP: String = "res://maps/course/course.scn"
 const ENTITY_MAP: String = "res://addons/mapcraft/sdks/surfsup.tres"
+const SHADERS: String = "res://addons/mapcraft/shaders/"
 const UNITS_PER_METER: float = 39.37
 
 var _failures: PackedStringArray = PackedStringArray()
@@ -18,6 +19,8 @@ func _initialize() -> void:
 		var root: Node3D = scene.instantiate() as Node3D
 		_check_imported(root)
 		root.free()
+	_check_wrappers()
+	_check_blend_fallbacks()
 	_check_runtime_build()
 	_check_runtime_load()
 	_check_pack(OS.get_cmdline_user_args())
@@ -63,9 +66,12 @@ func _check_imported(root: Node3D) -> void:
 	_check_prop(root.get_node_or_null("crate") as Node3D)
 
 	var mesh: MeshInstance3D = root.get_node_or_null("WorldMesh") as MeshInstance3D
-	_expect(mesh != null and mesh.mesh.get_surface_count() == 2, "one surface per material")
+	_expect(mesh != null and mesh.mesh.get_surface_count() == 9, \
+			"one surface per material, blend layer and anti-tiling mode")
 	if mesh != null:
 		_check_checker_surface(mesh.mesh as ArrayMesh)
+		_check_anti_tiling(mesh.mesh as ArrayMesh)
+		_check_blend(mesh.mesh as ArrayMesh)
 	var body: StaticBody3D = root.get_node_or_null("WorldCollision") as StaticBody3D
 	var holder: CollisionShape3D = null
 	if body != null and body.get_child_count() == 1:
@@ -121,6 +127,142 @@ func _check_checker_surface(mesh: ArrayMesh) -> void:
 		low = low.min(uv)
 		high = high.max(uv)
 	_expect((high - low).is_equal_approx(Vector2(2.0, 4.0)), "UVs divide by the texture size")
+
+
+# Anti-tiled faces draw through the addon's wrappers unless that would lose part of their look.
+func _check_anti_tiling(mesh: ArrayMesh) -> void:
+	var ramp: ShaderMaterial = _surface_material(mesh, "checker#macro") as ShaderMaterial
+	_expect(_wrapper(ramp) == "mapcraft_single_linear.gdshader", \
+			"an anti-tiled face draws through the linear wrapper")
+	if ramp != null:
+		_expect(_approx(ramp.get_shader_parameter(&"macro_amount"), 0.15), \
+				"the wrapper varies albedo by 15 percent")
+		_expect(ramp.get_shader_parameter(&"albedo_texture_a") \
+				== load("res://Assets/Textures/checker.png"), \
+				"the wrapper copies the albedo texture")
+		_expect(_approx(ramp.get_shader_parameter(&"uv1_scale_a"), Vector3.ONE), \
+				"the wrapper copies the UV scale")
+		_expect(_approx(ramp.get_shader_parameter(&"map_units"), UNITS_PER_METER), \
+				"the wrapper's noise uses the map's units")
+	var pixel: ShaderMaterial = _surface_material(mesh, "nearest_mip#macro") as ShaderMaterial
+	_expect(_wrapper(pixel) == "mapcraft_single_nearest_mipmap.gdshader", \
+			"texture_filter 2 picks the nearest mipmap wrapper")
+	var sharp: ShaderMaterial = _surface_material(mesh, "nearest#hex") as ShaderMaterial
+	_expect(_wrapper(sharp) == "mapcraft_single_nearest.gdshader", \
+			"texture_filter 0 picks the nearest wrapper")
+	var specular: Variant = sharp.get_shader_parameter(&"specular_a") if sharp != null else null
+	_expect(_approx(specular, 0.0), "the wrapper copies metallic_specular")
+	var sharp_hex: Variant = sharp.get_shader_parameter(&"hex_tiling") if sharp != null else null
+	var sharp_macro: Variant = sharp.get_shader_parameter(&"macro_amount") if sharp != null else null
+	_expect(sharp_hex is bool and not sharp_hex and _approx(sharp_macro, 0.15), \
+			"a pixel texture draws hex tiling as variation")
+	var hex: ShaderMaterial = _surface_material(mesh, "checker#hex") as ShaderMaterial
+	_expect(_wrapper(hex) == "mapcraft_single_linear.gdshader", \
+			"a hex tiled face draws through the linear wrapper")
+	var tiled: Variant = hex.get_shader_parameter(&"hex_tiling") if hex != null else null
+	var varied: Variant = hex.get_shader_parameter(&"macro_amount") if hex != null else null
+	_expect(tiled is bool and tiled and _approx(varied, 0.15), \
+			"hex tiling turns on the wrapper's hex tiles over the variation")
+	for material_name: String in ["glow", "shader"]:
+		var kept: Material = _surface_material(mesh, material_name + "#macro")
+		var path: String = kept.resource_path if kept != null else ""
+		_expect(path == "res://Assets/Textures/%s.tres" % material_name, \
+				"%s keeps its own material" % material_name)
+
+
+# The floor spans map x 1024 to 1280 and its weights rise from 0 to 1 along x.
+func _check_blend(mesh: ArrayMesh) -> void:
+	var surface: int = _surface_index(mesh, "checker|stripes")
+	_expect(surface >= 0, "a blended displacement has its own surface")
+	if surface < 0:
+		return
+	var arrays: Array = mesh.surface_get_arrays(surface)
+	var colors: Variant = arrays[Mesh.ARRAY_COLOR]
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var follows: bool = colors is PackedColorArray and colors.size() == vertices.size() \
+			and not vertices.is_empty()
+	if follows:
+		for i: int in vertices.size():
+			var expected: float = (vertices[i].x * UNITS_PER_METER - 1024.0) / 256.0
+			follows = follows and absf(colors[i].a - expected) < 0.01
+	_expect(follows, "vertex alpha carries each vertex's weight")
+	var blend: ShaderMaterial = mesh.surface_get_material(surface) as ShaderMaterial
+	_expect(_wrapper(blend) == "mapcraft_blend_linear.gdshader", \
+			"a blended displacement draws through the blend wrapper")
+	if blend == null:
+		return
+	_expect(_approx(blend.get_shader_parameter(&"uv_ratio_b"), Vector2(2.0, 1.0)), \
+			"the second layer keeps its own texel size")
+	_expect(blend.get_shader_parameter(&"albedo_texture_b") \
+			== load("res://Assets/Textures/stripes.png"), \
+			"the wrapper copies the second layer's albedo texture")
+	_expect(_approx(blend.get_shader_parameter(&"macro_amount"), 0.0), \
+			"a blend without anti-tiling has no variation")
+
+
+# The floor blending a ShaderMaterial or a missing material falls back to checker.tres alone.
+func _check_blend_fallbacks() -> void:
+	var text: String = FileAccess.get_file_as_string(MAP)
+	var wrappers: Dictionary[String, String] = {
+		"shader": "",
+		"missing": "",
+		"nearest": "mapcraft_blend_linear.gdshader",
+	}
+	for layer: String in wrappers:
+		var copy: String = "user://blend_%s.mcmap" % layer
+		var suffix: String = "#hex" if layer == "nearest" else ""
+		var edited: String = text.replace("\"blend_material\": \"stripes\"", \
+				"\"blend_material\": \"%s\"" % layer)
+		if not suffix.is_empty():
+			edited = edited.replace("\"disp\": {", \
+					"\"attrs\": {\"anti_tile\": \"hex\"}, \"disp\": {")
+		var file: FileAccess = FileAccess.open(copy, FileAccess.WRITE)
+		file.store_string(edited)
+		file.close()
+		var packed: PackedScene = load(copy) as PackedScene
+		var root: Node = packed.instantiate() if packed != null else null
+		var world: MeshInstance3D = null
+		if root != null:
+			world = root.get_node_or_null("WorldMesh") as MeshInstance3D
+		var mesh: ArrayMesh = world.mesh as ArrayMesh if world != null else null
+		var surface: int = _surface_index(mesh, "checker|" + layer + suffix) if mesh != null else -1
+		_expect(surface >= 0, "a floor blending %s imports" % layer)
+		if surface >= 0:
+			var material: Material = mesh.surface_get_material(surface)
+			var colored: bool = (mesh.surface_get_format(surface) & Mesh.ARRAY_FORMAT_COLOR) != 0
+			if wrappers[layer].is_empty():
+				_expect(material != null and material.resource_path \
+						== "res://Assets/Textures/checker.tres" and not colored, \
+						"a floor blending %s draws its own material without weights" % layer)
+			else:
+				var shaded: ShaderMaterial = material as ShaderMaterial
+				_expect(_wrapper(shaded) == wrappers[layer] and colored, \
+						"a floor blending %s draws with its own filtering" % layer)
+				var hex: Variant = shaded.get_shader_parameter(&"hex_tiling") \
+						if shaded != null else null
+				var varied: Variant = shaded.get_shader_parameter(&"macro_amount") \
+						if shaded != null else null
+				_expect(hex is bool and not hex and _approx(varied, 0.15), \
+						"a blend with a pixel layer draws hex tiling as variation")
+		if root != null:
+			root.free()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(copy))
+
+
+# Headless Godot only prints shader errors, and a shader that fails to compile lists no uniforms.
+func _check_wrappers() -> void:
+	for kind: String in ["single", "blend"]:
+		for filter: String in ["linear", "nearest", "nearest_mipmap"]:
+			var wrapper: String = "mapcraft_%s_%s" % [kind, filter]
+			var shader: Shader = load(SHADERS + wrapper + ".gdshader") as Shader
+			var names: PackedStringArray = PackedStringArray()
+			if shader != null:
+				for uniform: Dictionary in shader.get_shader_uniform_list():
+					names.append(uniform["name"])
+			var blends: bool = "uv_ratio_b" in names
+			_expect("macro_amount" in names and "hex_tiling" in names \
+					and "albedo_texture_a" in names and blends == (kind == "blend"), \
+					"%s compiles" % wrapper)
 
 
 func _check_runtime_build() -> void:
@@ -189,6 +331,33 @@ func _check_pack(args: PackedStringArray) -> void:
 	_expect(spawn is Marker3D, "the pack has the map")
 	if root != null:
 		root.free()
+
+
+func _surface_material(mesh: ArrayMesh, surface_name: String) -> Material:
+	var surface: int = _surface_index(mesh, surface_name)
+	return mesh.surface_get_material(surface) if surface >= 0 else null
+
+
+func _surface_index(mesh: ArrayMesh, surface_name: String) -> int:
+	for i: int in mesh.get_surface_count():
+		if mesh.surface_get_name(i) == surface_name:
+			return i
+	return -1
+
+
+# Takes Variants so a missing shader parameter fails its check instead of stopping the test.
+func _approx(value: Variant, expected: Variant) -> bool:
+	if typeof(value) != typeof(expected):
+		return false
+	if value is float:
+		return is_equal_approx(value, expected)
+	return value.is_equal_approx(expected)
+
+
+func _wrapper(material: ShaderMaterial) -> String:
+	if material == null or material.shader == null:
+		return ""
+	return material.shader.resource_path.get_file()
 
 
 func _zone_kind(zone: Area3D) -> String:

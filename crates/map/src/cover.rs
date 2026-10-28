@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use mapcraft_geom::{Aabb, DVec3, Plane, Winding};
 
-use crate::{FaceId, Map, NodeId, NodeKind};
+use crate::{FaceId, Map, NodeId, NodeKind, is_tool_material};
 
 /// Faces closer than this to an opposite face count as touching it.
 const TOUCH: f64 = 0.01;
@@ -13,10 +13,6 @@ const TOUCH: f64 = 0.01;
 fn key(normal: DVec3, dist: f64) -> [i64; 4] {
     let q = |v: f64, s: f64| (v * s).round() as i64;
     [q(normal.x, 1e4), q(normal.y, 1e4), q(normal.z, 1e4), q(dist, 1.0 / TOUCH)]
-}
-
-fn is_tool(material: &str) -> bool {
-    material.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("tools/"))
 }
 
 /// The part of `face` inside `other`, a convex polygon on the same plane facing the other way.
@@ -45,7 +41,7 @@ pub fn covered_faces(map: &Map, only: Option<&BTreeSet<NodeId>>) -> BTreeSet<(No
         }
         let Ok(solid) = b.solid() else { continue };
         for (f, w) in b.faces.iter().zip(solid.faces) {
-            if let (Some(w), Some(p), false) = (w, f.plane(), is_tool(&f.material))
+            if let (Some(w), Some(p), false) = (w, f.plane(), is_tool_material(&f.material))
                 && let Some(bounds) = w.bounds()
             {
                 faces.push((id, f.id, w, p, bounds));

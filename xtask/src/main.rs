@@ -29,7 +29,7 @@ const LAYERS: &[(&str, u8)] = &[
 /// The first layer that may use UI crates.
 const UI_LAYER: u8 = 6;
 
-const UI_ONLY: &[&str] = &["craft-ui", "egui", "eframe", "egui-wgpu", "winit", "rfd", "muda"];
+const UI_ONLY: &[&str] = &["craft-ui", "egui", "egui_extras", "eframe", "egui-wgpu", "winit", "rfd", "muda"];
 
 fn short(name: &str) -> &str {
     name.strip_prefix("mapcraft-").unwrap_or(name)
@@ -93,7 +93,8 @@ fn plugins() -> Result<(), String> {
     let manifest = root.join("plugins/Cargo.toml");
     let manifest = manifest.to_string_lossy();
     run(env!("CARGO"), &["build", "--manifest-path", &manifest, "--target", WASM_TARGET, "--release"])?;
-    let built = root.join("plugins/target").join(WASM_TARGET).join("release");
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("plugins/target"), PathBuf::from);
+    let built = target.join(WASM_TARGET).join("release");
     let sdks = std::fs::read_dir(root.join("sdks")).map_err(|e| format!("sdks: {e}"))?;
     for sdk in sdks.flatten().map(|e| e.path()).filter(|p| p.join("sdk.toml").is_file()) {
         let text = std::fs::read_to_string(sdk.join("sdk.toml")).map_err(|e| e.to_string())?;

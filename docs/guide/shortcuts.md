@@ -11,6 +11,14 @@ Press `F1` for the list of every shortcut, with a search box.
 
 Menus and tooltips show the current key.
 
+## Search commands
+
+Press `F3` (**Edit > Search Commands**) and type part of a command's name, such as `drop` or `hollow`.
+The list shows each match with its icon and key; hover one for its menu.
+`Up` and `Down` move through the list, `Enter` or a click runs the command, and `Escape` closes it.
+Commands that cannot run right now are grayed out, and the ones you ran last come first.
+Typing the first letters of each word, such as `dtf` for Drop to Floor, also finds a command.
+
 ![The Keyboard Shortcuts window with its search box and the File shortcuts at the top](img/shortcuts-f1.webp)
 
 ## Change a shortcut
@@ -19,7 +27,7 @@ Menus and tooltips show the current key.
 2. Pick a preset under **Shortcuts**: MapCraft, Hammer or TrenchBroom.
 3. Open **Key bindings** and type a chord such as `Ctrl+Shift+K` next to an action, or clear it to unbind the action.
 
-**Reset** next to an action returns it to its preset's key.
+The **Reset** button after an action's key returns it to the preset's key.
 
 ![Preferences with the Shortcuts preset menu open on MapCraft, Hammer and TrenchBroom, and Key bindings below](img/shortcuts-preferences.webp)
 
@@ -29,7 +37,7 @@ Menus and tooltips show the current key.
 
 > [!NOTE]
 > Some keys only work in one place, where they win over the same key elsewhere.
-> The UV editor's keys work with the pointer over a UV editor, and the Vertex tool's keys (select modes, Merge and Bevel) work in the Vertex tool.
+> The UV editor's keys work with the pointer over a UV editor, the Vertex tool's keys (select modes, Merge, Bevel and Delete) work in the Vertex tool, and Remove Last Clip Point (`Delete`) works in the Clip tool.
 
 ## All shortcuts
 
@@ -46,6 +54,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Open | `Ctrl+O` |
 | Save | `Ctrl+S` |
 | Save As | `Ctrl+Shift+S` |
+| Revert | *none* |
+| Reload Assets | `F5` |
 | SDK Settings | `Ctrl+Shift+Comma` |
 | Switch SDK | *none* |
 | SDK Manager | *none* |
@@ -55,6 +65,7 @@ The tables are generated from the editor's code, so they match the version this 
 
 | Action | Shortcut |
 |---|---|
+| Search Commands | `F3` |
 | Preferences | `Ctrl+Comma` |
 | Undo | `Ctrl+Z` |
 | Redo | `Ctrl+Shift+Z` |
@@ -63,6 +74,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Duplicate Linked | `Alt+D` |
 | Select All | `Ctrl+A` |
 | Select None | `Ctrl+Shift+A` |
+| Select Faces by Material | *none* |
+| Select Brushes by Material | *none* |
 | Select Groups | `Alt+1` |
 | Select Objects | `Alt+2` |
 | Select Solids | `Alt+3` |
@@ -90,7 +103,8 @@ The tables are generated from the editor's code, so they match the version this 
 |---|---|
 | Smart Edit | `Ctrl+Alt+E` |
 | Next Block Shape | `Alt+B` |
-| Next Clip Side | `Alt+C` |
+| Next Clip Side | `Ctrl+Enter` |
+| Remove Last Clip Point | `Delete` |
 
 ### Brushes and organizing
 
@@ -98,6 +112,7 @@ The tables are generated from the editor's code, so they match the version this 
 |---|---|
 | Transform | `Ctrl+M` |
 | Array | `Ctrl+Shift+D` |
+| Randomize Transform | *none* |
 | Replace Materials | *none* |
 | Check for Problems | `Alt+P` |
 | New Layer | `Ctrl+Shift+N` |
@@ -116,7 +131,9 @@ The tables are generated from the editor's code, so they match the version this 
 | Array Along Path | `Ctrl+Alt+D` |
 | Make Curve Real | *none* |
 | Tie to Entity | `Ctrl+T` |
+| Drop to Floor | `End` |
 | Move to World | `Ctrl+Shift+W` |
+| Center Origins | *none* |
 | Rotate 90° Clockwise | `Ctrl+R` |
 | Rotate 90° Counter-Clockwise | `Ctrl+Shift+R` |
 | Flip X | `Ctrl+L` |
@@ -146,7 +163,9 @@ The tables are generated from the editor's code, so they match the version this 
 | Flat Shaded | `Ctrl+Alt+2` |
 | Wireframe | `Ctrl+Alt+3` |
 | Lit | `Ctrl+Alt+4` |
+| Show Sky | *none* |
 | Color Brushes by Object | `Ctrl+Alt+C` |
+| Color by Slope | `Ctrl+Alt+5` |
 | Frame All | `Home` |
 | Go to Origin | `Shift+Home` |
 | One View Layout | `Shift+Space` |
@@ -167,6 +186,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Action | Shortcut |
 |---|---|
 | Scene Panel | `Ctrl+1` |
+| Search Scene | `Ctrl+Shift+F` |
 | Tags Panel | `Ctrl+2` |
 | Materials Panel | `Ctrl+3` |
 | Entities Panel | `Ctrl+4` |
@@ -179,6 +199,10 @@ The tables are generated from the editor's code, so they match the version this 
 |---|---|
 | Run Last Profile | `F9` |
 | Cancel Run | `Shift+F9` |
+| Load Leak Trail | *none* |
+| Unload Leak Trail | *none* |
+| Next Leak Point | `Period` |
+| Previous Leak Point | `Comma` |
 
 ### Help
 
@@ -193,6 +217,7 @@ The tables are generated from the editor's code, so they match the version this 
 | UV Grab | `G` |
 | UV Rotate | `R` |
 | UV Scale | `S` |
+| Fit UV View | `F` |
 | Unwrap | `U` |
 | Project from View | *none* |
 | Cube Projection | *none* |
@@ -207,6 +232,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Face Select Mode | `3` |
 | Merge Vertices | `M` |
 | Bevel Edges | `Ctrl+B` |
+| Delete Vertices or Dissolve Faces | `Delete` |
+| Set Origin to Selected Corners | *none* |
 
 ### Other
 
@@ -217,6 +244,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Sculpt: Smooth | `3` |
 | Sculpt: Flatten | `4` |
 | Sculpt: Noise | `5` |
+| Sculpt: Paint | `6` |
+| Sculpt: Blur | `7` |
 
 ### Mouse and fixed keys
 
@@ -227,9 +256,10 @@ These cannot be rebound.
 | Copy, or copy the active face in the Face tool | `Ctrl+C` |
 | Cut | `Ctrl+X` |
 | Paste, or paste a face on the picked faces in the Face tool | `Ctrl+V` |
-| Cancel the current drag or tool step | `Escape` |
+| Cancel the current drag or tool step, leave the tool, then deselect | `Escape` |
 | Apply the clip | `Enter` |
 | Extrude a face | `Shift+Drag` |
+| Slide a face, keeping its shape | `Alt+Shift+Drag` |
 | Extrude into a new brush | `Ctrl+Shift+Drag` |
 | Stamp a copy along a face | `Ctrl+Alt+Shift+Drag` |
 | Pick a face's material | `Alt+Click` |
@@ -240,13 +270,23 @@ These cannot be rebound.
 | Snap a UV grab, rotate or scale | `Ctrl` |
 | Apply a UV grab, rotate or scale | `Click, Enter` |
 | Cancel a UV grab, rotate or scale | `Escape, Right Click` |
+| Move the picked faces' UVs | `Drag a picked face in a UV editor` |
+| Scale UVs; Shift keeps a corner's aspect | `Drag a square handle in a UV editor` |
+| Rotate UVs | `Drag the round handle in a UV editor` |
 | Change a bevel's segments while sizing it | `Scroll` |
 | Apply a bevel being sized | `Click, Enter` |
 | Cancel a bevel being sized | `Escape, Right Click` |
-| Move a 3D vertex handle up and down | `Shift+Drag` |
-| Add a third clip point that tilts the cut | `Click in the 3D view` |
+| Move a 3D vertex handle or block height up and down | `Shift+Drag, Alt+Drag` |
+| Add a third clip point that tilts the cut | `Click in another view` |
+| Clip along a face | `Double-click the face in the 3D view` |
 | Move a clip point | `Drag the point` |
+| Move a brush entity's origin | `Drag its handle in a 2D view` |
 | Nudge the selection one grid step, or the picked handles in the Vertex tool | `Arrow keys` |
+| Nudge the selection one unit | `Shift+Arrow keys` |
+| Nudge a copy of the selection, leaving the original | `Ctrl+Arrow keys` |
+| Move a copy of the selection, leaving the original | `Ctrl+Drag` |
+| Pick a face from the Select or Move tool | `Shift+Click in the 3D view` |
+| Orbit the 3D camera around the point under the pointer | `Alt+Right Drag` |
 
 ### Hammer and TrenchBroom presets
 

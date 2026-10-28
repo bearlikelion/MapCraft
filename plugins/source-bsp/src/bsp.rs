@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use glam::{DMat3, DVec3};
 use valve::{Files, Library, Origin, bytes, lzma, u16_at, u32_at};
 
-use crate::mapcraft::plugin::types::{Brush, Entity, Face, Group, Image, MaterialInfo, Output, TexAxis, Vec3};
+use crate::mapcraft::plugin::types::{BlendRole, Brush, Entity, Face, Group, Image, MaterialInfo, Output, TexAxis, Vec3};
 
 const ENTITIES: usize = 0;
 const PLANES: usize = 1;
@@ -332,6 +332,8 @@ impl Map {
                     points: (place(center + right * 64.0), place(center), place(center + up * 64.0)),
                     material: info.map_or(NODRAW, |i| i.material.as_str()).to_string(),
                     uv: info.and_then(|i| tex_axis(rotation, origin, i.s).zip(tex_axis(rotation, origin, i.t))),
+                    attrs: Vec::new(),
+                    disp: None,
                 }
             })
             .collect();
@@ -457,6 +459,7 @@ fn static_props(bsp: &Bsp) -> Result<Vec<Entity>, String> {
                 ("angles".into(), format(vec_at(r, 12))),
                 ("skin".into(), i32_at(r, 32).to_string()),
             ],
+            connections: Vec::new(),
             brushes: Vec::new(),
         })
         .collect())
@@ -503,7 +506,7 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
             brush_entities += 1;
         }
         keys.retain(|(k, _)| !k.eq_ignore_ascii_case("classname"));
-        entities.push(Entity { classname, properties: keys, brushes: entity_brushes });
+        entities.push(Entity { classname, properties: keys, connections: Vec::new(), brushes: entity_brushes });
     }
     let mut warnings = Vec::new();
     let props = static_props(&bsp).unwrap_or_else(|e| {
@@ -548,6 +551,9 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
                 size: picture.as_ref().map(|p| p.2),
                 pixels: picture.map(|((width, height, rgba), ..)| Image { width, height, rgba }),
                 pbr: None,
+                uv_scale: None,
+                pixelated: false,
+                blend: BlendRole::Layer,
             }
         })
         .collect();

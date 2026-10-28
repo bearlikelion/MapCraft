@@ -32,8 +32,11 @@ The tab is empty when the SDK defines no classes.
 1. Press `N`, or click a point class in the Entities tab.
 2. Click in a view to place one.
 
-- In the 3D view it lands on the face under the pointer, snapped to the grid. Clicking empty sky places nothing.
+- In the 3D view its box rests on the face under the pointer, or on the ground, with its origin snapped to the grid across the face.
+  Over empty sky, or ground far off, it floats a little way out from the camera.
 - In a 2D view it lands on the grid, at the depth of the last brush you drew.
+
+While the tool is on, a yellow box shows where the entity will go.
 
 The new entity gets its class's default settings, goes where new objects go (see [Organizing](organizing.md#where-new-objects-go)) and is selected.
 The tool starts out placing `info_player_start`, the player spawn.
@@ -62,6 +65,10 @@ A model that is missing, broken or huge (over about a million triangles) shows a
 
 Open it with `Ctrl+6`.
 It lists every model in the SDK's model folders; type in the search box to filter.
+Each model shows as a picture with its file name under it; hover a picture for the model's full path.
+Pictures are drawn the first time a model scrolls into view and kept, so they show at once next time and are redrawn only when the model file changes.
+**Previews**, at the right of the model count, switches between the pictures and a plain list of paths, as it does in the Materials tab.
+A model that cannot be loaded shows a gray cube instead of a picture.
 
 1. Click a model.
    The tab shows its triangle count and size.
@@ -74,53 +81,75 @@ An SDK without a prop class can preview models but not place them.
 
 ## The inspector
 
-Select one entity to edit it in the inspector on the right.
+Select an entity to edit it in the inspector on the right.
 With nothing selected, the inspector shows the whole map's settings (`worldspawn`).
 
-1. The class dropdown turns the entity into another class of the same kind, for example a `trigger_teleport` into a `teleport_zone`, without redrawing it. Its settings stay; ones the new class does not know show in italics.
-2. **Smart edit** (`Ctrl+Alt+E`) switches between friendly fields and the raw key and value pairs.
-3. The help box describes the setting under the pointer, or the class when nothing is hovered.
+The top of the inspector stays in place while the rest scrolls:
 
-A brush entity also shows its brushes' material buttons below its settings.
+1. The entity's name (`targetname`), typed straight into the header next to its icon; an entity without one reads **unnamed**.
+2. The class dropdown turns the entity into another class of the same kind, for example a `trigger_teleport` into a `teleport_zone`, without redrawing it. Its settings stay; ones the new class does not know show in italics.
+3. **Class help**, the question mark, shows what the class is for under the header.
+4. **Smart edit**, the sliders icon (`Ctrl+Alt+E`), switches between friendly fields and the raw key and value pairs.
+5. **Filter properties** shows only the rows whose name or key contains what you type; `Esc` or the cross clears it.
 
-![The inspector for a teleport_zone with numbered markers on the class dropdown, the Smart edit toggle and the help box](img/entities-inspector.webp)
+Below them the settings sit in sections.
+Click a section's bar to fold it; MapCraft remembers which sections you folded.
 
-### Keyvalues
+![The inspector for a teleport_zone with numbered markers on the name, the class dropdown, Class help, Smart edit and the filter](img/entities-inspector.webp)
+
+### Transform
+
+A point entity's **Origin**, and its **Angles** when the class has them, come first, three fields each.
+Drag a field to change it, hold `Shift` to drag slowly, or click it to type a number.
+
+### Properties
 
 With **Smart edit** on:
 
-- Each setting the class defines gets a row with a friendly name. A dimmed name means it is not set and shows the default.
-- Choices get a dropdown, flags and yes or no settings a checkbox, and colors a color picker.
+- Each setting the class defines gets a row with a friendly name. A dimmed name means it is not set and shows the default; hover the name for its key and what it does.
+- A setting you changed shows a curved arrow after its name; click it to go back to the default.
+- Numbers get fields you drag or type into, choices a dropdown, flags and yes or no settings checkboxes, and colors a color picker.
+  Number fields only take digits, a sign and a decimal point.
+- A setting that holds three numbers, such as a direction or Quake's `_sun_mangle`, gets three colored fields you drag one at a time, labelled X, Y and Z, or Yaw, Pitch and Roll in the order its description names them.
+- A field that names another entity, such as a destination, suggests the names in the map, and its name turns orange when no entity has that name, as **Check for Problems** would report.
 - Everything else is a text field.
-- Settings the class does not define show in italics with a delete button.
-- Type a name into **new key** and click **Add** to add one.
+- Settings the class does not define show in italics with a trash button that removes them.
+- Type a name into **new key** and click the plus (**Add key**) to add one; the field suggests the class's settings that are not set yet.
 
 Turn Smart edit off to see and rename the raw keys.
-Typing into one field is a single undo step.
+Typing into one field is a single undo step, and each separate edit is a step of its own.
+
+### Editing several entities
+
+Select several entities of the same class to edit them together.
+A setting that differs between them shows its name in italics and its field reads **mixed**; what you type or pick goes to all of them.
+Dragging one axis of a position, or ticking one flag, changes only that part, so each entity keeps the rest of its own value.
+Entities of different classes show a note instead.
 
 ### Outputs
 
 Outputs make one entity tell another to do something.
-The tab title shows how many the entity has.
+The section's bar shows how many the entity has.
 
 1. Click **Add output**.
-2. Fill in the output name, the target entity's name, the input to fire on it and a parameter.
-3. Set a **delay** in seconds, and tick **once** to fire only the first time.
+2. Fill in the **Output name**, the **Target** entity's name, the **Input** to fire on it and a **Parameter**; the first three suggest what the SDK and the map offer.
+3. Set a **Delay** in seconds, and tick **Once** to fire only the first time.
 
-The output name is a dropdown when the SDK lists outputs for the class.
-The delete button removes an output.
+The trash button after **Output name** removes an output.
 
-![The Outputs tab with one new output row: output, target, input, parameter, delay and once](img/entities-outputs.webp)
+![The Outputs section with one output: Output name, Target, Input, Parameter, Delay and Once](img/entities-outputs.webp)
 
 ### Inputs
 
-This tab lists the outputs of other entities that target this entity's name (`targetname`).
-Click one to select the entity that sends it.
+This section lists the outputs of other entities that target this entity's name (`targetname`).
+Click the pointer at the end of a row to select the entity that sends it.
 An entity with no name has no inputs.
+
+A brush entity also shows the **Brushes** section, with its brushes' type, material and texture rows.
 
 ## Tie to Entity and Move to World
 
-**Tools > Tie to Entity** (`Ctrl+T`, or **Tie to entity** in the inspector) moves the selected world brushes into a new brush entity.
+**Tools > Tie to Entity** (`Ctrl+T`) moves the selected world brushes into a new brush entity.
 
 - The class is the brush class you last clicked in the Entities tab (`func_detail` until you click one).
 - Brushes already in an entity are left alone.
@@ -128,18 +157,28 @@ An entity with no name has no inputs.
 
 **Tools > Move to World** (`Ctrl+Shift+W`) does the reverse: the entity goes away and its brushes stay, selected.
 
+### Brush entity origins
+
+A brush entity's `origin` is the point it turns about, such as a rotating door's hinge.
+It shows as a small cross in the views, and as a round handle in the 2D views while the entity is selected with the Select, Move or Scale tool.
+
+- Drag the handle in a 2D view to move the origin; it snaps to the grid and to corners, and the brushes stay put.
+- **Tools > Center Origins** puts the origin of each selected brush entity at the middle of its brushes.
+- In the Vertex tool, pick corners and choose **Set Origin to Selected Corners** from the right click menu to put the origin of the brush entity they belong to at their middle, such as on the edge a door hangs from.
+
+Moving, turning, copying or arraying a brush entity takes its origin along with its brushes.
+
 ### Brush type
 
-The inspector's **Type** row switches selected brushes in one click:
+The **Type** row in the inspector's **Brushes** section switches selected brushes in one click:
 
 - **World** makes them plain world brushes.
 - **detail**, **illusionary** and **wall** tie them to `func_detail`, `func_illusionary` or `func_wall`, if the SDK has that class.
-- **Group** groups them, like **Tools > Group**.
 
 Empty entities left behind are removed, and the switch is one undo step.
 In the SurfsUp SDK, `func_detail` merges into the world and `func_illusionary` is drawn but cannot be touched.
 
-![The Type row in the inspector: World, detail, illusionary and Group](img/entities-brush-type.webp)
+![The Type row in the inspector: World, detail and illusionary](img/entities-brush-type.webp)
 
 ## Zone from Selection
 

@@ -29,7 +29,7 @@ Use a local path for a private registry or for testing.
       "download": "https://example.com/releases/surfsup-3.zip",
       "sha256": "9f2c...64 hex digits...",
       "size": 193512,
-      "min_mapcraft": "0.1.0",
+      "min_mapcraft": "0.2.0",
       "plugins": ["godot", "source-bsp", "surfsup"]
     }
   ]

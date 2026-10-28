@@ -177,7 +177,7 @@ fn face(lx: &mut Lexer) -> Result<Option<Face>, String> {
         lx.number()?;
     }
     let length = cross.length();
-    Ok((length.is_finite() && length > 1e-9).then(|| Face { points: (v3(p0), v3(p1), v3(p2)), material, uv: Some(uv) }))
+    Ok((length.is_finite() && length > 1e-9).then(|| Face { points: (v3(p0), v3(p1), v3(p2)), material, uv: Some(uv), attrs: Vec::new(), disp: None }))
 }
 
 fn brush(lx: &mut Lexer, degenerate: &mut usize) -> Result<Vec<Face>, String> {

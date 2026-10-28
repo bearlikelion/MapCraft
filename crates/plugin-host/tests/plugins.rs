@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use mapcraft_map::NodeKind;
+use mapcraft_map::{BlendRole, NodeKind};
 use mapcraft_plugin_host::{Channel, ChannelMap, Context, Host, MaterialInfo, Pbr, Plugin};
 use mapcraft_sdk::Vfs;
 use serde_json::json;
@@ -22,7 +22,7 @@ fn load(host: &Host, id: &str, vfs: Vfs) -> Option<Plugin> {
 }
 
 fn ctx() -> Context {
-    Context { grid: 16.0, material: "dev/grid".into(), scale: 1.0 }
+    Context { grid: 16.0, material: "dev/grid".into(), scale: 1.0, game: "Quake".into() }
 }
 
 #[test]
@@ -102,8 +102,17 @@ fn godot_materials() {
         metallic_value,
         ao: None,
     };
-    let info =
-        |name: &str, image: Option<&str>, color, pbr| MaterialInfo { name: name.into(), image: image.map(String::from), color, pixels: None, size: None, pbr };
+    let info = |name: &str, image: Option<&str>, color, pbr| MaterialInfo {
+        name: name.into(),
+        image: image.map(String::from),
+        color,
+        pixels: None,
+        size: None,
+        pbr,
+        uv_scale: None,
+        pixelated: false,
+        blend: BlendRole::Layer,
+    };
     let rock = Pbr {
         roughness: Some(ChannelMap { path: "Rock/Rock_1K_Roughness.jpg".into(), channel: Channel::Red }),
         ..pbr(Some("Rock/Rock_1K_NormalDX.jpg"), true, 1.0, 0.0)
@@ -116,7 +125,7 @@ fn godot_materials() {
             info("Brick/brick", Some("Brick/brick_color.jpg"), None, Some(pbr(Some("Brick/brick_n.jpg"), false, 0.5, 1.0))),
             info("Rock/Rock_1K_Color", Some("Rock/Rock_1K_Color.jpg"), None, Some(rock)),
             info("loose", Some("loose.png"), None, None),
-            info("ramps-orange1", None, Some([255, 102, 0]), Some(pbr(None, false, 1.0, 0.0))),
+            MaterialInfo { blend: BlendRole::Unblendable, ..info("ramps-orange1", None, Some([255, 102, 0]), Some(pbr(None, false, 1.0, 0.0))) },
         ]
     );
 }
@@ -125,6 +134,63 @@ fn godot_materials() {
 fn garbage_is_refused() {
     let host = Host::new().unwrap();
     assert!(host.load(b"not wasm", Vfs::default()).is_err());
+}
+
+#[test]
+fn plugins_for_the_old_api_ask_to_be_rebuilt() {
+    let name = b"mapcraft:plugin/host@0.1.0";
+    let mut old = b"\0asm\x0d\0\x01\0\x07\x03\x01\x42\x00\x0a".to_vec();
+    old.push(name.len() as u8 + 5);
+    old.extend([1, 0, name.len() as u8]);
+    old.extend(name);
+    old.extend([5, 0]);
+    let err = Host::new().unwrap().load(&old, Vfs::default()).err().unwrap().to_string();
+    assert_eq!(err, "built for plugin API 0.1.0; rebuild it against 0.2.0");
+}
+
+/// Coplanar displaced faces from the VMF named by `MAPCRAFT_DISP_VMF` meet along nearly every shared edge, which swapped rows and columns would break; faces at an angle differ by the sideways offsets MapCraft drops.
+#[test]
+fn vmf_displacements_meet_at_their_seams() {
+    use mapcraft_format::Fragment;
+    use mapcraft_geom::DVec3;
+    use mapcraft_map::Brush;
+    let Some(path) = std::env::var_os("MAPCRAFT_DISP_VMF") else { return };
+    let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdks/cstrike/plugins/source.wasm");
+    let mut p = Host::new().unwrap().load_file(&wasm, Vfs::default()).unwrap();
+    let imported = p.import("vmf", "seams.vmf", &std::fs::read(path).unwrap(), &ctx()).unwrap();
+    fn brushes(nodes: &[Fragment], out: &mut Vec<Brush>) {
+        for f in nodes {
+            if let NodeKind::Brush(b) = &f.kind {
+                out.push(b.clone());
+            }
+            brushes(&f.children, out);
+        }
+    }
+    let mut all = Vec::new();
+    brushes(&imported.nodes, &mut all);
+    let key = |p: DVec3| [p.x, p.y, p.z].map(|c| (c * 8.0).round() as i64);
+    let mut edges: std::collections::HashMap<[[i64; 3]; 2], Vec<(DVec3, Vec<DVec3>)>> = std::collections::HashMap::new();
+    let mut faces = 0;
+    for b in &all {
+        let Ok(solid) = b.solid() else { continue };
+        for (i, v) in b.displaced(&solid) {
+            let (Some(d), Some(Some(w)), Some(plane)) = (b.faces[i].disp.as_ref(), solid.faces.get(i), b.faces[i].plane()) else { continue };
+            let Some(c) = d.corners(&w.0) else { continue };
+            faces += 1;
+            let n = d.size();
+            let line = |from: usize, step: usize| (0..n).map(|t| v[from + t * step]).collect::<Vec<_>>();
+            for (a, z, points) in [(c[0], c[1], line(0, 1)), (c[1], c[2], line(n - 1, n)), (c[3], c[2], line(n * (n - 1), 1)), (c[0], c[3], line(0, n))] {
+                let (ka, kz) = (key(a), key(z));
+                let (k, points) = if ka <= kz { ([ka, kz], points) } else { ([kz, ka], points.into_iter().rev().collect()) };
+                edges.entry(k).or_default().push((plane.normal, points));
+            }
+        }
+    }
+    let shared: Vec<_> = edges.values().filter(|l| l.len() == 2 && l[0].1.len() == l[1].1.len() && l[0].0.dot(l[1].0) > 0.999).collect();
+    let apart = shared.iter().filter(|l| l[0].1.iter().zip(&l[1].1).any(|(a, b)| a.distance(*b) > 0.1)).count();
+    eprintln!("{faces} displaced faces, {} coplanar shared edges, {apart} apart: {:?}", shared.len(), p.take_log());
+    assert!(!shared.is_empty(), "the map has no coplanar displacements that touch");
+    assert!(apart * 50 <= shared.len(), "{apart} of {} seams are open", shared.len());
 }
 
 /// The Python example in `plugins/stairs-py`, when `MAPCRAFT_PY_PLUGIN` names its built `.wasm`.
@@ -161,6 +227,47 @@ fn bsp_import_groups_and_textures() {
     let ramp = imported.nodes.iter().find(|f| matches!(&f.kind, NodeKind::Group(g) if g.name == "Ramps")).unwrap();
     let NodeKind::Brush(b) = &ramp.children[0].kind else { panic!("ramps hold brushes") };
     assert!(b.faces.iter().any(|f| f.u.axis != mapcraft_geom::DVec3::X && f.u.axis != mapcraft_geom::DVec3::Y), "faces keep the map's texture axes");
+}
+
+/// The SurfsUp SDK pack that `MAPCRAFT_SURFSUP_PCK` names imports; `MAPCRAFT_SURFSUP_OUT` names a `.mcmap` to save it as.
+#[test]
+fn surfsup_imports_a_real_pack() {
+    use mapcraft_format::Fragment;
+    use mapcraft_map::{Map, NodeId, ROOT};
+    let Some(path) = std::env::var_os("MAPCRAFT_SURFSUP_PCK") else { return };
+    let host = Host::new().unwrap();
+    let Some(mut p) = load(&host, "surfsup", Vfs::default()) else { return };
+    let imported = p.import("pck", "real.pck", &std::fs::read(path).unwrap(), &ctx()).unwrap();
+    fn count(nodes: &[Fragment]) -> (usize, usize) {
+        nodes.iter().fold((0, 0), |(b, e), f| {
+            let (cb, ce) = count(&f.children);
+            (b + cb + usize::from(matches!(f.kind, NodeKind::Brush(_))), e + ce + usize::from(matches!(f.kind, NodeKind::Entity(_))))
+        })
+    }
+    fn insert(e: &mut mapcraft_map::Edit<'_>, parent: NodeId, nodes: Vec<Fragment>) {
+        for f in nodes {
+            let id = e.insert(parent, f.kind).unwrap();
+            insert(e, id, f.children);
+        }
+    }
+    let (brushes, entities) = count(&imported.nodes);
+    let log = p.take_log();
+    eprintln!("{brushes} brushes, {entities} entities, {} materials: {log:#?}", imported.materials.len());
+    let coverage = log.iter().find_map(|l| {
+        let (on, rest) = l.split_once("; ")?.1.split_once(" of their ")?;
+        Some((on.parse::<f64>().ok()?, rest.split(' ').next()?.parse::<f64>().ok()?))
+    });
+    if let Some((on, all)) = coverage {
+        eprintln!("ramp coverage: {on} of {all} collision triangles lie on a brush face ({:.1}%)", 100.0 * on / all);
+    }
+    assert!(brushes > 0);
+    if let Some(out) = std::env::var_os("MAPCRAFT_SURFSUP_OUT") {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        insert(&mut e, ROOT, imported.nodes);
+        map.apply(e.finish());
+        mapcraft_format::save(&PathBuf::from(out), &map, Some("surfsup"), &json!({})).unwrap();
+    }
 }
 
 /// SurfsUp checks report map-wide problems and point zone problems back at their node.

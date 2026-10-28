@@ -25,7 +25,7 @@ The view under the pointer gets an orange outline; keys such as `Space` and the 
 Press `Space` to fill the window with the view under the pointer.
 Press `Space` again to bring back all four.
 
-1. The square button at the right end of each view's header does the same, as does **View > Maximize View Under Pointer**.
+1. The **Maximize** button at the right end of each view's header (four corners pointing out) does the same, as does **View > Maximize View Under Pointer**.
 
 ![The 3D view filling the window, with its maximize button marked](img/views-maximize.webp)
 
@@ -33,7 +33,7 @@ Press `Space` again to bring back all four.
 
 **View > One View Layout** (`Shift+Space`) always shows a single view, as in TrenchBroom.
 `Space` then steps to the next view (3D, Top, Front, Side), and the status bar names the one shown.
-Press `Shift+Space` again, or the square button, to bring back all four.
+Press `Shift+Space` again, or the **Restore** button in the header, to bring back all four.
 
 ## Go to Origin
 
@@ -69,8 +69,12 @@ Toggle it with `Shift+Z`, the chain button, or **View > Link 2D Zoom**.
 | Hold the right button and press `Q` or `E` | Sink or rise |
 | Add `Shift` while flying | Fly three times as fast |
 | Scroll while flying | Fly faster or slower |
+| Hold `Alt` and the right button and move the mouse | Orbit the point under the pointer |
+| Scroll while orbiting | Move nearer or farther |
 | Middle drag | Pan |
 | Scroll | Move forward or back |
+
+An orbit turns around the surface you pressed on, or a point ahead of the camera when there is none, and keeps its distance as it turns.
 
 While the right button is down, single keys only fly; shortcuts with `Ctrl` still work.
 The fly speed starts at 512 units per second; the status bar shows it while you change it, and **Edit > Preferences** (`Ctrl+Comma`) sets it too.
@@ -84,7 +88,7 @@ Click it again to look from the other end.
 ## Render modes
 
 The 3D view draws in one of four modes.
-Press `Z` to step through them, or pick one from the mode menu in the 3D view's header or the **View** menu.
+Press `Z` to step through them, or pick one from the mode menu in the 3D view's header, whose icon shows the current mode, or from the **View** menu.
 
 | Mode | Key | Shows |
 |---|---|---|
@@ -113,6 +117,15 @@ Faces take light from the map's lights, spotlights and sun, with normal maps and
 > [!NOTE]
 > The light keys Lit reads, the sky keys and where material maps come from are in [Lit preview](../lighting.md).
 
+### Sky
+
+The sky button in the 3D view's header, after the render mode, shows and hides the sky; so does **View > Show Sky**.
+With the sky hidden, Lit draws no sky behind the map, and sky faces such as Quake's `sky` textures draw like other faces instead of showing the sky beyond them; a Quake sky shows its back layer, stretched.
+With baked lighting in Lit (see [Baked lighting](../sdk-format.md#baked-lighting)), sky faces keep showing the sky, and only the sky behind the map goes away.
+The lighting stays the same.
+Flat and Wireframe draw no sky, so the button is grayed out there.
+Every 3D view follows the setting, like the render mode, and MapCraft remembers it.
+
 ## Framing
 
 - `Home` (**View > Frame All**) fits the whole map in every view.
@@ -126,7 +139,7 @@ Faces take light from the map's lights, spotlights and sun, with normal maps and
 The grid is 16 units by default, and MapCraft remembers your choice.
 
 - `[` halves it and `]` doubles it, from 0.125 up to 4096 units.
-- The **-** and **+** buttons next to **Grid** on the top bar do the same.
+- The **Smaller grid** and **Larger grid** buttons on either side of the grid size on the top bar do the same.
 
 When a 2D view is zoomed far out, it draws a coarser grid and shows that size in orange in its header.
 Drags in that view snap to the coarser grid; zoom in to snap finer.
@@ -137,8 +150,8 @@ Drags in that view snap to the coarser grid; zoom in to snap finer.
 
 Both snapping switches sit on the top bar and are on by default.
 
-- **Snap** (`Shift+W`) puts dragged, drawn and placed things on the grid, and turns rotations in 15 degree steps.
-- **Corners** (`Shift+Q`) snaps a point dragged in a 2D view to a nearby brush corner or entity origin.
+- **Snap** (`Shift+W`), the magnet, puts dragged, drawn and placed things on the grid, and turns rotations in 15 degree steps.
+- **Corners** (`Shift+Q`), the square with a dot on each corner, snaps a point dragged in a 2D view to a nearby brush corner or entity origin.
 
 While you drag, an orange cross marks the grid point you will land on and a yellow ring marks a snapped corner.
 When you move a selection, the corner nearest where you grabbed it is the one that snaps.
@@ -176,10 +189,37 @@ Brushes inside an entity keep the entity's color, and selected edges keep the se
 
 ![The Top view with Color by object on, each brush a different color, and off, all edges white](img/views-color-by-object.webp)
 
+## Color by slope
+
+**View > Color by Slope** (`Ctrl+Alt+5`) tints every face by how steep it is, so a floor too steep to stand on or a ramp too flat to surf shows at a glance.
+
+| Color | Face |
+|---|---|
+| Green | Walkable: no steeper than 45.573 degrees, Source's limit for standing |
+| Blue | Surfable: steeper than walkable, up to 72 degrees |
+| Orange | Wall: steeper still |
+| Purple | Ceiling: facing down |
+
+Displacements are colored triangle by triangle, and tool brushes such as triggers keep their own color.
+Change the limits with **Color by Slope** in **Edit > Preferences**: surf maps' main ramps measure 47 to 64 degrees, and staying a degree or two over 45.573 keeps a ramp surfable.
+The tint shows in Textured, Flat and Lit; Flat shows it plainest.
+
+## Leak trails
+
+When a compile finds a leak, vbsp writes a `.lin` file and qbsp a `.pts` file: a line from inside the map out to the void.
+After a compile, MapCraft loads the trail it finds beside the map or in its `build` folder and draws it in red in every view.
+**Run > Load Leak Trail** loads one by hand.
+
+- **Run > Next Leak Point** (`Period`) puts the 3D camera on the next point of the trail, looking along it, and centers the 2D views there.
+- **Run > Previous Leak Point** (`Comma`) steps back.
+- **Run > Unload Leak Trail** hides it; opening another map or starting a compile does too.
+
+Follow the trail to where it leaves the map and close the gap there.
+
 ## The status bar
 
-The bottom bar shows what is selected, where the pointer is in a 2D view, the grid, the selection mode, texture lock and the SDK.
+The bottom bar shows what is selected, where the pointer is in a 2D view, the grid, the selection mode, texture lock and the SDK, each behind its icon.
 On the right it shows a hint for the current tool, or a message for a few seconds.
-**Output** at the far right shows or hides the Output panel.
+The **Output** button at the far right shows or hides the Output panel.
 
 ![The status bar showing Ramp 3 selected, the cursor position, grid 16, groups mode, texture lock on and the SurfsUp SDK](img/views-status-bar.webp)

@@ -58,6 +58,53 @@ The scene uses only Godot's built-in nodes, so the game needs neither the addon 
 
 A face's material is found by its name under the material root: first `<name>.tres`, `.res` or `.material`, then an image (`png`, `jpg`, `webp`, `tga`, `bmp`).
 
+## Anti-tiling
+
+A face whose `anti_tile` attribute is `macro` draws its texture under gentle light and dark patches a few meters across, so a long ramp or wall stops showing the same tile over and over.
+A face set to `hex` draws the same patches over hex tiling: the texture breaks into hexagons about one repeat across, each shifted and turned at random and blended into its neighbors.
+Hex tiling reads the albedo and normal maps three times where a plain face reads them once; the other maps are still read once.
+MapCraft's Textured and Lit views draw the same patches and tiles in the same places, so the editor shows what the game will, except on a material with a UV scale, which the views do not show yet, or a UV offset; their tiles sit elsewhere in the game.
+A face whose material, or a blend's second material, uses a Nearest filter draws `hex` as `macro`, since blended hexagons of big texels read as double images, and the views do the same.
+Inside a prefab, the game places the patches by the prefab's own origin, so they repeat with each copy and differ from the views.
+AI agents set it with the `face_texture` tool; see [MCP server](../mcp-server.md).
+
+## Blended terrain
+
+A displacement that [blends a second material](displacements.md#blending-textures) imports with each vertex's share of it in the vertex color's alpha, and the addon's shader mixes the two materials by it the same way MapCraft's views do, brighter parts of each texture showing through first.
+Each material keeps its own texture size, so the second material tiles in the game as it does in the views.
+Faces with the same pair of materials share one mesh surface, named like `rock|grass`.
+A displaced face whose `blend_material` is empty, its own material or a `tools/` material imports with one material, as MapCraft draws it.
+Godot's Output panel warns when the second material uses a different texture filter group from the face's own, since the blend draws both with the face's filter.
+
+## Shader wrappers
+
+For anti-tiling and blends, the addon wraps the face's material in one of its shaders in `addons/mapcraft/shaders`, so a game needs that folder too; an older addon without it draws these faces plain.
+Only a plain `StandardMaterial3D` with Godot's default modes can be wrapped: per-pixel shading, back-face culling, Mix blending, Burley diffuse, Schlick GGX specular and texture repeat, with no transparency and no features other than normal and ambient occlusion maps.
+A blend needs both of its materials to qualify.
+Any other material draws as it is, without its blend or anti-tiling, and Godot's Output panel names the reason:
+
+- `not found`, for a second material missing from the material root;
+- the material's class, such as `ShaderMaterial`;
+- a mode: `unshaded`, `per-vertex shading`, `cull mode`, `transparency`, `blend mode`, `depth draw`, `diffuse mode`, `specular mode`, `billboard`, `distance fade`, `proximity fade`, `grow` or `no texture repeat`;
+- a feature: `emission`, `rim`, `clearcoat`, `anisotropy`, `heightmap`, `subsurface scattering`, `transmittance`, `backlight`, `refraction` or `detail`;
+- a flag: `triplanar`, `vertex color`, `forced sRGB`, `ambient occlusion on UV2`, `no depth test`, `no shadows`, `no ambient light`, `no fog`, `shadow to opacity`, `point size`, `fixed size`, `particle trails` or `MSDF`.
+
+The wrapper copies the material's albedo, UV scale and offset, roughness, metallic, specular, normal and ambient occlusion maps and next pass.
+It keeps the material's texture filter: Nearest stays pixelated, Nearest Mipmap and Nearest Mipmap Anisotropic stay pixelated with mipmaps, and every other filter draws smooth with mipmaps.
+Anisotropic filtering is not kept.
+The copy is built into the imported scene, so after changing a material that anti-tiled or blended faces use, reimport the map.
+Each wrapper shader compiles the first time a map uses it, which a game can move to its loading screen by loading the six shaders there.
+
+## Godot materials in the views
+
+MapCraft reads each material's `.tres` to draw it in the views as the game does:
+
+- A material's UV scale (`uv1_scale`) tiles its texture as densely in the views as in the game.
+- A triplanar material's UV scale counts in world space, so the views keep such a material at its own texture size.
+- A material's UV offset (`uv1_offset`) is not shown: the views tile every texture from offset 0, so a material with an offset sits shifted against the game.
+- A material with a Nearest, Nearest Mipmap or Nearest Mipmap Anisotropic texture filter draws pixelated.
+- A material the shader wrappers cannot take, for one of the reasons above, cannot be a blend layer, so the Sculpt tool's Paint mode refuses it.
+
 ## Import options
 
 Select the `.mcmap` in Godot's FileSystem dock, change these in the Import dock, then click **Reimport**:

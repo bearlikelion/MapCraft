@@ -102,6 +102,7 @@ Besides the `paths` the user set, these are always available:
 | `${map_name}` | Its file name without extension |
 | `${sdk_dir}` | The SDK folder |
 | `${cpu_count}` | Number of CPU threads |
+| `${bake_dir}` | The editor's bake folder, where bake profiles write; list it in `files.roots` so the plugin that reads the bake can |
 
 An unknown variable stops the compile with an error instead of expanding to nothing.
 
@@ -113,6 +114,15 @@ An unknown variable stops the compile with an error instead of expanding to noth
 
 Export steps run before all other steps, because plugins run in the editor; the other steps then run in order and the profile stops at the first failure.
 MapCraft asks before running an SDK's programs the first time.
+
+## Baked lighting
+
+A profile with `bake = "..."` bakes the map's lighting for the Lit view, so it shows what the game draws.
+It runs without saving the map, with `${map_dir}` set to `${bake_dir}`, and `bake` names the file its steps leave there, such as `"${map_name}.bsp"`.
+The plugin whose `load-model` reads that file's type turns it into lightmapped parts (see [`plugin-api.md`](plugin-api.md)), and the Lit view draws them in place of the brushes.
+A Quake bake shows colored light that `light -bspxlit` writes into the `.bsp` itself, so it needs no `.lit` file; when both are there, the `.bsp`'s own colored light wins, since it always matches the compile.
+While a Lit view is open, MapCraft bakes again shortly after each edit; choosing the profile in the Run menu bakes at once.
+Until the new bake lands after a change to the brushes, the Lit view draws the brushes as they are now, with live lights, so a drag never shows the old shape.
 
 ## Where SDKs are found
 

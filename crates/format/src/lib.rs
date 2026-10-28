@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const FORMAT: &str = "mapcraft.map";
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const EXTENSION: &str = "mcmap";
 
 #[derive(Debug, thiserror::Error)]
@@ -183,9 +183,15 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
             obj.insert("extra".into(), serde_json::to_value(&map.extra)?);
         }
     }
+    // Maps without blend data stay readable by builds that only know schema 1.
+    let blended = map
+        .nodes()
+        .filter_map(|(_, n)| n.kind.brush())
+        .flat_map(|b| &b.faces)
+        .any(|f| f.blend_layer().is_some() || f.disp.as_ref().is_some_and(|d| !d.blend.is_empty()));
     let mut doc = json!({
         "format": FORMAT,
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": if blended { SCHEMA_VERSION } else { 1 },
         "generator": concat!("MapCraft ", env!("CARGO_PKG_VERSION")),
     });
     if let Some(obj) = doc.as_object_mut() {
@@ -450,6 +456,50 @@ mod tests {
         assert!(from_str(bad_parent).is_err());
         let deep = format!(r#"{{"format":"mapcraft.map","schema_version":1,"map":{{"root":{}}}}}"#, "{\"id\":1,\"children\":[".repeat(5000));
         assert!(from_str(&deep).is_err());
+    }
+
+    /// `file` with its first brush's first face displaced at power 2 and changed by `paint`.
+    fn displaced(mut file: MapFile, paint: impl Fn(&mut mapcraft_map::Displacement)) -> MapFile {
+        let (id, mut b) = file.map.nodes().find_map(|(id, n)| Some((id, n.kind.brush()?.clone()))).unwrap();
+        let start = b.solid().unwrap().faces[0].as_ref().unwrap().0[0];
+        let mut d = mapcraft_map::Displacement::new(2, start);
+        paint(&mut d);
+        b.faces[0].disp = Some(d);
+        let mut e = file.map.edit();
+        e.set_kind(id, NodeKind::Brush(b)).unwrap();
+        file.map.apply(e.finish());
+        file
+    }
+
+    #[test]
+    fn blend_data_raises_the_schema_version() {
+        let version = |f: &MapFile| serde_json::from_str::<Value>(&f.to_string().unwrap()).unwrap()["schema_version"].clone();
+        let painted = displaced(sample(), |d| {
+            d.set_blend((0..25).map(|k| k as f64 / 24.0).collect());
+            d.blend_material = Some("grass".into());
+        });
+        let text = painted.to_string().unwrap();
+        let back = from_str(&text).unwrap();
+        assert_eq!(back, painted);
+        assert_eq!(back.to_string().unwrap(), text, "the round trip is stable");
+        assert_eq!(version(&painted), 2);
+        assert_eq!(version(&sample()), 1, "unpainted maps stay readable by older builds");
+        assert_eq!(version(&displaced(sample(), |d| d.blend_material = Some(String::new()))), 1, "an empty layer name is no blend");
+        assert_eq!(version(&displaced(sample(), |d| d.blend_material = Some("grass".into()))), 2, "a layer counts before any paint");
+
+        let old = from_str(&displaced(sample(), |_| {}).to_string().unwrap()).unwrap();
+        let disps = || old.map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).filter_map(|f| f.disp.as_ref()).collect::<Vec<_>>();
+        assert!(disps().len() == 1 && disps()[0].blend.is_empty(), "a schema 1 grid loads unpainted");
+
+        let mut short: Value = serde_json::from_str(&text).unwrap();
+        let disp = &mut short["map"]["root"]["children"][0]["children"][0]["faces"][0]["disp"];
+        assert_eq!(disp["blend"].as_array().map(Vec::len), Some(25));
+        disp["blend"] = json!([0.5, 7, -3]);
+        let loaded = from_str(&short.to_string()).unwrap();
+        let d = loaded.map.nodes().find_map(|(_, n)| n.kind.brush()?.faces[0].disp.clone()).unwrap();
+        assert_eq!((d.blend_at(1), d.blend_at(2), d.blend_at(3)), (1.0, 0.0, 0.0), "a short blend loads and reads tamed");
+        short["schema_version"] = json!(3);
+        assert!(matches!(from_str(&short.to_string()), Err(FormatError::Newer(3))));
     }
 
     #[test]

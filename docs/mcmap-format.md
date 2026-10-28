@@ -18,6 +18,7 @@ This page is the reference for importers such as the Godot extension, a Unity im
 
 - `format` is always `mapcraft.map`.
 - `schema_version` is an integer; readers refuse versions newer than they know.
+  MapCraft writes 2 when some displacement carries blend data (`blend` weights or a second layer, see Displacements), so older builds refuse a painted map instead of dropping its paint on save; every other map is written as 1.
 - `sdk` is the id of the SDK the map was made with and may be missing.
 - `view` holds editor state (cameras, layout) and is not part of the map.
 - `tags` is a list of `{id, name, color, parent, hidden}`; nodes list the tag ids they carry.
@@ -114,6 +115,7 @@ Its children are written as ordinary nodes, so importers treat it like any other
   This is the Valve220 and VMF convention.
 - `rotation` is informational; the axes already include it.
 - `attrs` holds per-face game attributes such as `lightmapscale` or `smoothing_groups` as strings.
+  `anti_tile` set to `macro` or `hex` hides the texture's repetition in MapCraft's views and in the Godot importer; any other value, or none, means off, and writers leave the key out rather than writing `off`.
 - Face `id`s are unique within a map and stable across saves.
 
 ## Displacements
@@ -133,6 +135,19 @@ A face with four corners may carry a `disp`: Hammer-style displacement that turn
   Triangulate cell `(i, j)` with corners `a = (i, j)`, `b = (i + 1, j)`, `c = (i + 1, j + 1)`, `d = (i, j + 1)` as `a b c` and `a c d` when `i + j` is even, else `a b d` and `b c d`; these are counter-clockwise from outside.
 - A brush with any displaced face counts only as its displaced faces, as in Source: importers draw and collide with the displaced surfaces and skip the brush's other faces.
   Collide with them as triangles, not as a convex hull.
+
+A displacement can blend a second material into the face's own:
+
+```json
+"disp": {"power": 2, "start": [1024, -128, 0], "heights": [...], "blend": [0, 0, 0.5, 1, ...], "blend_material": "nature/grass"}
+```
+
+- `blend` has one value per vertex in the same order as `heights`: the second layer's share, 0 for only the face's material and 1 for only the second layer.
+  It is missing when every vertex is 0; a missing or short list counts as 0 past its end, and values outside 0 to 1 are clamped.
+- `blend_material` names the second layer.
+  It counts only when it is not empty, not the face's own material (ignoring case) and not a `tools/` material; otherwise the face shows its own material alone.
+- A face may carry `blend` without `blend_material`: its material blends by vertex weight itself, as a Source WorldVertexTransition material does.
+- Copying painted terrain to the clipboard and pasting it into an older MapCraft drops the paint, since clipboard text carries no schema version.
 
 ## Units and axes
 

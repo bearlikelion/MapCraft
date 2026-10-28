@@ -39,14 +39,21 @@ That writes `GameConfig.cfg` and your `.fgd` into TrenchBroom's games folder, wh
 - When the folder already holds a different `.map` with that name, MapCraft keeps it as `<name>.map.bak`.
 - To keep working on a map you made in TrenchBroom, open it with **File > Import > Quake map**.
 
-> [!NOTE]
-> The Output panel may say long texture names do not fit Quake's WADs and BSPs.
-> That only matters for Quake; func_godot reads them.
+## Open a map in TrenchBroom
+
+**File > Export > Quake map (Valve220)** writes any map of an SDK that uses the Quake plugin, such as Quake or a func_godot game, as a `.map` TrenchBroom opens.
+
+- The file's first line names the SDK as the game, such as `// Game: Quake`, so TrenchBroom opens it with the game of that name.
+- Layers and groups come back as TrenchBroom layers and groups, with their names.
+- Faces without a material are written as `__TB_empty`, as TrenchBroom writes them.
+- What a `.map` cannot hold is written plainly, and the Output panel counts it: displacements come out flat, and anti-tiling is dropped.
+- Long texture names only draw a warning when the map uses WAD files, since func_godot games read loose pictures.
 
 ## After you change your entities
 
 Export the game config again in Godot, remove the SDK in the SDK Manager, and import it again.
 The SDK keeps its id, which comes from your game's name, so your maps still find it.
+If you only edited the FGD of an SDK already imported, **File > Reload Assets** (`F5`) rereads it without reopening the map.
 
 ## Limits
 

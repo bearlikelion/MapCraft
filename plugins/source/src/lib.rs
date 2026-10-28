@@ -7,7 +7,7 @@ mod vmf;
 use std::collections::BTreeSet;
 
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{ExporterSpec, ImporterSpec};
+use mapcraft::plugin::types::{BlendRole, ExporterSpec, ImporterSpec};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -45,7 +45,18 @@ fn materials(library: &valve::Library, loose: &[String]) -> Vec<MaterialInfo> {
             let picture = library.picture(&name, side);
             let size = picture.as_ref().map(|p| p.2);
             let pixels = picture.map(|((width, height, rgba), ..)| Image { width, height, rgba });
-            MaterialInfo { color: pixels.is_none().then_some((128, 128, 128)), name, image: None, pixels, size, pbr: None }
+            let blend = if library.blends(&name) { BlendRole::Own } else { BlendRole::Layer };
+            MaterialInfo {
+                color: pixels.is_none().then_some((128, 128, 128)),
+                name,
+                image: None,
+                pixels,
+                size,
+                pbr: None,
+                uv_scale: None,
+                pixelated: false,
+                blend,
+            }
         })
         .collect()
 }

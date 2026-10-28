@@ -177,4 +177,21 @@ mod tests {
         assert!((f.area() - b.area()).abs() < 1e-3 * f.area());
         assert!(w.split(&Plane { normal: DVec3::Z, dist: 0.0 }).0.is_some());
     }
+
+    #[test]
+    fn overlapping_windings() {
+        let square = |x: f64| Winding(vec![DVec3::new(x, 0.0, 0.0), DVec3::new(x + 64.0, 0.0, 0.0), DVec3::new(x + 64.0, 64.0, 0.0), DVec3::new(x, 64.0, 0.0)]);
+        let flipped = |w: Winding| Winding(w.0.into_iter().rev().collect());
+        assert!(square(0.0).overlaps(&flipped(square(32.0))));
+        assert!(!square(0.0).overlaps(&square(64.0)), "touching along an edge is no overlap");
+        assert!(!flipped(square(0.0)).overlaps(&square(100.0)));
+    }
+
+    #[test]
+    fn travel_snaps_corners_to_the_grid() {
+        let up = [(DVec3::new(0.0, 0.0, 17.0), DVec3::Z)];
+        assert_eq!(crate::snap_travel(&up, 13.0, 16.0), 15.0, "an off-grid top lands on the next grid plane");
+        assert_eq!(crate::snap_travel(&[], 13.0, 16.0), 13.0);
+        assert_eq!(crate::snap_travel(&up, 13.0, 0.0), 13.0);
+    }
 }

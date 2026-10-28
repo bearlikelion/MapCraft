@@ -2,5 +2,5 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
-# The generated import-file glue passes each string and list as a pointer and a length.
-too-many-arguments-threshold = 12
+# The generated export glue passes each string and list as a pointer and a length, up to the ABI's 16 values.
+too-many-arguments-threshold = 16

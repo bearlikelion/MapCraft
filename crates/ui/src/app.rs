@@ -66,10 +66,33 @@ enum Pending {
     Quit,
 }
 
+/// The Sculpt tool's Paint and Blur settings; flow, opacity and spacing run 0 to 1.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintBrush {
+    pub(crate) flow: f64,
+    pub(crate) opacity: f64,
+    /// Distance between dabs as a share of the radius.
+    pub(crate) spacing: f64,
+    pub(crate) show_weights: bool,
+}
+
+impl Default for PaintBrush {
+    fn default() -> Self {
+        Self { flow: 0.5, opacity: 1.0, spacing: 0.25, show_weights: true }
+    }
+}
+
 pub(crate) struct CompileJob {
     rx: mpsc::Receiver<String>,
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
+    started: std::time::SystemTime,
+}
+
+/// A leak trail from a compiler's point file, and the point the camera last flew to.
+pub(crate) struct Pointfile {
+    pub points: Vec<DVec3>,
+    pub at: Option<usize>,
 }
 
 pub struct MapCraftApp {
@@ -102,12 +125,13 @@ pub struct MapCraftApp {
     pub(crate) tree_revealed: BTreeSet<mapcraft_map::NodeId>,
     /// The scene tree's scroll offset and visible height last frame.
     pub(crate) tree_view: (f32, f32),
+    pub(crate) tree_search: crate::panels::TreeSearch,
     pub(crate) last_box: Aabb,
     pub(crate) clip_points: Vec<DVec3>,
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
-    /// Face drags keep the face's shape and push it along its normal, instead of stretching its neighbors.
-    pub(crate) extrude_along_normal: bool,
     pub(crate) clip_view_axis: Option<DVec3>,
+    /// The view the first clip point was placed in.
+    pub(crate) clip_view: Option<usize>,
     pub(crate) cursor_world: Option<DVec3>,
     /// The map with prefab instances and mirror halves expanded, and the real node each added node belongs to.
     pub(crate) display: Option<(Map, BTreeMap<NodeId, NodeId>)>,
@@ -125,9 +149,14 @@ pub struct MapCraftApp {
     pub(crate) uv_modal: Option<crate::uv::UvModal>,
     /// A UV transform ran as this frame began, so views ignore the clicks that end it.
     pub(crate) uv_busy: bool,
+    /// The UV view atop the Face tool's inspector.
+    pub(crate) uv_panel: crate::uv::UvCamera,
+    /// The UV view under the pointer last frame.
+    pub(crate) uv_hovered: Option<crate::uv::UvView>,
     pub(crate) find: crate::panels::FindState,
     pub(crate) tag_name: String,
     pub(crate) show_thumbs: bool,
+    pub(crate) show_model_thumbs: bool,
     /// Compiles plugins; `None` when the WebAssembly engine could not start.
     plugin_host: Option<mapcraft_plugin_host::Host>,
     pub(crate) plugin_dialog: Option<crate::plugins::PluginDialog>,
@@ -141,12 +170,21 @@ pub struct MapCraftApp {
     pub(crate) sculpt: (mapcraft_engine::SculptMode, f64, f64),
     /// The displaced surface under the sculpt brush: view, point and normal.
     pub(crate) sculpt_at: Option<(usize, DVec3, DVec3)>,
+    pub(crate) sculpt_falloff: mapcraft_engine::Falloff,
+    pub(crate) paint: PaintBrush,
+    /// The blend under the pointer while painting, such as `rock031 + grass: 62%`.
+    pub(crate) blend_readout: Option<String>,
     /// Power of new displacements, and the heights a heightmap's black and white map to.
     pub(crate) disp_power: u32,
     pub(crate) heightmap_range: (f64, f64),
+    pub(crate) blend_fill: crate::panels::BlendFillRows,
     /// The status message and when it first showed, so it can give way to tool hints.
     pub(crate) status_shown: (String, Instant),
-    pub(crate) inspector_tab: crate::panels::InspectorTab,
+    pub(crate) inspector_filter: String,
+    /// The class description shows under the inspector header.
+    pub(crate) inspector_help: bool,
+    /// The widget focused last frame; a change ends the inspector's undo coalescing.
+    pub(crate) inspector_focus: Option<egui::Id>,
     /// Corners and entity origins drags snap to, rebuilt after the map changes.
     pub(crate) snap_points: Option<Vec<(NodeId, DVec3)>>,
     /// The view and point a drag or a placing tool would snap to, and whether a corner caught it.
@@ -173,6 +211,7 @@ pub struct MapCraftApp {
     pending: Option<Pending>,
     pub(crate) confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
+    pub(crate) bake: crate::bake::BakeState,
     /// Plugin materials still being listed on a worker thread.
     pub(crate) material_list: Option<mpsc::Receiver<crate::project::Listed>>,
     last_autosave: Instant,
@@ -183,6 +222,11 @@ pub struct MapCraftApp {
     quit_confirmed: bool,
     /// Calls from agents through `mapcraft-cli mcp`.
     pub(crate) control: Option<crate::control::Channel>,
+    pub(crate) pointfile: Option<Pointfile>,
+    /// The view being orbited with Alt+right drag, and the point it turns about.
+    pub(crate) orbit: Option<(usize, DVec3)>,
+    /// An autosave opened from the recovery dialog, deleted once the map is saved.
+    pub(crate) recovered: Option<PathBuf>,
 }
 
 impl MapCraftApp {
@@ -200,7 +244,7 @@ impl MapCraftApp {
             Some(dir) => Some(dir.join("data")),
             None => craft_settings::paths::data_dir("mapcraft"),
         };
-        let recovery = data_dir.as_deref().map(crate::dialogs::start_session).unwrap_or_default();
+        let (recovery, running) = data_dir.as_deref().map(crate::dialogs::start_session).unwrap_or_default();
         let cached = data_dir.as_deref().map(|d| mapcraft_plugin_host::Host::with_cache(&d.join("plugin-cache")));
         let plugin_host = match cached {
             Some(Ok(host)) => Ok(host),
@@ -237,15 +281,16 @@ impl MapCraftApp {
             tree_drag: Vec::new(),
             tree_revealed: BTreeSet::new(),
             tree_view: (0.0, 0.0),
+            tree_search: crate::panels::TreeSearch::default(),
             last_box: Aabb::new(DVec3::ZERO, DVec3::splat(64.0)),
             clip_points: Vec::new(),
             clip_keep: mapcraft_engine::ClipKeep::Both,
-            extrude_along_normal: true,
             clip_view_axis: None,
+            clip_view: None,
             cursor_world: None,
             display: None,
             prefab_cache: HashMap::new(),
-            dialogs: Dialogs { recovery, ..Dialogs::default() },
+            dialogs: Dialogs { recovery, running, ..Dialogs::default() },
             data_dir,
             last_click: None,
             picked_face: None,
@@ -253,9 +298,12 @@ impl MapCraftApp {
             uv_images: crate::thumbs::Thumbs::sized(1024),
             uv_modal: None,
             uv_busy: false,
+            uv_panel: crate::uv::UvCamera::default(),
+            uv_hovered: None,
             find: crate::panels::FindState::default(),
             tag_name: String::new(),
             show_thumbs: true,
+            show_model_thumbs: true,
             plugin_host,
             plugin_dialog: None,
             plugin_shape: None,
@@ -263,10 +311,16 @@ impl MapCraftApp {
             ghost_at: None,
             sculpt: (mapcraft_engine::SculptMode::Raise, 128.0, 256.0),
             sculpt_at: None,
+            sculpt_falloff: mapcraft_engine::Falloff::Smooth,
+            paint: PaintBrush::default(),
+            blend_readout: None,
             disp_power: 3,
             heightmap_range: (0.0, 512.0),
+            blend_fill: Default::default(),
             status_shown: (String::new(), Instant::now()),
-            inspector_tab: crate::panels::InspectorTab::default(),
+            inspector_filter: String::new(),
+            inspector_help: false,
+            inspector_focus: None,
             snap_points: None,
             snap_mark: None,
             hovered_pane: None,
@@ -284,6 +338,7 @@ impl MapCraftApp {
             pending: None,
             confirm_tools: None,
             compile: None,
+            bake: Default::default(),
             material_list: None,
             last_autosave: Instant::now(),
             screenshot: options.screenshot,
@@ -292,6 +347,9 @@ impl MapCraftApp {
             frame: 0,
             quit_confirmed: false,
             control: None,
+            pointfile: None,
+            orbit: None,
+            recovered: None,
         };
         app.session.grid = grid;
         app.rescan_sdks();
@@ -326,6 +384,9 @@ impl MapCraftApp {
                 vars.insert(k.clone(), d.clone());
             }
         }
+        if let Some(d) = &self.data_dir {
+            vars.entry("bake_dir".into()).or_insert_with(|| d.join("bake").to_string_lossy().into_owned());
+        }
         vars
     }
 
@@ -338,6 +399,10 @@ impl MapCraftApp {
             self.status = format!("SDK `{id}` is not installed; entities and materials are unavailable");
         }
         let vars = sdk_id.as_deref().map(|id| self.sdk_vars(id, sdk.as_ref())).unwrap_or_default();
+        // Plugins only get folders that exist, and the bake folder must be one before the first bake.
+        if let Some(d) = vars.get("bake_dir") {
+            let _ = std::fs::create_dir_all(d);
+        }
         if let Some(s) = &sdk {
             self.session.tex.scale = s.manifest.textures.scale;
             if let Some(d) = &s.manifest.textures.default {
@@ -346,12 +411,15 @@ impl MapCraftApp {
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        let skies = self.project.sdk.iter().flat_map(|s| &s.manifest.textures.sky).filter(|p| !p.is_empty());
+        self.session.blend_roles = skies.map(|p| (format!("{p}*"), mapcraft_map::BlendRole::Unblendable)).collect();
         self.material_list = self.plugin_host.as_ref().and_then(|h| self.project.list_materials_later(h));
         if let Some(dir) = self.material_cache() {
             self.project.add_cached_materials(&dir);
         }
-        self.thumbs.clear();
-        let pixelated = self.project.sdk.as_ref().is_some_and(|s| s.manifest.textures.pixelated);
+        let pixelated = self.project.pixelated();
+        self.thumbs.set_pixelated(pixelated);
+        self.uv_images.set_pixelated(pixelated);
         if let Some(gpu) = &mut self.gpu {
             gpu.renderer.forget_materials();
             gpu.renderer.set_pixelated(pixelated);
@@ -415,6 +483,7 @@ impl MapCraftApp {
         self.session.sdk = sdk.clone();
         self.prefs.update(|p| p.last_sdk = sdk.clone());
         self.status = "New map".into();
+        self.pointfile = None;
         self.load_project(sdk);
     }
 
@@ -431,6 +500,7 @@ impl MapCraftApp {
         // Layers are the map's outline, so the tree opens with them unfolded.
         self.expanded = s.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).map(|(id, _)| id).chain([mapcraft_map::ROOT]).collect();
         self.session = s;
+        self.pointfile = None;
         self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
         self.status = format!("Opened {}", path.display());
         self.load_project(sdk);
@@ -455,11 +525,14 @@ impl MapCraftApp {
         }
     }
 
-    /// Saves to `path`, which becomes the map's path, and drops the old autosave.
+    /// Saves to `path`, which becomes the map's path, backing up the file it replaces and dropping this map's autosave.
     pub(crate) fn save_to(&mut self, path: &Path) -> Result<(), mapcraft_engine::EngineError> {
         let old_autosave = self.autosave_path();
+        if let Err(e) = rotate_backups(path, self.prefs.get().view.backups) {
+            self.output.push(format!("Could not keep a backup of {}: {e}", path.display()));
+        }
         self.session.save_as(path)?;
-        if let Some(a) = old_autosave {
+        for a in old_autosave.into_iter().chain(self.recovered.take()) {
             let _ = std::fs::remove_file(a);
         }
         self.prefs.update(|p| p.push_recent(&path.to_string_lossy()));
@@ -501,12 +574,88 @@ impl MapCraftApp {
 
     pub(crate) fn mark_changed(&mut self) {
         self.scene_dirty = true;
+        self.bake.changed();
         self.snap_points = None;
+        if let Some(notice) = self.session.notice.take() {
+            self.status = notice;
+        }
     }
 
     pub(crate) fn reload_prefabs(&mut self) {
         self.prefab_cache.clear();
         self.mark_changed();
+    }
+
+    /// Rereads the SDK's entity definitions, materials, models and prefabs, keeping the map, undo and current material.
+    fn reload_assets(&mut self) {
+        let tex = self.session.tex.clone();
+        self.status = "Reloaded entity definitions, materials, models and prefabs".into();
+        self.load_project(self.session.sdk.clone());
+        self.session.tex = tex;
+        self.reload_prefabs();
+    }
+
+    /// Shows the leak trail in `path`, a qbsp .pts or vbsp .lin file.
+    pub(crate) fn load_pointfile(&mut self, path: &Path) {
+        use std::io::Read;
+        // A trail is a few thousand lines, so a cap keeps a wrong file from filling memory.
+        let read = std::fs::File::open(path).and_then(|f| {
+            let mut text = String::new();
+            f.take(16 << 20).read_to_string(&mut text).map(|_| text)
+        });
+        let points = match read {
+            Ok(text) => parse_pointfile(&text),
+            Err(e) => {
+                self.status = format!("Cannot read {}: {e}", path.display());
+                return;
+            }
+        };
+        if points.len() < 2 {
+            self.status = format!("{} holds no leak trail", path.display());
+            return;
+        }
+        self.status = format!(
+            "Loaded a leak trail of {} points from {}; {} and {} fly along it",
+            points.len(),
+            path.display(),
+            self.chord("run.point_next"),
+            self.chord("run.point_prev")
+        );
+        self.output.push(self.status.clone());
+        self.pointfile = Some(Pointfile { points, at: None });
+    }
+
+    /// Puts the 3D camera on the next or previous leak point, looking along the trail, and centers the 2D views on it.
+    fn step_pointfile(&mut self, forward: bool) {
+        let Some(trail) = &mut self.pointfile else {
+            self.status = "Load a leak trail first, from the Run menu".into();
+            return;
+        };
+        let last = trail.points.len().saturating_sub(1);
+        let i = match (trail.at, forward) {
+            (None, true) => 0,
+            (None, false) => last,
+            (Some(i), true) => (i + 1).min(last),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        trail.at = Some(i);
+        let Some(&p) = trail.points.get(i) else { return };
+        let ahead = trail.points.get(i + 1).map(|q| *q - p).or_else(|| i.checked_sub(1).and_then(|k| trail.points.get(k)).map(|q| p - *q));
+        let count = trail.points.len();
+        for pane in &mut self.panes {
+            let cam = &mut pane.camera;
+            if cam.is_2d() {
+                let (r, u, _) = cam.view.axes();
+                cam.center = mapcraft_geom::DVec2::new(p.dot(r), p.dot(u));
+                continue;
+            }
+            cam.position = p;
+            if let Some(d) = ahead.and_then(|d| d.try_normalize()) {
+                cam.yaw = d.y.atan2(d.x).to_degrees();
+                cam.pitch = d.z.asin().to_degrees().clamp(-89.0, 89.0);
+            }
+        }
+        self.status = format!("Leak point {} of {count}", i + 1);
     }
 
     fn update_display(&mut self) {
@@ -542,13 +691,17 @@ impl MapCraftApp {
         self.update_display();
         let Some(gpu) = &mut self.gpu else { return };
         let map = self.display.as_ref().map_or(&self.session.map, |(m, _)| m);
-        let names: BTreeSet<String> = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
+        let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
+        let names: BTreeSet<String> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()].into_iter().flatten().map(String::from)).collect();
         self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
         self.project.prepare_models(map, &mut gpu.renderer, &mut self.output);
         let renderer = &gpu.renderer;
-        let colorize = self.prefs.get().view.colorize;
-        let scene = build_scene(map, &self.session.selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, colorize);
+        let view = &self.prefs.get().view;
+        let slope = view.slope_colors.then_some(mapcraft_render::Slope { walkable: view.slope_walkable, surfable: view.slope_surfable });
+        let selection = &self.session.selection;
+        let scene = build_scene(map, selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, view.colorize, slope);
         gpu.renderer.set_scene(&scene);
+        gpu.renderer.set_bake_stale(self.bake.stale(map));
         self.scene_dirty = false;
     }
 
@@ -566,6 +719,16 @@ impl MapCraftApp {
     /// Each view's 2D zoom, for tests.
     pub fn zooms_for_test(&self) -> Vec<f64> {
         self.panes.iter().map(|p| p.camera.zoom).collect()
+    }
+
+    /// Where the inspector's UV view was drawn, its zoom and its center, for tests.
+    pub fn uv_panel_for_test(&self) -> (Rect, f64, mapcraft_geom::DVec2) {
+        (self.uv_panel.rect, self.uv_panel.zoom, self.uv_panel.center)
+    }
+
+    /// The sky setting, and whether the renderer last drew with the sky, for tests.
+    pub fn sky_for_test(&self) -> (bool, Option<bool>) {
+        (self.prefs.get().view.sky, self.gpu.as_ref().map(|g| g.renderer.show_sky))
     }
 
     /// Whether the SDK Settings window is open, for tests.
@@ -587,6 +750,11 @@ impl MapCraftApp {
     /// The status bar message, for tests.
     pub fn status_for_test(&self) -> &str {
         &self.status
+    }
+
+    /// The status bar's hint when no message is showing, for tests.
+    pub fn hint_for_test(&self) -> String {
+        self.tool_hint()
     }
 
     /// The id of the SDK the editor loaded for the map, for tests.
@@ -627,8 +795,22 @@ impl MapCraftApp {
         self.prefs.get().view.fly_speed
     }
 
+    /// View `index`'s camera position, yaw and pitch, for tests.
+    pub fn camera_for_test(&self, index: usize) -> (DVec3, f64, f64) {
+        self.panes.get(index).map_or((DVec3::ZERO, 0.0, 0.0), |p| (p.camera.position, p.camera.yaw, p.camera.pitch))
+    }
+
+    pub fn load_pointfile_for_test(&mut self, path: &Path) {
+        self.load_pointfile(path);
+    }
+
     pub fn clip_points_for_test(&self) -> usize {
         self.clip_points.len()
+    }
+
+    /// Which side the Clip tool keeps, for tests.
+    pub fn clip_keep_for_test(&self) -> mapcraft_engine::ClipKeep {
+        self.clip_keep
     }
 
     pub fn run_command_for_test(&mut self, id: &str) {
@@ -656,12 +838,13 @@ impl MapCraftApp {
         }
         // WASD and friends fly the 3D camera while the right button is down.
         let flying = ctx.input(|i| i.pointer.secondary_down());
-        let over_uv = self.hovered_pane.and_then(|i| self.panes.get(i)).is_some_and(|p| p.uv.is_some());
+        let over_uv = self.uv_hovered.is_some();
         let prefs = self.prefs.get();
         for (sc, id) in crate::shortcuts::bindings(prefs.keymap, &prefs.shortcuts) {
             if (flying && !sc.modifiers.command)
                 || (!over_uv && crate::shortcuts::uv_only(id))
                 || (self.tool != Tool::Vertex && crate::shortcuts::vertex_only(id))
+                || (self.tool != Tool::Clip && crate::shortcuts::clip_only(id))
             {
                 continue;
             }
@@ -670,14 +853,20 @@ impl MapCraftApp {
             }
         }
         self.clipboard(ctx);
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let unfocused = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))));
+        if matches!(self.drag, Drag::Extrude { .. }) && (escape || unfocused) {
+            self.cancel_extrude();
+        } else if escape && !ctx.egui_wants_keyboard_input() {
             if self.tool == Tool::Clip && !self.clip_points.is_empty() {
-                self.clip_points.clear();
-            } else {
+                self.pop_clip_point();
+            } else if self.tool != Tool::Select {
                 self.set_tool(Tool::Select);
+            } else {
+                self.run_action("edit.select_none");
             }
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Clip && self.clip_points.len() >= 2 {
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none()) && self.tool == Tool::Clip && self.clip_points.len() >= 2 {
             self.apply_clip();
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.tool == Tool::Path {
@@ -744,6 +933,8 @@ impl MapCraftApp {
             "sculpt.smooth" => Some(M::Smooth),
             "sculpt.flatten" => Some(M::Flatten),
             "sculpt.noise" => Some(M::Noise),
+            "sculpt.paint" => Some(M::Paint),
+            "sculpt.blur" => Some(M::Blur),
             _ => None,
         };
         if let Some(m) = mode {
@@ -766,8 +957,64 @@ impl MapCraftApp {
                 self.save(true);
             }
             "edit.preferences" => self.dialogs.preferences = true,
+            "file.revert" => match self.session.path.clone() {
+                Some(_) if self.session.is_dirty() => self.dialogs.revert = true,
+                Some(p) => self.open_now(&p),
+                None => self.status = "This map has never been saved, so there is nothing to revert to".into(),
+            },
+            "file.reload_assets" => self.reload_assets(),
+            "edit.search" => self.dialogs.search = Some(crate::dialogs::CommandSearch::default()),
             "tools.transform" => self.dialogs.transform.open = true,
             "tools.array" => self.open_array(),
+            "tools.randomize" => self.dialogs.randomize.open = true,
+            "tools.drop_to_floor" => {
+                let project = &self.project;
+                let size = |e: &mapcraft_map::Entity| {
+                    let (min, max) = mapcraft_render::entity_bounds(project, e);
+                    Some(Aabb::new(min, max))
+                };
+                match self.session.drop_to_floor(&size) {
+                    Ok(0) => {}
+                    Ok(n) => self.status = format!("{n} of the selected objects have nothing solid below them and stayed put"),
+                    Err(e) => self.status = e.to_string(),
+                }
+                self.mark_changed();
+            }
+            "edit.select_faces_by_material" => {
+                match mapcraft_engine::execute(&mut self.session, id) {
+                    Ok(()) => {
+                        let picked = (self.session.face_selection.clone(), self.session.active_face);
+                        self.set_tool(Tool::Face);
+                        (self.session.face_selection, self.session.active_face) = picked;
+                    }
+                    Err(e) => self.status = e.to_string(),
+                }
+                self.mark_changed();
+            }
+            "edit.select_brushes_by_material" => {
+                match mapcraft_engine::execute(&mut self.session, id) {
+                    Ok(()) if self.tool == Tool::Face => self.set_tool(Tool::Select),
+                    Ok(()) => {}
+                    Err(e) => self.status = e.to_string(),
+                }
+                self.mark_changed();
+            }
+            "view.slope" => {
+                self.prefs.update(|p| p.view.slope_colors = !p.view.slope_colors);
+                self.mark_changed();
+            }
+            "run.load_pointfile" => {
+                let mut dialog = rfd::FileDialog::new().add_filter("Leak trail", &["lin", "pts"]);
+                if let Some(dir) = self.session.path.as_ref().and_then(|p| p.parent()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                if let Some(p) = dialog.pick_file() {
+                    self.load_pointfile(&p);
+                }
+            }
+            "run.unload_pointfile" => self.pointfile = None,
+            "run.point_next" => self.step_pointfile(true),
+            "run.point_prev" => self.step_pointfile(false),
             "tools.sweep" | "tools.spin" => self.run_curve(id),
             "tools.replace_materials" => self.open_replace_materials(),
             "view.snap_grid" => {
@@ -778,6 +1025,9 @@ impl MapCraftApp {
             }
             "view.link_zoom" => {
                 self.prefs.update(|p| p.view.link_zoom = !p.view.link_zoom);
+            }
+            "view.sky" => {
+                self.prefs.update(|p| p.view.sky = !p.view.sky);
             }
             "view.maximize" if self.prefs.get().view.single_view => {
                 let next = self.maximized.map_or(0, |m| (m + 1) % self.panes.len().max(1));
@@ -837,6 +1087,10 @@ impl MapCraftApp {
                 self.show_bottom = true;
             }
             "panel.scene" => self.left_tab = LeftTab::Scene,
+            "panel.scene_search" => {
+                self.left_tab = LeftTab::Scene;
+                self.tree_search.focus = true;
+            }
             "panel.tags" => self.left_tab = LeftTab::Tags,
             "panel.materials" => self.left_tab = LeftTab::Materials,
             "panel.entities" => self.left_tab = LeftTab::Entities,
@@ -855,6 +1109,7 @@ impl MapCraftApp {
                     K::Back => K::Both,
                 };
             }
+            "clip.remove_point" => self.pop_clip_point(),
             "run.again" => {
                 let count = self.project.sdk.as_ref().map_or(0, |s| s.manifest.compile.len());
                 match self.last_compile.filter(|i| *i < count).or((count > 0).then_some(0)) {
@@ -867,6 +1122,7 @@ impl MapCraftApp {
             "uv.grab" => self.begin_uv_modal(crate::uv::UvMode::Grab),
             "uv.rotate" => self.begin_uv_modal(crate::uv::UvMode::Rotate),
             "uv.scale" => self.begin_uv_modal(crate::uv::UvMode::Scale),
+            "uv.fit" => self.fit_uv(),
             _ => self.run_command(id),
         }
     }
@@ -898,9 +1154,9 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    /// Where pictures of materials brought in by imports are kept between sessions.
+    /// Where pictures of materials brought in by imports are kept between sessions, one folder per SDK.
     pub(crate) fn material_cache(&self) -> Option<PathBuf> {
-        self.data_dir.as_ref().map(|d| d.join("materials"))
+        Some(self.data_dir.as_ref()?.join("materials").join(self.project.id()?))
     }
 
     /// The chord shown next to an action in menus.
@@ -979,7 +1235,7 @@ impl MapCraftApp {
     }
 
     pub(crate) fn action_button(&mut self, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) {
-        let button = egui::Button::new(label).shortcut_text(self.chord(id));
+        let button = crate::icons::button(crate::icons::action_icon(id), label).shortcut_text(self.chord(id));
         if ui.add_enabled(enabled, button).clicked() {
             self.run_action(id);
         }
@@ -987,7 +1243,7 @@ impl MapCraftApp {
 
     /// A menu item that shows `on` as selected.
     fn action_toggle(&mut self, ui: &mut egui::Ui, id: &str, label: &str, on: bool) {
-        if ui.add(egui::Button::selectable(on, label).shortcut_text(self.chord(id))).clicked() {
+        if ui.add(crate::icons::selectable(on, crate::icons::action_icon(id), label).shortcut_text(self.chord(id))).clicked() {
             self.run_action(id);
         }
     }
@@ -1015,9 +1271,9 @@ impl MapCraftApp {
             ui.menu_button("File", |ui| {
                 self.action_button(ui, "file.new", "New Map…", true);
                 self.action_button(ui, "file.open", "Open…", true);
-                ui.menu_button("Open Recent", |ui| {
+                ui.menu_button((crate::icons::slot(Some("clock")), "Open Recent"), |ui| {
                     for p in self.prefs.get().recent.clone() {
-                        if ui.button(&p).clicked() {
+                        if ui.add(crate::icons::button(None, &p)).clicked() {
                             self.request(Pending::Open(PathBuf::from(p)));
                         }
                     }
@@ -1025,6 +1281,7 @@ impl MapCraftApp {
                 ui.separator();
                 self.action_button(ui, "file.save", "Save", true);
                 self.action_button(ui, "file.save_as", "Save As…", true);
+                self.action_button(ui, "file.revert", "Revert", self.session.path.is_some());
                 ui.separator();
                 self.import_menu(ui);
                 self.export_menu(ui);
@@ -1032,6 +1289,7 @@ impl MapCraftApp {
                 self.action_button(ui, "file.switch_sdk", "Switch SDK…", true);
                 self.action_button(ui, "file.sdk_settings", "SDK Settings…", true);
                 self.action_button(ui, "file.sdk_manager", "SDK Manager…", true);
+                self.action_button(ui, "file.reload_assets", "Reload Assets", true);
                 ui.separator();
                 self.action_button(ui, "file.quit", "Quit", true);
             });
@@ -1042,6 +1300,7 @@ impl MapCraftApp {
                         let any = !self.session.selection.is_empty();
                         self.action_button(ui, "tools.transform", "Transform…", any);
                         self.action_button(ui, "tools.array", "Array…", any);
+                        self.action_button(ui, "tools.randomize", "Randomize Transform…", any);
                         self.action_button(ui, "tools.replace_materials", "Replace Materials…", true);
                         ui.separator();
                         self.prefab_menu(ui);
@@ -1056,8 +1315,10 @@ impl MapCraftApp {
                         self.action_button(ui, "view.render_cycle", "Next Render Mode", true);
                         ui.separator();
                         let view = self.prefs.get().view.clone();
+                        self.action_toggle(ui, "view.sky", "Show Sky", view.sky);
                         self.action_toggle(ui, "view.link_zoom", "Link 2D Zoom", view.link_zoom);
                         self.action_toggle(ui, "view.colorize", "Color Brushes by Object", view.colorize);
+                        self.action_toggle(ui, "view.slope", "Color by Slope", view.slope_colors);
                         self.action_toggle(ui, "view.snap_grid", "Snap to Grid", view.snap_grid);
                         self.action_toggle(ui, "view.snap_vertices", "Snap to Corners", view.snap_vertices);
                         ui.separator();
@@ -1067,7 +1328,8 @@ impl MapCraftApp {
                         self.action_button(ui, "view.maximize", if view.single_view { "Next View" } else { "Maximize View Under Pointer" }, true);
                         self.action_toggle(ui, "view.single", "One View Layout", view.single_view);
                         self.action_button(ui, "view.find_entities", "Find Entities", true);
-                        ui.menu_button("Panels", |ui| {
+                        self.action_button(ui, "panel.scene_search", "Search Scene", true);
+                        ui.menu_button((crate::icons::slot(None), "Panels"), |ui| {
                             for (id, label) in [
                                 ("panel.scene", "Scene"),
                                 ("panel.tags", "Tags"),
@@ -1087,7 +1349,13 @@ impl MapCraftApp {
                         match c.menu.split('/').nth(1).filter(|_| c.menu.matches('/').count() == 2) {
                             Some(sub) if !submenus.contains(&sub) => {
                                 submenus.push(sub);
-                                ui.menu_button(sub, |ui| {
+                                let icon = match sub {
+                                    "Curves" => Some("itinerary"),
+                                    "UV" => Some("unwrap"),
+                                    "Select by Material" => Some("swatches"),
+                                    _ => None,
+                                };
+                                ui.menu_button((crate::icons::slot(icon), sub), |ui| {
                                     for c in mapcraft_engine::commands().iter().filter(|c| in_menu(c, &format!("{top}/{sub}"))) {
                                         self.command_item(ui, c);
                                     }
@@ -1099,6 +1367,7 @@ impl MapCraftApp {
                     }
                     if top == "Edit" {
                         ui.separator();
+                        self.action_button(ui, "edit.search", "Search Commands…", true);
                         self.action_button(ui, "edit.preferences", "Preferences…", true);
                     }
                 });
@@ -1110,13 +1379,19 @@ impl MapCraftApp {
                     ui.label("This SDK has no compile profiles");
                 }
                 for (i, name) in profiles.iter().enumerate() {
-                    if ui.add_enabled(self.compile.is_none(), egui::Button::new(name)).clicked() {
+                    if ui.add_enabled(self.compile.is_none(), crate::icons::button(Some("play"), name)).clicked() {
                         self.start_compile(i);
                     }
                 }
                 ui.separator();
                 self.action_button(ui, "run.again", "Run Last Profile", !profiles.is_empty() && self.compile.is_none());
                 self.action_button(ui, "run.cancel", "Cancel", self.compile.is_some());
+                ui.separator();
+                let trail = self.pointfile.is_some();
+                self.action_button(ui, "run.load_pointfile", "Load Leak Trail…", true);
+                self.action_button(ui, "run.point_next", "Next Leak Point", trail);
+                self.action_button(ui, "run.point_prev", "Previous Leak Point", trail);
+                self.action_button(ui, "run.unload_pointfile", "Unload Leak Trail", trail);
             });
             ui.menu_button("Help", |ui| {
                 self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
@@ -1301,7 +1576,7 @@ impl MapCraftApp {
                     if missing {
                         label.on_hover_text("This folder does not exist");
                     }
-                    if ui.small_button("Remove").clicked() {
+                    if crate::chrome::icon_button(ui, "trash_can", "Remove", 20.0, false).on_hover_text("Remove this folder").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -1329,6 +1604,10 @@ impl MapCraftApp {
                 }
             });
             if current {
+                ui.separator();
+                ui.label("Folders shown in the Materials panel")
+                    .on_hover_text("Hidden folders stay hidden for every map on this SDK; faces using them still draw");
+                self.texture_folder_toggles(ui);
                 ui.horizontal(|ui| {
                     apply = ui.add_enabled(self.sdk_paths_changed || changed || dirs_changed, egui::Button::new("Apply")).clicked();
                     ui.label(egui::RichText::new("Closing the window applies changes too.").color(crate::chrome::TEXT_WEAK));
@@ -1372,6 +1651,10 @@ impl MapCraftApp {
         let Some(profile) = sdk.manifest.compile.get(index).cloned() else { return };
         if !self.prefs.get().approved_tools.contains(&sdk.manifest.id) {
             self.confirm_tools = Some(index);
+            return;
+        }
+        if profile.bake.is_some() {
+            self.start_bake(index, true);
             return;
         }
         if !self.save(false) {
@@ -1432,7 +1715,8 @@ impl MapCraftApp {
             });
             d.store(true, Ordering::Relaxed);
         });
-        self.compile = Some(CompileJob { rx, cancel, done });
+        self.compile = Some(CompileJob { rx, cancel, done, started: std::time::SystemTime::now() });
+        self.pointfile = None;
         self.show_bottom = true;
         self.bottom_tab = BottomTab::Output;
     }
@@ -1444,6 +1728,8 @@ impl MapCraftApp {
                 self.material_list = None;
                 let problems = self.project.take_listed(listed);
                 self.output.extend(problems);
+                let roles = self.project.materials.iter().filter(|m| m.blend != mapcraft_map::BlendRole::Layer);
+                self.session.blend_roles.extend(roles.map(|m| (m.name.clone(), m.blend)));
                 if let Some(dir) = self.material_cache() {
                     self.project.add_cached_materials(&dir);
                 }
@@ -1463,20 +1749,24 @@ impl MapCraftApp {
         self.output.extend(job.rx.try_iter());
         if job.done.load(Ordering::Relaxed) {
             self.output.extend(job.rx.try_iter());
+            let started = job.started;
             self.compile = None;
+            if let Some(trail) = self.session.path.as_deref().and_then(|p| find_pointfile(p, started)) {
+                self.load_pointfile(&trail);
+            }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
     fn autosave_path(&self) -> Option<PathBuf> {
-        let stem = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".to_string(), |s| s.to_string_lossy().into_owned());
-        Some(self.data_dir.as_ref()?.join("autosave").join(format!("{stem}.autosave.mcmap")))
+        Some(self.data_dir.as_ref()?.join("autosave").join(autosave_name(self.session.path.as_deref(), std::process::id())))
     }
 
     fn autosave(&mut self) {
         let minutes = self.prefs.get().view.autosave_minutes;
-        if minutes == 0 || !self.session.is_dirty() || self.last_autosave.elapsed().as_secs() < u64::from(minutes) * 60 {
+        let due = self.last_autosave.elapsed().as_secs() >= u64::from(minutes) * 60;
+        if minutes == 0 || !self.session.is_dirty() || !due || !matches!(self.drag, Drag::None) {
             return;
         }
         self.last_autosave = Instant::now();
@@ -1540,7 +1830,10 @@ impl MapCraftApp {
         }
         self.pane_header(ui, index, header, active);
         if self.panes.get(index).is_some_and(|p| p.uv.is_some()) {
-            self.uv_view(ui, index, body);
+            if active {
+                self.uv_hovered = Some(crate::uv::UvView::Pane(index));
+            }
+            self.uv_view(ui, crate::uv::UvView::Pane(index), body);
         } else {
             self.viewport(ui, index, body);
             if self.panes.get(index).is_some_and(|p| !p.camera.is_2d()) {
@@ -1605,6 +1898,70 @@ pub(crate) fn frame_camera(cam: &mut Camera, b: &Aabb, px: f64) {
     }
 }
 
+/// The map's autosave name: its name, a hash of its full path and the editor's process, so no two maps or editors share one.
+fn autosave_name(path: Option<&Path>, process: u32) -> String {
+    let Some(p) = path else { return format!("untitled-{process}.autosave.mcmap") };
+    let full = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    // FNV-1a rather than std's hasher, whose output may change between Rust releases.
+    let hash = full.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    let stem = p.file_stem().map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
+    format!("{stem}-{hash:016x}-{process}.autosave.mcmap")
+}
+
+/// Copies `path` to `backups/<name>.1.mcmap` beside it, first moving older copies up a number and dropping the one past `keep`.
+fn rotate_backups(path: &Path, keep: u32) -> std::io::Result<()> {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else { return Ok(()) };
+    let keep = keep.min(99);
+    if keep == 0 || !path.is_file() {
+        return Ok(());
+    }
+    let dir = dir.join("backups");
+    let name = |n: u32| dir.join(format!("{}.{n}.{}", stem.to_string_lossy(), mapcraft_format::EXTENSION));
+    // Saving an unchanged map must not push real earlier versions out.
+    if name(1).is_file() && std::fs::read(path)? == std::fs::read(name(1))? {
+        return Ok(());
+    }
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir)?;
+        // Keeps Godot from importing every backup as a scene.
+        std::fs::write(dir.join(".gdignore"), "")?;
+    }
+    let _ = std::fs::remove_file(name(keep));
+    for n in (1..keep).rev() {
+        if name(n).is_file() {
+            std::fs::rename(name(n), name(n + 1))?;
+        }
+    }
+    std::fs::copy(path, name(1)).map(|_| ())
+}
+
+/// Points of a leak trail, one `x y z` per line as qbsp's .pts and vbsp's .lin write them.
+fn parse_pointfile(text: &str) -> Vec<DVec3> {
+    const MAX_POINTS: usize = 1 << 20;
+    text.lines()
+        .filter_map(|l| {
+            let v: Vec<f64> = l.split_whitespace().take(3).map(|t| t.parse::<f64>().ok().filter(|x| x.is_finite())).collect::<Option<_>>()?;
+            match v[..] {
+                [x, y, z] => Some(DVec3::new(x, y, z)),
+                _ => None,
+            }
+        })
+        .take(MAX_POINTS)
+        .collect()
+}
+
+/// The leak trail a compile of `map` wrote after `since`, in the map's build folder or beside it.
+fn find_pointfile(map: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
+    let (dir, stem) = (map.parent()?, map.file_stem()?.to_string_lossy());
+    [dir.join("build"), dir.to_path_buf()]
+        .iter()
+        .flat_map(|d| ["lin", "pts"].map(|x| d.join(format!("{stem}.{x}"))))
+        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
+        .filter(|(t, _)| *t >= since)
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p)
+}
+
 /// Loads prefabs by the path stored in an instance, relative to the map at `doc`, once each.
 pub(crate) fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Option<PathBuf>) -> impl FnMut(&str) -> Option<Map> + '_ {
     move |stored| {
@@ -1627,6 +1984,7 @@ impl eframe::App for MapCraftApp {
         self.prefs.tick(Instant::now());
         self.autosave();
         self.poll_compile(ctx);
+        self.poll_bake(ctx);
         self.poll_materials(ctx);
         self.poll_models(ctx);
         self.poll_control();
@@ -1642,6 +2000,7 @@ impl eframe::App for MapCraftApp {
             self.session.view_dir = if p.camera.is_2d() { -p.camera.view.axes().2 } else { p.camera.forward() };
         }
         self.handle_shortcuts(&ctx);
+        self.uv_hovered = None;
         if self.scene_dirty {
             self.rebuild_scene();
         }
@@ -1657,7 +2016,7 @@ impl eframe::App for MapCraftApp {
         }
         egui::Panel::left("left").resizable(true).default_size(260.0).show(ui, |ui| self.left_panel(ui));
         egui::Panel::left("tools").resizable(false).exact_size(44.0).show(ui, |ui| self.tool_palette(ui));
-        egui::Panel::right("inspector").resizable(true).default_size(300.0).show(ui, |ui| self.inspector(ui));
+        egui::Panel::right("inspector").resizable(true).default_size(300.0).min_size(240.0).show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| self.central(ui));
         self.dialogs(&ctx);
         self.extra_dialogs(&ctx);
@@ -1677,9 +2036,10 @@ impl eframe::App for MapCraftApp {
     }
 
     fn on_exit(&mut self) {
-        if let Some(a) = self.autosave_path() {
+        for a in self.autosave_path().into_iter().chain(self.recovered.take()) {
             let _ = std::fs::remove_file(a);
         }
+        drop(self.dialogs.running.take());
         if let Some(d) = &self.data_dir {
             crate::dialogs::end_session(d);
         }
@@ -1691,5 +2051,56 @@ impl eframe::App for MapCraftApp {
         if let Err(e) = self.prefs.flush() {
             log::error!("saving settings: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_sharing_a_name_get_their_own_autosaves() {
+        let (a, b) = (Path::new("/maps/one/level.mcmap"), Path::new("/maps/two/level.mcmap"));
+        assert_ne!(autosave_name(Some(a), 1), autosave_name(Some(b), 1), "saving one cannot delete the other's autosave");
+        assert_ne!(autosave_name(Some(a), 1), autosave_name(Some(a), 2), "nor can another editor with the same map open");
+        assert!(autosave_name(Some(a), 1).starts_with("level-"));
+        assert_ne!(autosave_name(None, 1), autosave_name(None, 2), "two editors with unsaved maps keep apart");
+        let name = autosave_name(Some(a), 77);
+        assert_eq!(crate::dialogs::autosave_owner(&name), Some("77"));
+    }
+
+    #[test]
+    fn saves_keep_a_rolling_set_of_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let map = dir.path().join("level.mcmap");
+        rotate_backups(&map, 2).unwrap();
+        assert!(!dir.path().join("backups").exists(), "nothing to keep before the first save");
+        for v in ["1", "2", "3"] {
+            std::fs::write(&map, v).unwrap();
+            rotate_backups(&map, 2).unwrap();
+        }
+        let read = |n: u32| std::fs::read_to_string(dir.path().join(format!("backups/level.{n}.mcmap"))).ok();
+        assert_eq!((read(1).as_deref(), read(2).as_deref(), read(3)), (Some("3"), Some("2"), None));
+        rotate_backups(&map, 2).unwrap();
+        assert_eq!((read(1).as_deref(), read(2).as_deref()), (Some("3"), Some("2")), "saving it unchanged keeps the older backup");
+        assert!(dir.path().join("backups/.gdignore").is_file());
+        std::fs::write(&map, "4").unwrap();
+        rotate_backups(&map, u32::MAX).unwrap();
+        assert_eq!(read(3).as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn leak_trails_parse_and_are_found_after_a_compile() {
+        let points = parse_pointfile("0 0 0\n16 -8.5 32\nnot a point\n1 2\n1e400 0 0\n");
+        assert_eq!(points, vec![DVec3::ZERO, DVec3::new(16.0, -8.5, 32.0)]);
+        let dir = tempfile::tempdir().unwrap();
+        let map = dir.path().join("surf.v2.mcmap");
+        let start = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+        assert_eq!(find_pointfile(&map, start), None);
+        std::fs::create_dir_all(dir.path().join("build")).unwrap();
+        std::fs::write(dir.path().join("build/surf.v2.lin"), "0 0 0\n1 1 1\n").unwrap();
+        assert_eq!(find_pointfile(&map, start), Some(dir.path().join("build/surf.v2.lin")));
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert_eq!(find_pointfile(&map, later), None, "a trail older than the compile is left alone");
     }
 }

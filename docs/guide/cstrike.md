@@ -40,9 +40,13 @@ Loose materials in `cstrike/materials` and `cstrike/download/materials` are list
 Choose **File > Import > Valve map (VMF)** and pick a `.vmf` file from Hammer, Hammer++ or a decompiler such as BSPSource.
 
 - World brushes and entities come in with every key, brush entities with their brushes, hidden objects too.
+- Entities keep their outputs (the `connections` block), shown in the inspector's Outputs tab.
+- The world's keys, such as `skyname`, go on the map's world, unless the open map already sets them.
 - Faces keep their material and texture axes, offset, scale and rotation included.
 - Material names come in lower case with forward slashes, as the game looks them up.
 - Visgroups become groups named after them, nested ones as `Parent / Child`; an object in several visgroups goes into the first.
+- Hammer groups become groups named `Group <id>`, with groups inside groups folded into the outermost one; an object in a Hammer group goes there rather than into its visgroup.
+- A `func_instance` comes in as an entity that keeps its `file` and other keys, and goes back out the same way.
 - The Output panel sums up what came in and what was skipped.
 
 ![The File menu with Import open, showing Valve map (VMF) and Source BSP](img/cstrike-import.webp)
@@ -51,9 +55,10 @@ Choose **File > Import > Valve map (VMF)** and pick a `.vmf` file from Hammer, H
 
 **File > Export > Valve map (VMF)** writes a `.vmf` that Hammer and Hammer++ open:
 
-- the world's keys and brushes, then every entity with its keys and brushes;
+- the world's keys and brushes, then every entity with its keys, outputs and brushes;
 - layers and groups as nested visgroups;
-- every side with its plane, material, texture axes, rotation 0 and lightmap scale 16;
+- every side with its plane, material, texture axes, rotation 0, and its lightmap scale and smoothing groups (16 and 0 unless the face sets them);
+- displacements on world brushes, with their heights and blend alphas;
 - ids counted up in order, so exporting the same map twice gives the same file.
 
 If a different file is already there, it is kept beside the new one as `<name>.vmf.bak`.
@@ -65,16 +70,28 @@ Start the game and type `map <name>` in the console to play it.
 
 ![The Run menu with Compile, Run Last Profile and Cancel](img/cstrike-run.webp)
 
+## Displacements
+
+[Displacements](displacements.md) go both ways with their heights and their blend alphas.
+
+- Import reads each side's `dispinfo` into a displacement of the same power, every vertex's height along the face normal and its alpha as the blend weight.
+- Sideways offsets, which MapCraft cannot hold, are dropped, and an unreadable `dispinfo` leaves its face flat; the Output panel counts both.
+- Export writes a `dispinfo` for every displaced face of a world brush.
+- Source allows displacements only on world brushes, so those on brush entities are written flat, and so are power 1 displacements, which Source does not have; the Output panel counts them.
+
+A Source displacement blends two textures through its material, not through MapCraft's second layer.
+Give a blended face a material whose `.vmt` uses the `WorldVertexTransition` shader and names both textures, `$basetexture` and `$basetexture2`, such as the game's `nature/blendgrassdirt001a`.
+MapCraft knows these materials and paints their weights with the Sculpt tool's Paint mode, with the face's own material picked, as the alphas the game blends by.
+The views draw such a face with its first texture only.
+A face that blends through MapCraft's second layer exports its alphas, and the Output panel says to give it a WorldVertexTransition material.
+
+Anti-tiling is not something Source can show, so faces that use it export plain, and the Output panel counts them.
+
 ## What is lost
 
 Some `.vmf` content cannot come into MapCraft yet.
 Import skips it and lists it in the Output panel:
 
-- **Displacements:** their brushes come in flat.
-- **Entity outputs** (the `connections` block): triggers and buttons lose their outputs.
-- **Worldspawn keys** such as `skyname`: set them again in the inspector with nothing selected.
-- **Per-face lightmap scale and smoothing groups:** exports write lightmap scale 16 and no smoothing.
-- **Hammer groups:** their contents come in ungrouped.
+- **Unreadable entity outputs**, such as one missing its delay.
 - **Cameras, cordons and Hammer's view settings.**
-
-Export also leaves out displacements (their brushes are written flat) and entity outputs, and the Output panel says how many.
+- **Instances:** a `func_instance` stays an entity and its map is not brought in.

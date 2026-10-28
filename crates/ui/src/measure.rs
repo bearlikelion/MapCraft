@@ -1,7 +1,7 @@
 //! Size labels on boxes being drawn or resized, and highlights on the faces a drag moves.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
-use mapcraft_geom::{Aabb, DVec3};
+use mapcraft_geom::{Aabb, DVec3, Plane};
 
 use crate::app::MapCraftApp;
 use crate::viewport::{Drag, dvec};
@@ -39,17 +39,18 @@ pub(crate) fn label(painter: &egui::Painter, at: Pos2, align: Align2, text: Stri
 }
 
 impl MapCraftApp {
-    /// The box whose size is shown: a block being drawn, or the selection being resized.
-    fn measured_box(&self) -> Option<Aabb> {
+    /// The box whose size is shown: a block being drawn, or the selection being resized or extruded.
+    pub(crate) fn measured_box(&self) -> Option<Aabb> {
         match &self.drag {
             Drag::Block { start, end, .. } => Some(self.block_box(*start, *end)),
             Drag::Resize { applied, .. } | Drag::Scale { applied, .. } => Some(*applied),
+            Drag::Extrude { created, .. } => created.iter().filter_map(|id| self.node_bounds(*id)).chain(self.selection_bounds()).reduce(|a, b| a.union(&b)),
             _ => self.block_3d_box(),
         }
     }
 
     /// The faces the current drag moves, or an extrude would move, as world polygons.
-    fn manipulated_faces(&self) -> Vec<Vec<DVec3>> {
+    pub(crate) fn manipulated_faces(&self) -> Vec<Vec<DVec3>> {
         match &self.drag {
             Drag::Resize { view, handle, applied, .. } => {
                 let Some(cam) = self.panes.get(*view).map(|p| p.camera) else { return Vec::new() };
@@ -61,15 +62,29 @@ impl MapCraftApp {
                     .collect()
             }
             Drag::Scale { axis, low, applied, .. } => vec![box_face(applied, *axis, !*low)],
-            Drag::Extrude { faces, .. } => faces
-                .iter()
-                .filter_map(|(id, _, face)| {
-                    let brush = self.session.map.get(*id)?.kind.brush()?;
-                    let solid = brush.solid().ok()?;
-                    let i = brush.faces.iter().position(|f| f.id == *face)?;
-                    Some(solid.faces.get(i)?.as_ref()?.0.clone())
-                })
-                .collect(),
+            Drag::Extrude { faces, created, offset, .. } => {
+                // Where each face is now, on its own brush or on the one a split or stamp made.
+                let moved: Vec<Plane> = faces
+                    .iter()
+                    .filter_map(|(_, b, face)| b.faces.iter().find(|f| f.id == *face)?.plane())
+                    .map(|p| Plane { normal: p.normal, dist: p.dist + offset.dot(p.normal) })
+                    .collect();
+                faces
+                    .iter()
+                    .map(|(id, ..)| *id)
+                    .chain(created.iter().copied())
+                    .filter_map(|id| {
+                        let brush = self.session.map.get(id)?.kind.brush()?;
+                        let solid = brush.solid().ok()?;
+                        brush
+                            .faces
+                            .iter()
+                            .zip(solid.faces)
+                            .find_map(|(f, w)| w.filter(|_| f.plane().is_some_and(|p| moved.iter().any(|m| p.approx_eq(m, 1e-3)))))
+                    })
+                    .map(|w| w.0)
+                    .collect()
+            }
             Drag::None => self.extrude_hover.as_ref().map(|h| h.polygons.clone()).unwrap_or_default(),
             _ => Vec::new(),
         }

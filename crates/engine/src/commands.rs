@@ -1,6 +1,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{EngineError, SelectMode, Session};
+use crate::{BlendFill, EngineError, SelectMode, Session};
 
 /// A user-facing action that menus, shortcuts and the CLI dispatch by id.
 pub struct CommandSpec {
@@ -66,7 +66,7 @@ const COMMANDS: &[CommandSpec] = &[
         enabled: has_selection,
         run: |s| {
             let g = s.grid;
-            s.duplicate_selection(mapcraft_geom::DVec3::new(g, g, 0.0))
+            s.duplicate_selection(mapcraft_geom::DVec3::new(g, g, 0.0), None)
         },
     },
     CommandSpec {
@@ -116,6 +116,34 @@ const COMMANDS: &[CommandSpec] = &[
         run: |s| {
             s.select_none();
             Ok(())
+        },
+    },
+    CommandSpec {
+        id: "edit.select_faces_by_material",
+        label: "Select Faces by Material",
+        menu: "Edit/Select by Material/Faces Using Current Material",
+        shortcut: None,
+        enabled: always,
+        run: |s| {
+            let m = s.tex.material.clone();
+            match s.select_faces_with_material(&m) {
+                0 => Err(EngineError::Refused("no face a click can reach uses the current material")),
+                _ => Ok(()),
+            }
+        },
+    },
+    CommandSpec {
+        id: "edit.select_brushes_by_material",
+        label: "Select Brushes by Material",
+        menu: "Edit/Select by Material/Brushes Using Current Material",
+        shortcut: None,
+        enabled: always,
+        run: |s| {
+            let m = s.tex.material.clone();
+            match s.select_brushes_with_material(&m) {
+                0 => Err(EngineError::Refused("no brush a click can reach uses the current material")),
+                _ => Ok(()),
+            }
         },
     },
     CommandSpec {
@@ -261,12 +289,31 @@ const COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec {
+        id: "tools.drop_to_floor",
+        label: "Drop to Floor",
+        menu: "Tools/Drop to Floor",
+        shortcut: Some("End"),
+        enabled: has_selection,
+        run: |s| s.drop_to_floor(&|_| None).map(|_| ()),
+    },
+    CommandSpec {
         id: "tools.move_to_world",
         label: "Move to World",
         menu: "Tools/Move to World",
         shortcut: Some("Ctrl+Shift+W"),
         enabled: has_selection,
         run: Session::move_to_world,
+    },
+    CommandSpec {
+        id: "tools.center_origins",
+        label: "Center Origins",
+        menu: "Tools/Center Origins",
+        shortcut: None,
+        enabled: |s| !s.selected_brush_entities().is_empty(),
+        run: |s| {
+            let ids = s.selected_brush_entities();
+            s.set_origins(&ids, None, None)
+        },
     },
     CommandSpec {
         id: "tools.rotate_cw",
@@ -309,6 +356,60 @@ const COMMANDS: &[CommandSpec] = &[
         shortcut: Some("Shift+T"),
         enabled: |s| has_selection(s) || !s.face_selection.is_empty(),
         run: Session::apply_material,
+    },
+    CommandSpec {
+        id: "tools.clear_material",
+        label: "Clear Material",
+        menu: "Tools/Clear Material",
+        shortcut: None,
+        enabled: |s| has_selection(s) || !s.face_selection.is_empty(),
+        run: Session::clear_material,
+    },
+    CommandSpec {
+        id: "disp.blend_use_current",
+        label: "Blend Current Material",
+        menu: "Tools/Displacement/Blend Current Material",
+        shortcut: None,
+        enabled: Session::has_picked_displacement,
+        run: |s| {
+            let current = s.tex.material.clone();
+            if current.is_empty() {
+                return Err(EngineError::Refused("pick a material to blend in the Materials panel first"));
+            }
+            s.set_blend_material(Some(&current)).map(|_| ())
+        },
+    },
+    CommandSpec {
+        id: "disp.blend_remove",
+        label: "Remove Blend Material",
+        menu: "Tools/Displacement/Remove Blend Material",
+        shortcut: None,
+        enabled: Session::has_picked_displacement,
+        run: |s| s.set_blend_material(None).map(|_| ()),
+    },
+    CommandSpec {
+        id: "disp.blend_fill",
+        label: "Fill Blend",
+        menu: "Tools/Displacement/Fill Blend",
+        shortcut: None,
+        enabled: Session::has_picked_displacement,
+        run: |s| s.fill_blend(BlendFill::Value(1.0)).map(|_| ()),
+    },
+    CommandSpec {
+        id: "disp.blend_invert",
+        label: "Invert Blend",
+        menu: "Tools/Displacement/Invert Blend",
+        shortcut: None,
+        enabled: Session::has_picked_displacement,
+        run: |s| s.fill_blend(BlendFill::Invert).map(|_| ()),
+    },
+    CommandSpec {
+        id: "disp.blend_clear",
+        label: "Clear Blend",
+        menu: "Tools/Displacement/Clear Blend",
+        shortcut: None,
+        enabled: Session::has_picked_displacement,
+        run: |s| s.fill_blend(BlendFill::Value(0.0)).map(|_| ()),
     },
     CommandSpec { id: "uv.unwrap", label: "Unwrap", menu: "Tools/UV/Unwrap", shortcut: Some("U"), enabled: has_faces, run: Session::unwrap_faces },
     CommandSpec {
@@ -447,5 +548,22 @@ mod tests {
         s.selection = BTreeSet::from([b]);
         execute(&mut s, "tools.tie_to_entity").unwrap();
         assert_eq!(s.map.get(s.map.get(b).unwrap().parent.unwrap()).unwrap().kind.entity().unwrap().classname, "func_detail");
+    }
+
+    #[test]
+    fn select_by_material_and_drop_to_floor() {
+        let mut s = Session::default();
+        s.tex.material = "dev/floor".into();
+        s.create_brush(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0))).unwrap();
+        s.tex.material = "dev/crate".into();
+        let c = s.create_brush(Aabb::new(DVec3::new(0.0, 0.0, 64.0), DVec3::splat(96.0))).unwrap();
+        execute(&mut s, "edit.select_brushes_by_material").unwrap();
+        assert_eq!(s.selection, BTreeSet::from([c]));
+        execute(&mut s, "tools.drop_to_floor").unwrap();
+        assert_eq!(s.map.get(c).unwrap().kind.brush().unwrap().bounds().unwrap().min.z, 0.0);
+        execute(&mut s, "edit.select_faces_by_material").unwrap();
+        assert_eq!(s.face_selection.len(), 6);
+        s.tex.material = "unused".into();
+        assert!(matches!(execute(&mut s, "edit.select_faces_by_material"), Err(EngineError::Refused(_))));
     }
 }

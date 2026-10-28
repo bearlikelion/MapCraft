@@ -41,7 +41,7 @@
 - [x] Snapping like TrenchBroom: drags snap the grabbed corner to the grid or to a nearby brush corner, with a marker showing where it lands, and toggles for both.
 - [x] Space maximizes the viewport under the pointer and restores the four views.
 - [x] Linked 2D zoom (on by default, chain toggle in each 2D header).
-- [x] TrenchBroom's extrude: drag a face (Extrude tool, or Shift+drag with Select), Ctrl splits off a new brush or splits inward, Ctrl+Alt stamps; coplanar faces of several brushes move together.
+- [x] TrenchBroom's extrude: drag a face (Extrude tool, or Shift+drag with Select), Ctrl splits off a new brush or splits inward, Ctrl+Alt stamps, Alt slides the face keeping its shape; coplanar faces of several brushes and touching seams move together, hidden faces are reached through silhouette edges, corners snap to the grid and Escape cancels.
 - [x] Godot-style keys: Q select, W move, E extrude, R rotate (2D drag or 3D rings, 15 degree steps), T scale (3D handles); B block, N entity, C clip, V vertex, Shift+F face, D sculpt; F focuses the selection.
 - [x] SDK Settings opens by itself when a path materials need is unset, lists those paths first, flags paths that do not exist and applies on close.
 - [x] Release builds find the SDKs in the source tree; `MAPCRAFT_SDK_PATH` adds more folders.

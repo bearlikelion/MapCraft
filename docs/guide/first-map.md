@@ -34,7 +34,7 @@ The other folders are only needed to play the map and to import BSP maps; fill t
 
 The first block is 64 units deep; later blocks match the depth of the last one you drew.
 It gets the material shown in the top bar.
-You can also drag in the 3D view, on the ground or on any face; hold `Shift` while dragging to set the height.
+You can also drag in the 3D view, on the ground or on any face; hold `Shift` or `Alt` while dragging to set the height.
 
 > [!TIP]
 > To change the material, open the Materials tab (`Ctrl+3`) and click one: the selected block gets it. See [Materials](materials.md).
@@ -46,7 +46,7 @@ You can also drag in the 3D view, on the ground or on any face; hold `Shift` whi
 With the Block tool on, the top bar lists the shapes, then **Surf Ramp** and **Bhop Platforms**.
 
 1. Click **Surf Ramp**. A yellow ghost of the ramp follows the pointer.
-2. Set **Turn**, or click **90°** for a quarter turn.
+2. Set **Facing** in the inspector, or click the turn icon next to it for a quarter turn.
 3. Click in a view to place it.
 
 ![Surf Ramp picked in the top bar (1), the 90° turn button (2) and the yellow ghost of the ramp in the Top view (3), with the ramp's settings in the inspector](img/first-ramp.webp)
@@ -106,23 +106,38 @@ If MapCraft closes without saving, the next start asks **Recover unsaved work?**
 - **Not now** keeps them for later.
 
 Change the interval with **Autosave every** in **Edit > Preferences**; 0 turns autosave off.
-Saving the map, or quitting normally, deletes its backup.
-Backups live in the `autosave` folder of MapCraft's data folder: `~/.local/share/mapcraft/autosave` on Linux, `%LOCALAPPDATA%\mapcraft\autosave` on Windows.
+Autosaves wait until you finish a drag, so they never catch half a move.
+Saving the map, or quitting normally, deletes its autosave.
+Autosaves live in the `autosave` folder of MapCraft's data folder: `~/.local/share/mapcraft/autosave` on Linux, `%LOCALAPPDATA%\mapcraft\autosave` on Windows.
+Each map gets its own autosave, named for the map and its folder, so two maps called `level.mcmap` in different projects never overwrite each other's.
+Each running MapCraft keeps its own autosaves too, so a second window never offers back or deletes the first one's.
+
+### Backups and Revert
+
+Each save first copies the file it replaces into a `backups` folder beside the map: `level.1.mcmap` is the version before the last save, `level.2.mcmap` the one before that.
+**Keep backups** in **Edit > Preferences** sets how many are kept (3 to start with); 0 turns them off.
+Saving a map that has not changed since its last backup makes no new one.
+The `backups` folder holds a `.gdignore` file, so Godot does not import the copies as scenes.
+Open a backup like any map to get an earlier version back.
+
+**File > Revert** throws away unsaved changes and opens the saved map again, after asking.
+**File > Reload Assets** (`F5`) rereads the SDK's entity definitions, materials, models and prefabs from disk, keeping the map, the selection, the undo history and the current material.
+Use it after editing an FGD or a texture with the map open.
 
 ## 8. Check for problems
 
-Press `Alt+P`, or click **Check** at the right of the top bar.
+Press `Alt+P`, or click **Check** (the checklist) at the right of the top bar.
 The Issues tab opens below the views: errors in red, warnings in yellow.
 
 - Click an issue to select the object and look at it.
-- **Fix** repairs one issue, and **Fix all** repairs every one it can, as one undo step.
+- **Fix** (the wrench on an issue's row) repairs one issue, and **Fix all** repairs every one it can, as one undo step.
 - **Check again** runs the checks once more.
 
 ![The Check button marked 1, and the Issues tab below the views listing two yellow warnings about zones shorter than 256 units](img/first-check.webp)
 
 ## 9. Play it
 
-Open the **Run** menu, or click **Run** at the right of the top bar, and pick a profile:
+Open the **Run** menu, or click **Run** (the orange play button) at the right of the top bar, and pick a profile:
 
 - **Play in SurfsUp project** runs the map in your SurfsUp Godot project.
 - **Play in SurfsUp** runs it in the installed game.

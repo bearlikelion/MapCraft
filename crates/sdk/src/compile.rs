@@ -29,6 +29,9 @@ pub enum CompileError {
 pub struct CompileProfile {
     pub name: String,
     pub steps: Vec<Step>,
+    /// A file the Lit view shows once the steps run in the editor's bake folder, which `${map_dir}` names, without saving.
+    #[serde(default)]
+    pub bake: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -239,10 +242,14 @@ steps = [
         assert_eq!(std::fs::read_to_string(dir.path().join("out/b.txt")).unwrap(), "hi");
         assert!(lines.contains(&"built".to_string()) && lines.contains(&"warn".to_string()));
 
-        let failing =
-            CompileProfile { name: "f".into(), steps: vec![Step::Run { run: "sh".into(), args: vec!["-c".into(), "exit 3".into()], wine: false, cwd: None }] };
+        let failing = CompileProfile {
+            name: "f".into(),
+            steps: vec![Step::Run { run: "sh".into(), args: vec!["-c".into(), "exit 3".into()], wine: false, cwd: None }],
+            bake: None,
+        };
         assert!(matches!(run_profile(&failing, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Failed { .. })));
-        let missing = CompileProfile { name: "m".into(), steps: vec![Step::Run { run: "/no/such/tool".into(), args: vec![], wine: false, cwd: None }] };
+        let missing =
+            CompileProfile { name: "m".into(), steps: vec![Step::Run { run: "/no/such/tool".into(), args: vec![], wine: false, cwd: None }], bake: None };
         assert!(matches!(run_profile(&missing, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Spawn { .. })));
         assert!(matches!(run_profile(&profile, &vars, &mut |_| {}, &AtomicBool::new(true)), Err(CompileError::Cancelled)));
     }

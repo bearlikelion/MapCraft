@@ -173,6 +173,15 @@ impl Map {
     /// Nodes that are drawn and picked: not hidden, carrying no hidden tag, under no hidden
     /// parent, and while a cordon is active, touching one.
     pub fn visible_nodes(&self) -> BTreeSet<NodeId> {
+        self.shown(false)
+    }
+
+    /// Visible nodes not locked or inside something locked: what clicks and Select All reach.
+    pub fn editable_nodes(&self) -> BTreeSet<NodeId> {
+        self.shown(true)
+    }
+
+    fn shown(&self, skip_locked: bool) -> BTreeSet<NodeId> {
         let hidden_tags: BTreeSet<TagId> = self.tags.iter().filter(|t| t.hidden).map(|t| t.id).collect();
         let cordons: Vec<Aabb> = self.cordons.iter().filter(|c| c.active).map(|c| c.bounds).collect();
         let outside = |n: &Node| {
@@ -188,7 +197,8 @@ impl Map {
         let mut stack = vec![ROOT];
         while let Some(id) = stack.pop() {
             let Some(n) = self.nodes.get(&id) else { continue };
-            if n.hidden || n.tags.iter().any(|t| hidden_tags.contains(t)) || (!cordons.is_empty() && outside(n)) || !out.insert(id) {
+            let locked = skip_locked && n.locked;
+            if n.hidden || locked || n.tags.iter().any(|t| hidden_tags.contains(t)) || (!cordons.is_empty() && outside(n)) || !out.insert(id) {
                 continue;
             }
             stack.extend(n.children.iter().copied());
@@ -459,6 +469,20 @@ mod tests {
         assert!(!v.contains(&a) && v.contains(&b));
         map.apply(undo);
         assert!(map.cordons.is_empty() && map.tags.len() == 1);
+    }
+
+    #[test]
+    fn locks_reach_contents() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let g = e.insert(ROOT, NodeKind::Group(Group::default())).unwrap();
+        let a = e.insert(g, brush()).unwrap();
+        let b = e.insert(ROOT, brush()).unwrap();
+        e.update(g, |_, locked, _, _| *locked = true).unwrap();
+        map.apply(e.finish());
+        let v = map.editable_nodes();
+        assert!(!v.contains(&g) && !v.contains(&a), "a locked group locks what it holds");
+        assert!(v.contains(&b) && map.visible_nodes().contains(&a));
     }
 
     #[test]

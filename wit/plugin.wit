@@ -1,4 +1,4 @@
-package mapcraft:plugin@0.1.0;
+package mapcraft:plugin@0.2.0;
 
 /// Plain data shared by the host and plugins. Lengths are map units (1 unit = 1 inch), Z is up.
 interface types {
@@ -90,10 +90,12 @@ interface types {
         models: list<string>,
     }
 
-    /// Editor state a command may use: the grid size and the material picked in the browser.
+    /// Editor state a command may use: the grid size, the material picked in the browser, and the
+    /// SDK's name, which TrenchBroom calls the game.
     record context {
         grid: f64,
         material: string,
+        game: string,
     }
 
     /// A brush face: three points on its plane, clockwise seen from outside the brush.
@@ -104,11 +106,28 @@ interface types {
         scale: f64,
     }
 
+    /// A displaced face's grid, in `.mcmap` order.
+    record displacement {
+        /// 1 to 4: the grid has 2^power + 1 vertices a side.
+        power: u32,
+        /// The face's corners in grid order, the start corner then counter-clockwise seen from outside; from a plugin only the start corner is read.
+        corners: tuple<vec3, vec3, vec3, vec3>,
+        /// Height along the face's outward normal at each vertex, row by row: a row runs from the start corner toward the second corner, and rows step toward the fourth.
+        heights: list<f64>,
+        /// Second layer share at each vertex from 0 to 1, in the same order; empty is 0 everywhere.
+        blend: list<f64>,
+        /// The second layer's material, when the face has one.
+        blend-material: option<string>,
+    }
+
     record face {
         points: tuple<vec3, vec3, vec3>,
         material: string,
         /// The u and v texture axes; without them the texture is aligned to the world.
         uv: option<tuple<tex-axis, tex-axis>>,
+        /// Game attributes such as `lightmapscale`, `smoothing_groups` or `anti_tile`.
+        attrs: list<tuple<string, string>>,
+        disp: option<displacement>,
     }
 
     /// Faces of a hull whose outward normal is within about 8 degrees of `normal` get `material`.
@@ -129,10 +148,23 @@ interface types {
         hull(hull),
     }
 
+    /// An entity output wired to an input of the entities named `target` (Hammer's I/O).
+    record connection {
+        output: string,
+        target: string,
+        input: string,
+        param: string,
+        /// Seconds after the output fires.
+        delay: f64,
+        /// How many times it fires; -1 is every time.
+        times: s32,
+    }
+
     /// A point entity, or a brush entity when it has brushes.
     record entity {
         classname: string,
         properties: list<tuple<string, string>>,
+        connections: list<connection>,
         brushes: list<brush>,
     }
 
@@ -161,6 +193,7 @@ interface types {
     record map-entity {
         classname: string,
         properties: list<tuple<string, string>>,
+        connections: list<connection>,
     }
 
     variant map-node-kind {
@@ -208,6 +241,12 @@ interface types {
         uvs: list<tuple<f32, f32>>,
         /// Three per triangle, indexes into `positions`.
         indices: list<u32>,
+        /// The SDK material a compiled map names for these triangles; the Lit view shows it in place of `texture`.
+        material: option<string>,
+        /// Index into `model.textures` of baked light that multiplies the material's sRGB color: 128 shows it as is, 255 twice as bright.
+        lightmap: option<u32>,
+        /// Coordinates into the lightmap per position, 0 to 1 with V down; empty without a lightmap.
+        lightmap-uvs: list<tuple<f32, f32>>,
     }
 
     /// A static model a point entity shows, in map units around the entity's origin, facing +X.
@@ -253,6 +292,16 @@ interface types {
         ao: option<channel-map>,
     }
 
+    /// How a material takes part in displacement blending.
+    enum blend-role {
+        /// Either layer of a blend the editor draws.
+        layer,
+        /// The material holds two textures and mixes them by vertex weight itself.
+        %own,
+        /// Neither: painting refuses it and the game draws it unblended.
+        unblendable,
+    }
+
     /// A material for the browser. `image` is a path in the SDK's asset folders shown as its
     /// preview; without one, `color` (sRGB) is.
     record material-info {
@@ -265,6 +314,11 @@ interface types {
         size: option<tuple<u32, u32>>,
         /// Physically based maps; without them the material is fully rough and not metallic.
         pbr: option<pbr>,
+        /// How many times the texture repeats across its own texel size, as Godot's `uv1_scale`; none is once.
+        uv-scale: option<tuple<f32, f32>>,
+        /// The game draws it with nearest filtering.
+        pixelated: bool,
+        blend: blend-role,
     }
 }
 
@@ -281,6 +335,9 @@ interface host {
 
     /// Reads part of a file from the SDK's asset folders, for archives too big to read whole.
     read-range: func(path: string, offset: u64, length: u64) -> result<list<u8>, string>;
+
+    /// Where a file from the SDK's asset folders is on disk, for compilers and other tools outside the editor.
+    file-path: func(path: string) -> option<string>;
 }
 
 world plugin {

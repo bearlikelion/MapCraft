@@ -78,7 +78,7 @@ int32_t MapCraftImportPlugin::_get_import_order() const {
 
 // Bump when imported scenes change, so projects reimport maps made by an older build.
 int32_t MapCraftImportPlugin::_get_format_version() const {
-	return 3;
+	return 6;
 }
 
 Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,

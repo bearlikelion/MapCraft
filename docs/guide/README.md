@@ -5,8 +5,8 @@ If you are new, read the first two pages.
 
 ## The editor at a glance
 
-1. **Top bar**: menus, the selection mode, grid size, snapping, the current material, and the **Check** and **Run** buttons.
-2. **Panels**: the Scene tree, Tags, Materials, Entities and Models tabs.
+1. **Top bar**: menus, the selection mode, grid size, snapping, the current material, and the **Check** and **Run** buttons; hover an icon for its name and shortcut.
+2. **Panels**: the Scene tree, Tags, Materials, Entities and Models tabs, shown as icons.
 3. **Tools**: Select, Move, Extrude, Rotate, Scale, Block, Entity, Clip, Vertex, Face, Sculpt and Path.
 4. **Views**: 3D, Top, Front and Side. Press `Space` to fill the window with the one under the pointer.
 5. **Inspector**: shows and edits the settings of the selection.

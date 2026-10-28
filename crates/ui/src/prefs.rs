@@ -15,12 +15,16 @@ pub struct Prefs {
     pub sdk_paths: BTreeMap<String, BTreeMap<String, String>>,
     /// Per SDK id, the user's own texture folders, searched after the SDK's.
     pub sdk_textures: BTreeMap<String, Vec<String>>,
+    /// Per SDK id, the top-level material folders the Materials panel leaves out.
+    pub hidden_textures: BTreeMap<String, BTreeSet<String>>,
     /// SDKs whose compile tools the user allowed to run.
     pub approved_tools: BTreeSet<String>,
     pub view: ViewPrefs,
     pub keymap: crate::shortcuts::Preset,
     /// The user's own chords by action id, over the preset; empty unbinds.
     pub shortcuts: BTreeMap<String, String>,
+    /// Inspector sections folded open or closed, by `{key}:{closed by default}`.
+    pub inspector_folds: BTreeMap<String, bool>,
 }
 
 impl Default for Prefs {
@@ -32,10 +36,12 @@ impl Default for Prefs {
             registries: vec![mapcraft_sdk_manager::DEFAULT_REGISTRY.to_string()],
             sdk_paths: BTreeMap::new(),
             sdk_textures: BTreeMap::new(),
+            hidden_textures: BTreeMap::new(),
             approved_tools: BTreeSet::new(),
             view: ViewPrefs::default(),
             keymap: crate::shortcuts::Preset::default(),
             shortcuts: BTreeMap::new(),
+            inspector_folds: BTreeMap::new(),
         }
     }
 }
@@ -45,6 +51,8 @@ impl Default for Prefs {
 pub struct ViewPrefs {
     pub grid: f64,
     pub autosave_minutes: u32,
+    /// Earlier versions of a map kept in a `backups` folder beside it each time it is saved.
+    pub backups: u32,
     pub fly_speed: f64,
     /// Draw each brush in its own color in the 2D views, as Hammer does.
     pub colorize: bool,
@@ -57,6 +65,16 @@ pub struct ViewPrefs {
     pub apply_on_click: bool,
     /// One view fills the window and Space shows the next one, as in TrenchBroom.
     pub single_view: bool,
+    /// A face drag sweeps the face out square to it instead of moving its plane.
+    pub extrude_along_normal: bool,
+    /// Tint faces by steepness: walkable, surfable, wall or ceiling.
+    pub slope_colors: bool,
+    /// Steepest a floor can be and still be stood on, in degrees; Source's is 45.573 (normal Z 0.7).
+    pub slope_walkable: f64,
+    /// Steepest a surfable ramp can be, in degrees; surf maps' main ramps stay under about 72.
+    pub slope_surfable: f64,
+    /// 3D views draw the sky; off, sky faces draw like other faces.
+    pub sky: bool,
 }
 
 impl Default for ViewPrefs {
@@ -64,6 +82,7 @@ impl Default for ViewPrefs {
         Self {
             grid: 16.0,
             autosave_minutes: 5,
+            backups: 3,
             fly_speed: 512.0,
             colorize: true,
             snap_grid: true,
@@ -71,6 +90,11 @@ impl Default for ViewPrefs {
             link_zoom: true,
             apply_on_click: true,
             single_view: false,
+            extrude_along_normal: false,
+            slope_colors: false,
+            slope_walkable: 45.573,
+            slope_surfable: 72.0,
+            sky: true,
         }
     }
 }

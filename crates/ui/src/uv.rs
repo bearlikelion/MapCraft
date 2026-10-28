@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::{Align2, Color32, FontId, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use mapcraft_engine::{FacePick, face_polygons, uv_islands};
 use mapcraft_geom::{DAffine2, DVec2};
 use mapcraft_render::Renderer;
@@ -19,12 +19,23 @@ pub(crate) struct UvCamera {
     pub zoom: f64,
     /// Fits the picked faces into the view on its next frame.
     pub frame: bool,
+    /// Where the view was last drawn; the inspector's is `Rect::NOTHING` while it is hidden.
+    pub rect: Rect,
+    /// A hash of the picks it last fitted; picks changed outside UV views fit it again.
+    pub picks: u64,
 }
 
 impl Default for UvCamera {
     fn default() -> Self {
-        Self { center: DVec2::ZERO, zoom: 1.0, frame: true }
+        Self { center: DVec2::ZERO, zoom: 1.0, frame: true, rect: Rect::NOTHING, picks: 0 }
     }
+}
+
+/// A UV view: one filling a pane, or the one atop the Face tool's inspector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum UvView {
+    Pane(usize),
+    Inspector,
 }
 
 impl UvCamera {
@@ -50,20 +61,27 @@ pub(crate) enum UvMode {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct UvModal {
     mode: UvMode,
-    pane: usize,
+    view: UvView,
     /// The pointer as the transform began, taken on its first frame.
     start: Option<Pos2>,
     pivot: DVec2,
     /// Locks the transform to U (0) or V (1).
     axis: Option<usize>,
+    /// Scales U and V apart, as a corner handle does, unless Shift keeps the aspect.
+    free: bool,
+    /// A drag of a face or handle, which applies on release, and its cursor.
+    drag: Option<CursorIcon>,
     applied: DAffine2,
-    changed: bool,
 }
 
 impl UvModal {
+    fn new(mode: UvMode, view: UvView, pivot: DVec2) -> Self {
+        Self { mode, view, start: None, pivot, axis: None, free: false, drag: None, applied: DAffine2::IDENTITY }
+    }
+
     /// The whole transform for the pointer at `pointer`, with `snap` in whole texels, 15 degrees or
     /// tenths.
-    fn transform(&self, cam: &UvCamera, rect: Rect, start: Pos2, pointer: Pos2, snap: bool) -> DAffine2 {
+    fn transform(&self, cam: &UvCamera, rect: Rect, start: Pos2, pointer: Pos2, snap: bool, keep_aspect: bool) -> DAffine2 {
         let around = |m: DAffine2| DAffine2::from_translation(self.pivot) * m * DAffine2::from_translation(-self.pivot);
         let pivot = cam.screen(rect, self.pivot);
         match self.mode {
@@ -88,23 +106,28 @@ impl UvModal {
                 around(DAffine2::from_angle(turn))
             }
             UvMode::Scale => {
-                let from = dvec(start - pivot).length();
-                let mut f = if from > 1.0 { dvec(pointer - pivot).length() / from } else { 1.0 };
+                let ratio = |to: f64, from: f64| if from.abs() > 1.0 { to / from } else { 1.0 };
+                let (a, b) = (dvec(start - pivot), dvec(pointer - pivot));
+                let mut f = if self.free && !keep_aspect { DVec2::new(ratio(b.x, a.x), ratio(b.y, a.y)) } else { DVec2::splat(ratio(b.length(), a.length())) };
                 if snap {
-                    f = ((f * 10.0).round() / 10.0).max(0.1);
+                    f = ((f * 10.0).round() / 10.0).max(DVec2::splat(0.1));
                 }
-                let f = f.max(0.01);
+                let f = f.max(DVec2::splat(0.01));
                 around(DAffine2::from_scale(match self.axis {
-                    Some(0) => DVec2::new(f, 1.0),
-                    Some(_) => DVec2::new(1.0, f),
-                    None => DVec2::splat(f),
+                    Some(0) => DVec2::new(f.x, 1.0),
+                    Some(_) => DVec2::new(1.0, f.y),
+                    None => f,
                 }))
             }
         }
     }
 
     pub(crate) fn hint(&self) -> String {
-        format!("{}; X or Y locks an axis, Ctrl snaps, click or Enter applies, Esc or right click cancels", self.done())
+        match self.drag {
+            Some(_) if self.free => format!("{}; Shift keeps the aspect, Ctrl snaps, Esc or right click cancels", self.done()),
+            Some(_) => format!("{}; Ctrl snaps, Esc or right click cancels", self.done()),
+            None => format!("{}; X or Y locks an axis, Ctrl snaps, click or Enter applies, Esc or right click cancels", self.done()),
+        }
     }
 
     /// How far the transform has gone, as the view shows it.
@@ -143,6 +166,37 @@ fn bounds(points: impl Iterator<Item = DVec2>) -> Option<(DVec2, DVec2)> {
     points.fold(None, |b, p| Some(b.map_or((p, p), |(lo, hi): (DVec2, DVec2)| (lo.min(p), hi.max(p)))))
 }
 
+fn picked_bounds(faces: &[UvFace]) -> Option<(DVec2, DVec2)> {
+    bounds(faces.iter().filter(|f| f.picked).flat_map(|f| f.points.iter().copied()))
+}
+
+/// Screen pixels from a handle that still grab it.
+const HANDLE_REACH: f32 = 7.0;
+/// Screen pixels the rotate handle sits above the box.
+const KNOB: f32 = 20.0;
+
+/// The handles of the box around the picked faces' UVs, where each draws and the drag it starts:
+/// corners and edges scale about the opposite side, the knob above turns about the middle.
+fn uv_handles(cam: &UvCamera, rect: Rect, view: UvView, (lo, hi): (DVec2, DVec2)) -> Vec<(Pos2, UvModal)> {
+    let (mid, half) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
+    let mut out: Vec<(Pos2, UvModal)> = [(-1i8, -1i8), (1, -1), (1, 1), (-1, 1), (0, -1), (1, 0), (0, 1), (-1, 0)]
+        .into_iter()
+        .map(|(i, j)| {
+            let side = DVec2::new(f64::from(i), f64::from(j)) * half;
+            let (axis, cursor) = match (i, j) {
+                (0, _) => (Some(1), CursorIcon::ResizeVertical),
+                (_, 0) => (Some(0), CursorIcon::ResizeHorizontal),
+                _ if i == j => (None, CursorIcon::ResizeNwSe),
+                _ => (None, CursorIcon::ResizeNeSw),
+            };
+            (cam.screen(rect, mid + side), UvModal { axis, free: true, drag: Some(cursor), ..UvModal::new(UvMode::Scale, view, mid - side) })
+        })
+        .collect();
+    let knob = cam.screen(rect, DVec2::new(mid.x, lo.y)) - Vec2::new(0.0, KNOB);
+    out.push((knob, UvModal { drag: Some(CursorIcon::Grab), ..UvModal::new(UvMode::Rotate, view, mid) }));
+    out
+}
+
 /// Whether `p` lies inside `poly`, by the even-odd rule.
 fn contains(poly: &[DVec2], p: DVec2) -> bool {
     let mut inside = false;
@@ -159,6 +213,43 @@ fn island_color(island: usize) -> Color32 {
 }
 
 impl MapCraftApp {
+    fn uv_camera(&self, view: UvView) -> Option<UvCamera> {
+        match view {
+            UvView::Pane(i) => self.panes.get(i)?.uv,
+            UvView::Inspector => Some(self.uv_panel),
+        }
+    }
+
+    fn uv_cameras(&mut self) -> impl Iterator<Item = (UvView, &mut UvCamera)> {
+        let panes = self.panes.iter_mut().enumerate().filter_map(|(i, p)| Some((UvView::Pane(i), p.uv.as_mut()?)));
+        panes.chain([(UvView::Inspector, &mut self.uv_panel)])
+    }
+
+    fn uv_picks(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        self.session.face_selection.hash(&mut h);
+        h.finish()
+    }
+
+    /// Fits the picked faces in the UV view under the pointer, else in every UV view.
+    pub(crate) fn fit_uv(&mut self) {
+        let hovered = self.uv_hovered;
+        for (view, cam) in self.uv_cameras() {
+            cam.frame |= hovered.is_none_or(|h| h == view);
+        }
+    }
+
+    fn set_uv_camera(&mut self, view: UvView, cam: UvCamera) {
+        let slot = match view {
+            UvView::Pane(i) => self.panes.get_mut(i).and_then(|p| p.uv.as_mut()),
+            UvView::Inspector => Some(&mut self.uv_panel),
+        };
+        if let Some(c) = slot {
+            *c = cam;
+        }
+    }
+
     /// The material UV views show, the active face's, and its texture size.
     pub(crate) fn uv_reference(&self) -> Option<(String, DVec2)> {
         let (id, face) = self.session.active_pick()?;
@@ -196,34 +287,35 @@ impl MapCraftApp {
         if !matches!(self.drag, Drag::None) {
             return;
         }
-        let is_uv = |i: &usize| self.panes.get(*i).is_some_and(|p| p.uv.is_some());
-        let Some(pane) = self.hovered_pane.filter(is_uv).or_else(|| (0..self.panes.len()).find(is_uv)) else {
-            self.status = "Turn a view into the UV Editor from its header first".into();
+        let shown = |v: &UvView| self.uv_camera(*v).is_some_and(|c| c.rect.is_positive());
+        let mut views = (0..self.panes.len()).map(UvView::Pane).chain([UvView::Inspector]);
+        let Some(view) = self.uv_hovered.filter(shown).or_else(|| views.find(shown)) else {
+            self.status = "Open UV in the Face tool's inspector, or turn a view into the UV Editor from its header".into();
             return;
         };
         let Some((_, size)) = self.uv_reference() else {
             self.status = format!("Pick faces with the Face tool ({}) first", self.chord("tool.face"));
             return;
         };
-        let faces = self.uv_faces(size);
-        let Some((lo, hi)) = bounds(faces.iter().filter(|f| f.picked).flat_map(|f| f.points.iter().copied())) else { return };
+        let Some((lo, hi)) = picked_bounds(&self.uv_faces(size)) else { return };
         self.session.end_coalesce();
-        self.uv_modal = Some(UvModal { mode, pane, start: None, pivot: (lo + hi) / 2.0, axis: None, applied: DAffine2::IDENTITY, changed: false });
+        self.uv_modal = Some(UvModal::new(mode, view, (lo + hi) / 2.0));
     }
 
     /// Drives a running UV transform from the pointer and keys; every other shortcut waits for it.
     pub(crate) fn uv_modal_input(&mut self, ctx: &egui::Context) {
         let Some(mut m) = self.uv_modal else { return };
-        let view = self.panes.get(m.pane).and_then(|p| Some((p.uv?, p.rect)));
-        let (Some((cam, rect)), Some((_, size))) = (view, self.uv_reference()) else {
+        let (Some(cam), Some((_, size))) = (self.uv_camera(m.view).filter(|c| c.rect.is_positive()), self.uv_reference()) else {
             self.uv_modal = None;
             return;
         };
+        let rect = cam.rect;
         use egui::Key;
-        let (pointer, snap, x, y, enter, escape, confirm, cancel) = ctx.input(|i| {
+        let (pointer, snap, keep_aspect, x, y, enter, escape, confirm, cancel) = ctx.input(|i| {
             (
                 i.pointer.latest_pos(),
                 i.modifiers.command,
+                i.modifiers.shift,
                 i.key_pressed(Key::X),
                 i.key_pressed(Key::Y),
                 i.key_pressed(Key::Enter),
@@ -233,13 +325,13 @@ impl MapCraftApp {
             )
         });
         for (pressed, axis) in [(x, 0), (y, 1)] {
-            if pressed {
+            if pressed && m.drag.is_none() {
                 m.axis = if m.axis == Some(axis) { None } else { Some(axis) };
             }
         }
         if let Some(pointer) = pointer {
             let start = *m.start.get_or_insert(pointer);
-            let total = m.transform(&cam, rect, start, pointer, snap);
+            let total = m.transform(&cam, rect, start, pointer, snap, keep_aspect);
             if !total.abs_diff_eq(m.applied, 1e-12) {
                 let label = match m.mode {
                     UvMode::Grab => "Move UVs",
@@ -250,7 +342,7 @@ impl MapCraftApp {
                 let step = total * m.applied.inverse();
                 match self.session.transform_uvs(label, step, size, &|name| texture_size(renderer, name), Some("uv-transform")) {
                     Ok(()) => {
-                        (m.applied, m.changed) = (total, true);
+                        m.applied = total;
                         self.mark_changed();
                     }
                     Err(e) => self.status = e.to_string(),
@@ -258,12 +350,12 @@ impl MapCraftApp {
             }
         }
         self.uv_modal = Some(m);
-        if enter || confirm {
+        let back = m.applied.abs_diff_eq(DAffine2::IDENTITY, 1e-12);
+        if (enter || confirm) && !back {
             self.session.end_coalesce();
             self.uv_modal = None;
-        } else if escape || cancel {
-            if m.changed {
-                self.session.undo();
+        } else if enter || confirm || escape || cancel {
+            if self.session.cancel_coalesce("uv-transform") {
                 self.mark_changed();
             }
             self.uv_modal = None;
@@ -281,34 +373,43 @@ impl MapCraftApp {
                 self.session.active_face = Some(h);
             }
         }
+        let picks = self.uv_picks();
+        self.uv_cameras().for_each(|(_, c)| c.picks = picks);
         self.mark_changed();
     }
 
-    pub(crate) fn uv_view(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) {
+    pub(crate) fn uv_view(&mut self, ui: &mut egui::Ui, view: UvView, rect: Rect) {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_gray(28));
-        let Some(pane) = self.panes.get_mut(index) else { return };
-        pane.rect = rect;
+        if let UvView::Pane(i) = view
+            && let Some(pane) = self.panes.get_mut(i)
+        {
+            pane.rect = rect;
+        }
+        let Some(cam) = self.uv_camera(view) else { return };
+        self.set_uv_camera(view, UvCamera { rect, ..cam });
+        if ui.rect_contains_pointer(rect) {
+            self.uv_hovered = Some(view);
+        }
         let Some((material, size)) = self.uv_reference() else {
             let text = format!("Pick faces with the Face tool ({}) to see their UVs here", self.chord("tool.face"));
             painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(14.0), TEXT_WEAK);
             return;
         };
         let faces = self.uv_faces(size);
-        let response = ui.interact(rect, ui.id().with(("uv-view", index)), Sense::click_and_drag());
+        let response = ui.interact(rect, ui.id().with(("uv-view", view)), Sense::click_and_drag());
         if !self.uv_busy {
-            self.uv_input(ui, index, rect, &response, &faces);
+            self.uv_input(ui, view, rect, &response, &faces);
         }
-        let Some(mut cam) = self.panes.get(index).and_then(|p| p.uv) else { return };
-        if cam.frame {
-            if let Some((lo, hi)) = bounds(faces.iter().filter(|f| f.picked).flat_map(|f| f.points.iter().copied())) {
+        let Some(mut cam) = self.uv_camera(view) else { return };
+        let picks = self.uv_picks();
+        if cam.frame || cam.picks != picks {
+            if let Some((lo, hi)) = picked_bounds(&faces) {
                 cam.center = (lo + hi) / 2.0;
                 cam.zoom = ((dvec(rect.size()) / (hi - lo).max(DVec2::ONE)).min_element() / 1.3).clamp(1.0 / 64.0, 64.0);
             }
-            cam.frame = false;
-            if let Some(p) = self.panes.get_mut(index) {
-                p.uv = Some(cam);
-            }
+            (cam.frame, cam.picks) = (false, picks);
+            self.set_uv_camera(view, cam);
         }
         self.draw_uv_texture(ui, &painter, rect, &cam, &material, size);
         for f in &faces {
@@ -322,7 +423,21 @@ impl MapCraftApp {
                 painter.add(Shape::closed_line(pts, Stroke::new(1.0, Color32::from_white_alpha(70))));
             }
         }
-        if let Some(m) = self.uv_modal.filter(|m| m.pane == index) {
+        if let Some((lo, hi)) = picked_bounds(&faces) {
+            painter.rect_stroke(Rect::from_two_pos(cam.screen(rect, lo), cam.screen(rect, hi)), 0.0, Stroke::new(1.0, ACCENT), egui::StrokeKind::Middle);
+            for (at, m) in uv_handles(&cam, rect, view, (lo, hi)) {
+                if m.mode == UvMode::Rotate {
+                    painter.line_segment([at, at + Vec2::new(0.0, KNOB)], Stroke::new(1.0, ACCENT));
+                    painter.circle(at, 5.0, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
+                } else {
+                    painter.rect(Rect::from_center_size(at, Vec2::splat(7.0)), 0.0, Color32::WHITE, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Inside);
+                }
+            }
+        }
+        if let Some(m) = self.uv_modal.filter(|m| m.view == view) {
+            if let Some(cursor) = m.drag {
+                ui.ctx().set_cursor_icon(cursor);
+            }
             let c = cam.screen(rect, m.pivot);
             if let Some(p) = ui.ctx().pointer_latest_pos().filter(|_| m.mode != UvMode::Grab) {
                 painter.circle_stroke(c, 5.0, Stroke::new(1.5, ACCENT));
@@ -333,8 +448,8 @@ impl MapCraftApp {
             painter.rect_filled(Rect::from_min_size(at, text.size()).expand(4.0), 3.0, Color32::from_black_alpha(170));
             painter.galley(at, text, Color32::WHITE);
         }
-        if let Drag::Marquee { view, start } = &self.drag
-            && *view == index
+        if let Drag::UvMarquee { view: v, start } = &self.drag
+            && *v == view
             && let Some(p) = response.interact_pointer_pos()
         {
             painter.rect_stroke(Rect::from_two_pos(*start, p), 0.0, Stroke::new(1.0, Color32::YELLOW), egui::StrokeKind::Inside);
@@ -376,11 +491,12 @@ impl MapCraftApp {
     }
 
     /// Pan, zoom, picking and the context menu of a UV view.
-    fn uv_input(&mut self, ui: &egui::Ui, index: usize, rect: Rect, response: &egui::Response, faces: &[UvFace]) {
+    fn uv_input(&mut self, ui: &egui::Ui, view: UvView, rect: Rect, response: &egui::Response, faces: &[UvFace]) {
         let ctx = ui.ctx().clone();
-        let Some(mut cam) = self.panes.get(index).and_then(|p| p.uv) else { return };
+        let Some(mut cam) = self.uv_camera(view) else { return };
         if let Some(h) = response.hover_pos() {
-            let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
+            // Taken so the inspector around it does not scroll too.
+            let scroll = ctx.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta)).y;
             if scroll != 0.0 {
                 let at = cam.uv(rect, h);
                 cam.zoom = (cam.zoom * (f64::from(scroll) / 200.0).exp()).clamp(1.0 / 64.0, 256.0);
@@ -393,25 +509,47 @@ impl MapCraftApp {
         if response.double_clicked() {
             cam.frame = true;
         }
-        if let Some(p) = self.panes.get_mut(index) {
-            p.uv = Some(cam);
-        }
+        self.set_uv_camera(view, cam);
         let additive = ctx.input(|i| i.modifiers.command || i.modifiers.shift);
+        let handles = picked_bounds(faces).map(|b| uv_handles(&cam, rect, view, b)).unwrap_or_default();
+        let handle_at = |p: Pos2| handles.iter().find(|(at, _)| at.distance(p) <= HANDLE_REACH).map(|(_, m)| *m);
+        let face_at = |p: Pos2| faces.iter().rev().find(|f| contains(&f.points, cam.uv(rect, p)));
+        if let Some(h) = response.hover_pos().filter(|_| !response.dragged()) {
+            let picked = face_at(h).is_some_and(|f| f.picked);
+            if let Some(cursor) = handle_at(h).and_then(|m| m.drag).or(picked.then_some(CursorIcon::Move)) {
+                ctx.set_cursor_icon(cursor);
+            }
+        }
         if response.clicked_by(PointerButton::Primary)
             && let Some(p) = response.interact_pointer_pos()
+            && handle_at(p).is_none()
         {
-            let at = cam.uv(rect, p);
-            let hit = faces.iter().rev().find(|f| contains(&f.points, at)).map(|f| f.pick);
+            let hit = face_at(p).map(|f| f.pick);
             self.pick_uv_faces(hit.into_iter().collect(), additive, true);
         }
         if response.drag_started_by(PointerButton::Primary)
             && let Some(p) = ctx.input(|i| i.pointer.press_origin())
         {
-            self.drag = Drag::Marquee { view: index, start: p };
+            let modal = match (handle_at(p), face_at(p)) {
+                (Some(m), _) => Some(m),
+                (None, Some(f)) => {
+                    if !f.picked {
+                        self.pick_uv_faces(vec![f.pick], additive, false);
+                    }
+                    Some(UvModal { drag: Some(CursorIcon::Move), ..UvModal::new(UvMode::Grab, view, cam.uv(rect, p)) })
+                }
+                (None, None) => None,
+            };
+            if let Some(m) = modal {
+                self.session.end_coalesce();
+                self.uv_modal = Some(UvModal { start: Some(p), ..m });
+            } else {
+                self.drag = Drag::UvMarquee { view, start: p };
+            }
         }
         if response.drag_stopped()
-            && let Drag::Marquee { view, start } = self.drag
-            && view == index
+            && let Drag::UvMarquee { view: v, start } = self.drag
+            && v == view
         {
             self.drag = Drag::None;
             if let Some(end) = response.interact_pointer_pos().or(response.hover_pos()) {
@@ -431,6 +569,10 @@ impl MapCraftApp {
                     self.command_item(ui, c);
                 }
             }
+            ui.separator();
+            let hovered = self.uv_hovered.replace(view);
+            self.action_button(ui, "uv.fit", "Fit UV View", true);
+            self.uv_hovered = hovered;
         });
     }
 }
@@ -441,25 +583,55 @@ mod tests {
 
     #[test]
     fn modal_transforms_follow_the_pointer() {
-        let cam = UvCamera { center: DVec2::ZERO, zoom: 2.0, frame: false };
+        let cam = UvCamera { center: DVec2::ZERO, zoom: 2.0, frame: false, ..UvCamera::default() };
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(200.0));
-        let mut m = UvModal { mode: UvMode::Grab, pane: 0, start: None, pivot: DVec2::new(10.0, 0.0), axis: None, applied: DAffine2::IDENTITY, changed: false };
+        let mut m = UvModal::new(UvMode::Grab, UvView::Pane(0), DVec2::new(10.0, 0.0));
         let at = |x: f32, y: f32| rect.center() + Vec2::new(x, y);
-        let moved = m.transform(&cam, rect, at(0.0, 0.0), at(7.0, -3.0), true);
+        let moved = m.transform(&cam, rect, at(0.0, 0.0), at(7.0, -3.0), true, false);
         assert_eq!(moved.translation, DVec2::new(4.0, -2.0), "half texels round away under Ctrl");
         m.axis = Some(1);
-        assert_eq!(m.transform(&cam, rect, at(0.0, 0.0), at(7.0, -3.0), false).translation, DVec2::new(0.0, -1.5));
+        assert_eq!(m.transform(&cam, rect, at(0.0, 0.0), at(7.0, -3.0), false, false).translation, DVec2::new(0.0, -1.5));
         m.mode = UvMode::Rotate;
         m.axis = None;
-        let turned = m.transform(&cam, rect, at(40.0, 0.0), at(41.0, 19.0), true);
+        let turned = m.transform(&cam, rect, at(40.0, 0.0), at(41.0, 19.0), true, false);
         assert!(turned.transform_point2(m.pivot).abs_diff_eq(m.pivot, 1e-9), "rotation keeps the pivot");
         assert!((turned.matrix2.x_axis.y.atan2(turned.matrix2.x_axis.x).to_degrees() - 45.0).abs() < 1e-9);
         m.mode = UvMode::Scale;
         m.axis = Some(0);
-        let scaled = m.transform(&cam, rect, at(40.0, 0.0), at(60.0, 0.0), true);
+        let scaled = m.transform(&cam, rect, at(40.0, 0.0), at(60.0, 0.0), true, false);
         assert!((scaled.matrix2.x_axis.x - 2.0).abs() < 1e-9 && scaled.matrix2.y_axis.y == 1.0, "{scaled:?}");
         assert!(scaled.transform_point2(m.pivot).abs_diff_eq(m.pivot, 1e-9));
         assert!(contains(&[DVec2::ZERO, DVec2::new(4.0, 0.0), DVec2::new(0.0, 4.0)], DVec2::ONE));
         assert!(!contains(&[DVec2::ZERO, DVec2::new(4.0, 0.0), DVec2::new(0.0, 4.0)], DVec2::splat(3.0)));
+    }
+
+    #[test]
+    fn handles_scale_about_the_opposite_side_and_turn_about_the_middle() {
+        let cam = UvCamera { center: DVec2::new(5.0, 10.0), zoom: 2.0, frame: false, ..UvCamera::default() };
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(200.0));
+        let (lo, hi) = (DVec2::ZERO, DVec2::new(10.0, 20.0));
+        let handles = uv_handles(&cam, rect, UvView::Pane(0), (lo, hi));
+        let handle = |at: DVec2| handles.iter().copied().find(|(p, _)| *p == cam.screen(rect, at)).unwrap();
+
+        let (from, corner) = handle(hi);
+        let to = from + Vec2::new(10.0, -20.0);
+        let scaled = corner.transform(&cam, rect, from, to, false, false);
+        assert!(scaled.transform_point2(lo).abs_diff_eq(lo, 1e-9), "the opposite corner stays put");
+        assert!(scaled.transform_point2(hi).abs_diff_eq(cam.uv(rect, to), 1e-9), "the corner follows the pointer: {scaled:?}");
+        let kept = corner.transform(&cam, rect, from, to, false, true);
+        assert!((kept.matrix2.x_axis.x - kept.matrix2.y_axis.y).abs() < 1e-9, "Shift keeps the aspect: {kept:?}");
+        assert!(kept.transform_point2(lo).abs_diff_eq(lo, 1e-9));
+
+        let (from, edge) = handle(DVec2::new(10.0, 10.0));
+        let stretched = edge.transform(&cam, rect, from, from + Vec2::new(10.0, 7.0), false, false);
+        assert_eq!((stretched.matrix2.x_axis.x, stretched.matrix2.y_axis.y), (1.5, 1.0), "an edge scales only its own axis");
+        assert!(stretched.transform_point2(DVec2::new(0.0, 10.0)).abs_diff_eq(DVec2::new(0.0, 10.0), 1e-9), "about the opposite edge");
+
+        let (knob, turn) = handles.iter().copied().find(|(_, m)| m.mode == UvMode::Rotate).unwrap();
+        assert!(turn.pivot == (lo + hi) / 2.0 && knob.y < cam.screen(rect, lo).y, "the knob sits above the box and turns about its middle");
+        let angle = |m: DAffine2| m.matrix2.x_axis.y.atan2(m.matrix2.x_axis.x).to_degrees();
+        let to = cam.screen(rect, turn.pivot) + Vec2::new(50.0, -60.0);
+        assert!((angle(turn.transform(&cam, rect, knob, to, false, false)) - 39.805_571).abs() < 1e-5);
+        assert!((angle(turn.transform(&cam, rect, knob, to, true, false)) - 45.0).abs() < 1e-9, "Ctrl snaps to 15 degrees");
     }
 }

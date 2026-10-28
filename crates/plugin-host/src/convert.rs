@@ -1,6 +1,7 @@
 use mapcraft_format::Fragment;
 use mapcraft_geom::DVec3;
-use mapcraft_map::{Brush, Entity, Face, Group, NodeKind, TexAxis, TexDefaults};
+use mapcraft_map::disp::MAX_POWER;
+use mapcraft_map::{BlendRole, Brush, Connection, Displacement, Entity, Face, Group, NodeKind, TexAxis, TexDefaults};
 use serde_json::{Value as Json, json};
 
 use crate::bindings::mapcraft::plugin::types as t;
@@ -9,6 +10,9 @@ use crate::bindings::mapcraft::plugin::types as t;
 const MAX_NODES: usize = 100_000;
 /// cos(8 degrees): how close a hull face's normal must be to a surface hint.
 const SURFACE_COS: f64 = 0.990_268;
+/// Most attributes a plugin face keeps, and the longest key, value or material name it may give.
+const MAX_ATTRS: usize = 64;
+const MAX_TEXT: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Manifest {
@@ -60,12 +64,13 @@ pub enum ParamKind {
     Material,
 }
 
-/// Editor state passed to commands; `scale` is the texture scale given to new faces.
+/// Editor state passed to commands; `scale` is the texture scale given to new faces, and `game` the SDK's name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Context {
     pub grid: f64,
     pub material: String,
     pub scale: f64,
+    pub game: String,
 }
 
 impl CommandSpec {
@@ -161,7 +166,27 @@ fn vec3(p: &t::Vec3) -> DVec3 {
     DVec3::new(p.x, p.y, p.z)
 }
 
-fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
+/// A plugin's grid, or `None` unless every part of it is usable.
+fn displacement(d: &t::Displacement) -> Option<Displacement> {
+    let n = (1usize << d.power.min(MAX_POWER)) + 1;
+    let start = vec3(&d.corners.0);
+    let ok = (1..=MAX_POWER).contains(&d.power)
+        && d.heights.len() == n * n
+        && d.heights.iter().all(|h| h.is_finite() && h.abs() <= 1e6)
+        && start.is_finite()
+        && (d.blend.is_empty() || d.blend.len() == n * n)
+        && d.blend_material.as_ref().is_none_or(|m| m.len() <= MAX_TEXT);
+    if !ok {
+        return None;
+    }
+    let mut out = Displacement::new(d.power, start);
+    out.heights.clone_from(&d.heights);
+    out.set_blend(d.blend.clone());
+    out.blend_material.clone_from(&d.blend_material);
+    Some(out)
+}
+
+fn brush(b: t::Brush, ctx: &Context, flat: &mut usize) -> Option<Brush> {
     let tex = |m: &str| TexDefaults { material: if m.is_empty() { ctx.material.clone() } else { m.to_string() }, scale: ctx.scale };
     match b {
         t::Brush::Faces(faces) => {
@@ -173,6 +198,12 @@ fn brush(b: t::Brush, ctx: &Context) -> Option<Brush> {
                         && let (Some(u), Some(v)) = (tex_axis(u), tex_axis(v))
                     {
                         (face.u, face.v) = (u, v);
+                    }
+                    let short = f.attrs.iter().filter(|(k, v)| k.len() <= MAX_TEXT && v.len() <= MAX_TEXT);
+                    face.attrs = short.take(MAX_ATTRS).cloned().collect();
+                    if let Some(d) = &f.disp {
+                        face.disp = displacement(d);
+                        *flat += usize::from(face.disp.is_none());
                     }
                     face
                 })
@@ -200,28 +231,48 @@ fn wit_vec3(p: DVec3) -> t::Vec3 {
     t::Vec3 { x: p.x, y: p.y, z: p.z }
 }
 
-fn solid(b: &Brush) -> t::Solid {
+fn wit_displacement(f: &Face, d: &Displacement, polygon: &[DVec3]) -> Option<t::Displacement> {
+    let [a, b, c, e] = d.corners(polygon)?;
+    Some(t::Displacement {
+        power: d.power.clamp(1, MAX_POWER),
+        corners: (wit_vec3(a), wit_vec3(b), wit_vec3(c), wit_vec3(e)),
+        heights: d.heights.clone(),
+        blend: if d.blend.is_empty() { Vec::new() } else { d.blend_values() },
+        blend_material: f.blend_layer().map(str::to_string),
+    })
+}
+
+/// The brush as an exporter sees it; displacements that do not fit their face go out flat and count in `flat`.
+fn solid(b: &Brush, flat: &mut usize) -> t::Solid {
     let axis = |a: &TexAxis| t::TexAxis { axis: wit_vec3(a.axis), offset: a.offset, scale: a.scale };
+    let windings = b.solid().map(|s| s.faces).unwrap_or_default();
     let faces = b
         .faces
         .iter()
-        .map(|f| t::Face {
-            points: (wit_vec3(f.points[0]), wit_vec3(f.points[1]), wit_vec3(f.points[2])),
-            material: f.material.clone(),
-            uv: Some((axis(&f.u), axis(&f.v))),
+        .enumerate()
+        .map(|(i, f)| {
+            let disp = f.disp.as_ref().map(|d| windings.get(i).and_then(Option::as_ref).and_then(|w| wit_displacement(f, d, &w.0)));
+            *flat += usize::from(matches!(disp, Some(None)));
+            t::Face {
+                points: (wit_vec3(f.points[0]), wit_vec3(f.points[1]), wit_vec3(f.points[2])),
+                material: f.material.clone(),
+                uv: Some((axis(&f.u), axis(&f.v))),
+                attrs: f.attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                disp: disp.flatten(),
+            }
         })
         .collect();
     t::Solid { faces, vertices: b.vertices().unwrap_or_default().into_iter().map(wit_vec3).collect() }
 }
 
-/// The map as an exporter sees it, parents first: layers left out of exports, and anything outside
-/// every active cordon, are dropped. `map` should already have prefabs and mirrors resolved.
-pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> t::MapData {
-    map_data_with_ids(map, name).0
+/// The map as an exporter sees it, parents first and without layers left out of exports or anything outside every active cordon, and how many displacements went out flat; `map` should already have prefabs and mirrors resolved.
+pub(crate) fn map_data(map: &mapcraft_map::Map, name: &str) -> (t::MapData, usize) {
+    let (data, _, flat) = map_data_with_ids(map, name);
+    (data, flat)
 }
 
 /// [`map_data`] and the node id behind each entry of its `nodes`.
-pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapData, Vec<mapcraft_map::NodeId>) {
+pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapData, Vec<mapcraft_map::NodeId>, usize) {
     use mapcraft_geom::Aabb;
     let world = map.get(mapcraft_map::ROOT).and_then(|n| n.kind.entity()).map(|e| e.properties.clone()).unwrap_or_default();
     let cordons: Vec<Aabb> = map.cordons.iter().filter(|c| c.active).map(|c| c.bounds).collect();
@@ -231,6 +282,7 @@ pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapD
     let mut stack: Vec<(mapcraft_map::NodeId, Option<u32>)> = roots.into_iter().rev().map(|c| (c, None)).collect();
     let mut nodes = Vec::new();
     let mut ids = Vec::new();
+    let mut flat = 0;
     while let Some((id, parent)) = stack.pop() {
         let Some(n) = map.get(id) else { continue };
         let kind = match &n.kind {
@@ -242,9 +294,10 @@ pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapD
                 if !kept {
                     continue;
                 }
-                t::MapNodeKind::Entity(t::MapEntity { classname: e.classname.clone(), properties: e.properties.clone() })
+                let connections = e.connections.iter().map(wit_connection).collect();
+                t::MapNodeKind::Entity(t::MapEntity { classname: e.classname.clone(), properties: e.properties.clone(), connections })
             }
-            NodeKind::Brush(b) if brush_inside(&id) => t::MapNodeKind::Brush(solid(b)),
+            NodeKind::Brush(b) if brush_inside(&id) => t::MapNodeKind::Brush(solid(b, &mut flat)),
             _ => continue,
         };
         let index = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
@@ -252,7 +305,22 @@ pub(crate) fn map_data_with_ids(map: &mapcraft_map::Map, name: &str) -> (t::MapD
         ids.push(id);
         stack.extend(n.children.iter().rev().map(|c| (*c, Some(index))));
     }
-    (t::MapData { name: name.to_string(), world, nodes }, ids)
+    (t::MapData { name: name.to_string(), world, nodes }, ids, flat)
+}
+
+fn wit_connection(c: &Connection) -> t::Connection {
+    t::Connection { output: c.output.clone(), target: c.target.clone(), input: c.input.clone(), param: c.param.clone(), delay: c.delay, times: c.times_to_fire }
+}
+
+fn connection(c: t::Connection) -> Connection {
+    Connection {
+        output: c.output,
+        target: c.target,
+        input: c.input,
+        param: c.param,
+        delay: if c.delay.is_finite() { c.delay } else { 0.0 },
+        times_to_fire: c.times,
+    }
 }
 
 /// A texture axis, or `None` when it would divide by zero or is not a number.
@@ -265,7 +333,7 @@ fn tex_axis(a: &t::TexAxis) -> Option<TexAxis> {
     })
 }
 
-fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize) -> Vec<Fragment> {
+fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize, flat: &mut usize) -> Vec<Fragment> {
     let leaf = |kind| Fragment { kind, children: Vec::new() };
     let take = |n: &mut usize| {
         *n > 0 && {
@@ -280,7 +348,7 @@ fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, bud
             break;
         }
         let hull = matches!(b, t::Brush::Hull(_));
-        if let Some(b) = brush(b, ctx) {
+        if let Some(b) = brush(b, ctx, flat) {
             if hull { hulls.push(b) } else { faced.push(b) }
         }
     }
@@ -293,29 +361,40 @@ fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, bud
         }
         let mut ent = Entity::new(e.classname);
         ent.properties = e.properties;
-        let children = e.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx)).map(|b| leaf(NodeKind::Brush(b))).collect();
+        ent.connections = e.connections.into_iter().take(MAX_NODES).map(connection).collect();
+        let children = e.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx, flat)).map(|b| leaf(NodeKind::Brush(b))).collect();
         frags.push(Fragment { kind: NodeKind::Entity(ent), children });
     }
     frags
 }
 
-pub(crate) fn output(out: t::Output, ctx: &Context) -> Vec<Fragment> {
-    let mut budget = MAX_NODES;
-    let mut frags = contents(out.brushes, out.entities, ctx, &mut budget);
+/// The nodes a plugin made, and how many of its displacements were invalid and came in flat.
+pub(crate) fn output(out: t::Output, ctx: &Context) -> (Vec<Fragment>, usize) {
+    let (mut budget, mut flat) = (MAX_NODES, 0);
+    let mut frags = contents(out.brushes, out.entities, ctx, &mut budget, &mut flat);
     for g in out.groups {
-        let children = contents(g.brushes, g.entities, ctx, &mut budget);
+        let children = contents(g.brushes, g.entities, ctx, &mut budget, &mut flat);
         if !children.is_empty() {
             frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children });
         }
     }
-    frags
+    (frags, flat)
+}
+
+pub(crate) fn blend_role(b: t::BlendRole) -> BlendRole {
+    match b {
+        t::BlendRole::Layer => BlendRole::Layer,
+        t::BlendRole::Own => BlendRole::Own,
+        t::BlendRole::Unblendable => BlendRole::Unblendable,
+    }
 }
 
 /// A plugin's model with parts that do not add up dropped: indices past their positions, a UV
-/// count that differs, or a texture that is not there.
+/// count that differs, or a texture that is not there; a lightmap that does not add up is left off.
 pub(crate) fn model(m: t::Model) -> crate::PluginModel {
     const MAX_TRIANGLES: usize = 1 << 20;
     let textures: Vec<Option<crate::Picture>> = m.textures.into_iter().take(256).map(picture).collect();
+    let finite = |(u, v): (f32, f32)| [if u.is_finite() { u } else { 0.0 }, if v.is_finite() { v } else { 0.0 }];
     let mut triangles = 0usize;
     let parts = m
         .parts
@@ -327,11 +406,17 @@ pub(crate) fn model(m: t::Model) -> crate::PluginModel {
             triangles = triangles.saturating_add(p.indices.len() / 3);
             triangles <= MAX_TRIANGLES
         })
-        .map(|p| crate::PluginModelPart {
-            texture: p.texture.map(|t| t as usize),
-            positions: p.positions.iter().map(vec3).collect(),
-            uvs: p.uvs.into_iter().map(|(u, v)| [if u.is_finite() { u } else { 0.0 }, if v.is_finite() { v } else { 0.0 }]).collect(),
-            indices: p.indices,
+        .map(|p| {
+            let lightmap = p.lightmap.filter(|l| p.lightmap_uvs.len() == p.positions.len() && textures.get(*l as usize).is_some_and(Option::is_some));
+            crate::PluginModelPart {
+                texture: p.texture.map(|t| t as usize),
+                positions: p.positions.iter().map(vec3).collect(),
+                uvs: p.uvs.into_iter().map(finite).collect(),
+                indices: p.indices,
+                material: p.material.filter(|m| !m.is_empty() && m.len() <= 256),
+                lightmap: lightmap.map(|l| l as usize),
+                lightmap_uvs: if lightmap.is_some() { p.lightmap_uvs.into_iter().map(finite).collect() } else { Vec::new() },
+            }
         })
         .collect();
     let textures = textures.into_iter().map(|t| t.unwrap_or(crate::Picture { width: 1, height: 1, rgba: vec![255; 4] })).collect();
@@ -409,7 +494,7 @@ mod tests {
         map.apply(e.finish());
         map.cordons = vec![Cordon { name: "start".into(), bounds: Aabb::new(DVec3::splat(-128.0), DVec3::splat(128.0)), active: true }];
 
-        let data = map_data(&map, "surf_test");
+        let (data, _) = map_data(&map, "surf_test");
         let kinds: Vec<&str> = data
             .nodes
             .iter()
@@ -426,5 +511,86 @@ mod tests {
         let t::MapNodeKind::Brush(b) = &data.nodes[1].kind else { panic!("a brush") };
         assert_eq!((b.faces.len(), b.vertices.len()), (6, 8));
         assert!(b.faces.iter().all(|f| f.uv.is_some()));
+    }
+
+    #[test]
+    fn entity_outputs_cross_both_ways() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let mut relay = Entity::new("logic_relay");
+        let wire = Connection { output: "OnTrigger".into(), target: "door".into(), input: "Open".into(), param: String::new(), delay: 0.5, times_to_fire: 1 };
+        relay.connections.push(wire.clone());
+        e.insert(ROOT, NodeKind::Entity(relay)).unwrap();
+        map.apply(e.finish());
+        let (data, _) = map_data(&map, "io");
+        let t::MapNodeKind::Entity(ent) = &data.nodes[0].kind else { panic!("an entity") };
+        assert_eq!(ent.connections.iter().cloned().map(connection).collect::<Vec<_>>(), [wire]);
+        let bad = connection(t::Connection { delay: f64::NAN, ..ent.connections[0].clone() });
+        assert_eq!(bad.delay, 0.0, "a delay that is not a number fires at once");
+    }
+
+    #[test]
+    fn displacements_and_attributes_cross_both_ways() {
+        let tex = TexDefaults { material: "rock".into(), scale: 1.0 };
+        let mut b = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 64.0, 32.0)), &tex);
+        let facing = |b: &Brush, n: DVec3| b.faces.iter().position(|f| f.plane().is_some_and(|p| p.normal.dot(n) > 0.9)).unwrap();
+        let (top, bottom, side) = (facing(&b, DVec3::Z), facing(&b, -DVec3::Z), facing(&b, DVec3::X));
+        let mut d = Displacement::new(2, DVec3::new(64.0, 0.0, 32.0));
+        d.heights[1] = 5.0;
+        d.set_blend((0..25).map(|k| f64::from(u8::from(k == 3))).collect());
+        d.blend_material = Some("grass".into());
+        b.faces[top].disp = Some(d.clone());
+        b.faces[top].attrs.insert("anti_tile".into(), "macro".into());
+        b.faces[bottom].disp = Some(Displacement { heights: vec![0.0; 3], ..Displacement::new(2, DVec3::ZERO) });
+        b.faces[side].disp = Some(Displacement { power: 0, heights: vec![0.0; 9], ..Displacement::new(1, DVec3::new(64.0, 0.0, 0.0)) });
+
+        let mut flat = 0;
+        let s = solid(&b, &mut flat);
+        assert_eq!(flat, 1, "the short grid goes out flat");
+        assert!(s.faces[bottom].disp.is_none());
+        let w = b.solid().unwrap().faces[top].clone().unwrap();
+        let wd = s.faces[top].disp.as_ref().unwrap();
+        assert_eq!([wd.corners.0, wd.corners.1, wd.corners.2, wd.corners.3].map(|c| vec3(&c)), d.corners(&w.0).unwrap());
+        assert_eq!(vec3(&wd.corners.0), d.start, "the start corner comes first");
+        assert_eq!((wd.power, wd.heights[1], wd.blend[3], wd.blend_material.as_deref()), (2, 5.0, 1.0, Some("grass")));
+        assert_eq!(s.faces[top].attrs, [("anti_tile".to_string(), "macro".to_string())]);
+        assert_eq!(s.faces[side].disp.as_ref().map(|d| d.power), Some(1), "plugins see the power the grid has");
+
+        let mut prism = Brush::cylinder(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 64.0, 32.0)), 5, &tex).unwrap();
+        let cap = facing(&prism, DVec3::Z);
+        prism.faces[cap].disp = Some(Displacement::new(2, DVec3::new(32.0, 0.0, 32.0)));
+        let mut flat = 0;
+        assert!(solid(&prism, &mut flat).faces[cap].disp.is_none());
+        assert_eq!(flat, 1, "a pentagon goes out flat");
+
+        let ctx = Context { grid: 16.0, material: "dev".into(), scale: 1.0, game: String::new() };
+        let mut invalid = 0;
+        let back = brush(t::Brush::Faces(s.faces.clone()), &ctx, &mut invalid).unwrap();
+        assert_eq!((invalid, back.faces[top].disp.as_ref(), back.faces[top].anti_tile()), (0, Some(&d), mapcraft_map::AntiTile::Macro));
+
+        let hostile = |edit: &dyn Fn(&mut t::Face)| {
+            let mut faces = s.faces.clone();
+            edit(&mut faces[top]);
+            let mut invalid = 0;
+            let b = brush(t::Brush::Faces(faces), &ctx, &mut invalid).unwrap();
+            (b.faces[top].clone(), invalid)
+        };
+        let good = wd.clone();
+        for bad in [
+            t::Displacement { power: 9, ..good.clone() },
+            t::Displacement { heights: vec![0.0; 24], ..good.clone() },
+            t::Displacement { heights: [f64::NAN].repeat(25), ..good.clone() },
+            t::Displacement { blend: vec![0.0; 3], ..good.clone() },
+        ] {
+            let (face, invalid) = hostile(&|f| f.disp = Some(bad.clone()));
+            assert_eq!((face.disp, invalid), (None, 1));
+        }
+        let (face, invalid) = hostile(&|f| f.disp.as_mut().unwrap().blend = vec![1.5; 25]);
+        assert_eq!((face.disp.unwrap().blend_at(7), invalid), (1.0, 0), "weights past 1 are capped");
+        let (face, _) = hostile(&|f| {
+            f.attrs = (0..100).map(|i| (format!("k{i:03}"), "v".into())).collect();
+            f.attrs.insert(0, ("x".repeat(2000), "v".into()));
+        });
+        assert_eq!((face.attrs.len(), face.attrs.keys().next().map(String::as_str)), (64, Some("k000")), "long and extra attributes are dropped");
     }
 }

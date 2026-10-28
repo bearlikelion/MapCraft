@@ -30,15 +30,16 @@ Open a map in MapCraft first, so its SDK gives the agent entity classes, materia
 | `list_nodes`, `get_node`, `find` | Walk the scene tree, read a node's key/values or brush faces, search entities |
 | `select` | Select nodes by id |
 | `create_brush` | Block, wedge, cylinder, spike, sphere or arch filling a box |
-| `create_entity`, `set_property` | Place point entities and edit key/values (node 0 is worldspawn) |
+| `create_entity`, `set_property` | Place point entities and edit key/values (node 1 is worldspawn), or rename a group or layer with key `name` |
 | `tie_to_entity` | Turn the selected brushes into a brush entity, such as a trigger or zone |
 | `set_material` | Give the selected brushes' faces a material and texture scale, all of them or those facing one way |
 | `move`, `rotate`, `scale`, `duplicate` | Transform the selection, or copy it in a row |
 | `hollow`, `clip` | Make rooms with walls of a given thickness, cut brushes with a plane |
-| `pick_faces`, `face_texture`, `extrude` | Pick faces as the Face tool does, set their texture offset, scale and rotation, push them out |
+| `pick_faces`, `face_texture`, `extrude` | Pick faces as the Face tool does, set their texture offset, scale, rotation and anti-tiling (`anti_tile`: `off`, `macro` or `hex`), push them out or slide them |
 | `move_vertices`, `bevel` | Move brush corners and bevel edges, as the Vertex tool does |
 | `create_path`, `set_curve` | Draw a path, and change a sweep, spin or path array's settings; `run_command` runs the sweep, spin and array themselves |
-| `displace`, `sculpt`, `heightmap` | Make terrain from picked faces and shape it with sculpt dabs or a grayscale grid |
+| `displace`, `sculpt`, `heightmap` | Make terrain from picked faces and shape it with sculpt dabs or a grayscale grid; `sculpt` modes `paint` and `blur` and `heightmap` `channel` `blend` paint a second material's share instead of heights |
+| `blend` | Give the picked displacements a second material (`material`, `""` removes it) and fill its share by `value`, `invert`, `slope`, `height` or `noise` |
 | `zone_from_selection` | Cover the selection's top with a zone of a given class |
 | `create_layer`, `move_to`, `tag`, `cordon` | Organize the scene tree, tags and cordons |
 | `insert_prefab`, `save_prefab`, `make_prefab_local` | Reuse prefabs, save the selection as one, and make instances local |

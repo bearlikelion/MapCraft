@@ -42,17 +42,16 @@ fn turned(m: &DMat4, mut angles: DVec3) -> DVec3 {
 pub fn transform(kind: &NodeKind, m: &DMat4, point: bool) -> Option<NodeKind> {
     Some(match kind {
         NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, true).ok()?),
-        NodeKind::Entity(e) if point => {
+        NodeKind::Entity(e) => {
             let mut e = e.clone();
             if let Some(o) = e.origin() {
                 e.set("origin", fmt_vec(m.transform_point3(o)));
             }
-            if let Some(a) = e.get("angles").and_then(parse_vec3) {
+            if let Some(a) = e.get("angles").and_then(parse_vec3).filter(|_| point) {
                 e.set("angles", fmt_vec(turned(m, a)));
             }
             NodeKind::Entity(e)
         }
-        NodeKind::Entity(e) => NodeKind::Entity(e.clone()),
         NodeKind::Prefab(p) => {
             let mut p = p.clone();
             (p.origin, p.angles) = (m.transform_point3(p.origin), turned(m, p.angles));
@@ -185,6 +184,22 @@ mod tests {
         map.apply(e.finish());
         let (out, _) = crate::mirror::expand(&map);
         assert!(centers(&out, copy)[0].distance(DVec3::new(248.0, 8.0, 8.0)) < 1e-9);
+    }
+
+    #[test]
+    fn copies_of_brush_entities_carry_their_origin() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let source = e.insert(ROOT, group(Some(Link { source: None, frame: DMat4::IDENTITY }))).unwrap();
+        let mut door = crate::Entity::new("func_door_rotating");
+        door.set("origin", "0 0 0");
+        let door = e.insert(source, NodeKind::Entity(door)).unwrap();
+        e.insert(door, cuboid(DVec3::ZERO, DVec3::splat(16.0))).unwrap();
+        let copy = e.insert(ROOT, group(Some(Link { source: Some(source), frame: DMat4::from_translation(DVec3::new(256.0, 0.0, 0.0)) }))).unwrap();
+        map.apply(e.finish());
+        let (out, _) = crate::mirror::expand(&map);
+        let hinge = out.subtree(copy).into_iter().find_map(|n| out.get(n)?.kind.entity()?.origin());
+        assert_eq!(hinge, Some(DVec3::new(256.0, 0.0, 0.0)), "the copy's door turns about its own hinge");
     }
 
     #[test]

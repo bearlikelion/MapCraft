@@ -182,6 +182,12 @@ impl GameData {
             helpers: Vec::new(),
         };
         self.merge(def, &mut out, &mut BTreeSet::new(), 0);
+        for p in out.properties.iter_mut().filter(|p| p.ty == "flags" && p.default.is_none()) {
+            let bits = p.choices.iter().filter(|c| c.default_on == Some(true)).filter_map(|c| c.value.trim().parse::<u64>().ok()).fold(0, |a, b| a | b);
+            if bits != 0 {
+                p.default = Some(bits.to_string());
+            }
+        }
         Some(out)
     }
 
@@ -254,6 +260,13 @@ mod tests {
         let c = gd.class("c").unwrap();
         assert_eq!(c.properties.len(), 2);
         assert!(gd.class("missing").is_none());
+    }
+
+    #[test]
+    fn flags_default_to_their_default_on_bits() {
+        let gd = GameData::parse_str("@PointClass = lamp [ spawnflags(flags) = [ 1 : \"Off\" : 1 2 : \"Quiet\" : 0 4 : \"Loud\" : 1 ] ]");
+        let c = gd.class("lamp").unwrap();
+        assert_eq!(c.property("spawnflags").unwrap().default.as_deref(), Some("5"));
     }
 
     #[test]

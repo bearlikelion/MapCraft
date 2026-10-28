@@ -32,7 +32,26 @@ pub enum Fix {
 }
 
 /// Keys that name another entity when no FGD says otherwise.
-const LINK_KEYS: &[&str] = &["target", "parentname", "filtername", "landmark"];
+pub const LINK_KEYS: &[&str] = &["target", "parentname", "filtername", "landmark"];
+
+/// Every non-empty targetname in `map`.
+pub fn target_names(map: &Map) -> BTreeSet<&str> {
+    map.nodes().filter_map(|(_, n)| n.kind.entity()?.get("targetname")).filter(|s| !s.is_empty()).collect()
+}
+
+/// Whether `value` names an entity that `names` lacks; empty values, `!` names and wildcards never do.
+pub fn is_unresolved(names: &BTreeSet<&str>, value: &str) -> bool {
+    !value.is_empty() && !value.starts_with('!') && !value.contains('*') && !names.contains(value)
+}
+
+/// Whether `key = value` names an entity that `names` lacks; `ty` is the key's FGD type, `None` when no FGD defines the key.
+pub fn is_broken_link(game: Option<&GameData>, ty: Option<&str>, names: &BTreeSet<&str>, key: &str, value: &str) -> bool {
+    let link = match ty {
+        Some(t) => matches!(t, "target_destination" | "target_name_or_class" | "filterclass"),
+        None => LINK_KEYS.iter().any(|l| l.eq_ignore_ascii_case(key)),
+    };
+    link && is_unresolved(names, value) && !(ty == Some("target_name_or_class") && game.is_some_and(|g| g.class(value).is_some()))
+}
 
 /// Problems that make a map fail to compile or play, mirror halves included; FGD checks run when `game` is given.
 pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
@@ -40,7 +59,7 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
     let map = &map;
     let mut out = Vec::new();
     let mut push = |node, face, severity, message: String, fix| out.push(Issue { node, face, severity, message, fix });
-    let names: BTreeSet<&str> = map.nodes().filter_map(|(_, n)| n.kind.entity()?.get("targetname")).filter(|s| !s.is_empty()).collect();
+    let names = target_names(map);
     let limits = game.and_then(|g| g.map_size).filter(|(low, high)| low < high).map(|(low, high)| (low as f64, high as f64));
     let outside = |b: &mapcraft_geom::Aabb| limits.filter(|(low, high)| b.min.min_element() < *low || b.max.max_element() > *high);
     for (id, node) in map.nodes() {
@@ -61,6 +80,16 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
                     let u_in_plane = f.u.axis.cross(f.v.axis).length() > 1e-6 && f.u.axis.cross(f.v.axis).normalize_or_zero().dot(plane.normal).abs() > 1e-3;
                     if bad_axis(&f.u) || bad_axis(&f.v) || !u_in_plane {
                         push(id, Some(f.id), Severity::Warning, format!("face {i} has invalid texture axes"), Some(Fix::ResetTextureAxes));
+                    }
+                    if let Some(d) = f.disp.as_ref().filter(|d| !d.blend_fits()) {
+                        let (len, n) = (d.blend.len(), d.size() * d.size());
+                        push(
+                            id,
+                            Some(f.id),
+                            Severity::Warning,
+                            format!("face {i}'s displacement has {len} blend values for {n} vertices; the rest count as 0"),
+                            None,
+                        );
                     }
                 }
                 if let Err(e) = b.solid() {
@@ -88,11 +117,8 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
                     }
                 }
                 for (key, value) in &e.properties {
-                    let is_link = match &class {
-                        Some(c) => c.property(key).is_some_and(|p| p.ty == "target_destination" || p.ty == "filterclass"),
-                        None => LINK_KEYS.contains(&key.as_str()),
-                    };
-                    if is_link && !value.is_empty() && !value.contains('*') && !value.starts_with('!') && !names.contains(value.as_str()) {
+                    let ty = class.as_ref().and_then(|c| c.property(key)).map(|p| p.ty.as_str());
+                    if is_broken_link(game, ty, &names, key, value) {
                         push(
                             id,
                             None,
@@ -103,7 +129,7 @@ pub fn validate(map: &Map, game: Option<&GameData>) -> Vec<Issue> {
                     }
                 }
                 for (i, c) in e.connections.iter().enumerate() {
-                    if !c.target.starts_with('!') && !c.target.contains('*') && !names.contains(c.target.as_str()) {
+                    if c.target.is_empty() || is_unresolved(&names, &c.target) {
                         let msg = format!("output {} targets `{}`, which no entity is named", c.output, c.target);
                         push(id, None, Severity::Warning, msg, Some(Fix::RemoveConnection(i)));
                     }
@@ -244,11 +270,50 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_targets() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let mut door = Entity::new("func_door");
+        door.set("targetname", "door");
+        e.insert(ROOT, NodeKind::Entity(door)).unwrap();
+        map.apply(e.finish());
+        let names = target_names(&map);
+        for resolved in ["", "!activator", "door*", "door"] {
+            assert!(!is_unresolved(&names, resolved), "{resolved}");
+        }
+        assert!(is_unresolved(&names, "gate"));
+
+        let game = GameData::parse_str("@PointClass = info_target []");
+        assert!(is_broken_link(Some(&game), None, &names, "Target", "gate"), "keys the FGD lacks fall back to the usual link keys");
+        assert!(!is_broken_link(Some(&game), None, &names, "message", "gate"));
+        assert!(is_broken_link(Some(&game), Some("target_destination"), &names, "goal", "gate"));
+        assert!(!is_broken_link(Some(&game), Some("string"), &names, "target", "gate"), "the FGD's type wins over the key's name");
+        assert!(is_broken_link(Some(&game), Some("target_name_or_class"), &names, "who", "gate"));
+        assert!(!is_broken_link(Some(&game), Some("target_name_or_class"), &names, "who", "info_target"), "a class name resolves");
+    }
+
+    #[test]
     fn clean_cube_has_no_issues() {
         let mut map = Map::new();
         let mut e = map.edit();
         e.insert(ROOT, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default()))).unwrap();
         map.apply(e.finish());
         assert_eq!(validate(&map, None), vec![]);
+    }
+
+    #[test]
+    fn short_blend_vectors_are_warned_about() {
+        let mut map = Map::new();
+        let mut b = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &TexDefaults::default());
+        let mut d = mapcraft_map::Displacement::new(2, DVec3::splat(64.0));
+        d.blend = vec![1.0; 3];
+        b.faces[4].disp = Some(d);
+        let mut e = map.edit();
+        let id = e.insert(ROOT, NodeKind::Brush(b)).unwrap();
+        map.apply(e.finish());
+        let issues = validate(&map, None);
+        assert_eq!(issues.len(), 1);
+        assert_eq!((issues[0].node, issues[0].severity), (id, Severity::Warning));
+        assert_eq!(issues[0].message, "face 4's displacement has 3 blend values for 25 vertices; the rest count as 0");
     }
 }

@@ -151,8 +151,10 @@ impl MapCraftApp {
         let mut acts = Vec::new();
         egui::Window::new("SDK Manager").open(&mut open).default_size([700.0, 560.0]).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for (t, label) in [(Tab::Installed, "Installed"), (Tab::Available, "Available"), (Tab::Create, "Create")] {
-                    if ui.selectable_label(self.sdk_manager.tab == t, label).clicked() {
+                for (t, label, icon) in
+                    [(Tab::Installed, "Installed", "storage"), (Tab::Available, "Available", "cloud_arrow_down"), (Tab::Create, "Create", "plus")]
+                {
+                    if ui.add(crate::icons::selectable(self.sdk_manager.tab == t, Some(icon), label)).clicked() {
                         acts.push(Act::Tab(t));
                     }
                 }
@@ -211,24 +213,31 @@ impl MapCraftApp {
                     ui.label(RichText::new("A copy with the same id is listed above and loads instead.").color(TEXT_WEAK));
                 }
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(sdk.is_some(), egui::Button::new("Configure")).on_hover_text("Set the folders and programs it uses").clicked()
+                    if ui
+                        .add_enabled(sdk.is_some(), crate::icons::button(Some("cog"), "Configure"))
+                        .on_hover_text("Set the folders and programs it uses")
+                        .clicked()
                         && let Some(s) = sdk
                     {
                         acts.push(Act::Configure(s.clone()));
                     }
-                    if ui.add_enabled(!running, egui::Button::new("Check")).on_hover_text("Check the manifest, FGDs, plugins, paths and samples").clicked() {
+                    if ui
+                        .add_enabled(!running, crate::icons::button(Some("list_checkboxes"), "Check"))
+                        .on_hover_text("Check the manifest, FGDs, plugins, paths and samples")
+                        .clicked()
+                    {
                         acts.push(Act::Check(inst.dir.clone()));
                     }
-                    let test = ui.add_enabled(sdk.is_some() && !running, egui::Button::new("Test"));
+                    let test = ui.add_enabled(sdk.is_some() && !running, crate::icons::button(Some("play"), "Test"));
                     if test.on_hover_text("Open its first sample map, or check it when it has none").clicked()
                         && let Some(s) = sdk
                     {
                         acts.push(Act::Test(s.clone()));
                     }
-                    if ui.button("Open Folder").clicked() {
+                    if ui.add(crate::icons::button(Some("folder_open"), "Open Folder")).clicked() {
                         acts.push(Act::Open(inst.dir.clone()));
                     }
-                    if inst.origin == Origin::User && ui.button("Remove…").clicked() {
+                    if inst.origin == Origin::User && ui.add(crate::icons::button(Some("trash_can"), "Remove…")).clicked() {
                         acts.push(Act::Remove(folder.clone()));
                     }
                     if running {
@@ -245,7 +254,7 @@ impl MapCraftApp {
     fn available_tab(&self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         let m = &self.sdk_manager;
         ui.horizontal(|ui| {
-            if ui.add_enabled(m.fetching.is_none(), egui::Button::new("Refresh")).clicked() {
+            if ui.add_enabled(m.fetching.is_none(), crate::icons::button(Some("arrows_clockwise"), "Refresh")).clicked() {
                 acts.push(Act::Refresh);
             }
             if m.fetching.is_some() {
@@ -303,7 +312,7 @@ impl MapCraftApp {
                         if let Some(why) = e.unsupported() {
                             ui.colored_label(WARN, why);
                         } else if let Some(label) = label {
-                            if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                            if ui.add_enabled(!busy, crate::icons::button(Some("cloud_arrow_down"), label)).clicked() {
                                 acts.push(Act::Install(url.clone(), e.clone()));
                             }
                         } else {

@@ -143,6 +143,7 @@ name = "plugin-surfsup"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "ruzstd",
  "wit-bindgen",
 ]
 
@@ -173,6 +174,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
 
 [[package]]
 name = "semver"

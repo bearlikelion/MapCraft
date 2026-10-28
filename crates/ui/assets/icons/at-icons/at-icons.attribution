@@ -1,0 +1,6 @@
+asset: crates/ui/assets/icons/at-icons/*.svg
+title: @icons by Voxybuns, node variant, fill changed to currentColor
+author: Valentin Fossati (Voxybuns) and contributors
+source: https://github.com/Voxybuns/at-icons at bc002842ea6ed19e10f642d159af8e92c93a1597 (https://voxybuns.itch.io/at-icons)
+license: MIT
+added: 2026-10-27

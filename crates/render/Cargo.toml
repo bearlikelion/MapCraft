@@ -13,11 +13,14 @@ base64 = { workspace = true }
 bytemuck = { workspace = true }
 gltf-json = { workspace = true }
 image = { workspace = true }
+log = { workspace = true }
+pollster = { workspace = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]
-pollster = { workspace = true }
 mapcraft-format = { workspace = true }
+# pipeline_constants only exists with an output feature.
+naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 
 [lints]
 workspace = true

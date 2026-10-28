@@ -12,6 +12,7 @@ pub struct Thumbs {
     pending: HashSet<String>,
     requests: mpsc::Sender<(String, Source)>,
     results: mpsc::Receiver<(String, Option<ColorImage>)>,
+    filter: TextureOptions,
 }
 
 /// Where a preview comes from: an image file, or a picture a plugin already decoded.
@@ -52,7 +53,7 @@ impl Thumbs {
                 }
             }
         });
-        Self { textures: HashMap::new(), pending: HashSet::new(), requests, results }
+        Self { textures: HashMap::new(), pending: HashSet::new(), requests, results, filter: TextureOptions::LINEAR }
     }
 
     /// The preview for a material, queued for loading the first time it is asked for.
@@ -66,7 +67,7 @@ impl Thumbs {
                 }
                 (false, Some(c)) => {
                     let img = ColorImage::new([SIZE as usize; 2], vec![egui::Color32::from_rgb(c[0], c[1], c[2]); (SIZE * SIZE) as usize]);
-                    self.textures.insert(m.name.clone(), Some(ctx.load_texture(format!("thumb:{}", m.name), img, TextureOptions::LINEAR)));
+                    self.textures.insert(m.name.clone(), Some(ctx.load_texture(format!("thumb:{}", m.name), img, self.filter)));
                 }
                 _ => {
                     self.textures.insert(m.name.clone(), None);
@@ -80,7 +81,7 @@ impl Thumbs {
     pub fn poll(&mut self, ctx: &egui::Context) {
         for (name, img) in self.results.try_iter() {
             self.pending.remove(&name);
-            let tex = img.map(|i| ctx.load_texture(format!("thumb:{name}"), i, TextureOptions::LINEAR));
+            let tex = img.map(|i| ctx.load_texture(format!("thumb:{name}"), i, self.filter));
             self.textures.insert(name, tex);
         }
         if !self.pending.is_empty() {
@@ -89,6 +90,12 @@ impl Thumbs {
     }
 
     pub fn clear(&mut self) {
+        self.textures.clear();
+    }
+
+    /// Pixel-art SDKs show their small textures blown up with hard texel edges, as the views do.
+    pub fn set_pixelated(&mut self, on: bool) {
+        self.filter = if on { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
         self.textures.clear();
     }
 }
