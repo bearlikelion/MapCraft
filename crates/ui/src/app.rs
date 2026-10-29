@@ -177,6 +177,7 @@ pub struct MapCraftApp {
     /// Power of new displacements, and the heights a heightmap's black and white map to.
     pub(crate) disp_power: u32,
     pub(crate) heightmap_range: (f64, f64),
+    pub(crate) height_noise: mapcraft_engine::HeightNoise,
     pub(crate) blend_fill: crate::panels::BlendFillRows,
     /// The status message and when it first showed, so it can give way to tool hints.
     pub(crate) status_shown: (String, Instant),
@@ -316,6 +317,7 @@ impl MapCraftApp {
             blend_readout: None,
             disp_power: 3,
             heightmap_range: (0.0, 512.0),
+            height_noise: Default::default(),
             blend_fill: Default::default(),
             status_shown: (String::new(), Instant::now()),
             inspector_filter: String::new(),
@@ -1566,17 +1568,19 @@ impl MapCraftApp {
                 ui.colored_label(crate::chrome::ACCENT, format!("Materials load once {} is set.", editing.join(", ")));
             }
             ui.separator();
-            let heading = ui.label("Texture folders").on_hover_text("More folders of materials, searched after the SDK's own, which win when both hold a name");
+            let heading = ui
+                .label("Texture folders")
+                .on_hover_text("More folders of materials, or single files such as a WAD, searched after the SDK's own, which win when both hold a name");
             let mut remove = None;
             for (i, d) in dirs.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    let missing = !std::path::Path::new(d).is_dir();
+                    let missing = !std::path::Path::new(d).exists();
                     let text = egui::RichText::new(d).monospace();
                     let label = ui.label(if missing { text.color(egui::Color32::LIGHT_RED) } else { text });
                     if missing {
-                        label.on_hover_text("This folder does not exist");
+                        label.on_hover_text("This folder or file does not exist");
                     }
-                    if crate::chrome::icon_button(ui, "trash_can", "Remove", 20.0, false).on_hover_text("Remove this folder").clicked() {
+                    if crate::chrome::icon_button(ui, "trash_can", "Remove", 20.0, false).on_hover_text("Take it off the list").clicked() {
                         remove = Some(i);
                     }
                 });
@@ -1587,14 +1591,19 @@ impl MapCraftApp {
             }
             ui.horizontal(|ui| {
                 let typed = &mut self.dialogs.new_texture_dir;
-                ui.add(egui::TextEdit::singleline(typed).hint_text("A folder of images").desired_width(300.0)).labelled_by(heading.id);
+                ui.add(egui::TextEdit::singleline(typed).hint_text("A folder, or one file such as a WAD").desired_width(300.0)).labelled_by(heading.id);
                 let mut added = None;
                 if ui.add_enabled(!typed.trim().is_empty(), egui::Button::new("Add")).clicked() {
                     added = Some(typed.trim().to_string());
                     typed.clear();
                 }
-                if ui.button("Browse…").clicked()
+                if ui.button("Browse…").on_hover_text("Pick a folder").clicked()
                     && let Some(p) = rfd::FileDialog::new().pick_folder()
+                {
+                    added = Some(p.to_string_lossy().into_owned());
+                }
+                if ui.button("File…").on_hover_text("Pick one file, such as a texture WAD").clicked()
+                    && let Some(p) = rfd::FileDialog::new().pick_file()
                 {
                     added = Some(p.to_string_lossy().into_owned());
                 }

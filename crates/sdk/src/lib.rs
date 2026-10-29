@@ -157,7 +157,7 @@ fn default_kind() -> String {
 pub struct Sdk {
     pub dir: PathBuf,
     pub manifest: Manifest,
-    /// Texture folders the user added in SDK Settings, searched after the manifest's.
+    /// Texture folders and single files the user added in SDK Settings, searched after the manifest's.
     pub user_textures: Vec<PathBuf>,
 }
 
@@ -212,11 +212,11 @@ impl Sdk {
         Ok(Vfs::new(roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?))
     }
 
-    /// What plugins may read: the texture folders, the user's, then the extra file folders that are set.
+    /// What plugins may read: the texture folders, the user's folders and files, then the extra file folders that are set.
     pub fn plugin_vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
         let resolve = |r: &String| self.resolve(r, vars).ok();
         let textures = self.manifest.textures.roots.iter().filter_map(resolve).chain(self.user_textures.iter().cloned());
-        Vfs::new(textures.chain(self.manifest.files.roots.iter().filter_map(resolve)).filter(|p| p.is_dir()).collect())
+        Vfs::new(textures.chain(self.manifest.files.roots.iter().filter_map(resolve)).filter(|p| p.exists()).collect())
     }
 }
 
@@ -310,17 +310,21 @@ steps = [
     fn user_texture_folders_follow_the_sdks_own() {
         let root = tempfile::tempdir().unwrap();
         let (own, user, game) = (root.path().join("p/Assets/Textures"), root.path().join("mine"), root.path().join("game"));
-        for file in [own.join("wall.png"), user.join("wall.png"), user.join("metal/plate.png"), game.join("x.png")] {
+        let wad = root.path().join("jams/jam.wad");
+        for file in [own.join("wall.png"), user.join("wall.png"), user.join("metal/plate.png"), game.join("x.png"), wad.clone()] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(&file, b"").unwrap();
         }
-        let mut sdk = Sdk { dir: root.path().into(), manifest: toml::from_str(SURFSUP).unwrap(), user_textures: vec![user.clone(), root.path().join("gone")] };
+        let user_textures = vec![user.clone(), root.path().join("gone"), wad.clone()];
+        let mut sdk = Sdk { dir: root.path().into(), manifest: toml::from_str(SURFSUP).unwrap(), user_textures };
         sdk.manifest.files.roots = vec!["${game}".into()];
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let vars = BTreeMap::from([("project".to_string(), s(&root.path().join("p"))), ("game".to_string(), s(&game))]);
         let vfs = sdk.vfs(&vars).unwrap();
-        assert_eq!(vfs.roots(), [own.clone(), user.clone(), root.path().join("gone")]);
-        assert_eq!(sdk.plugin_vfs(&vars).roots(), [own.clone(), user.clone(), game], "missing folders are left out of what plugins read");
+        assert_eq!(vfs.roots(), [own.clone(), user.clone(), root.path().join("gone"), wad.clone()]);
+        let plugins = sdk.plugin_vfs(&vars);
+        assert_eq!(plugins.roots(), [own.clone(), user.clone(), wad, game], "missing folders are left out of what plugins read, single files are not");
+        assert_eq!(plugins.list(&["wad".to_string()]).len(), 1);
         let listed = vfs.list(&["png".to_string()]);
         assert_eq!(
             listed,

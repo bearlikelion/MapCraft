@@ -224,6 +224,19 @@ impl Library {
             .join(";")
     }
 
+    /// The WAD each texture is read from, the first holding it, by file name without its extension.
+    pub fn folders(&self) -> BTreeMap<&str, &str> {
+        let mut out = BTreeMap::new();
+        for wad in &self.wads {
+            let name = file_name(&wad.path);
+            let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+            for lump in &wad.lumps {
+                out.entry(lump.name.as_str()).or_insert(stem);
+            }
+        }
+        out
+    }
+
     /// Pictures of the named textures, or of every texture with `None`, and why some could not be decoded.
     pub fn pictures(&self, files: &dyn Files, names: Option<&BTreeSet<String>>) -> (BTreeMap<String, Picture>, Vec<String>) {
         let mut chosen: BTreeMap<&str, (&Wad, &Lump)> = BTreeMap::new();
@@ -384,6 +397,20 @@ pub(crate) mod tests {
         let lib = Library { wads: vec![Wad { path: "id1/gfx/base.wad".into(), half_life: false, lumps: Vec::new() }], palette: None, problems: Vec::new() };
         let key = "/mnt/Storage/Quake/WAD/mc_anniv_jam.wad; C:\\Quake\\wads\\BASE.wad;knave.wad";
         assert_eq!(lib.missing_folders(key).into_iter().collect::<Vec<_>>(), vec!["/mnt/Storage/Quake/WAD"]);
+    }
+
+    #[test]
+    fn each_texture_shows_in_the_folder_of_the_wad_it_is_read_from() {
+        let tex = |name: &'static str| (name, MIPTEX_WAD2, miptex(name, 16, 16, None));
+        let files = Mem(HashMap::from([
+            ("wads/Base.WAD".to_string(), wad(b"WAD2", &[tex("brick"), tex("sky1")])),
+            ("jam/mc_jam.wad".to_string(), wad(b"WAD2", &[tex("brick"), tex("lava")])),
+            ("jam/nameless".to_string(), wad(b"WAD2", &[tex("ghost")])),
+        ]));
+        let library = Library::open(&files, "");
+        assert_eq!(library.folders().into_iter().collect::<Vec<_>>(), [("brick", "mc_jam"), ("lava", "mc_jam"), ("sky1", "Base")]);
+        let library = Library::open(&files, "base.wad");
+        assert_eq!(library.folders().get("brick"), Some(&"Base"), "a WAD the map names comes first");
     }
 
     #[test]

@@ -3,7 +3,8 @@ use std::path::{Component, Path, PathBuf};
 const MAX_DEPTH: usize = 32;
 const MAX_FILES: usize = 200_000;
 
-/// Read-only view over asset folders; the first root holding a file wins.
+/// Read-only view over asset folders, and single files a mapper added, which go by their own name;
+/// the first root holding a file wins.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vfs {
     roots: Vec<PathBuf>,
@@ -26,7 +27,9 @@ impl Vfs {
 
     pub fn find(&self, rel: &str) -> Option<PathBuf> {
         let rel = safe_relative(rel)?;
-        self.roots.iter().map(|r| r.join(&rel)).find(|p| p.is_file())
+        self.roots
+            .iter()
+            .find_map(|r| if r.is_file() { (r.file_name() == Some(rel.as_os_str())).then(|| r.clone()) } else { Some(r.join(&rel)).filter(|p| p.is_file()) })
     }
 
     pub fn read(&self, rel: &str) -> Option<Vec<u8>> {
@@ -54,6 +57,13 @@ impl Vfs {
     pub fn list(&self, extensions: &[String]) -> Vec<(String, PathBuf)> {
         let mut out: Vec<(String, PathBuf)> = Vec::new();
         for root in &self.roots {
+            if root.is_file() {
+                let stem = root.file_stem().map(|s| s.to_string_lossy().into_owned());
+                if let Some(stem) = stem.filter(|_| has_extension(root, extensions)) {
+                    out.push((stem, root.clone()));
+                }
+                continue;
+            }
             let mut stack = vec![(root.clone(), 0usize)];
             while let Some((dir, depth)) = stack.pop() {
                 let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -63,7 +73,7 @@ impl Vfs {
                     // file_type does not follow symlinks, so linked folders cannot loop.
                     if ty.is_dir() && depth < MAX_DEPTH && !entry.file_name().to_string_lossy().starts_with('.') && !path.join(".gdignore").exists() {
                         stack.push((path, depth + 1));
-                    } else if ty.is_file() && path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e))) {
+                    } else if ty.is_file() && has_extension(&path, extensions) {
                         let Ok(rel) = path.with_extension("").strip_prefix(root).map(Path::to_path_buf) else { continue };
                         let name = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
                         out.push((name, path));
@@ -76,6 +86,10 @@ impl Vfs {
         }
         finish(out)
     }
+}
+
+fn has_extension(path: &Path, extensions: &[String]) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| extensions.iter().any(|x| x.eq_ignore_ascii_case(e)))
 }
 
 fn finish(mut out: Vec<(String, PathBuf)>) -> Vec<(String, PathBuf)> {
@@ -113,5 +127,21 @@ mod tests {
         assert_eq!(names, ["ramps", "ramps/orange"]);
         assert_eq!(vfs.list(&exts)[1].1, a.path().join("ramps/orange.png"));
         assert_eq!(vfs.find_material("ramps/orange", &exts), Some(a.path().join("ramps/orange.png")));
+    }
+
+    #[test]
+    fn single_files_go_by_their_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("jam")).unwrap();
+        let wad = dir.path().join("jam/Mine.WAD");
+        std::fs::write(&wad, b"WAD2data").unwrap();
+        std::fs::write(dir.path().join("jam/other.wad"), b"").unwrap();
+        let vfs = Vfs::new(vec![wad.clone()]);
+        assert_eq!(vfs.list(&["wad".to_string()]), [("Mine".to_string(), wad.clone())]);
+        assert!(vfs.list(&["png".to_string()]).is_empty());
+        assert_eq!(vfs.read_range("Mine.WAD", 4, 4).unwrap(), b"data");
+        assert_eq!(vfs.find("Mine.WAD"), Some(wad));
+        assert!(vfs.find("other.wad").is_none(), "only the added file, not its neighbors");
+        assert!(vfs.find("jam/Mine.WAD").is_none());
     }
 }

@@ -21,6 +21,8 @@ pub use convert::{CommandSpec, Context, ImporterSpec, Manifest, ParamKind, Param
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialInfo {
     pub name: String,
+    /// The Materials panel folder, for a name that carries none.
+    pub folder: Option<String>,
     pub image: Option<String>,
     pub color: Option<[u8; 3]>,
     /// The picture itself, for materials from files outside the SDK's asset folders.
@@ -107,7 +109,7 @@ mod bindings {
 }
 
 /// The `wit/plugin.wit` package version plugins must import.
-const API: &str = "0.2.0";
+const API: &str = "0.3.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};
@@ -118,6 +120,8 @@ const MEMORY: usize = 512 << 20;
 /// An import may use this much more memory than the file it reads.
 const IMPORT_HEADROOM: usize = 256 << 20;
 const MAX_RANGE: u64 = 256 << 20;
+/// Longest material folder name a plugin may give.
+const MAX_FOLDER: usize = 256;
 /// Fuel for one import; decompressing and decoding a big compiled map takes far more than a command.
 const IMPORT_FUEL: u64 = 60_000_000_000;
 
@@ -421,6 +425,7 @@ impl Plugin {
                 .map(|m| MaterialInfo {
                     pixels: m.pixels.and_then(convert::picture).map(std::sync::Arc::new),
                     name: m.name,
+                    folder: m.folder.map(|f| f.trim().to_string()).filter(|f| !f.is_empty() && f.len() <= MAX_FOLDER),
                     image: m.image,
                     color: m.color.map(|(r, g, b)| [r, g, b]),
                     size: m.size.map(|(w, h)| [w, h]),

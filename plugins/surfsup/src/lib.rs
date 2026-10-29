@@ -11,7 +11,7 @@ mod validate;
 
 use glam::DVec3;
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{Brush, CommandSpec, Hull, ImporterSpec, IntegerRange, NumberRange, ParamKind, ParamSpec, Surface, Value, Vec3};
+use mapcraft::plugin::types::{Brush, CommandSpec, Face, Hull, ImporterSpec, IntegerRange, NumberRange, ParamKind, ParamSpec, TexAxis, Value, Vec3};
 
 wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
 
@@ -120,6 +120,13 @@ fn ramp_command() -> CommandSpec {
             material("surf_material", "Surf material", "Empty uses the material picked in the browser"),
             material("side_material", "Side material", "Empty uses the material picked in the browser"),
             material("bottom_material", "Bottom material", "Empty uses the side material"),
+            spec(
+                "uv_scale",
+                "UV scale",
+                "Map units per texel; the texture runs along the ramp",
+                ParamKind::Number(NumberRange { min: 0.01, max: 64.0, step: 0.05 }),
+                Value::Number(1.0),
+            ),
         ],
     }
 }
@@ -207,15 +214,28 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
     }
     let (surf, side) = (p.text("surf_material"), p.text("side_material"));
     let bottom = if p.text("bottom_material").is_empty() { side } else { p.text("bottom_material") };
+    let scale = p.num("uv_scale", 1.0);
+    let axis = |(a, offset): ramp::UvAxis| TexAxis { axis: v(a.normalize_or_zero()), offset: offset / scale, scale: scale / a.length().max(1e-9) };
     let brushes = ramp::build(&r)?
         .into_iter()
         .map(|piece| {
-            let surfaces = piece
+            let faces = piece
                 .faces
-                .iter()
-                .map(|(n, slot)| Surface { normal: v(*n), material: if *slot == ramp::Slot::Surf { surf } else { bottom }.to_string() })
+                .into_iter()
+                .map(|f| Face {
+                    points: (v(f.points[0]), v(f.points[1]), v(f.points[2])),
+                    material: match f.slot {
+                        ramp::Slot::Surf => surf,
+                        ramp::Slot::Side => side,
+                        ramp::Slot::Bottom => bottom,
+                    }
+                    .to_string(),
+                    uv: f.uv.map(|(u, w)| (axis(u), axis(w))),
+                    attrs: Vec::new(),
+                    disp: None,
+                })
                 .collect();
-            Brush::Hull(Hull { points: piece.points.into_iter().map(v).collect(), material: side.to_string(), surfaces })
+            Brush::Faces(faces)
         })
         .collect();
     Ok(Output { brushes, entities: Vec::new(), groups: Vec::new(), materials: Vec::new() })

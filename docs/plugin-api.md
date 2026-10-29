@@ -104,6 +104,7 @@ A plugin that does not validate returns an empty list.
 
 A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
 Each material has a name, which is what faces store and what engine importers look up, and a preview: an image path in the asset folders, or an sRGB color.
+The Materials panel groups materials by the part of their name before the first `/`; a plugin whose names carry no folder, such as Quake's bare WAD texture names, sets `folder` instead, and the panel shows the material there (the Quake plugin gives each WAD its own folder).
 A plugin that returns its own pictures (`pixels`) may shrink them to save memory; it then sets `size` to the texture's real width and height, because texture scales and offsets count real texels.
 Importers do the same for the materials they return.
 When a map uses a material whose listed picture is smaller than its `size`, the editor asks the plugin's `load-materials` for the full picture of every such material at once, so a big library can list small previews and the views still draw the textures sharp.
@@ -213,6 +214,7 @@ A Python plugin carries its own interpreter, so it is about 18 MB and takes a co
 
 ## Versioning
 
-The WIT package is `mapcraft:plugin@0.2.0`.
+The WIT package is `mapcraft:plugin@0.3.0`.
 Until 1.0 the API may change between releases, and a plugin built for another API version is not loaded and the Output panel asks for it to be rebuilt.
 Version 0.2.0 added face `attrs` and `disp` and material `uv-scale`, `pixelated` and `blend`, so a plugin built for 0.1, in an SDK or in the user's plugins folder, is not loaded and the Output panel asks for it to be rebuilt against 0.2.
+Version 0.3.0 added material `folder`, so a plugin built for 0.2 is not loaded until it is rebuilt against 0.3; a plugin that does not group its materials sets it to `none`.

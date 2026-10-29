@@ -12,6 +12,8 @@ use mapcraft_sdk::{Sdk, Vfs};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Material {
     pub name: String,
+    /// The Materials panel folder a plugin gives a name that carries none, such as a WAD's texture.
+    pub folder: Option<String>,
     pub image: Option<PathBuf>,
     pub color: Option<[u8; 3]>,
     /// A picture a plugin decoded itself, such as a texture from a WAD.
@@ -23,6 +25,13 @@ pub struct Material {
     pub uv_scale: Option<[f32; 2]>,
     pub pixelated: bool,
     pub blend: mapcraft_map::BlendRole,
+}
+
+impl Material {
+    /// The top-level folder the Materials panel shows it in: the plugin's, else the name's first part.
+    pub fn folder(&self) -> Option<&str> {
+        self.folder.as_deref().or_else(|| self.name.split_once('/').map(|(f, _)| f))
+    }
 }
 
 /// Real texture sizes of cached imported pictures that were shrunk, by material name.
@@ -190,6 +199,7 @@ impl Project {
                             .map(|m| Material {
                                 image: m.image.and_then(|i| vfs.find(&i)),
                                 name: m.name,
+                                folder: m.folder,
                                 color: m.color,
                                 pixels: m.pixels,
                                 size: m.size,

@@ -14,10 +14,11 @@ pub struct Import {
     pub log: Vec<String>,
 }
 
-pub fn material(name: String, picture: Picture) -> MaterialInfo {
+pub fn material(name: String, picture: Picture, folder: Option<String>) -> MaterialInfo {
     let color = Some(picture.average());
     MaterialInfo {
         name,
+        folder,
         image: None,
         color,
         size: Some(picture.full),
@@ -139,13 +140,16 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
     let folders = library.missing_folders(&wad_key);
     if !folders.is_empty() {
         let folders: Vec<&str> = folders.into_iter().collect();
-        log.push(format!("to load those textures, set the SDK's WAD folder (File > SDK Settings) to {}", folders.join(" or ")));
+        log.push(format!(
+            "to load those textures, set the SDK's WAD folder (File > SDK Settings) to {}, or add the WADs under Texture folders",
+            folders.join(" or ")
+        ));
     }
     let (pictures, failed) = library.pictures(files, Some(&used));
     let missing: Vec<&str> = used.iter().filter(|n| !library.wads.iter().any(|w| w.lumps.iter().any(|l| &l.name == *n))).map(String::as_str).collect();
     log.push(format!("textures: {} of {} found in {} WADs", pictures.len(), used.len(), library.wads.len()));
     if library.wads.is_empty() {
-        log.push("no WAD files found: set the SDK's WAD folder or Quake folder".into());
+        log.push("no WAD files found: set the SDK's WAD folder or Quake folder, or add WADs under Texture folders (File > SDK Settings)".into());
     }
     if library.palette.is_none() && !failed.is_empty() {
         log.push("Quake's palette was not found: set the SDK's Quake folder (the one holding id1)".into());
@@ -154,7 +158,14 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
         log.push(format!("not in any WAD: {}", missing.join(", ")));
     }
     log.extend(failed.into_iter().take(10).map(|f| format!("texture {f}")));
-    let materials = pictures.into_iter().map(|(name, p)| material(name, p)).collect();
+    let folders = library.folders();
+    let materials = pictures
+        .into_iter()
+        .map(|(name, p)| {
+            let folder = folders.get(name.as_str()).map(|f| f.to_string());
+            material(name, p, folder)
+        })
+        .collect();
     if !world_keys.is_empty() {
         top.push(Entity { classname: "worldspawn".into(), properties: world_keys, connections: Vec::new(), brushes: Vec::new() });
     }

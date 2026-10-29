@@ -49,6 +49,7 @@ fn materials(library: &valve::Library, loose: &[String]) -> Vec<MaterialInfo> {
             MaterialInfo {
                 color: pixels.is_none().then_some((128, 128, 128)),
                 name,
+                folder: None,
                 image: None,
                 pixels,
                 size,

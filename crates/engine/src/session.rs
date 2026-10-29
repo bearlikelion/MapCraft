@@ -66,6 +66,8 @@ pub struct Session {
     pub blend_roles: BTreeMap<String, BlendRole>,
     /// A paint stroke's coalesce key and, per face, the weights it started from and its coverage per vertex.
     pub(crate) paint_stroke: Option<(String, BTreeMap<(NodeId, FaceId), (Vec<f64>, Vec<f64>)>)>,
+    /// The faces the last heightmap covered, its 0..1 samples on each and whether noise made them.
+    pub(crate) heightmap: Option<(Vec<(NodeId, FaceId)>, Vec<Vec<f64>>, bool)>,
     /// Something the last edit wants the user to know, such as displacements it flattened.
     pub notice: Option<String>,
     undo: Vec<Transaction>,
@@ -99,6 +101,7 @@ impl Session {
             default_solid_entity: "func_detail".into(),
             blend_roles: BTreeMap::new(),
             paint_stroke: None,
+            heightmap: None,
             notice: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -167,8 +170,9 @@ impl Session {
         if changes.is_empty() {
             return;
         }
-        // Any edit makes a paint stroke's starting weights stale; paint_blend restores its own after storing.
+        // Any edit makes a paint stroke's starting weights and the last heightmap stale; their own edits restore them after storing.
         self.paint_stroke = None;
+        self.heightmap = None;
         let before = self.selection.clone();
         let mut touched: BTreeSet<NodeId> = changes.nodes.keys().copied().collect();
         let mut inverse = self.map.apply(changes);
@@ -213,6 +217,7 @@ impl Session {
             let Some(t) = self.undo.pop() else { break };
             self.map.apply(t.inverse);
             self.selection = t.selection;
+            self.heightmap = None;
             cancelled = true;
         }
         self.prune_selection();
@@ -221,6 +226,7 @@ impl Session {
 
     pub fn undo(&mut self) -> bool {
         self.paint_stroke = None;
+        self.heightmap = None;
         let Some(t) = self.undo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);
         let after = std::mem::replace(&mut self.selection, t.selection);
@@ -231,6 +237,7 @@ impl Session {
 
     pub fn redo(&mut self) -> bool {
         self.paint_stroke = None;
+        self.heightmap = None;
         let Some(t) = self.redo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);
         let before = std::mem::replace(&mut self.selection, t.selection);

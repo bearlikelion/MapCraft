@@ -90,15 +90,16 @@ Paths are saved per SDK, so every map made with that SDK shares them.
 
 ### Texture folders
 
-The **Texture folders** list, below the SDK's own paths, adds more material folders to any SDK.
+The **Texture folders** list, below the SDK's own paths, adds more material folders, or single files, to any SDK.
 
-- Type a folder and click **Add**, or click **Browse** to pick one.
-- A folder that does not exist turns red; **Remove** (the trash can) takes a folder off the list.
+- Type a folder or a file and click **Add**, click **Browse** to pick a folder, or click **File** to pick one file, such as a texture WAD for the Quake SDK.
+- An entry that does not exist turns red; **Remove** (the trash can) takes it off the list.
 - Click **Apply**, or close the window, to reload the materials.
 
 Materials in an added folder are named by their path inside it without the extension, as in the SDK's own folders.
 The SDK's own folders are searched first, then the added ones in list order, so when two folders hold the same name the first one wins.
-Plugins read the added folders too, so the Godot plugin lists the `.tres` materials in them as well as their pictures.
+Plugins read the added folders and files too, so the Godot plugin lists the `.tres` materials in them as well as their pictures, and the Quake plugin lists the textures in every added WAD, each WAD in its own folder.
+An added file goes by its own name, as if it sat at the top of a folder.
 The list is saved per SDK, under `sdk_textures` in MapCraft's `config.toml`.
 
 For the SDK of the open map, **Folders shown in the Materials panel** lists its top-level material folders with a checkbox each, the same list as **Folders** in the [Materials panel](materials.md#the-materials-panel).

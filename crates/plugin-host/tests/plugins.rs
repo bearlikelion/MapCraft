@@ -104,6 +104,7 @@ fn godot_materials() {
     };
     let info = |name: &str, image: Option<&str>, color, pbr| MaterialInfo {
         name: name.into(),
+        folder: None,
         image: image.map(String::from),
         color,
         pixels: None,
@@ -145,7 +146,7 @@ fn plugins_for_the_old_api_ask_to_be_rebuilt() {
     old.extend(name);
     old.extend([5, 0]);
     let err = Host::new().unwrap().load(&old, Vfs::default()).err().unwrap().to_string();
-    assert_eq!(err, "built for plugin API 0.1.0; rebuild it against 0.2.0");
+    assert_eq!(err, "built for plugin API 0.1.0; rebuild it against 0.3.0");
 }
 
 /// Coplanar displaced faces from the VMF named by `MAPCRAFT_DISP_VMF` meet along nearly every shared edge, which swapped rows and columns would break; faces at an angle differ by the sideways offsets MapCraft drops.

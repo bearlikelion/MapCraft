@@ -40,6 +40,7 @@ bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
 gltf-json = "1.4"
 base64 = "0.22"
+fastnoise-lite = "1.1"
 
 # plugins
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "parallel-compilation", "cache"] }

@@ -19,7 +19,8 @@ It lists every material of the map's SDK, including the [texture folders](sdks-a
 
 1. Type in **Search materials** to filter by name.
 2. The **Previews** button at the right of the material count switches between pictures and a plain list of names.
-   **Folders** lists the SDK's top-level material folders; untick one to hide its materials, or use **Hide all** and tick the ones you want.
+   **Folders** lists the SDK's top-level material folders, or the folders its plugin puts materials in, such as one per WAD on the Quake SDK; untick one to hide its materials, or use **Hide all** and tick the ones you want.
+   Searching matches folder names as well as material names.
    The choice is saved per SDK, so it holds for every map on that SDK, and faces already using a hidden material still draw.
 3. Click a material to make it current.
    With brushes selected or faces picked, the click also puts it on them, as in TrenchBroom.

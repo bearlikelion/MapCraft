@@ -85,7 +85,14 @@ impl Guest for Quake {
         if library.palette.is_none() && !failed.is_empty() {
             host::log("Quake textures: the palette was not found; set the SDK's Quake folder (the one holding id1)");
         }
-        Ok(pictures.into_iter().map(|(name, p)| import::material(name, p)).collect())
+        let folders = library.folders();
+        Ok(pictures
+            .into_iter()
+            .map(|(name, p)| {
+                let folder = folders.get(name.as_str()).map(|f| f.to_string());
+                import::material(name, p, folder)
+            })
+            .collect())
     }
     fn load_materials(names: Vec<String>) -> Vec<Option<Image>> {
         let library = wad::Library::open(&HostFiles, "");

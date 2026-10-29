@@ -281,6 +281,7 @@ impl Guest for Godot {
             let pbr = Pbr { normal: p.normal.and_then(|n| locate(&n, &images)), roughness: at(p.roughness), metallic: at(p.metallic), ao: at(p.ao), ..p };
             out.push(MaterialInfo {
                 name,
+                folder: None,
                 image: res.albedo.and_then(|t| locate(&t, &images)),
                 color: res.color,
                 pixels: None,
@@ -312,6 +313,7 @@ impl Guest for Godot {
             let pbr = set.and_then(|s| loose_pbr(s));
             out.push(MaterialInfo {
                 name,
+                folder: None,
                 image: Some(img.clone()),
                 color: None,
                 pixels: None,

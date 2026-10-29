@@ -58,6 +58,7 @@ Each shape also remembers the settings you last used, until you quit.
 | **End slope** | Straight only: the base reaches past the top at each end; negative undercuts, and length 0 makes a pyramid |
 | **Lead in**, **Lead out** | Straight runs before and after a curve |
 | **Surf**, **Side** and **Bottom material** | Empty uses the current material; the bucket (**Use current material**) fills one in |
+| **UV scale** | Map units per texel; the texture runs along the ramp and down its faces, as SURGE lays it out |
 
 ## Keep it surfable
 

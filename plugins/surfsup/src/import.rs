@@ -1278,6 +1278,7 @@ impl<'a> Builder<'a> {
             let px = [c.x as u8, c.y as u8, c.z as u8, 255];
             self.materials.infos.push(MaterialInfo {
                 name: name.clone(),
+                folder: None,
                 image: None,
                 color: Some((px[0], px[1], px[2])),
                 pixels: Some(Image { width: 4, height: 4, rgba: px.repeat(16) }),

@@ -1,4 +1,4 @@
-package mapcraft:plugin@0.2.0;
+package mapcraft:plugin@0.3.0;
 
 /// Plain data shared by the host and plugins. Lengths are map units (1 unit = 1 inch), Z is up.
 interface types {
@@ -306,6 +306,9 @@ interface types {
     /// preview; without one, `color` (sRGB) is.
     record material-info {
         name: string,
+        /// The Materials panel folder it shows in, for a name that carries none, such as a
+        /// texture from a WAD; without one, the part of the name before its first `/` is.
+        folder: option<string>,
         image: option<string>,
         color: option<tuple<u8, u8, u8>>,
         /// The picture itself, for a material from outside the SDK's asset folders.

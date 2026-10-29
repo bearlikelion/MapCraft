@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Align, Color32, Layout, Rect, RichText};
-use mapcraft_engine::{BlendFill, Severity};
+use mapcraft_engine::{BlendFill, FractalType, HeightNoise, NoiseType, Severity};
 use mapcraft_fgd::{EntityClass, Property};
 use mapcraft_geom::DVec2;
 use mapcraft_map::{
@@ -108,6 +108,28 @@ impl BlendFillRows {
             _ => BlendFill::Value(self.amount / 100.0),
         }
     }
+}
+
+const NOISE_TYPES: [(NoiseType, &str); 6] = [
+    (NoiseType::OpenSimplex2, "Simplex"),
+    (NoiseType::OpenSimplex2S, "Simplex Smooth"),
+    (NoiseType::Cellular, "Cellular"),
+    (NoiseType::Perlin, "Perlin"),
+    (NoiseType::ValueCubic, "Value Cubic"),
+    (NoiseType::Value, "Value"),
+];
+const FRACTALS: [(FractalType, &str); 4] =
+    [(FractalType::None, "None"), (FractalType::FBm, "FBM"), (FractalType::Ridged, "Ridged"), (FractalType::PingPong, "Ping-Pong")];
+
+/// A choice cell for a small enum, matched by its options' labels.
+fn pick<T: Copy + PartialEq>(ui: &mut egui::Ui, id: &str, value: &mut T, options: &[(T, &str)]) -> egui::Response {
+    let labels: Vec<(&str, &str)> = options.iter().map(|(_, l)| (*l, *l)).collect();
+    let mut shown = options.iter().find(|(v, _)| v == value).map_or("", |(_, l)| *l).to_string();
+    let r = inspect::choice(ui, egui::Id::new(id), &mut shown, &labels, false);
+    if let Some((v, _)) = options.iter().find(|(_, l)| *l == shown) {
+        *value = *v;
+    }
+    r
 }
 
 const ANTI_TILE_TIP: &str =
@@ -684,8 +706,8 @@ impl MapCraftApp {
             .project
             .materials
             .iter()
-            .filter(|m| !top_folder(&m.name).is_some_and(|f| hidden.contains(f)))
-            .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter))
+            .filter(|m| !m.folder().is_some_and(|f| hidden.contains(f)))
+            .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter) || m.folder.as_ref().is_some_and(|f| f.to_lowercase().contains(&filter)))
             .cloned()
             .collect();
         count_and_previews(ui, &format!("{} materials", names.len()), &mut self.show_thumbs);
@@ -754,7 +776,7 @@ impl MapCraftApp {
     /// A checkbox per top-level material folder of the current SDK, saved per SDK.
     pub(crate) fn texture_folder_toggles(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.project.id().map(str::to_string) else { return };
-        let folders: BTreeSet<&str> = self.project.materials.iter().filter_map(|m| top_folder(&m.name)).collect();
+        let folders: BTreeSet<&str> = self.project.materials.iter().filter_map(crate::project::Material::folder).collect();
         if folders.is_empty() {
             ui.label(RichText::new("This SDK's materials are not in folders.").color(crate::chrome::TEXT_WEAK));
             return;
@@ -2042,7 +2064,9 @@ impl MapCraftApp {
             }
         }
 
-        self.displacement_section(ui, faces.iter().any(|(_, f)| f.disp.is_some()));
+        let any = faces.iter().any(|(_, f)| f.disp.is_some());
+        self.displacement_section(ui, any);
+        self.noise_section(ui, any);
     }
 
     /// The picked faces' UV editor, at the top of the face panel.
@@ -2109,13 +2133,16 @@ impl MapCraftApp {
         }
         let readonly = (!any).then_some("Make a displacement first.");
         let tip = "The height a heightmap's black maps to";
-        inspect::row(ui, &Prop { label: "Black height", key: "black", tip, readonly, ..Default::default() }, |ui| {
+        let black = inspect::row(ui, &Prop { label: "Black height", key: "black", tip, readonly, ..Default::default() }, |ui| {
             inspect::num(ui, &mut self.heightmap_range.0, -inspect::LIMIT..=inspect::LIMIT, 4.0, "", None)
         });
         let tip = "The height a heightmap's white maps to";
-        inspect::row(ui, &Prop { label: "White height", key: "white", tip, readonly, ..Default::default() }, |ui| {
+        let white = inspect::row(ui, &Prop { label: "White height", key: "white", tip, readonly, ..Default::default() }, |ui| {
             inspect::num(ui, &mut self.heightmap_range.1, -inspect::LIMIT..=inspect::LIMIT, 4.0, "", None)
         });
+        if black.changed || white.changed {
+            self.retune_heightmap();
+        }
         let load =
             [Action { icon: "folder_open", label: "Load heightmap…", tip: "A grayscale image stretched over all the picked displacements", enabled: any }];
         if inspect::actions(ui, &load).is_some() {
@@ -2254,6 +2281,67 @@ impl MapCraftApp {
             }
         }
         if range[0] <= range[1] { range } else { [0.0, 512.0] }
+    }
+
+    /// Noise to use as the heightmap; edits reshape the last applied noise live.
+    fn noise_section(&mut self, ui: &mut egui::Ui, any: bool) {
+        let tip = "Noise made as Godot's FastNoiseLite makes it, stretched between Black height and White height";
+        if !self.section(ui, &Section { key: "face.noise", title: "Noise", tip, icon: Some(("wave", TEXT_WEAK)), closed: !any, ..Default::default() }) {
+            return;
+        }
+        let readonly = (!any).then_some("Make a displacement first.");
+        let prop = |label, key, tip| Prop { label, key, tip, readonly, ..Default::default() };
+        fn num<N: egui::emath::Numeric>(ui: &mut egui::Ui, p: &Prop, v: &mut N, range: std::ops::RangeInclusive<N>, speed: f64) -> bool {
+            inspect::row(ui, p, |ui| inspect::num(ui, v, range, speed, "", None)).changed
+        }
+        let n = &mut self.height_noise;
+        let tip = "The noise each point's height comes from";
+        let mut changed = inspect::row(ui, &prop("Type", "noise_type", tip), |ui| pick(ui, "noise-type", &mut n.kind, &NOISE_TYPES)).changed;
+        changed |= num(ui, &prop("Seed", "noise_seed", "Another seed gives another surface"), &mut n.seed, 0..=1 << 30, 1.0);
+        let tip = "Bumps per pixel of a 512 pixel image laid over the picked displacements";
+        changed |= num(ui, &prop("Frequency", "noise_frequency", tip), &mut n.frequency, 0.0001..=1.0, 0.0001);
+        changed |= inspect::row(ui, &prop("Offset", "noise_offset", "Slides the noise, in pixels"), |ui| {
+            inspect::vec(ui, &mut n.offset, inspect::UV, -inspect::LIMIT..=inspect::LIMIT, 1.0, "", [false; 2]).0
+        })
+        .changed;
+        let tip = "How layers of finer noise add up";
+        changed |= inspect::row(ui, &prop("Fractal", "noise_fractal", tip), |ui| pick(ui, "noise-fractal", &mut n.fractal, &FRACTALS)).changed;
+        if n.fractal != FractalType::None {
+            changed |= num(ui, &prop("Octaves", "noise_octaves", "Layers of finer noise"), &mut n.octaves, 1..=10, 0.05);
+            changed |= num(ui, &prop("Lacunarity", "noise_lacunarity", "How much finer each layer is"), &mut n.lacunarity, 0.0..=16.0, 0.01);
+            changed |= num(ui, &prop("Gain", "noise_gain", "How much each layer adds"), &mut n.gain, 0.0..=4.0, 0.01);
+            let tip = "Makes a layer add less where the layers before it are low";
+            changed |= num(ui, &prop("Weighted strength", "noise_weighted", tip), &mut n.weighted_strength, 0.0..=1.0, 0.01);
+        }
+        let tip = "Share of each side that eases down to Black height";
+        changed |= num(ui, &prop("Edge falloff", "noise_falloff", tip), &mut n.edge_falloff, 0.0..=0.5, 0.005);
+        changed |= num(ui, &prop("Terraces", "noise_terraces", "Steps the heights climb in; 0 keeps them smooth"), &mut n.terraces, 0..=64, 0.05);
+        let presets = HeightNoise::presets();
+        let icons = ["wave", "mountains", "footsteps", "bullseye", "pyramid"];
+        let tip = "Sets the rows above to this starting point and applies it";
+        let mut items: Vec<Action> = presets.iter().zip(icons).map(|(&(label, _), icon)| Action { icon, label, tip, enabled: any }).collect();
+        items.push(Action { icon: "magic_wand", label: "Apply noise", tip: "Stretches this noise over all the picked displacements", enabled: any });
+        match inspect::actions(ui, &items) {
+            Some(i) => {
+                if let Some((_, p)) = presets.get(i) {
+                    self.height_noise = *p;
+                }
+                let (low, high) = self.heightmap_range;
+                let r = self.session.apply_noise(&self.height_noise, low, high);
+                self.after_edit(r);
+            }
+            None if changed => self.retune_heightmap(),
+            None => {}
+        }
+    }
+
+    /// Applies the last heightmap or noise again after its heights or noise changed, one undo step per drag.
+    fn retune_heightmap(&mut self) {
+        let (low, high) = self.heightmap_range;
+        match self.session.retune_heightmap(&self.height_noise, low, high, Some("heightmap")) {
+            Ok(false) => {}
+            r => self.after_edit(r.map(|_| ())),
+        }
     }
 
     fn after_edit(&mut self, result: Result<(), mapcraft_engine::EngineError>) {
@@ -2504,8 +2592,4 @@ fn highlight(text: &str, query: &str, font: egui::FontId, color: Color32) -> egu
         None => job.append(text, 0.0, format(color)),
     }
     job
-}
-
-fn top_folder(material: &str) -> Option<&str> {
-    material.split_once('/').map(|(f, _)| f)
 }

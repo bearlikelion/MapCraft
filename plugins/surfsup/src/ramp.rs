@@ -5,6 +5,8 @@
 use glam::{DAffine3, DVec2, DVec3};
 
 const EPSILON: f64 = 1e-6;
+/// How far a face's fourth corner may sit off the plane of the other three before it is split.
+const TWIST: f64 = 1e-3;
 const BANK_EASE_FRACTION: f64 = 0.2;
 pub const SURF_MIN_ANGLE: f64 = 45.573;
 const CURVED_SEGMENTS_MIN: usize = 3;
@@ -107,10 +109,26 @@ impl Default for Ramp {
     }
 }
 
-/// One brush: the points it is the hull of, and the outward normals of its surf and bottom faces.
+/// A texture axis in map units, `p . axis + offset`, before the texture scale divides it.
+pub type UvAxis = (DVec3, f64);
+
+/// A brush face: three points clockwise seen from outside, what part of the ramp it is, and its texture.
+pub struct Face {
+    pub points: [DVec3; 3],
+    pub slot: Slot,
+    pub uv: Option<(UvAxis, UvAxis)>,
+}
+
+impl Face {
+    pub fn normal(&self) -> DVec3 {
+        let [a, b, c] = self.points;
+        (a - b).cross(c - b).normalize_or_zero()
+    }
+}
+
+/// One brush, as the faces that bound it.
 pub struct Piece {
-    pub points: Vec<DVec3>,
-    pub faces: Vec<(DVec3, Slot)>,
+    pub faces: Vec<Face>,
 }
 
 /// The surfable line across the cross-section, including any flat ridge or trough floor.
@@ -334,6 +352,65 @@ fn local(p: DVec2) -> DVec3 {
     DVec3::new(0.0, p.x, p.y)
 }
 
+/// Distance down the outline from its highest corner to each corner, walking whichever way runs downhill.
+fn down_from_top(part: &[DVec2]) -> Vec<f64> {
+    let n = part.len();
+    let top = (0..n).max_by(|i, j| part[*i].y.total_cmp(&part[*j].y)).unwrap_or(0);
+    let mut out = vec![f64::INFINITY; n];
+    out[top] = 0.0;
+    for step in [1, n.saturating_sub(1)] {
+        let (mut i, mut d) = (top, 0.0);
+        for _ in 1..n {
+            let k = (i + step) % n;
+            if part[k].y > part[i].y + EPSILON {
+                break;
+            }
+            d += part[i].distance(part[k]);
+            out[k] = out[k].min(d);
+            i = k;
+        }
+    }
+    out.into_iter().map(|d| if d.is_finite() { d } else { 0.0 }).collect()
+}
+
+/// The face through `tri` turned to point along `out`; none when the points are in a line.
+fn facing(tri: [DVec3; 3], out: DVec3, slot: Slot, uv: Option<(UvAxis, UvAxis)>) -> Option<Face> {
+    let n = (tri[0] - tri[1]).cross(tri[2] - tri[1]);
+    if n.length() <= EPSILON {
+        return None;
+    }
+    Some(Face { points: if n.dot(out) < 0.0 { [tri[2], tri[1], tri[0]] } else { tri }, slot, uv })
+}
+
+/// Texture flat on a face with v running down it, as Align to Face does.
+fn facing_uv(n: DVec3) -> Option<(UvAxis, UvAxis)> {
+    let n = n.normalize_or_zero();
+    let v = (n * n.z - DVec3::Z).normalize_or_zero();
+    (v != DVec3::ZERO && n.z.abs() < 0.999).then(|| ((n.cross(v), 0.0), (v, 0.0)))
+}
+
+/// Texture like SURGE's Follow Active Quads: u runs `along` the center line, v down the outline from `below` its top.
+fn strip_uv(a: DAffine3, b: DAffine3, along: (f64, f64), (p, q): (DVec2, DVec2), below: (f64, f64), out: DVec3) -> Option<(UvAxis, UvAxis)> {
+    let (hi, lo, top) = if p.y >= q.y { (p, q, below.0) } else { (q, p, below.1) };
+    let mid = local((p + q) * 0.5);
+    let (ma, mb) = (a.transform_point3(mid), b.transform_point3(mid));
+    let len = ma.distance(mb);
+    if len <= EPSILON {
+        return None;
+    }
+    let dir = (mb - ma) / len;
+    let down = a.transform_vector3(local(lo - hi)) + b.transform_vector3(local(lo - hi));
+    let v = (down - dir * down.dot(dir)).normalize_or_zero();
+    if v == DVec3::ZERO {
+        return None;
+    }
+    let sign = if out.cross(v).dot(dir) < 0.0 { -1.0 } else { 1.0 };
+    let step = along.1 - along.0;
+    // Inner and outer faces of a curve stretch to the center line's length so their textures line up.
+    let u = dir * sign * if step > EPSILON { step / len } else { 1.0 };
+    Some(((u, sign * along.0 - ma.dot(u)), (v, top - a.transform_point3(local(hi)).dot(v))))
+}
+
 /// The brushes of a ramp, or why it cannot be built.
 pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
     let parts = profile_parts(r);
@@ -348,6 +425,10 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
     let frames = frames(r);
     let closed = is_closed(r.shape, r.angle, r.rise);
     let steps = if closed { frames.len() } else { frames.len().saturating_sub(1) };
+    let mut along = vec![0.0];
+    for s in 0..steps {
+        along.push(along[s] + frames[s].translation.distance(frames[(s + 1) % frames.len()].translation));
+    }
     let mut out = Vec::new();
     for s in 0..steps {
         let (a, b) = (frames[s], frames[(s + 1) % frames.len()]);
@@ -371,30 +452,42 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
                     pb.iter_mut().zip(part).for_each(|(q, p)| q.x -= reach(p));
                 }
             }
-            let points = pa.iter().zip(&pb).flat_map(|(x, y)| [*x, *y]).collect();
             let mut faces = Vec::new();
+            let area = |t: &[DVec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).length_squared();
+            for (cap, outward) in [(&pa, a.transform_vector3(DVec3::X)), (&pb, b.transform_vector3(-DVec3::X))] {
+                let tri = (1..cap.len().saturating_sub(1)).map(|i| [cap[0], cap[i], cap[i + 1]]).max_by(|x, y| area(x).total_cmp(&area(y)));
+                if let Some(mut f) = tri.and_then(|t| facing(t, outward, Slot::Side, None)) {
+                    f.uv = facing_uv(f.normal());
+                    faces.push(f);
+                }
+            }
+            let below = down_from_top(part);
             for j in 0..part.len() {
                 let k = (j + 1) % part.len();
                 let (p, q) = (part[j], part[k]);
                 let slot = edge_slot(p, q, &line);
-                if slot == Slot::Side {
-                    continue;
-                }
                 // Counter-clockwise, so outward is the edge direction turned clockwise.
                 let d = q - p;
-                let out = local(DVec2::new(d.y, -d.x));
-                let out = a.transform_vector3(out) + b.transform_vector3(out);
-                let [p0, p1] = [pa[j], pa[k]];
-                let [q0, q1] = [pb[j], pb[k]];
-                // A twisted face becomes two triangles in the brush; either diagonal may be used.
-                for (x, y, z) in [(p0, p1, q1), (p0, q1, q0), (p0, p1, q0), (p1, q1, q0)] {
-                    let n = (y - x).cross(z - x).normalize_or_zero();
-                    if n != DVec3::ZERO {
-                        faces.push((if n.dot(out) < 0.0 { -n } else { n }, slot));
-                    }
-                }
+                let outward = local(DVec2::new(d.y, -d.x));
+                let outward = a.transform_vector3(outward) + b.transform_vector3(outward);
+                let uv = strip_uv(a, b, (along[s], along[s + 1]), (p, q), (below[j], below[k]), outward).or_else(|| facing_uv(outward));
+                let quad = [pa[j], pa[k], pb[k], pb[j]];
+                let first = (quad[1] - quad[0]).cross(quad[2] - quad[0]);
+                let first = if first.dot(outward) < 0.0 { -first } else { first }.normalize_or_zero();
+                let bend = first.dot(quad[3] - quad[0]);
+                // A twisted face is two triangles, split along the diagonal that keeps the brush convex.
+                let tris: &[[usize; 3]] = if first == DVec3::ZERO {
+                    &[[0, 2, 3]]
+                } else if bend.abs() <= TWIST {
+                    &[[0, 1, 2]]
+                } else if bend < 0.0 {
+                    &[[0, 1, 2], [0, 2, 3]]
+                } else {
+                    &[[0, 1, 3], [1, 2, 3]]
+                };
+                faces.extend(tris.iter().filter_map(|t| facing(t.map(|i| quad[i]), outward, slot, uv)));
             }
-            out.push(Piece { points, faces });
+            out.push(Piece { faces });
         }
     }
     Ok(out)
@@ -409,13 +502,12 @@ mod tests {
         let r = Ramp::default();
         let pieces = build(&r).unwrap();
         assert_eq!(pieces.len(), 1);
-        assert_eq!(pieces[0].points.len(), 8);
-        let (n, slot) = pieces[0].faces.iter().find(|(_, s)| *s == Slot::Surf).copied().unwrap();
-        assert_eq!(slot, Slot::Surf);
+        assert_eq!(pieces[0].faces.len(), 6, "two ends, the surf face, the tip, the back and the bottom");
+        let n = pieces[0].faces.iter().find(|f| f.slot == Slot::Surf).unwrap().normal();
         assert!(n.z > 0.0 && n.y > 0.0, "a left surf faces up and to +Y: {n:?}");
         let angle = slope_angle(r.width, r.height, r.tip);
         assert!((angle - 51.34).abs() < 0.01, "the default face is the 5:4 slope: {angle}");
-        assert!(pieces[0].points.iter().any(|p| (p.x + r.size).abs() < 1e-9));
+        assert!(corners(&pieces[0]).any(|p| (p.x + r.size).abs() < 1e-9));
     }
 
     #[test]
@@ -434,15 +526,19 @@ mod tests {
         assert!(build(&Ramp { width: 0.0, ..Ramp::default() }).is_err());
     }
 
+    fn corners(p: &Piece) -> impl Iterator<Item = DVec3> + '_ {
+        p.faces.iter().flat_map(|f| f.points)
+    }
+
     fn zs(pieces: &[Piece]) -> (f64, f64) {
-        pieces.iter().flat_map(|p| p.points.iter().map(|q| q.z)).fold((f64::MAX, f64::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)))
+        pieces.iter().flat_map(|p| corners(p).map(|q| q.z)).fold((f64::MAX, f64::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)))
     }
 
     #[test]
     fn drop_and_leads_extend_the_path() {
         let r = Ramp { drop: 256.0, ..Ramp::default() };
         let piece = &build(&r).unwrap()[0];
-        let far: Vec<f64> = piece.points.iter().filter(|p| (p.x + r.size).abs() < 1e-9).map(|p| p.z).collect();
+        let far: Vec<f64> = corners(piece).filter(|p| (p.x + r.size).abs() < 1e-9).map(|p| p.z).collect();
         assert!(far.iter().all(|z| *z <= r.height - 256.0 + 1e-9), "the far end sits lower: {far:?}");
         let curve = Ramp { shape: Shape::Right, smoothness: 18, lead_in: 512.0, lead_out: 256.0, ..Ramp::default() };
         let f = frames(&curve);
@@ -461,13 +557,13 @@ mod tests {
         let trough = Ramp { surf: Surf::Inside, ridge: 128.0, ..Ramp::default() };
         let pieces = build(&trough).unwrap();
         assert_eq!(pieces.len(), 3, "two walls and the floor between them");
-        let surf: Vec<DVec3> = pieces.iter().flat_map(|p| p.faces.iter().filter(|(_, s)| *s == Slot::Surf).map(|(n, _)| *n)).collect();
+        let surf: Vec<DVec3> = pieces.iter().flat_map(|p| p.faces.iter().filter(|f| f.slot == Slot::Surf).map(Face::normal)).collect();
         assert!(surf.iter().any(|n| n.y > 0.1) && surf.iter().any(|n| n.y < -0.1), "the walls face each other");
 
         let broken = Ramp { gap: 64.0, smoothness: 4, ..Ramp::default() };
         let pieces = build(&broken).unwrap();
         assert_eq!(pieces.len(), 4);
-        let ends: Vec<(f64, f64)> = pieces.iter().map(|p| p.points.iter().map(|q| q.x).fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(x), b.max(x)))).collect();
+        let ends: Vec<(f64, f64)> = pieces.iter().map(|p| corners(p).map(|q| q.x).fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(x), b.max(x)))).collect();
         assert!((ends[0].0 - ends[1].1 - 64.0).abs() < 1e-9, "pieces stand a gap apart: {ends:?}");
         assert!(build(&Ramp { gap: 4096.0, smoothness: 4, ..Ramp::default() }).is_err());
     }
@@ -476,11 +572,36 @@ mod tests {
     fn sloped_ends_and_pyramids() {
         let hip = Ramp { surf: Surf::Both, end_slope: 256.0, ..Ramp::default() };
         let p = &build(&hip).unwrap()[0];
-        let at = |z: f64| p.points.iter().filter(|q| (q.z - z).abs() < 1e-9).map(|q| q.x).fold(f64::MIN, f64::max);
+        let at = |z: f64| corners(p).filter(|q| (q.z - z).abs() < 1e-9).map(|q| q.x).fold(f64::MIN, f64::max);
         assert!((at(0.0) - 256.0).abs() < 1e-9, "the base reaches past the start");
         assert!(at(hip.height).abs() < 1e-9, "the peak stays put");
         let pyramid = Ramp { surf: Surf::Both, size: 0.0, end_slope: 512.0, ..Ramp::default() };
         let (lo, hi) = zs(&build(&pyramid).unwrap());
         assert_eq!((lo, hi), (0.0, pyramid.height));
+    }
+
+    #[test]
+    fn curved_textures_follow_the_path_and_meet_at_seams() {
+        let r = Ramp { shape: Shape::Right, smoothness: 16, ..Ramp::default() };
+        let pieces = build(&r).unwrap();
+        let surf: Vec<&Face> = pieces.iter().map(|p| p.faces.iter().find(|f| f.slot == Slot::Surf).unwrap()).collect();
+        let tex = |f: &Face, p: DVec3| {
+            let ((u, uo), (v, vo)) = f.uv.unwrap();
+            DVec2::new(p.dot(u) + uo, p.dot(v) + vo)
+        };
+        let line = slope_line(r.surf, r.width, r.height, r.tip, r.ridge);
+        let mid = local((line[0] + line[1]) * 0.5);
+        let f = frames(&r);
+        for (i, w) in surf.windows(2).enumerate() {
+            let seam = f[i + 1].transform_point3(mid);
+            assert!(tex(w[0], seam).distance(tex(w[1], seam)) < 1e-6, "segment {i} meets the next");
+        }
+        for face in &surf {
+            let ((_, _), (v, _)) = face.uv.unwrap();
+            let n = face.normal();
+            assert!(v.dot((n * n.z - DVec3::Z).normalize()) > 0.999, "v runs straight down every face");
+        }
+        let (first, last) = (tex(surf[0], f[0].transform_point3(mid)), tex(surf[15], f[16].transform_point3(mid)));
+        assert!(((last.x - first.x).abs() - path_length(&r)).abs() < 2.0, "u runs the length of the center line");
     }
 }

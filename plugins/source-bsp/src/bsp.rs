@@ -546,6 +546,7 @@ pub fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
             }
             MaterialInfo {
                 name: name.to_string(),
+                folder: None,
                 image: None,
                 color: texdata.iter().find(|t| t.0 == name).map(|t| srgb(t.2)),
                 size: picture.as_ref().map(|p| p.2),

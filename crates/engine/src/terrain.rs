@@ -4,6 +4,7 @@ use mapcraft_geom::DVec3;
 use mapcraft_geom::noise::seeded_noise;
 use mapcraft_map::{BlendRole, Brush, Displacement, FaceId, NodeId, NodeKind, blend_layer, is_tool_material};
 
+use crate::noise::{HeightNoise, NOISE_PIXELS};
 use crate::{EngineError, Session};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -491,14 +492,57 @@ impl Session {
     /// Sets the targeted displacements from a grayscale image stretched over all of them together,
     /// 0 at `low` and 1 at `high`; the image's top is the faces' far side (+Y on a floor).
     pub fn apply_heightmap(&mut self, gray: &[f32], width: usize, height: usize, low: f64, high: f64) -> Result<(), EngineError> {
-        let mut targets = self.displacement_targets();
+        let targets = self.displacement_targets();
         let samples = image_samples(&targets, gray, width, height)?;
-        for (t, g) in targets.iter_mut().zip(samples) {
+        self.store_heightmap(targets, samples, false, low, high, None)
+    }
+
+    /// Sets the targeted displacements from `noise` laid over all of them together, its lowest point at `low` and highest at `high`.
+    pub fn apply_noise(&mut self, noise: &HeightNoise, low: f64, high: f64) -> Result<(), EngineError> {
+        let targets = self.displacement_targets();
+        let samples = noise_samples(&targets, noise)?;
+        self.store_heightmap(targets, samples, true, low, high, None)
+    }
+
+    /// Applies the last heightmap or noise again between `low` and `high`, regenerating noise from `noise`;
+    /// false once another edit, an undo or a new pick has replaced it.
+    pub fn retune_heightmap(&mut self, noise: &HeightNoise, low: f64, high: f64, coalesce: Option<&str>) -> Result<bool, EngineError> {
+        let targets = self.displacement_targets();
+        let Some((_, samples, from_noise)) = self.heightmap.take_if(|(faces, ..)| targets.iter().map(|t| (t.brush, t.face_id)).eq(faces.iter().copied()))
+        else {
+            return Ok(false);
+        };
+        let samples = if from_noise { noise_samples(&targets, noise)? } else { samples };
+        self.store_heightmap(targets, samples, from_noise, low, high, coalesce)?;
+        Ok(true)
+    }
+
+    /// Gives the targets `low` to `high` by their 0..1 samples as one undo step and remembers them for [`Session::retune_heightmap`].
+    fn store_heightmap(
+        &mut self,
+        targets: Vec<Target>,
+        samples: Vec<Vec<f64>>,
+        from_noise: bool,
+        low: f64,
+        high: f64,
+        coalesce: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let faces = targets.iter().map(|t| (t.brush, t.face_id)).collect();
+        let mut changed = Vec::new();
+        for (mut t, g) in targets.into_iter().zip(&samples) {
+            let before = t.disp.heights.clone();
             for (h, g) in t.disp.heights.iter_mut().zip(g) {
                 *h = low + g * (high - low);
             }
+            if t.disp.heights != before {
+                changed.push(t);
+            }
         }
-        self.store_targets(targets, "Apply heightmap", None)
+        if !changed.is_empty() {
+            self.store_targets(changed, if from_noise { "Apply noise" } else { "Apply heightmap" }, coalesce)?;
+        }
+        self.heightmap = Some((faces, samples, from_noise));
+        Ok(())
     }
 
     /// Sets the targeted displacements' blend weights from a grayscale image, placed as [`Session::apply_heightmap`] places it.
@@ -512,19 +556,23 @@ impl Session {
     }
 }
 
-/// Each target's flat grid sampled from a gray image stretched over them all, its top on their far side.
-fn image_samples(targets: &[Target], gray: &[f32], width: usize, height: usize) -> Result<Vec<Vec<f64>>, EngineError> {
-    let Some(first) = targets.first().filter(|_| width >= 2 && height >= 2 && gray.len() >= width * height) else {
-        return Err(EngineError::Refused("pick displaced faces and a heightmap image"));
-    };
-    let axis = first.normal.abs().max_position();
+/// The two in-plane axes of the targets' first face, and the low corner and size of their flat grids' bounds.
+fn layout(targets: &[Target]) -> Option<(usize, usize, DVec3, DVec3)> {
+    let axis = targets.first()?.normal.abs().max_position();
     let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
     let (a, b) = if a < b { (a, b) } else { (b, a) };
     let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
     for p in targets.iter().flat_map(|t| t.base.iter()) {
         (lo, hi) = (lo.min(*p), hi.max(*p));
     }
-    let span = (hi - lo).max(DVec3::splat(1e-9));
+    Some((a, b, lo, (hi - lo).max(DVec3::splat(1e-9))))
+}
+
+/// Each target's flat grid sampled from a gray image stretched over them all, its top on their far side.
+fn image_samples(targets: &[Target], gray: &[f32], width: usize, height: usize) -> Result<Vec<Vec<f64>>, EngineError> {
+    let Some((a, b, lo, span)) = layout(targets).filter(|_| width >= 2 && height >= 2 && gray.len() >= width * height) else {
+        return Err(EngineError::Refused("pick displaced faces and a heightmap image"));
+    };
     let at = |x: usize, y: usize| f64::from(gray.get(y.min(height - 1) * width + x.min(width - 1)).copied().unwrap_or(0.0));
     let sample = |p: &DVec3| {
         let u = (p[a] - lo[a]) / span[a] * (width - 1) as f64;
@@ -534,6 +582,27 @@ fn image_samples(targets: &[Target], gray: &[f32], width: usize, height: usize) 
         (at(x, y) * (1.0 - fx) + at(x + 1, y) * fx) * (1.0 - fy) + (at(x, y + 1) * (1.0 - fx) + at(x + 1, y + 1) * fx) * fy
     };
     Ok(targets.iter().map(|t| t.base.iter().map(sample).collect()).collect())
+}
+
+/// Each target's flat grid sampled from `noise` laid over them all with its top on their far side, scaled to 0..1 as
+/// NoiseTexture2D normalizes, then terraced and eased down at the edges.
+fn noise_samples(targets: &[Target], noise: &HeightNoise) -> Result<Vec<Vec<f64>>, EngineError> {
+    let (a, b, lo, span) = layout(targets).ok_or(EngineError::Refused("pick displaced faces"))?;
+    let at = noise.sampler();
+    let px = NOISE_PIXELS / span[a].max(span[b]);
+    let raw: Vec<Vec<f64>> = targets.iter().map(|t| t.base.iter().map(|p| at((p[a] - lo[a]) * px, (lo[b] + span[b] - p[b]) * px)).collect()).collect();
+    let (min, max) = raw.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| (l.min(*v), h.max(*v)));
+    let steps = f64::from(noise.terraces);
+    let falloff = if noise.edge_falloff.is_finite() { noise.edge_falloff.clamp(0.0, 0.5) } else { 0.0 };
+    let edge = |x: f64| ramp(0.0, falloff, x.min(1.0 - x));
+    let shape = |p: &DVec3, v: f64| {
+        let mut g = if max > min { (v - min) / (max - min) } else { 0.0 };
+        if noise.terraces >= 2 {
+            g = ((g * steps).floor() + ramp(0.5, 1.0, (g * steps).fract())) / steps;
+        }
+        g * edge((p[a] - lo[a]) / span[a]) * edge((p[b] - lo[b]) / span[b])
+    };
+    Ok(targets.iter().zip(raw).map(|(t, r)| t.base.iter().zip(r).map(|(p, v)| shape(p, v)).collect()).collect())
 }
 
 /// (target, vertex) lists of the vertices neighboring faces share.
@@ -585,6 +654,7 @@ mod tests {
     use mapcraft_geom::Aabb;
 
     use super::*;
+    use crate::{FractalType, NoiseType};
 
     fn floor(s: &mut Session, x: f64) -> NodeId {
         s.create_brush(Aabb::new(DVec3::new(x, 0.0, -16.0), DVec3::new(x + 64.0, 64.0, 0.0))).unwrap()
@@ -648,6 +718,73 @@ mod tests {
         let right = grid(&s, b).iter().filter(|p| (p.x - 128.0).abs() < 1e-6).map(|p| p.z).fold(0.0, f64::max);
         assert!((right - 100.0).abs() < 1e-6, "the far edge is white: {right}");
         assert!(s.displace_faces(2).is_err(), "nothing changes when the power is the same");
+    }
+
+    #[test]
+    fn heightmap_ranges_retune_live_in_one_step() {
+        let (mut s, ids) = terrain(2);
+        let gray: Vec<f32> = (0..4).flat_map(|_| (0..5).map(|x| x as f32 / 4.0)).collect();
+        let noise = HeightNoise::default();
+        assert!(!s.retune_heightmap(&noise, 0.0, 10.0, Some("heightmap")).unwrap(), "nothing applied yet");
+        s.apply_heightmap(&gray, 5, 4, 0.0, 100.0).unwrap();
+        let peak = |s: &Session| grid(s, ids[1]).iter().map(|p| p.z).fold(f64::MIN, f64::max);
+        for high in [120.0, 150.0, 200.0] {
+            assert!(s.retune_heightmap(&noise, 0.0, high, Some("heightmap")).unwrap());
+        }
+        assert!((peak(&s) - 200.0).abs() < 1e-6, "white follows the new height");
+        s.undo();
+        assert!((peak(&s) - 100.0).abs() < 1e-6, "one undo takes back the whole drag");
+        assert!(!s.retune_heightmap(&noise, 0.0, 50.0, None).unwrap(), "an undo ends it");
+        s.apply_heightmap(&gray, 5, 4, 0.0, 100.0).unwrap();
+        let picked = s.face_selection.clone();
+        s.face_selection = BTreeSet::from([(ids[0], top(&s, ids[0]))]);
+        assert!(!s.retune_heightmap(&noise, 0.0, 50.0, None).unwrap(), "another pick ends it");
+        s.face_selection = picked;
+        let dab = Sculpt { mode: SculptMode::Raise, center: DVec3::new(32.0, 32.0, 0.0), radius: 16.0, amount: 4.0, ..Default::default() };
+        s.sculpt(&dab, None).unwrap();
+        assert!(!s.retune_heightmap(&noise, 0.0, 50.0, None).unwrap(), "another edit ends it");
+    }
+
+    #[test]
+    fn noise_fills_the_range_and_survives_wild_settings() {
+        let (mut s, ids) = terrain(2);
+        let heights = |s: &Session| ids.iter().flat_map(|id| disp(s, *id).heights).collect::<Vec<f64>>();
+        for (name, preset) in HeightNoise::presets() {
+            s.apply_noise(&preset, -10.0, 50.0).unwrap();
+            let (min, max) = heights(&s).iter().fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+            assert!((min + 10.0).abs() < 1e-6 && (max - 50.0).abs() < 1e-6, "{name} spans the range: {min} {max}");
+        }
+        let hills = HeightNoise::presets()[0].1;
+        s.apply_noise(&hills, 0.0, 64.0).unwrap();
+        let first = heights(&s);
+        assert!(s.retune_heightmap(&HeightNoise { seed: 7, ..hills }, 0.0, 64.0, Some("heightmap")).unwrap());
+        assert_ne!(heights(&s), first, "a new seed reshapes it live");
+        assert!(s.retune_heightmap(&hills, 0.0, 64.0, Some("heightmap")).unwrap());
+        assert_eq!(heights(&s), first, "the same settings give the same surface");
+        s.retune_heightmap(&HeightNoise { edge_falloff: 0.25, ..hills }, 0.0, 64.0, None).unwrap();
+        let rim = ids.iter().flat_map(|id| grid(&s, *id)).filter(|p| p.x < 1e-6 || p.x > 128.0 - 1e-6 || p.y < 1e-6 || p.y > 64.0 - 1e-6);
+        assert!(rim.into_iter().all(|p| p.z.abs() < 1e-9), "the edges ease down to black");
+        let wild = HeightNoise {
+            seed: u32::MAX,
+            frequency: f64::NAN,
+            offset: [f64::INFINITY, -1e300],
+            octaves: u32::MAX,
+            lacunarity: 1e300,
+            gain: f64::NAN,
+            weighted_strength: -5.0,
+            edge_falloff: f64::NAN,
+            terraces: u32::MAX,
+            ..hills
+        };
+        let kinds = [NoiseType::OpenSimplex2, NoiseType::OpenSimplex2S, NoiseType::Cellular, NoiseType::Perlin, NoiseType::ValueCubic, NoiseType::Value];
+        for kind in kinds {
+            for fractal in [FractalType::None, FractalType::FBm, FractalType::Ridged, FractalType::PingPong] {
+                for frequency in [f64::NAN, 0.0, 1e300] {
+                    s.apply_noise(&HeightNoise { kind, fractal, frequency, ..wild }, 0.0, 64.0).unwrap();
+                    assert!(heights(&s).iter().all(|h| (0.0..=64.0).contains(h)), "{kind:?} {fractal:?} {frequency}");
+                }
+            }
+        }
     }
 
     /// A session with `n` displaced `rock` floors side by side along +X, all picked.
