@@ -8,7 +8,7 @@ use glam::{DVec2, DVec3};
 const TOLERANCE: f64 = 0.5;
 /// A quad split into two triangles may be this far from flat and still be one face.
 const MAX_TWIST: f64 = 2.0;
-/// How thick one sided surfaces are made behind their face.
+/// How thick one sided collision is made behind its face.
 pub const DEPTH: f64 = 16.0;
 /// Corners closer than this are the same corner.
 const WELD: f64 = 0.05;
@@ -50,8 +50,8 @@ struct Mesh {
     facets: Vec<Facet>,
 }
 
-/// Splits map space triangles into convex pieces, spending at most `budget` units of work.
-pub fn split(triangles: &[[DVec3; 3]], budget: &mut usize) -> Split {
+/// Splits map space triangles into convex pieces, one sided surfaces made `thickness` deep, spending at most `budget` units of work.
+pub fn split(triangles: &[[DVec3; 3]], thickness: f64, budget: &mut usize) -> Split {
     let m = mesh(triangles);
     let mut left = triangles.len() - m.tris.len();
     let mut pieces = Vec::new();
@@ -66,7 +66,7 @@ pub fn split(triangles: &[[DVec3; 3]], budget: &mut usize) -> Split {
             break;
         }
         let (region, verts) = grower.grow(seed, &mut used, budget);
-        pieces.extend(m.pieces(&region, &verts));
+        pieces.extend(m.pieces(&region, &verts, thickness));
     }
     Split { pieces, left }
 }
@@ -239,13 +239,13 @@ impl Mesh {
         }
     }
 
-    /// A region's brushes: its corners, else its surface pushed back by `DEPTH`, else one per triangle.
-    fn pieces(&self, region: &[usize], verts: &[usize]) -> Vec<Piece> {
+    /// A region's brushes: its corners, else its surface pushed back by `thickness`, else one per triangle.
+    fn pieces(&self, region: &[usize], verts: &[usize], thickness: f64) -> Vec<Piece> {
         let faces: Vec<(usize, DVec3)> = region.iter().map(|&t| (self.src[t], self.normal[t])).collect();
         let points: Vec<DVec3> = verts.iter().map(|&v| self.p(v)).collect();
         let depth = region.iter().map(|&t| points.iter().map(|p| self.offset[t] - self.normal[t].dot(*p)).fold(0.0, f64::max)).fold(f64::INFINITY, f64::min);
         let closed = region.iter().all(|&t| self.closed[t]);
-        if depth >= DEPTH || (closed && depth > 1.0) {
+        if depth >= thickness || (closed && depth > 1.0) {
             return vec![Piece { points, faces }];
         }
         let sum: DVec3 = region.iter().map(|&t| self.normal[t] * self.area[t]).sum();
@@ -253,14 +253,14 @@ impl Mesh {
         let back = sum.normalize_or_zero();
         if !closed && sum.length() > 0.5 * total && region.iter().all(|&t| self.normal[t].dot(back) > 0.05) {
             let mut points = points;
-            points.extend(verts.iter().map(|&v| self.p(v) - back * DEPTH));
+            points.extend(verts.iter().map(|&v| self.p(v) - back * thickness));
             return vec![Piece { points, faces }];
         }
         region
             .iter()
             .map(|&t| {
                 let corners = self.tris[t].map(|v| self.p(v));
-                let points = corners.iter().copied().chain(corners.iter().map(|p| *p - self.normal[t] * DEPTH)).collect();
+                let points = corners.iter().copied().chain(corners.iter().map(|p| *p - self.normal[t] * thickness)).collect();
                 Piece { points, faces: vec![(self.src[t], self.normal[t])] }
             })
             .collect()
@@ -484,7 +484,7 @@ mod tests {
     }
 
     fn run(tris: &[[DVec3; 3]]) -> Split {
-        split(tris, &mut 10_000_000)
+        split(tris, DEPTH, &mut 10_000_000)
     }
 
     #[test]
@@ -568,7 +568,7 @@ mod tests {
         assert_eq!((out.pieces.len(), out.left), (0, 3));
         assert_eq!(run(&[]).pieces.len(), 0);
         let tris = sweep(&arc(3000.0, 90.0, 24));
-        let out = split(&tris, &mut 1000);
+        let out = split(&tris, DEPTH, &mut 1000);
         assert!(out.left > 0 && out.pieces.len() < 24, "work stops at the budget");
     }
 }

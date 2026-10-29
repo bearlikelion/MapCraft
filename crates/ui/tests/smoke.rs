@@ -1298,6 +1298,25 @@ fn ctrl_drag_and_ctrl_arrows_move_copies() {
 }
 
 #[test]
+fn a_2d_drag_moves_the_selection_under_a_nearer_brush() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let wall = s.create_brush(Aabb::new(DVec3::new(-64.0, -64.0, 64.0), DVec3::new(128.0, 128.0, 128.0))).unwrap();
+    let inner = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    s.selection = std::collections::BTreeSet::from([inner]);
+    let group = s.group_selection().unwrap();
+    s.selection = std::collections::BTreeSet::from([group]);
+    h.run_steps(2);
+    let top = 1;
+    let (from, to) = (h.state().screen_for_test(top, DVec3::new(32.0, 32.0, 0.0)), h.state().screen_for_test(top, DVec3::new(160.0, 32.0, 0.0)));
+    drag(&mut h, from, to);
+    assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([group]), "the wall above it does not steal the drag");
+    assert_eq!(bounds(&mut h, inner).min.x, 128.0, "the selected group moves");
+    assert_eq!(bounds(&mut h, wall).min.x, -64.0, "the wall stays");
+}
+
+#[test]
 fn shift_click_picks_a_face_from_the_select_tool() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();

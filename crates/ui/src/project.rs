@@ -136,7 +136,7 @@ impl Project {
             Err(e) => p.problems.push(e.to_string()),
         }
         match sdk.model_vfs(&p.vars) {
-            Ok(vfs) => p.models = crate::models::Models::new(vfs, &sdk.manifest),
+            Ok(vfs) => p.models = crate::models::Models::new(vfs, &sdk.manifest, &p.game),
             Err(e) => p.problems.push(e.to_string()),
         }
         if let Some(host) = host {

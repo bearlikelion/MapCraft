@@ -1366,11 +1366,14 @@ impl MapCraftApp {
                     return;
                 }
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
-                let hit = self.pick(origin, dir, false).map(|(id, _)| pick_target(&self.session.map, id, self.session.select_mode));
-                match hit {
-                    Some(target) => {
-                        if !self.session.selection.contains(&target) {
-                            self.session.selection = BTreeSet::from([target]);
+                let hits = self.pick_all(origin, dir, false);
+                let selected = self.moving_nodes();
+                // The selection under the pointer drags even when something else is nearer the camera.
+                let grabbed = hits.iter().any(|(id, _)| selected.contains(id));
+                match hits.first() {
+                    Some(&(first, _)) => {
+                        if !grabbed {
+                            self.session.selection = BTreeSet::from([pick_target(&self.session.map, first, self.session.select_mode)]);
                             self.mark_changed();
                         }
                         let start = cam.plane_point(dvec(pos - rect.min), size);

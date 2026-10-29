@@ -30,6 +30,8 @@ pub(crate) struct Models {
     /// The point entity class the Models tab places.
     pub class: Option<String>,
     pub key: String,
+    /// Models classes show as their own, which the Models tab does not offer as props.
+    fixed: BTreeSet<String>,
     /// `None` for a model that failed to load.
     loaded: HashMap<String, Option<Arc<Model>>>,
     pending: HashSet<String>,
@@ -51,6 +53,7 @@ impl Default for Models {
             units_per_meter: 39.37,
             class: None,
             key: "model".into(),
+            fixed: BTreeSet::new(),
             loaded: HashMap::new(),
             pending: HashSet::new(),
             worker: None,
@@ -130,8 +133,9 @@ fn write_preview(file: &Path, rgba: Option<&[u8]>) {
 }
 
 impl Models {
-    pub fn new(vfs: Vfs, sdk: &mapcraft_sdk::Manifest) -> Self {
-        Self { vfs, units_per_meter: sdk.units_per_meter, class: sdk.models.class.clone(), key: sdk.models.key.clone(), ..Self::default() }
+    pub fn new(vfs: Vfs, sdk: &mapcraft_sdk::Manifest, game: &mapcraft_fgd::GameData) -> Self {
+        let fixed = game.class_names().filter_map(|c| model_file(&game.class(c)?.model()?)).collect();
+        Self { vfs, units_per_meter: sdk.units_per_meter, class: sdk.models.class.clone(), key: sdk.models.key.clone(), fixed, ..Self::default() }
     }
 
     pub fn get(&self, path: &str) -> Option<Arc<Model>> {
@@ -240,12 +244,13 @@ impl Models {
         self.previews.insert(path, texture);
     }
 
-    /// Every glTF file in the model folders, listed the first time it is asked for.
+    /// Every glTF file in the model folders but the classes' own, listed the first time it is asked for.
     fn files(&mut self) -> &[String] {
-        let vfs = &self.vfs;
+        let (vfs, fixed) = (&self.vfs, &self.fixed);
         self.files.get_or_insert_with(|| {
             let exts = EXTENSIONS.map(String::from);
-            vfs.list(&exts).into_iter().filter_map(|(name, path)| Some(format!("{name}.{}", path.extension()?.to_string_lossy()))).collect()
+            let names = vfs.list(&exts).into_iter().filter_map(|(name, path)| Some(format!("{name}.{}", path.extension()?.to_string_lossy())));
+            names.filter(|n| !fixed.contains(n)).collect()
         })
     }
 }

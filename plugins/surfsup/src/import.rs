@@ -33,6 +33,10 @@ const CLIP: &str = "tools/clip";
 const TRIGGER: &str = "tools/trigger";
 /// Concave collision meshes may hold at most this many triangles in all.
 const MAX_TRIANGLES: usize = 200_000;
+/// Drawn meshes without collision become brushes this thick, as planes do.
+const DECORATION_DEPTH: f64 = 1.0;
+/// A drawn mesh with more triangles than this is left out rather than becoming that many brushes.
+const MAX_DECORATION_TRIANGLES: usize = 4096;
 /// Work the ramp splitter may spend on one import, in rough plane tests.
 const SPLIT_WORK: usize = 100_000_000;
 const MAX_VERTICES: usize = 1 << 20;
@@ -1069,8 +1073,8 @@ impl<'a> Builder<'a> {
         // Planes become one unit thick slabs.
         let thin = 1.0 / UNITS_PER_METER;
         let mesh_kind = self.doc.kind(scene, section);
-        let points = match mesh_kind {
-            "BoxMesh" => box_points(section.prop("size").and_then(vec3).unwrap_or(DVec3::ONE)),
+        let hulls = match mesh_kind {
+            "BoxMesh" => vec![box_points(section.prop("size").and_then(vec3).unwrap_or(DVec3::ONE))],
             "PlaneMesh" | "QuadMesh" => {
                 let quad = mesh_kind == "QuadMesh";
                 let size = section.prop("size").and_then(vec2).unwrap_or(if quad { DVec2::ONE } else { DVec2::splat(2.0) });
@@ -1081,14 +1085,19 @@ impl<'a> Builder<'a> {
                     2 => DVec3::new(size.x, size.y, thin),
                     _ => DVec3::new(size.x, thin, size.y),
                 };
-                box_points(extent).into_iter().map(|p| p + offset).collect()
+                vec![box_points(extent).into_iter().map(|p| p + offset).collect()]
             }
-            "CylinderMesh" => cylinder_points(num("top_radius", 0.5), num("bottom_radius", 0.5), num("height", 2.0), 16),
+            "CylinderMesh" => vec![cylinder_points(num("top_radius", 0.5), num("bottom_radius", 0.5), num("height", 2.0), 16)],
             "PrismMesh" => {
                 let size = section.prop("size").and_then(vec3).unwrap_or(DVec3::ONE);
                 let apex = (num("left_to_right", 0.5) - 0.5) * size.x;
                 let h = size / 2.0;
-                [-h.z, h.z].iter().flat_map(|z| [DVec3::new(-h.x, -h.y, *z), DVec3::new(h.x, -h.y, *z), DVec3::new(apex, h.y, *z)]).collect()
+                vec![[-h.z, h.z].iter().flat_map(|z| [DVec3::new(-h.x, -h.y, *z), DVec3::new(h.x, -h.y, *z), DVec3::new(apex, h.y, *z)]).collect()]
+            }
+            "TorusMesh" => torus_hulls(num("inner_radius", 0.5), num("outer_radius", 1.0), 32, 8),
+            "ArrayMesh" => {
+                self.decoration(node);
+                return;
             }
             _ => {
                 self.skip("meshes that are not Godot primitives");
@@ -1098,10 +1107,31 @@ impl<'a> Builder<'a> {
         let material =
             node.prop("material_override").or_else(|| node.prop("surface_material_override/0")).or_else(|| section.prop("material").map(|v| (v, scene)));
         let material = self.material(material);
-        let pts: Vec<DVec3> = points.into_iter().map(|p| node.global.transform_point3(p)).collect();
         let solid = self.ancestors(node).any(|a| a.kind == "StaticBody3D");
-        let brushes: Vec<Brush> = self.hull(&pts, &material).into_iter().collect();
+        let brushes: Vec<Brush> = hulls
+            .iter()
+            .filter_map(|h| {
+                let pts: Vec<DVec3> = h.iter().map(|p| node.global.transform_point3(*p)).collect();
+                self.hull(&pts, &material)
+            })
+            .collect();
         self.place(node, brushes, solid);
+    }
+
+    /// An `ArrayMesh` with no collision of its own, such as trim along a ramp: thin brushes you can see but not touch.
+    fn decoration(&mut self, node: &'a Node) {
+        let Some(v) = self.visual(node) else {
+            self.skip("meshes that are not Godot primitives");
+            return;
+        };
+        if v.surfaces.iter().map(Vec::len).sum::<usize>() > MAX_DECORATION_TRIANGLES {
+            self.skip("meshes too detailed to become brushes");
+            return;
+        }
+        let names: Vec<String> = v.materials.iter().map(|m| self.material(*m)).collect();
+        let surface = v.surfaces.iter().enumerate().flat_map(|(i, s)| std::iter::repeat_n(i, s.len())).collect();
+        let ramp = Ramp { group: self.group_name(node), triangles: v.surfaces.concat(), names, surface };
+        self.ramp(ramp, false);
     }
 
     fn ancestors(&self, node: &Node) -> impl Iterator<Item = &'a Node> + '_ {
@@ -1123,7 +1153,7 @@ impl<'a> Builder<'a> {
             match self.ramps.remove(&shape.path) {
                 Some(ramp) => {
                     if let Some(ramp) = ramp {
-                        self.ramp(ramp);
+                        self.ramp(ramp, true);
                     }
                 }
                 None if meshes => {}
@@ -1141,8 +1171,8 @@ impl<'a> Builder<'a> {
     }
 
     /// Each brush takes the material most of its surface draws with, and faces on other surfaces keep theirs.
-    fn ramp(&mut self, ramp: Ramp) {
-        let split = trimesh::split(&ramp.triangles, &mut self.work);
+    fn ramp(&mut self, ramp: Ramp, solid: bool) {
+        let split = trimesh::split(&ramp.triangles, if solid { trimesh::DEPTH } else { DECORATION_DEPTH }, &mut self.work);
         let mut left = split.left;
         let mut brushes = Vec::new();
         let area = |i: usize| ramp.triangles.get(i).map_or(0.0, |[a, b, c]| (*b - *a).cross(*c - *a).length());
@@ -1168,7 +1198,7 @@ impl<'a> Builder<'a> {
                 left += piece.faces.len();
                 continue;
             };
-            if let Brush::Hull(h) = &brush {
+            if solid && let Brush::Hull(h) = &brush {
                 let points: Vec<DVec3> = h.points.iter().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
                 let on = |(i, n): &(usize, DVec3)| {
                     ramp.triangles
@@ -1179,11 +1209,13 @@ impl<'a> Builder<'a> {
             }
             brushes.push(brush);
         }
-        self.ramp_stats.shapes += 1;
-        self.ramp_stats.brushes += brushes.len();
-        self.ramp_stats.triangles += ramp.triangles.len();
-        self.skip_many("collision triangles that could not become brushes", left);
-        self.place_in(&ramp.group, brushes, true);
+        if solid {
+            self.ramp_stats.shapes += 1;
+            self.ramp_stats.brushes += brushes.len();
+            self.ramp_stats.triangles += ramp.triangles.len();
+        }
+        self.skip_many(if solid { "collision triangles that could not become brushes" } else { "mesh triangles that could not become brushes" }, left);
+        self.place_in(&ramp.group, brushes, solid);
     }
 
     /// The sky and sun, as the MapCraft Godot addon's `light_environment` keys.
@@ -1251,17 +1283,21 @@ impl<'a> Builder<'a> {
         self.swatch(id, rgb)
     }
 
-    /// A shader material's color: its first color parameter, else the brightest color its code
-    /// writes to `ALBEDO`, which is linear.
+    /// A shader material's color: the color parameter its code writes to `ALBEDO`, else its first
+    /// color parameter, else the brightest color its code writes to `ALBEDO`, which is linear.
     fn shader_color(&self, scene: usize, material: &Section) -> DVec3 {
-        if let Some(c) = material.props.iter().filter(|(k, _)| k.starts_with("shader_parameter/")).find_map(|(_, v)| color(v)) {
+        let code = material.prop("shader").and_then(|v| self.doc.resolve(scene, v)).and_then(|(_, s)| s.prop("code")).and_then(Value::text).unwrap_or_default();
+        let albedo: Vec<&str> = code.split("ALBEDO").skip(1).filter_map(|rest| rest.trim_start().strip_prefix('=')?.split(';').next()).collect();
+        let param = |name: &str| material.prop(&format!("shader_parameter/{name}")).and_then(color);
+        let named = albedo.iter().flat_map(|e| e.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')).find_map(param);
+        let first = || material.props.iter().filter(|(k, _)| k.starts_with("shader_parameter/")).find_map(|(_, v)| color(v));
+        if let Some(c) = named.or_else(first) {
             return c;
         }
-        let code = material.prop("shader").and_then(|v| self.doc.resolve(scene, v)).and_then(|(_, s)| s.prop("code")).and_then(Value::text).unwrap_or_default();
-        code.split("ALBEDO")
-            .skip(1)
-            .filter_map(|rest| {
-                let args = rest.trim_start().strip_prefix('=')?.trim_start().strip_prefix("vec3(")?;
+        albedo
+            .iter()
+            .filter_map(|e| {
+                let args = e.trim_start().strip_prefix("vec3(")?;
                 let n: Vec<f64> = args.split(')').next()?.split(',').map(|x| x.trim().parse::<f64>().ok()).collect::<Option<_>>()?;
                 let &[r, g, b] = n.as_slice() else { return None };
                 Some(DVec3::new(r, g, b).clamp(DVec3::ZERO, DVec3::ONE).powf(1.0 / 2.2))
@@ -1388,6 +1424,20 @@ fn cylinder_points(top: f64, bottom: f64, height: f64, sides: usize) -> Vec<DVec
     pts
 }
 
+/// A Godot torus around Y, as convex segments each spanning two cross sections of its tube.
+fn torus_hulls(inner: f64, outer: f64, segments: usize, sides: usize) -> Vec<Vec<DVec3>> {
+    let (tube, center) = ((outer - inner).abs() / 2.0, (outer + inner) / 2.0);
+    let ring = |i: usize| {
+        let a = i as f64 / segments as f64 * std::f64::consts::TAU;
+        (0..sides).map(move |j| {
+            let b = j as f64 / sides as f64 * std::f64::consts::TAU;
+            let r = center + tube * b.cos();
+            DVec3::new(r * a.sin(), tube * b.sin(), r * a.cos())
+        })
+    };
+    (0..segments).map(|i| ring(i).chain(ring(i + 1)).collect()).collect()
+}
+
 fn sphere_points(r: f64) -> Vec<DVec3> {
     let mut pts = vec![DVec3::Y * r, -DVec3::Y * r];
     for ring in 1..8 {
@@ -1498,6 +1548,25 @@ mod tests {
 [sub_resource type="StandardMaterial3D" id="pink"]
 albedo_color = Color(1, 0, 0.5, 1)
 
+[sub_resource type="Shader" id="hex"]
+code = "shader_type spatial;
+uniform vec3 edge : source_color;
+uniform vec3 avg_c : source_color;
+void fragment() {
+	vec3 col = edge;
+	ALBEDO = mix(col, avg_c, 0.5);
+}
+"
+
+[sub_resource type="ShaderMaterial" id="honey"]
+shader = SubResource("hex")
+shader_parameter/edge = Color(1, 1, 1, 1)
+shader_parameter/avg_c = Color(0.4, 0.2, 0, 1)
+
+[sub_resource type="TorusMesh" id="torus"]
+inner_radius = 1.0
+outer_radius = 2.0
+
 [sub_resource type="BoxShape3D" id="box"]
 size = Vector3(4, 2, 4)
 
@@ -1583,6 +1652,10 @@ depth = 3.0
 
 [node name="KillBox" parent="Level" instance=ExtResource("kill")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -100, 0)
+
+[node name="Ring" type="MeshInstance3D" parent="Level"]
+mesh = SubResource("torus")
+material_override = SubResource("honey")
 "#;
 
     const KILL_BOX: &str = r#"[gd_scene format=3]
@@ -1672,6 +1745,15 @@ shape = SubResource("plane")
             "a concave polygon becomes triangles"
         );
         assert!(imported.log.iter().any(|l| l.contains("1 Label3D")));
+
+        let ring = group(out, "Ring");
+        let Some(e) = ring.entities.first() else { panic!("the ring has no entity") };
+        assert_eq!((e.classname.as_str(), e.brushes.len()), ("func_illusionary", 32), "a torus is a brush per segment");
+        let Some(Brush::Hull(h)) = e.brushes.first() else { panic!("the ring has no brush") };
+        let reach = |p: &Vec3| p.x.hypot(p.y) / UNITS_PER_METER;
+        assert!(h.points.iter().all(|p| (0.99..=2.01).contains(&reach(p)) && p.z.abs() <= 0.51 * UNITS_PER_METER), "it lies flat around Godot's Y");
+        assert_eq!(h.material, "test/honey");
+        assert!(out.materials.iter().any(|m| m.name == "test/honey" && m.color == Some((102, 51, 0))), "a shader takes the color its ALBEDO line names");
     }
 
     #[test]
@@ -1808,7 +1890,11 @@ shape = SubResource("collision")
             assert!(h.surfaces.iter().all(|s| s.material == "ramp/side"));
             let log = &imported.log;
             assert!(log.iter().any(|l| l.ends_with("1 concave collision meshes became 1 brushes; 8 of their 8 triangles lie on a brush face")), "{log:?}");
-            assert!(log.iter().any(|l| l.ends_with("left out 1 meshes that are not Godot primitives")), "only the mesh without collision is left out: {log:?}");
+            assert!(!log.iter().any(|l| l.contains("left out")), "{log:?}");
+            let glow = group(&imported.output, "Track").entities.first().expect("the mesh without collision comes in");
+            assert_eq!((glow.classname.as_str(), glow.brushes.len()), ("func_illusionary", 1), "drawn only, so it cannot be touched");
+            let Some(Brush::Hull(g)) = glow.brushes.first() else { panic!("the glow has no brush") };
+            assert!(g.points.iter().all(|p| p.z >= 50.0 * UNITS_PER_METER - 0.01), "it sits where it is drawn");
         }
     }
 

@@ -64,7 +64,7 @@ A model that is missing, broken or huge (over about a million triangles) shows a
 ### The Models tab
 
 Open it with `Ctrl+6`.
-It lists every model in the SDK's model folders; type in the search box to filter.
+It lists every model in the SDK's model folders, except those an entity class always shows, such as SurfsUp's platforms; type in the search box to filter.
 Each model shows as a picture with its file name under it; hover a picture for the model's full path.
 Pictures are drawn the first time a model scrolls into view and kept, so they show at once next time and are redrawn only when the model file changes.
 **Previews**, at the right of the model count, switches between the pictures and a plain list of paths, as it does in the Materials tab.
@@ -210,7 +210,7 @@ While the brush class is still `func_detail`, MapCraft asks you to pick a trigge
 | `bhop_zone` | The same jump area as `zone_checkpoint` |
 
 In the game, each zone becomes the matching SurfsUp zone and keeps every setting, with the same name and type.
-`starting_platform` and `finish_line` place SurfsUp's own starting and landing platforms.
+`starting_platform` and `finish_line` place SurfsUp's own starting and landing platforms, and the views draw each with its model.
 [Surf ramps and bhop](surf.md) has tips on sizing and placing zones.
 
 ## Link lines

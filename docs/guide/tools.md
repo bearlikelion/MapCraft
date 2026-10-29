@@ -62,6 +62,7 @@ See [Organizing](organizing.md#selection-modes).
 ### Select in a 2D view
 
 - Drag an object to move the selection.
+  Dragging over the selection moves it even when another object is nearer in that view, such as a wall above a selected group.
 - Drag from empty space to draw a box; it selects everything fully inside.
 - Drag a white handle to resize the selection. The opposite side stays put, the moving sides turn red, and labels show the size.
 - Ctrl+drag moves a copy and leaves the original, in one undo step.
