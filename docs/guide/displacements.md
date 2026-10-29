@@ -90,8 +90,19 @@ Only the picked faces change, and their old shape is replaced.
 Heights are measured out from the flat face.
 On a floor, the picture's left edge is the low X side and its top is the high Y side; on a wall, its top is up.
 Color pictures are read as gray, and faces that share an edge meet without a step.
+Change **Black height** or **White height** afterwards and the faces follow as you drag or type, one undo step per change.
+That lasts until you pick other faces or edit, undo or redo anything else.
 
 ![A new displacement grid on the platform, with the Heightmap row in the inspector: black 0, white 512 and Load](img/terrain-heightmap.webp#wide)
+
+## Noise
+
+The **Noise** section shapes the picked displacements from generated noise instead of a picture, with the settings of Godot's FastNoiseLite.
+Click a preset (**Hills**, **Mountains**, **Dunes**, **Craters** or **Mesas**) or **Apply noise**, and the noise spreads over the picked faces from **Black height** at its lowest point to **White height** at its highest.
+After that, every row reshapes the faces live: **Type**, **Seed**, **Frequency**, **Offset**, **Fractal** with its **Octaves**, **Lacunarity**, **Gain** and **Weighted strength**, and the two heights.
+**Frequency** and **Offset** are in pixels of a 512 pixel picture laid over the faces, as in Godot's NoiseTexture2D, so a higher frequency gives more, smaller bumps.
+**Edge falloff** eases each side down to **Black height** so the terrain meets the ground around it, and **Terraces** turns slopes into steps.
+The same settings and seed always give the same surface.
 
 ## Blending textures
 

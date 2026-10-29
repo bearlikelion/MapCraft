@@ -504,8 +504,7 @@ impl Session {
         self.store_heightmap(targets, samples, true, low, high, None)
     }
 
-    /// Applies the last heightmap or noise again between `low` and `high`, regenerating noise from `noise`;
-    /// false once another edit, an undo or a new pick has replaced it.
+    /// Applies the last heightmap again between `low` and `high`, regenerating noise from `noise`; false once an edit, undo or new pick ends it.
     pub fn retune_heightmap(&mut self, noise: &HeightNoise, low: f64, high: f64, coalesce: Option<&str>) -> Result<bool, EngineError> {
         let targets = self.displacement_targets();
         let Some((_, samples, from_noise)) = self.heightmap.take_if(|(faces, ..)| targets.iter().map(|t| (t.brush, t.face_id)).eq(faces.iter().copied()))
@@ -584,8 +583,7 @@ fn image_samples(targets: &[Target], gray: &[f32], width: usize, height: usize) 
     Ok(targets.iter().map(|t| t.base.iter().map(sample).collect()).collect())
 }
 
-/// Each target's flat grid sampled from `noise` laid over them all with its top on their far side, scaled to 0..1 as
-/// NoiseTexture2D normalizes, then terraced and eased down at the edges.
+/// Each target's flat grid sampled from `noise` laid over them all, scaled to 0..1 as NoiseTexture2D normalizes, then terraced and eased at the edges.
 fn noise_samples(targets: &[Target], noise: &HeightNoise) -> Result<Vec<Vec<f64>>, EngineError> {
     let (a, b, lo, span) = layout(targets).ok_or(EngineError::Refused("pick displaced faces"))?;
     let at = noise.sampler();
