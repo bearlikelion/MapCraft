@@ -41,6 +41,8 @@ const char *MATERIAL_EXTENSIONS[] = { "tres", "res", "material" };
 const char *IMAGE_EXTENSIONS[] = { "png", "jpg", "jpeg", "webp", "tga", "bmp" };
 const double DEFAULT_TEXTURE_SIZE = 64.0;
 const int MAX_DEPTH = 256;
+const int MAX_PREFAB_DEPTH = 16;
+const int MAX_PREFABS = 256;
 // The editor's MACRO_AMOUNT in mapcraft_geom::noise.
 const double MACRO_AMOUNT = 0.15;
 const char *SHADER_DIR = "res://addons/mapcraft/shaders/";
@@ -188,6 +190,24 @@ AntiTile anti_tile_of(const Dictionary &p_face) {
 		return AntiTile::MACRO;
 	}
 	return mode.nocasecmp_to("hex") == 0 ? AntiTile::HEX : AntiTile::OFF;
+}
+
+// A map's name for a file under a folder: relative, with no . or .. segment, no \ : or control character, and no segment Windows would trim.
+bool inside_folder(const String &p_path) {
+	for (int64_t i = 0; i < p_path.length(); i++) {
+		const char32_t c = p_path[i];
+		if (c < 0x20 || c == 0x7F || c == '\\' || c == ':') {
+			return false;
+		}
+	}
+	const PackedStringArray segments = p_path.split("/");
+	for (int64_t i = 0; i < segments.size(); i++) {
+		const String segment = segments[i];
+		if (segment.is_empty() || segment.ends_with(".") || segment.ends_with(" ")) {
+			return false;
+		}
+	}
+	return true;
 }
 
 // Rust's eq_ignore_ascii_case, which leaves non-ASCII letters unfolded.
@@ -410,6 +430,7 @@ class Builder {
 	MapCraftPack pack;
 	String pack_path;
 	HashMap<String, Node3D *> models;
+	std::shared_ptr<int> prefab_budget;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
 		return TO_GODOT.xform(p_map) * scale;
@@ -444,7 +465,8 @@ class Builder {
 
 public:
 	Builder(Node3D *p_root, const MapCraftBuildOptions &p_options) :
-			root(p_root), options(p_options), scale(1.0 / (p_options.units_per_meter > 0.0 ? p_options.units_per_meter : 39.37)) {}
+			root(p_root), options(p_options), scale(1.0 / (p_options.units_per_meter > 0.0 ? p_options.units_per_meter : 39.37)),
+			prefab_budget(p_options.prefab_budget ? p_options.prefab_budget : std::make_shared<int>(MAX_PREFABS)) {}
 
 	~Builder() {
 		for (KeyValue<String, Node3D *> &kv : models) {
@@ -475,7 +497,10 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 	if (in_pack) {
 		mat = pack_material(p_name, packed, problem);
 	}
-	const bool look = !p_name.is_empty() && !in_pack;
+	const bool look = !in_pack && inside_folder(p_name);
+	if (!in_pack && !p_name.is_empty() && !look) {
+		UtilityFunctions::push_warning("MapCraft: material ", p_name.c_escape(), " is not a name inside ", options.material_root, ", drawn as missing");
+	}
 	for (const char *ext : MATERIAL_EXTENSIONS) {
 		if (look && mat.is_null() && loader->exists(base + "." + ext)) {
 			mat = loader->load(base + "." + ext);
@@ -896,16 +921,17 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	Node3D *node = nullptr;
 	if (kind == "scene" || kind == "model") {
 		String path = config.get("scene", "");
+		bool loadable = !path.is_empty();
 		bool packed = false;
 		if (kind == "model") {
-			path = String(properties.get(config.get("key", "model"), "")).strip_edges().replace("\\", "/");
-			if (!path.is_empty() && !path.begins_with("res://")) {
-				path = "res://" + path.trim_prefix("/");
-			}
-			packed = pack_model(path.trim_prefix("res://"), node);
+			const String model = String(properties.get(config.get("key", "model"), "")).strip_edges().replace("\\", "/");
+			const String relative = model.begins_with("res://") ? model.substr(6) : model.trim_prefix("/");
+			path = "res://" + relative;
+			loadable = inside_folder(relative);
+			packed = loadable && pack_model(relative, node);
 		}
 		Ref<PackedScene> scene;
-		if (!packed && !path.is_empty()) {
+		if (loadable && !packed) {
 			scene = ResourceLoader::get_singleton()->load(path);
 		}
 		if (scene.is_valid()) {
@@ -1023,17 +1049,39 @@ void Builder::add_prefab(const Dictionary &p_prefab) {
 	}
 	String path = p_prefab.get("path", "");
 	if (!path.is_absolute_path()) {
-		path = options.source_path.get_base_dir().path_join(path).simplify_path();
+		path = options.source_path.get_base_dir().path_join(path);
 	}
-	// Outside res://, ResourceLoader follows a .remap or .import file planted beside the path to any scene, scripts and all.
-	if (!path.begins_with("res://") || path.get_extension().to_lower() != "mcmap") {
-		UtilityFunctions::push_warning("MapCraft: prefab ", path, " is not a map inside the project; left out");
-		return;
+	path = path.simplify_path();
+	// Built from the file's bytes: ResourceLoader would follow a .remap or .import file beside the path, or one a mounted pack added, to any scene, scripts and all.
+	const String here = options.source_path.simplify_path();
+	String refusal;
+	if (path.get_extension().to_lower() != "mcmap") {
+		refusal = "is not a map";
+	} else if (path == here || options.prefabs_above.has(path)) {
+		refusal = "contains itself";
+	} else if (options.prefabs_above.size() >= MAX_PREFAB_DEPTH) {
+		refusal = "is nested over " + itos(MAX_PREFAB_DEPTH) + " deep";
+	} else if (*prefab_budget <= 0) {
+		refusal = "is past the map's " + itos(MAX_PREFABS) + " prefab copies";
 	}
-	Ref<PackedScene> scene = ResourceLoader::get_singleton()->load(path);
-	Node3D *instance = scene.is_valid() ? Object::cast_to<Node3D>(scene->instantiate()) : nullptr;
+	Node3D *instance = nullptr;
+	if (refusal.is_empty()) {
+		--*prefab_budget;
+		MapCraftBuildOptions nested = options;
+		nested.source_path = path;
+		nested.prefabs_above.push_back(here);
+		nested.prefab_budget = prefab_budget;
+		nested.own_nodes = false;
+		nested.on_entity = nullptr;
+		instance = memnew(Node3D);
+		instance->set_name(path.get_file().get_basename().validate_node_name());
+		if (mapcraft_build_file(path, instance, nested, refusal) != OK) {
+			memdelete(instance);
+			instance = nullptr;
+		}
+	}
 	if (instance == nullptr) {
-		UtilityFunctions::push_warning("MapCraft: cannot load prefab ", path);
+		UtilityFunctions::push_warning("MapCraft: prefab ", path, " ", refusal, "; left out");
 		return;
 	}
 	instance->set_transform(Transform3D(godot_basis(map_angles(read_vec3(p_prefab.get("angles", Array())))), to_godot(origin)));
@@ -1108,7 +1156,7 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		}
 	}
 	walk(map.get("root", Dictionary()), 0);
-	if (!has_environment && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
+	if (!has_environment && options.prefabs_above.is_empty() && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
 		add_environment(Dictionary());
 	}
 
@@ -1148,7 +1196,7 @@ Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraf
 		// Maps name their SDK; an addon entity map with that name is used when none is set.
 		String sdk = p_doc.get("sdk", "");
 		String candidate = String("res://addons/mapcraft/sdks").path_join(sdk + ".tres");
-		if (!sdk.is_empty() && ResourceLoader::get_singleton()->exists(candidate)) {
+		if (inside_folder(sdk) && !sdk.contains("/") && ResourceLoader::get_singleton()->exists(candidate)) {
 			options.entity_map = ResourceLoader::get_singleton()->load(candidate);
 		}
 	}

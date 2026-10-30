@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <functional>
+#include <memory>
 
 #include "mapcraft_entity_map.h"
 
@@ -19,6 +20,9 @@ struct MapCraftBuildOptions {
 	bool trimesh_collision = false;
 	bool own_nodes = true;
 	String source_path;
+	// Prefab maps this build sits inside, outermost first, and the prefab copies the whole map has left.
+	PackedStringArray prefabs_above;
+	std::shared_ptr<int> prefab_budget;
 	std::function<void(Node *, const String &, const Dictionary &)> on_entity;
 };
 

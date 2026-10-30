@@ -7,10 +7,16 @@ const ENTITY_MAP: String = "res://addons/mapcraft/sdks/surfsup.tres"
 const SHADERS: String = "res://addons/mapcraft/shaders/"
 const UNITS_PER_METER: float = 39.37
 const PREFAB_DIR: String = "user://prefab_test/"
+const MOUNTED_DIR: String = "res://mounted_pack_test/"
 const SCRIPTED_SCENE: String = "[gd_scene format=3]\n\n" \
 		+ "[sub_resource type=\"GDScript\" id=\"1\"]\n" \
 		+ "script/source = \"extends Node3D\nfunc _init():\n\tEngine.max_fps = 1234\n\"\n\n" \
 		+ "[node name=\"Scripted\" type=\"Node3D\"]\nscript = SubResource(\"1\")\n"
+const SCRIPTED_MATERIAL: String = "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n" \
+		+ "[sub_resource type=\"GDScript\" id=\"1\"]\n" \
+		+ "script/source = \"extends StandardMaterial3D\nfunc _init():\n" \
+		+ "\tEngine.max_fps = 1234\n\"\n\n" \
+		+ "[resource]\nscript = SubResource(\"1\")\n"
 
 var _failures: PackedStringArray = PackedStringArray()
 var _entities_built: int = 0
@@ -29,6 +35,7 @@ func _initialize() -> void:
 	_check_runtime_build()
 	_check_runtime_load()
 	_check_untrusted_prefabs()
+	_check_paths_stay_in_project()
 	_check_pack(OS.get_cmdline_user_args())
 	for failure: String in _failures:
 		printerr("FAIL: ", failure)
@@ -330,23 +337,104 @@ func _check_runtime_load() -> void:
 # A downloaded map's prefab could name a scene with a script, or a .remap planted to point at one.
 func _check_untrusted_prefabs() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(PREFAB_DIR))
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(MOUNTED_DIR))
 	_write_text(PREFAB_DIR + "scripted.tscn", SCRIPTED_SCENE)
 	_write_text(PREFAB_DIR + "inner.mcmap.remap", \
 			"[remap]\n\npath=\"%sscripted.tscn\"\n" % PREFAB_DIR)
+	# What a Workshop .pck mounted into res:// can add.
+	_write_text(MOUNTED_DIR + "scripted.tscn", SCRIPTED_SCENE)
+	_write_text(MOUNTED_DIR + "inner.mcmap.remap", \
+			"[remap]\n\npath=\"%sscripted.tscn\"\n" % MOUNTED_DIR)
+	var hostile: Dictionary[String, String] = {
+		"a scene beside the map": "scripted.tscn",
+		"a .remap beside the map": "inner.mcmap",
+		"an absolute scene path": ProjectSettings.globalize_path(PREFAB_DIR + "scripted.tscn"),
+		"a .remap a mounted pack added to res://": MOUNTED_DIR + "inner.mcmap",
+	}
+	for what: String in hostile:
+		var map: MapCraftMap = _build_with_prefabs(PREFAB_DIR + "map.mcmap", [hostile[what]])
+		_expect(Engine.max_fps != 1234, "%s cannot make a prefab run a script" % what)
+		Engine.max_fps = 0
+		map.free()
+
+	_write_text(PREFAB_DIR + "piece.mcmap", FileAccess.get_file_as_string(MAP))
+	_write_text(PREFAB_DIR + "self.mcmap", _prefab_map(["self.mcmap"]))
+	var built: MapCraftMap = _build_with_prefabs(PREFAB_DIR + "map.mcmap", \
+			["piece.mcmap", "self.mcmap"])
+	var piece: Node = built.get_node_or_null("piece")
+	_expect(piece != null and piece.get_node_or_null("WorldMesh") != null, \
+			"a prefab builds from its map file")
+	var itself: Node = built.get_node_or_null("self")
+	_expect(itself != null and itself.get_node_or_null("self") == null, \
+			"a prefab that contains itself stops at itself")
+	built.free()
+
+	for i: int in 18:
+		_write_text(PREFAB_DIR + "fan%d.mcmap" % i, \
+				_prefab_map(["fan%d.mcmap" % (i + 1), "fan%d.mcmap" % (i + 1)]))
+	var fan: MapCraftMap = _build_with_prefabs(PREFAB_DIR + "map.mcmap", ["fan0.mcmap"])
+	var copies: int = fan.find_children("fan*", "Node3D", true, false).size()
+	_expect(copies > 16 and copies <= 256, "prefabs that fan out stop at 256 copies")
+	fan.free()
+	for dir: String in [PREFAB_DIR, MOUNTED_DIR]:
+		for file: String in DirAccess.get_files_at(dir):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + file))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(MOUNTED_DIR))
+
+
+# res:// keeps a leading .., so a name in the map could reach a scripted file beside the game.
+func _check_paths_stay_in_project() -> void:
+	var outside: String = ProjectSettings.globalize_path("res://").simplify_path().get_base_dir() \
+			.path_join("mapcraft_escape")
+	DirAccess.make_dir_recursive_absolute(outside)
+	_write_text(outside.path_join("scripted.tscn"), SCRIPTED_SCENE)
+	_write_text(outside.path_join("scripted.tres"), SCRIPTED_MATERIAL)
+	var text: String = FileAccess.get_file_as_string(MAP)
+	var escapes: Dictionary[String, String] = {
+		"a model path": text.replace("Assets/Models/box.glb", "../mapcraft_escape/scripted.tscn"),
+		"a material name": text.replace("\"material\": \"glow\"", \
+				"\"material\": \"../../../mapcraft_escape/scripted\""),
+		"an SDK name": text.replace("\"sdk\": \"surfsup\"", \
+				"\"sdk\": \"../../../../mapcraft_escape/scripted\""),
+	}
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(PREFAB_DIR))
+	for what: String in escapes:
+		_write_text(PREFAB_DIR + "escape.mcmap", escapes[what])
+		var scene: PackedScene = ResourceLoader.load(PREFAB_DIR + "escape.mcmap", "", \
+				ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
+		var root: Node = scene.instantiate() if scene != null else null
+		_expect(root != null, "a map with %s outside the project still loads" % what)
+		_expect(Engine.max_fps != 1234, "%s cannot load a scripted file outside the project" % what)
+		Engine.max_fps = 0
+		if root != null:
+			root.free()
+	for file: String in DirAccess.get_files_at(outside):
+		DirAccess.remove_absolute(outside.path_join(file))
+	DirAccess.remove_absolute(outside)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(PREFAB_DIR + "escape.mcmap"))
+
+
+func _build_with_prefabs(path: String, prefabs: Array[String]) -> MapCraftMap:
 	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(MAP))
 	var children: Array = doc["map"]["root"]["children"]
-	var absolute: String = ProjectSettings.globalize_path(PREFAB_DIR + "scripted.tscn")
-	for path: String in ["scripted.tscn", "inner.mcmap", absolute]:
-		children.append({"id": 900000 + children.size(), "type": "prefab", "path": path})
-	_write_text(PREFAB_DIR + "map.mcmap", JSON.stringify(doc))
+	for prefab: String in prefabs:
+		children.append({"id": 900000 + children.size(), "type": "prefab", "path": prefab})
+	_write_text(path, JSON.stringify(doc))
 	var map: MapCraftMap = MapCraftMap.new()
-	map.map_file = PREFAB_DIR + "map.mcmap"
-	_expect(map.build() == OK, "a map with untrusted prefabs still builds")
-	_expect(Engine.max_fps != 1234, "a prefab outside the project cannot run a script")
-	Engine.max_fps = 0
-	map.free()
-	for file: String in DirAccess.get_files_at(PREFAB_DIR):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(PREFAB_DIR + file))
+	map.map_file = path
+	_expect(map.build() == OK, "a map with prefabs %s builds" % [prefabs])
+	return map
+
+
+func _prefab_map(prefabs: Array[String]) -> String:
+	var children: Array[Dictionary] = []
+	for prefab: String in prefabs:
+		children.append({"id": 2 + children.size(), "type": "prefab", "path": prefab})
+	return JSON.stringify({
+		"format": "mapcraft.map",
+		"schema_version": 1,
+		"map": {"root": {"id": 1, "type": "world", "children": children}},
+	})
 
 
 func _check_pack(args: PackedStringArray) -> void:
