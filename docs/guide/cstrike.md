@@ -6,13 +6,13 @@ Nothing of the game is copied into MapCraft: materials, entity definitions and c
 ## Setup
 
 1. Install Counter-Strike: Source from Steam.
-   The Windows version of the game keeps its compilers (`vbsp.exe`, `vvis.exe`, `vrad.exe`) and its entity definitions (`cstrike.fgd`) in the `bin` folder next to the `cstrike` folder.
+   The Windows version of the game keeps its compilers (`vbsp.exe`, `vvis.exe`, `vrad.exe`) in the `bin` folder next to the `cstrike` folder.
 2. Install the **Counter-Strike: Source** SDK from the **Add an SDK** window MapCraft opens on its first launch, or from the **Available** tab of **File > SDK Manager**.
 3. Choose **File > New Map**, pick **Counter-Strike: Source** in the SDK list and click **Create**, unless MapCraft already started an empty map on it after the install.
 4. In **File > SDK Settings**, which also opens after the install, set **Counter-Strike: Source game folder** to the `cstrike` folder, such as `.../steamapps/common/Counter-Strike Source/cstrike`.
 
-The SDK reads the game's packages from that folder and from the `hl2` folder beside it, and the entity definitions from `bin/cstrike.fgd` (an FGD file lists every entity a game has, with its keys).
-If `cstrike.fgd` is somewhere else, set **cstrike.fgd** in **File > SDK Settings** to it.
+The SDK reads the game's packages from that folder and from the `hl2` folder beside it.
+It brings the game's entity definitions with it (`cstrike.fgd` and `base.fgd`; an FGD file lists every entity a game has, with its keys), since only the Windows version of the game ships them.
 New brushes get `dev/dev_measuregeneric01b` at Hammer's usual texture scale of 0.25.
 
 ![The New Map window with the SDK list open: None, Counter-Strike: Source, Quake and SurfsUp](img/cstrike-new-map.webp)
@@ -20,9 +20,8 @@ New brushes get `dev/dev_measuregeneric01b` at Hammer's usual texture scale of 0
 ![Counter-Strike: Source SDK Settings with the game folder set](img/cstrike-settings.webp)
 
 > [!NOTE]
-> The Linux version of the game ships neither the entity definitions nor the compilers.
-> Copy `cstrike.fgd`, `base.fgd` and `halflife2.fgd` from the `bin` folder of a Windows install into one folder and set **cstrike.fgd** to the copy.
-> Then either build vbsp, vvis and vrad for Linux from the Source SDK 2013 and copy `vbsp`, `vvis`, `vrad`, `vvis_dll.so` and `vrad_dll.so` into the game's `bin/linux64` folder, beside the libraries they load, or install the Windows version of the game and Wine and use **Run > Compile with Wine**.
+> The Linux version of the game does not ship the compilers.
+> Either build vbsp, vvis and vrad for Linux from the Source SDK 2013 and copy `vbsp`, `vvis`, `vrad`, `vvis_dll.so` and `vrad_dll.so` into the game's `bin/linux64` folder, beside the libraries they load, or install the Windows version of the game and Wine and use **Run > Compile with Wine**.
 
 ## Materials
 
