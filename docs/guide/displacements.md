@@ -204,8 +204,6 @@ Other ways to set the blend:
 > [!NOTE]
 > A face's own material, tool materials, the SDK's skies and materials the game's plugin says cannot blend, such as Godot shader materials, cannot be a second material.
 
-AI agents can do the same with the `blend` and `heightmap` tools; see [MCP server](../mcp-server.md).
-
 ### Seams and games
 
 Neighboring faces with the same material and second material share one value where they meet.

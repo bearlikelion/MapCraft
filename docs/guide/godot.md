@@ -64,7 +64,6 @@ You set it with the **Anti-tiling** row of the face panel (see [Anti-tiling](mat
 - `hex` (**Hex tiling**) draws the same patches over hex tiling: the texture breaks into hexagons about one repeat across, each shifted and turned at random and blended into its neighbors.
 
 MapCraft's Textured and Lit views draw the same patches and tiles in the same places, so the editor shows what the game will.
-AI agents set it with the `face_texture` tool; see [MCP server](../mcp-server.md).
 
 > [!NOTE]
 > - Hex tiling costs more: it reads the albedo and normal maps three times where a plain face reads them once.

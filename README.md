@@ -43,7 +43,7 @@ cargo xtask ci
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first: it holds the rules every change must follow, such as never crashing and keeping the code clean-room.
+Changes must never crash the editor, and code stays clean-room: other editors are references for behavior only.
 Run `cargo xtask ci` before every commit.
 
 ## License

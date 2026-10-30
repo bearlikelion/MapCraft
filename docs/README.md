@@ -6,8 +6,6 @@ If you only want to make maps, start with the [user guide](guide/README.md).
 ## Build and automate
 
 - [Building from source](building.md): compile the editor, its plugins and the release packages yourself.
-- [AI agents](ai-agents.md): let an AI agent such as Claude Code edit your map alongside you.
-- [MCP server](mcp-server.md): the tools an AI agent can call, and how it connects to the editor.
 
 ## Add a game
 

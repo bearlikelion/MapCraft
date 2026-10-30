@@ -28,7 +28,7 @@ cargo run --release -p mapcraft
 - A build run from the source tree finds the SDKs in `sdks/` by itself.
 - On Linux, `cargo xtask desktop [path to the mapcraft binary]` installs a desktop entry and icons for a source build, so it shows in the app launcher.
 
-The headless tools, including the [MCP server](mcp-server.md), are in `mapcraft-cli`:
+The headless tools are in `mapcraft-cli`:
 
 ```sh
 cargo build --release -p mapcraft-cli

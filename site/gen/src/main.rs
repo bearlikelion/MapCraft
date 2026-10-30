@@ -61,8 +61,6 @@ const PAGE_ICONS: &[(&str, &str)] = &[
     ("docs/lighting.md", "sun"),
     ("docs/surf-mapping.md", "angle"),
     ("docs/trenchbroom-import.md", "file_arrow_down"),
-    ("docs/mcp-server.md", "window_terminal"),
-    ("docs/ai-agents.md", "magic_wand"),
     ("godot/README.md", "play"),
 ];
 const FONTS: &str = "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..900&family=Source+Sans+3:ital,wght@0,400..700;1,400&family=JetBrains+Mono:wght@400..600&display=swap";
