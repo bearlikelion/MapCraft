@@ -10,6 +10,10 @@
 #include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/environment.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/gltf_document.hpp>
+#include <godot_cpp/classes/gltf_state.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/marker3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -26,6 +30,8 @@
 #include <godot_cpp/classes/world_environment.hpp>
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+
+#include "mapcraft_pack.h"
 
 namespace godot {
 
@@ -368,6 +374,24 @@ void own(Node *p_node, Node *p_owner) {
 	}
 }
 
+// An empty base path leaves glTF nothing outside these bytes to read.
+Node3D *load_glb(const PackedByteArray &p_bytes) {
+	Ref<GLTFDocument> document;
+	document.instantiate();
+	Ref<GLTFState> state;
+	state.instantiate();
+	state->set_handle_binary_image(GLTFState::HANDLE_BINARY_EMBED_AS_UNCOMPRESSED);
+	if (document->append_from_buffer(p_bytes, "", state) != OK) {
+		return nullptr;
+	}
+	Node *scene = document->generate_scene(state);
+	Node3D *node = Object::cast_to<Node3D>(scene);
+	if (node == nullptr && scene != nullptr) {
+		memdelete(scene);
+	}
+	return node;
+}
+
 class Builder {
 	Node3D *root;
 	const MapCraftBuildOptions &options;
@@ -383,6 +407,9 @@ class Builder {
 	PackedVector3Array world_triangles;
 	int brush_count = 0;
 	bool has_environment = false;
+	MapCraftPack pack;
+	String pack_path;
+	HashMap<String, Node3D *> models;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
 		return TO_GODOT.xform(p_map) * scale;
@@ -401,6 +428,8 @@ class Builder {
 	}
 
 	Ref<Material> material(const String &p_name, Vector2 &r_size);
+	Ref<Material> pack_material(const String &p_name, const PackedByteArray &p_bytes, const String &p_problem);
+	bool pack_model(const String &p_path, Node3D *&r_node);
 	Ref<Material> variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size);
 	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
 	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
@@ -417,6 +446,14 @@ public:
 	Builder(Node3D *p_root, const MapCraftBuildOptions &p_options) :
 			root(p_root), options(p_options), scale(1.0 / (p_options.units_per_meter > 0.0 ? p_options.units_per_meter : 39.37)) {}
 
+	~Builder() {
+		for (KeyValue<String, Node3D *> &kv : models) {
+			if (kv.value != nullptr) {
+				memdelete(kv.value);
+			}
+		}
+	}
+
 	Error build(const Dictionary &p_doc, String &r_error);
 };
 
@@ -432,13 +469,20 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 	ResourceLoader *loader = ResourceLoader::get_singleton();
 	String base = options.material_root.path_join(p_name);
 	Ref<Material> mat;
+	PackedByteArray packed;
+	String problem;
+	const bool in_pack = !p_name.is_empty() && pack.find("materials/" + p_name, packed, problem);
+	if (in_pack) {
+		mat = pack_material(p_name, packed, problem);
+	}
+	const bool look = !p_name.is_empty() && !in_pack;
 	for (const char *ext : MATERIAL_EXTENSIONS) {
-		if (!p_name.is_empty() && mat.is_null() && loader->exists(base + "." + ext)) {
+		if (look && mat.is_null() && loader->exists(base + "." + ext)) {
 			mat = loader->load(base + "." + ext);
 		}
 	}
 	for (const char *ext : IMAGE_EXTENSIONS) {
-		if (!p_name.is_empty() && mat.is_null() && loader->exists(base + "." + ext)) {
+		if (look && mat.is_null() && loader->exists(base + "." + ext)) {
 			Ref<Texture2D> texture = loader->load(base + "." + ext);
 			if (texture.is_valid()) {
 				Ref<StandardMaterial3D> generated;
@@ -460,6 +504,47 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 	sizes[p_name] = size;
 	r_size = size;
 	return mat;
+}
+
+Ref<Material> Builder::pack_material(const String &p_name, const PackedByteArray &p_bytes, const String &p_problem) {
+	Ref<Image> image;
+	image.instantiate();
+	Error err = FAILED;
+	if (p_problem.is_empty()) {
+		err = p_bytes[0] == 0x89 ? image->load_png_from_buffer(p_bytes) : image->load_jpg_from_buffer(p_bytes);
+	}
+	if (err != OK || image->is_empty()) {
+		UtilityFunctions::push_warning("MapCraft: ", pack_path, ": ", p_name, " ", p_problem.is_empty() ? String("cannot be decoded") : p_problem, ", drawn as missing");
+		return Ref<Material>();
+	}
+	image->generate_mipmaps();
+	Ref<StandardMaterial3D> generated;
+	generated.instantiate();
+	generated->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, ImageTexture::create_from_image(image));
+	return generated;
+}
+
+// True when the map's pack holds this model; r_node stays null when that entry fails.
+bool Builder::pack_model(const String &p_path, Node3D *&r_node) {
+	if (!p_path.to_lower().ends_with(".glb")) {
+		return false;
+	}
+	const String stem = ("models/" + p_path.left(p_path.length() - 4)).to_lower();
+	if (!models.has(stem)) {
+		PackedByteArray bytes;
+		String problem;
+		if (!pack.find(stem, bytes, problem)) {
+			return false;
+		}
+		Node3D *model = problem.is_empty() ? load_glb(bytes) : nullptr;
+		if (model == nullptr) {
+			UtilityFunctions::push_warning("MapCraft: ", pack_path, ": ", stem, ".glb ", problem.is_empty() ? String("cannot be loaded") : problem);
+		}
+		models[stem] = model;
+	}
+	Node3D *model = models[stem];
+	r_node = model != nullptr ? Object::cast_to<Node3D>(model->duplicate()) : nullptr;
+	return true;
 }
 
 Ref<Material> Builder::variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size) {
@@ -811,14 +896,16 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	Node3D *node = nullptr;
 	if (kind == "scene" || kind == "model") {
 		String path = config.get("scene", "");
+		bool packed = false;
 		if (kind == "model") {
 			path = String(properties.get(config.get("key", "model"), "")).strip_edges().replace("\\", "/");
 			if (!path.is_empty() && !path.begins_with("res://")) {
 				path = "res://" + path.trim_prefix("/");
 			}
+			packed = pack_model(path.trim_prefix("res://"), node);
 		}
 		Ref<PackedScene> scene;
-		if (!path.is_empty()) {
+		if (!packed && !path.is_empty()) {
 			scene = ResourceLoader::get_singleton()->load(path);
 		}
 		if (scene.is_valid()) {
@@ -997,6 +1084,13 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 	if (String(p_doc.get("format", "")) != "mapcraft.map") {
 		r_error = "not a MapCraft map";
 		return ERR_FILE_UNRECOGNIZED;
+	}
+	if (!options.source_path.is_empty()) {
+		pack_path = options.source_path.get_basename() + ".mcpack";
+		String error;
+		if (FileAccess::file_exists(pack_path) && pack.open(pack_path, error) != OK) {
+			UtilityFunctions::push_error("MapCraft: ", pack_path, " ", error, ", so the map uses stock materials and models");
+		}
 	}
 	Dictionary map = p_doc.get("map", Dictionary());
 	Array cordon_list = map.get("cordons", Array());

@@ -48,6 +48,14 @@ Anti-tiled faces and blended displacements draw through the addon's shaders in `
 Only a plain `StandardMaterial3D` can take these shaders; any other material draws as it is, with a warning.
 The guide covers [anti-tiling](../docs/guide/godot.md#anti-tiling), [blended terrain](../docs/guide/godot.md#blended-terrain) and [which materials qualify](../docs/guide/godot.md#shader-wrappers).
 
+## Map packs
+
+A map built from a file picks up `<map>.mcpack` beside it: its pictures become the map's materials and its `.glb` models stand in for `model` paths, for that map only.
+The pack is read into memory and checked first; nothing in it is extracted, given a path or cached, a pack with a broken container is ignored with an error in the log, and an entry that fails its checks draws as missing.
+[The format](../docs/mcpack-format.md) lists what a pack may hold, every limit and the threat model.
+
+For maps downloaded from players, build them with a `MapCraftMap` node rather than `load()`: Godot's `load()` follows a `.remap` or `.import` file planted beside the path to any resource, scripts included.
+
 ## Entity maps
 
 A `MapCraftEntityMap` resource says what each entity class becomes.
