@@ -161,7 +161,19 @@ In the pack that means every byte: the header, the names, offsets and lengths, e
 
 ### Beyond the pack
 
+Godot runs a resource's scripts while it loads the resource: a `.tscn`, `.scn`, `.tres` or `.res` can carry a built-in script whose `_init` runs before any code can look at what was loaded.
+So every string in a map that becomes a `ResourceLoader` path is part of the attack surface, not only the pack.
+
 - Prefabs: the addon used to load a prefab's path through `ResourceLoader` wherever it pointed, so a map could name a `.tscn` with a built-in script sitting beside it, or plant `<prefab>.mcmap.remap` or `.import` to turn a `.mcmap` path into one.
-  The addon now loads prefabs only from inside the project (`res://`) and only as `.mcmap` files; maps MapCraft sends to games have their prefabs expanded already.
+  The addon now builds a prefab from its `.mcmap` file's bytes with the same builder, never through `ResourceLoader`, up to 16 prefabs deep and 256 prefab copies per map, and leaves out a prefab that contains itself.
+- Names inside `res://`: Godot keeps a leading `..` in a `res://` path, and an exported game looks up a `res://` file its packs lack in its working folder, which Steam sets to the game's install folder, so a model path like `../../workshop/content/<app>/<item>/x.tscn` could reach a scene in a Workshop folder.
+  Before it builds any path from a model path (less a leading `res://` or `/`), a material name or an SDK name, the addon refuses one with an empty, `.` or `..` segment, a segment ending in a dot or space, or a `\`, `:` or control character.
 - The map itself: `load()` and `ResourceLoader` follow a `<map>.mcmap.remap` or `<map>.mcmap.import` planted beside the map to any resource, scripts included, before the addon is ever called.
   Games should build maps downloaded from players with a `MapCraftMap` node, which reads the file itself, rather than with `load()`.
+
+### What the addon cannot close
+
+Materials and models the map names by path still load through `ResourceLoader` from inside `res://`, which is only safe while everything in `res://` is the game's own.
+A game that mounts a player's `.pck` into `res://` with `ProjectSettings.load_resource_pack` lets that pack add `.tscn`, `.tres`, `.res`, `.remap` and `.import` files there, and a map naming one of them runs its scripts; blocking `.gd` files in the pack does not help, since scripts can be built into scenes and resources.
+SurfsUp's Workshop `.pck` support does this, so it stays a risk no check in the addon can remove.
+Games should stop mounting packs from untrusted sources, build Workshop maps from bytes with a `MapCraftMap` node, and ship custom pictures and models in a `.mcpack`, which never registers anything in `res://`.

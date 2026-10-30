@@ -35,7 +35,7 @@ For maps in user folders or downloads, with no import step:
 - Brush entities become `Area3D` nodes centered on their brushes, with a collision shape per brush.
 - An [entity map](#entity-maps) can make an entity a different node, a scene, a model or part of the world instead.
 - Entity keys become metadata on the node, typed as numbers, vectors, booleans or text (see [Details](#details)).
-- Prefab instances load the prefab's `.mcmap` as a scene instance, only from inside the project (`res://`).
+- Prefab instances are built from the prefab's `.mcmap` file into a `Node3D` named after it, up to 16 prefabs deep and 256 copies per map; a prefab that contains itself is left out.
 - Everything outside an active cordon is left out.
 - Maps are Z up in inches; Godot gets Y up in meters, at 39.37 units per meter by default.
 
@@ -55,6 +55,8 @@ The pack is read into memory and checked first; nothing in it is extracted, give
 [The format](../docs/mcpack-format.md) lists what a pack may hold, every limit and the threat model.
 
 For maps downloaded from players, build them with a `MapCraftMap` node rather than `load()`: Godot's `load()` follows a `.remap` or `.import` file planted beside the path to any resource, scripts included.
+Model paths, material names and SDK names with `..`, `.` or empty segments, a backslash, a colon or a control character are refused before any path is built from them.
+Mounting a player's `.pck` into `res://` lets it add scenes and resources a map can then name, scripts included, so do not mount packs from untrusted sources.
 
 ## Entity maps
 
