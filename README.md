@@ -1,3 +1,5 @@
+<p align="center"><img src="apps/mapcraft/assets/mapcraft.svg" width="128" alt="The MapCraft logo: an orange and gray M built from brushes"></p>
+
 # MapCraft
 
 A free, open-source level editor for brush-based maps, in the style of Hammer and TrenchBroom, with a Godot-style scene tree, inspector and prefabs.
