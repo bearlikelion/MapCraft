@@ -147,6 +147,7 @@ pub struct MapCraftApp {
     pub(crate) dialogs: Dialogs,
     /// Where autosaves, the crash marker and user-installed SDKs live.
     pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) workshop: crate::workshop::Workshop,
     /// The view and spot of the last click, so clicking it again drills to the next object.
     pub(crate) last_click: Option<(usize, Pos2)>,
     /// Face whose material and alignment Alt+Shift+right click applies.
@@ -308,6 +309,7 @@ impl MapCraftApp {
             prefab_cache: HashMap::new(),
             dialogs: Dialogs { recovery, running, ..Dialogs::default() },
             data_dir,
+            workshop: crate::workshop::Workshop::new(),
             last_click: None,
             picked_face: None,
             transfer_step: None,
@@ -408,6 +410,7 @@ impl MapCraftApp {
         let mut vars = self.prefs.get().sdk_paths.get(id).cloned().unwrap_or_default();
         vars.extend(self.sdk_var_overrides.iter().cloned());
         if let Some(s) = sdk {
+            s.apply_steam_paths(&mut vars, |app| self.workshop.app_dir(app));
             s.apply_path_defaults(&mut vars);
         }
         if let Some(d) = &self.data_dir {
@@ -1147,6 +1150,7 @@ impl MapCraftApp {
             "file.quit" => self.quit_requested = true,
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
             "help.about" => self.dialogs.about = true,
+            "file.publish_workshop" => self.open_workshop(),
             "tools.check_problems" => self.check_problems(),
             "layer.new" => {
                 let n = self.session.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).count() + 1;
@@ -1383,6 +1387,7 @@ impl MapCraftApp {
                 ui.separator();
                 self.import_menu(ui);
                 self.export_menu(ui);
+                self.workshop_menu(ui);
                 ui.separator();
                 self.action_button(ui, "file.switch_sdk", "Switch SDK…", true);
                 self.action_button(ui, "file.sdk_settings", "SDK Settings…", true);
@@ -2165,6 +2170,7 @@ impl eframe::App for MapCraftApp {
         self.dialogs(&ctx);
         self.missing_assets_dialog(&ctx);
         self.extra_dialogs(&ctx);
+        self.workshop_window(&ctx);
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
         self.bevel_window(&ctx);

@@ -13,5 +13,8 @@ env_logger = "0.11"
 log = { workspace = true }
 egui = { workspace = true }
 
+[features]
+steam = ["mapcraft-ui/steam"]
+
 [lints]
 workspace = true

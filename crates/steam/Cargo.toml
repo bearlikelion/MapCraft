@@ -1,0 +1,16 @@
+[package]
+name = "mapcraft-steam"
+description = "Steam for builds shipped on Steam: other apps' install folders and Workshop publishing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+steamworks = "0.13"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

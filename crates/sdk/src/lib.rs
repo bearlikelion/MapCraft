@@ -71,6 +71,19 @@ pub struct Manifest {
     pub paths: BTreeMap<String, PathSetting>,
     #[serde(default)]
     pub compile: Vec<CompileProfile>,
+    /// The Steam Workshop maps publish to, in builds shipped on Steam.
+    #[serde(default)]
+    pub workshop: Option<Workshop>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Workshop {
+    /// The game's Steam app id.
+    pub app: u32,
+    /// Tags offered when publishing.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 fn default_units_per_meter() -> f64 {
@@ -157,6 +170,18 @@ pub struct PathSetting {
     /// `dir` or `file`.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Found in a Steam app's install folder when the user set nothing.
+    #[serde(default)]
+    pub steam: Option<SteamFind>,
+}
+
+/// A path inside a Steam app's install folder: the first of `find` that exists, or the folder itself.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SteamFind {
+    pub app: u32,
+    #[serde(default)]
+    pub find: Vec<String>,
 }
 
 fn default_kind() -> String {
@@ -187,6 +212,18 @@ impl Sdk {
             return Err(SdkError::Invalid("textures.scale must be a non-zero number".into()));
         }
         Ok(Self { dir: dir.to_path_buf(), manifest, user_textures: Vec::new() })
+    }
+
+    /// Fills paths the user left unset that name a Steam app, with `app_dir` giving an app's install folder.
+    pub fn apply_steam_paths(&self, vars: &mut BTreeMap<String, String>, app_dir: impl Fn(u32) -> Option<PathBuf>) {
+        for (k, setting) in &self.manifest.paths {
+            let Some(steam) = setting.steam.as_ref().filter(|_| !vars.contains_key(k)) else { continue };
+            let Some(dir) = app_dir(steam.app) else { continue };
+            let found = if steam.find.is_empty() { Some(dir) } else { steam.find.iter().map(|f| dir.join(f)).find(|p| p.exists()) };
+            if let Some(p) = found {
+                vars.insert(k.clone(), p.to_string_lossy().into_owned());
+            }
+        }
     }
 
     /// Fills paths the user left unset with the manifest's defaults, which may name other paths,
@@ -371,6 +408,27 @@ steps = []
         vars.insert("game".to_string(), "/g".to_string());
         sdk.apply_path_defaults(&mut vars);
         assert_eq!(vars["fgd"], "/g/bin/a.fgd");
+    }
+
+    #[test]
+    fn steam_paths_take_the_first_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Game.exe"), b"").unwrap();
+        let manifest = "id = \"a\"\nname = \"A\"\n[paths.game]\nprompt = \"g\"\nkind = \"file\"\nsteam = { app = 7, find = [\"Game.x86_64\", \"Game.exe\"] }";
+        let sdk = Sdk { dir: PathBuf::new(), manifest: toml::from_str(manifest).unwrap(), user_textures: Vec::new() };
+        let lookup = |app: u32| (app == 7).then(|| tmp.path().to_path_buf());
+        let mut vars = BTreeMap::new();
+        sdk.apply_steam_paths(&mut vars, lookup);
+        assert_eq!(vars["game"], tmp.path().join("Game.exe").to_string_lossy());
+        let mut vars = BTreeMap::from([("game".to_string(), "/mine".to_string())]);
+        sdk.apply_steam_paths(&mut vars, lookup);
+        assert_eq!(vars["game"], "/mine", "the user's own setting wins");
+    }
+
+    #[test]
+    fn workshop_parses() {
+        let m: Manifest = toml::from_str("id = \"a\"\nname = \"A\"\n[workshop]\napp = 3\ntags = [\"Surf\"]").unwrap();
+        assert_eq!(m.workshop, Some(Workshop { app: 3, tags: vec!["Surf".into()] }));
     }
 
     #[test]

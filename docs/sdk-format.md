@@ -88,7 +88,10 @@ steps = [
 | `models.key` | The key that holds a model's path, `model` by default |
 | `files.roots` | More folders plugins may read, such as a game install; ones whose paths are unset are skipped |
 | `paths.<name>` | A folder or program the user picks once; available as `${name}`. Its `default` may name other paths, such as `"${cstrike}/../bin/cstrike.fgd"`, and stays unset until they are |
+| `paths.<name>.steam` | Finds the path in a Steam app's install folder when the user set nothing, such as `{ app = 240, find = ["cstrike"] }`; the first `find` entry that exists wins, and without `find` it is the install folder itself. Only builds shipped on Steam can ask Steam, so others leave it to the user or `default` |
 | `compile` | Compile profiles shown in the Run menu |
+| `workshop.app` | The game's Steam app id; builds shipped on Steam then offer File > Publish to Steam Workshop, which uploads the map as `<map name>.mcmap` with prefabs baked in |
+| `workshop.tags` | Tags the Publish window offers |
 
 Relative paths are relative to the SDK folder.
 Unknown keys are an error, so typos are caught when the SDK loads.
@@ -133,9 +136,10 @@ Until the new bake lands after a change to the brushes, the Lit view draws the b
 
 MapCraft searches these folders in order and uses the first SDK with a given id:
 
-1. `sdks` in the user's data folder, where the SDK Manager installs and creates SDKs.
-2. The `sdks` folder of the source tree MapCraft was built from.
-3. Folders in `MAPCRAFT_SDK_PATH`.
-4. Extra SDK folders from Preferences.
+1. `sdks` next to the MapCraft executable, for builds that ship with SDKs, such as on Steam; these update with MapCraft, not through the SDK Manager.
+2. `sdks` in the user's data folder, where the SDK Manager installs and creates SDKs.
+3. The `sdks` folder of the source tree MapCraft was built from.
+4. Folders in `MAPCRAFT_SDK_PATH`.
+5. Extra SDK folders from Preferences.
 
 Release downloads hold no SDKs, so a fresh install finds none and opens the Add an SDK window described in [`sdk-registry.md`](sdk-registry.md#the-first-launch).

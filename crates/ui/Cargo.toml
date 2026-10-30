@@ -16,6 +16,7 @@ mapcraft-plugin-host = { workspace = true }
 mapcraft-render = { workspace = true }
 mapcraft-sdk = { workspace = true }
 mapcraft-sdk-manager = { workspace = true }
+mapcraft-steam = { workspace = true, optional = true }
 craft-settings = { workspace = true }
 craft-docpath = { workspace = true }
 craft-ui = { workspace = true }
@@ -28,6 +29,9 @@ egui_extras = { workspace = true }
 image = { workspace = true }
 rfd = { workspace = true }
 log = { workspace = true }
+
+[features]
+steam = ["dep:mapcraft-steam"]
 
 [dev-dependencies]
 mapcraft-geom = { workspace = true }

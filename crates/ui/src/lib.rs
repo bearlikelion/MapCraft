@@ -27,6 +27,34 @@ mod transform;
 mod uv;
 mod vertex;
 mod viewport;
+#[cfg(feature = "steam")]
+mod workshop;
+
+/// Stand-ins for builds without Steam.
+#[cfg(not(feature = "steam"))]
+mod workshop {
+    use std::path::PathBuf;
+
+    pub(crate) struct Workshop;
+
+    impl Workshop {
+        pub(crate) fn new() -> Self {
+            Workshop
+        }
+
+        pub(crate) fn app_dir(&self, _app: u32) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    impl crate::app::MapCraftApp {
+        pub(crate) fn workshop_menu(&mut self, _ui: &mut egui::Ui) {}
+
+        pub(crate) fn open_workshop(&mut self) {}
+
+        pub(crate) fn workshop_window(&mut self, _ctx: &egui::Context) {}
+    }
+}
 
 pub use app::{MapCraftApp, Options};
 pub use mapcraft_sdk_manager::APP_ID;

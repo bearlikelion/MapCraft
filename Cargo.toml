@@ -19,6 +19,7 @@ mapcraft-sdk = { path = "crates/sdk" }
 mapcraft-plugin-host = { path = "crates/plugin-host" }
 mapcraft-engine = { path = "crates/engine" }
 mapcraft-sdk-manager = { path = "crates/sdk-manager" }
+mapcraft-steam = { path = "crates/steam" }
 mapcraft-render = { path = "crates/render" }
 mapcraft-ui = { path = "crates/ui" }
 

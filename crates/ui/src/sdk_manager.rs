@@ -226,8 +226,8 @@ enum Act {
     Import,
 }
 
-/// Shows a folder in the system file manager.
-fn open_folder(dir: &Path) -> Result<(), String> {
+/// Shows a folder in the system file manager, or opens a link such as `steam://`.
+pub(crate) fn open_folder(dir: &Path) -> Result<(), String> {
     let program = if cfg!(windows) {
         "explorer"
     } else if cfg!(target_os = "macos") {

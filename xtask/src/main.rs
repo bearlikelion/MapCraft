@@ -17,6 +17,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("fgd", 1),
     ("format", 2),
     ("sdk", 2),
+    ("steam", 2),
     ("plugin-host", 3),
     ("render", 3),
     ("engine", 4),
@@ -124,6 +125,7 @@ fn ci() -> Result<(), String> {
     run(cargo, &["fmt", "--all", "--check"])?;
     run(cargo, &["fmt", "--manifest-path", &pm, "--all", "--check"])?;
     run(cargo, &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"])?;
+    run(cargo, &["clippy", "-p", "mapcraft", "--features", "steam", "--", "-D", "warnings"])?;
     run(cargo, &["clippy", "--manifest-path", &pm, "--target", WASM_TARGET, "--", "-D", "warnings"])?;
     run(cargo, &["test", "--manifest-path", &pm])?;
     plugins()?;
