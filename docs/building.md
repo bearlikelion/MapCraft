@@ -55,6 +55,18 @@ The packages hold no SDKs: on its first launch MapCraft offers to install one fr
 Pushing a `v*` tag runs the Release workflow, which builds the AppImage on Ubuntu 22.04 (to keep the glibc requirement low), the Windows zip with MSVC, the macOS app, and the Godot addon with its Linux, Windows and macOS libraries (the macOS one built on a Mac), then publishes all four as a GitHub release.
 Running the workflow by hand builds everything without publishing, to try a release first.
 
+## Steam builds
+
+A build shipped on Steam carries its own name and SDKs.
+`packaging/steam.sh <config> [linux|windows]...` reads a config such as `packaging/steam/surfsup.env` and writes `dist/steam`: a depot folder per system, holding the editor built with the `steam` feature, Steam's `steam_api` library and the config's SDKs, and the `steamcmd` build scripts that upload them.
+
+- `MAPCRAFT_BRAND` and `MAPCRAFT_APP_ID`, which the script sets from the config, rename the window and keep the build's settings and installed SDKs apart from a standalone MapCraft.
+- SDKs in `sdks` next to the executable come first in the search and update with the build.
+- The `steam` feature lets SDK paths with a `steam` hint find their game through Steam, and offers File > Publish to Steam Workshop for SDKs with a `[workshop]` table (see [SDK manifests](sdk-format.md)).
+- Build `linux` inside `packaging/linux-container.sh` for a low glibc requirement.
+  `windows` builds with MSVC: on Windows directly, or elsewhere through `cargo xwin`.
+- Upload with `steamcmd +login <account> +run_app_build "$PWD/dist/steam/scripts/app_build.vdf" +quit`.
+
 ## Checks
 
 Run `cargo xtask ci` before committing: it runs rustfmt, clippy with warnings as errors, the tests, and the layer check described in [Architecture](architecture.md).
