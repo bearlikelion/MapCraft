@@ -367,6 +367,14 @@ impl Guest for SurfsUp {
     fn validate(map: MapData) -> Vec<Issue> {
         validate::check(&map)
     }
+
+    fn list_models() -> Vec<String> {
+        Vec::new()
+    }
+
+    fn compile_issues(_map: MapData, _log: Vec<String>) -> Vec<Issue> {
+        Vec::new()
+    }
 }
 
 impl exports::mapcraft::plugin::resize::Guest for SurfsUp {

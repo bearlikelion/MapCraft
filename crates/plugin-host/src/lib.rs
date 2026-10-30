@@ -109,7 +109,7 @@ mod bindings {
 }
 
 /// The `wit/plugin.wit` package version plugins must import.
-const API: &str = "0.3.0";
+const API: &str = "0.4.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};
@@ -123,6 +123,8 @@ const MEMORY: usize = 512 << 20;
 /// An import may use this much more memory than the file it reads.
 const IMPORT_HEADROOM: usize = 256 << 20;
 const MAX_RANGE: u64 = 256 << 20;
+/// Compile output lines a plugin reads for problems; the last ones, where compilers report failures.
+const MAX_LOG_LINES: usize = 50_000;
 /// Longest material folder name a plugin may give.
 const MAX_FOLDER: usize = 256;
 /// Fuel for one import; decompressing and decoding a big compiled map takes far more than a command.
@@ -158,6 +160,18 @@ pub enum PluginError {
     Io(String, std::io::Error),
     #[error("built for plugin API {0}; rebuild it against {API}")]
     OldApi(String),
+}
+
+/// A plugin's issues with their nodes mapped back through the map-data `ids` they index, at most 10,000.
+fn issues(list: Vec<types::Issue>, ids: &[mapcraft_map::NodeId]) -> Vec<PluginIssue> {
+    list.into_iter()
+        .take(10_000)
+        .map(|i| PluginIssue {
+            error: matches!(i.severity, types::Severity::Error),
+            message: i.message,
+            node: i.node.and_then(|n| ids.get(n as usize).copied()),
+        })
+        .collect()
 }
 
 fn wasm_err(e: impl std::fmt::Display) -> PluginError {
@@ -430,15 +444,32 @@ impl Plugin {
         let (data, ids, _) = convert::map_data_with_ids(map, name);
         self.begin()?;
         match self.bindings.call_validate(&mut self.store, &data) {
-            Ok(list) => Ok(list
-                .into_iter()
-                .take(10_000)
-                .map(|i| PluginIssue {
-                    error: matches!(i.severity, types::Severity::Error),
-                    message: i.message,
-                    node: i.node.and_then(|n| ids.get(n as usize).copied()),
-                })
-                .collect()),
+            Ok(list) => Ok(issues(list, &ids)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Problems the compile output `log` names, for the map this plugin's exporter wrote for it,
+    /// which should be the same map, with prefabs and mirrors resolved.
+    pub fn compile_issues(&mut self, map: &mapcraft_map::Map, name: &str, log: &[String]) -> Result<Vec<PluginIssue>, PluginError> {
+        let (data, ids, _) = convert::map_data_with_ids(map, name);
+        let log = log.get(log.len().saturating_sub(MAX_LOG_LINES)..).unwrap_or_default();
+        self.begin()?;
+        self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
+        match self.bindings.call_compile_issues(&mut self.store, &data, log) {
+            Ok(list) => Ok(issues(list, &ids)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Model paths the plugin reads, such as models in a game's packages, for the Models tab.
+    pub fn list_models(&mut self) -> Result<Vec<String>, PluginError> {
+        if self.manifest.models.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.begin()?;
+        match self.bindings.call_list_models(&mut self.store) {
+            Ok(list) => Ok(list.into_iter().filter(|p| self.reads_model(p)).take(200_000).collect()),
             Err(e) => Err(self.trapped(e)),
         }
     }

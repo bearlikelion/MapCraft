@@ -6,7 +6,7 @@ The core editor has no game-specific code; plugins provide it.
 
 ## What a plugin can do
 
-A plugin exports eight functions:
+A plugin exports ten functions:
 
 | Export | Purpose |
 |---|---|
@@ -18,6 +18,8 @@ A plugin exports eight functions:
 | `export-file` | Writes the map in one of its export formats and returns the file's bytes |
 | `validate` | Checks the map and returns problems for Check for Problems |
 | `load-model` | Reads a model a point entity names, for the views |
+| `list-models` | Lists the model paths it reads, such as models in a game's packages, for the Models tab |
+| `compile-issues` | Reads the output of a compile that exported the map through it and returns problems for Check for Problems, such as a brush a compiler rejected |
 
 A plugin built against the `scalable-plugin` world also exports `resize.scale-params`, which lets its generators follow a resize (see [Generator groups](#generator-groups)).
 
@@ -111,6 +113,10 @@ A plugin that sets `validates` in its manifest is asked to check the map wheneve
 The editor lists them with its own problems and selects the node when the user clicks the issue.
 A plugin that does not validate returns an empty list.
 
+After a compile profile with an `export` step finishes or fails, the editor gives the plugin that exported the map the same `map-data` and the compilers' output lines through `compile-issues`, and lists what it returns the same way, so a message such as a brush a compiler rejected selects that brush.
+An exporter that wants this numbers what it writes by node index, so it can tell which node a compiler's message names.
+A plugin returns an empty list when it has nothing to read in a compile's output.
+
 ## Materials
 
 A plugin that sets `materials` in its manifest replaces the plain image listing of the SDK's texture folders.
@@ -150,6 +156,7 @@ The model comes back as parts, each a list of positions in map units around the 
 The editor works out the normals and places the model by the entity's `origin`, `angles` or `angle`, and `scale`.
 A model that fails to load shows as the entity's box, with the plugin's message in the Output panel.
 A plugin that reads no models leaves `models` empty and returns an error from `load-model`.
+The Models tab lists the glTF files in the SDK's model folders and the paths `list-models` returns, such as models packed in a game's archives; a plugin with none returns an empty list.
 
 `load-model` also reads the file an SDK's bake profile leaves (see [`sdk-format.md`](sdk-format.md)), such as a compiled `.bsp`, which the Lit view draws in place of the brushes.
 For that, each part names its SDK `material` and can carry a `lightmap`, an index into `textures`, with one `lightmap-uvs` coordinate per position.
@@ -225,8 +232,9 @@ A Python plugin carries its own interpreter, so it is about 18 MB and takes a co
 
 ## Versioning
 
-The WIT package is `mapcraft:plugin@0.3.0`.
+The WIT package is `mapcraft:plugin@0.4.0`.
 Until 1.0 the API may change between releases, and a plugin built for another API version is not loaded and the Output panel asks for it to be rebuilt.
 Version 0.2.0 added face `attrs` and `disp` and material `uv-scale`, `pixelated` and `blend`, so a plugin built for 0.1, in an SDK or in the user's plugins folder, is not loaded and the Output panel asks for it to be rebuilt against 0.2.
 Version 0.3.0 added material `folder`, so a plugin built for 0.2 is not loaded until it is rebuilt against 0.3; a plugin that does not group its materials sets it to `none`.
 The `resize` interface and the `scalable-plugin` world are an optional part of 0.3.0: the editor uses `resize` when a plugin exports it, so plugins built against `plugin` load as before.
+Version 0.4.0 added `list-models` and `compile-issues`, so a plugin built for 0.3 is not loaded until it is rebuilt against 0.4; a plugin with no packaged models or compile messages returns empty lists.

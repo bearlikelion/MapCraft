@@ -72,7 +72,7 @@ struct VpkEntry {
     length: u32,
 }
 
-/// A VPK directory: the materials and textures it holds and the archives holding their bytes.
+/// A VPK directory: the materials, textures and models it holds and the archives holding their bytes.
 struct Vpk {
     name: &'static str,
     dir: Vec<u8>,
@@ -107,7 +107,7 @@ impl Vpk {
                     let preload = usize::from(u16_at(e, 4));
                     let entry = VpkEntry { preload: (at + 18, preload), archive: u16_at(e, 6), offset: u32_at(e, 8), length: u32_at(e, 12) };
                     at += 18 + preload;
-                    if ext == "vmt" || ext == "vtf" {
+                    if ["vmt", "vtf", "mdl", "vvd", "vtx"].contains(&ext.as_str()) {
                         let full = if path == " " { format!("{file}.{ext}") } else { format!("{path}/{file}.{ext}") };
                         entries.insert(full, entry);
                     }
@@ -159,6 +159,26 @@ impl<'a> Library<'a> {
     /// The materials in the game's packages, such as `concrete/concretefloor001a`.
     pub fn materials(&self) -> BTreeSet<&str> {
         self.vpks.iter().flat_map(|v| v.entries.keys()).filter_map(|p| p.strip_prefix("materials/")?.strip_suffix(".vmt")).collect()
+    }
+
+    /// The models in the game's packages, such as `models/props/de_dust/du_crate_64x64.mdl`.
+    pub fn models(&self) -> BTreeSet<&str> {
+        self.vpks.iter().flat_map(|v| v.entries.keys()).map(String::as_str).filter(|p| p.starts_with("models/") && p.ends_with(".mdl")).collect()
+    }
+
+    /// A game file's bytes from the map's pakfile, the game's packages or its folders.
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.find(&normalize(path), usize::MAX).map(|(data, _)| data.into_owned())
+    }
+
+    /// Whether the game has the file, reading as little of it as it can.
+    pub fn has(&self, path: &str) -> bool {
+        self.find(&normalize(path), 1).is_some()
+    }
+
+    /// Lets go of the pictures [`Self::picture`] decoded, for a library kept between calls.
+    pub fn forget_pictures(&self) {
+        self.decoded.borrow_mut().clear();
     }
 
     /// The file's bytes, at least its first `limit` of them, and where it was found.

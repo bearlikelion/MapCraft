@@ -2,6 +2,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod diagnose;
 mod vmf;
 
 use std::collections::BTreeSet;
@@ -16,9 +17,19 @@ const SKIPPED: &[&str] = &["models/", "vgui/", "hud/", "console/", "particle/", 
 /// RGBA bytes the browser's previews may take; the more materials a game has, the smaller each preview.
 const PREVIEW_BUDGET: usize = 128 << 20;
 
+/// Largest side of a model's pictures in the views.
+const MODEL_PICTURE: usize = 512;
+
 struct Source;
 
 struct HostFiles;
+
+static HOST_FILES: HostFiles = HostFiles;
+
+thread_local! {
+    /// The game's package directories, read once for all the models the views ask for.
+    static LIBRARY: valve::Library<'static> = valve::Library::new(&[], &HOST_FILES);
+}
 
 impl valve::Files for HostFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -73,7 +84,7 @@ impl Guest for Source {
             importers: vec![ImporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
             exporters: vec![ExporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
             validates: false,
-            models: Vec::new(),
+            models: vec!["mdl".into()],
         }
     }
 
@@ -119,11 +130,41 @@ impl Guest for Source {
     }
 
     fn load_model(path: String) -> Result<Model, String> {
-        Err(format!("this plugin reads no models: {path}"))
+        use mapcraft::plugin::types::{ModelPart, Vec3};
+        let model = LIBRARY.with(|library| {
+            let model = valve::mdl::load(library, &path, MODEL_PICTURE);
+            library.forget_pictures();
+            model
+        })?;
+        let textures = model.pictures.into_iter().map(|(width, height, rgba)| Image { width, height, rgba }).collect();
+        let parts = model
+            .parts
+            .into_iter()
+            .map(|p| ModelPart {
+                texture: p.picture.and_then(|i| u32::try_from(i).ok()),
+                positions: p.mesh.positions.into_iter().map(|[x, y, z]| Vec3 { x, y, z }).collect(),
+                uvs: p.mesh.uvs.into_iter().map(|[u, v]| (u, v)).collect(),
+                indices: p.mesh.indices,
+                material: Some(p.material),
+                lightmap: None,
+                lightmap_uvs: Vec::new(),
+            })
+            .collect();
+        Ok(Model { parts, textures })
     }
 
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
+    }
+
+    fn list_models() -> Vec<String> {
+        let mut models: BTreeSet<String> = LIBRARY.with(|library| library.models().into_iter().map(str::to_string).collect());
+        models.extend(host::list_files(&["mdl".into()]).into_iter().map(|p| p.to_ascii_lowercase()).filter(|p| p.starts_with("models/")));
+        models.into_iter().collect()
+    }
+
+    fn compile_issues(map: MapData, log: Vec<String>) -> Vec<Issue> {
+        diagnose::issues(&map, &log)
     }
 }
 

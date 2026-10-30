@@ -32,6 +32,9 @@ pub struct CompileProfile {
     /// A file the Lit view shows once the steps run in the editor's bake folder, which `${map_dir}` names, without saving.
     #[serde(default)]
     pub bake: Option<String>,
+    /// The only OS that lists the profile, as Rust names it (`linux`, `windows`, `macos`).
+    #[serde(default)]
+    pub os: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -46,6 +49,9 @@ pub enum Step {
         wine: bool,
         #[serde(default)]
         cwd: Option<String>,
+        /// Environment variables for the tool, such as a library path; values expand like args.
+        #[serde(default)]
+        env: BTreeMap<String, String>,
     },
     Copy {
         copy: String,
@@ -152,7 +158,7 @@ pub fn run_profile(
                 }
                 std::fs::copy(&from, &to).map_err(err)?;
             }
-            Step::Run { run, args, wine, cwd } => {
+            Step::Run { run, args, wine, cwd, env } => {
                 let mut program = expand(run, vars)?;
                 let mut args = args.iter().map(|a| expand(a, vars)).collect::<Result<Vec<_>, _>>()?;
                 if *wine && !cfg!(windows) {
@@ -164,6 +170,9 @@ pub fn run_profile(
                 cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
                 if let Some(dir) = cwd {
                     cmd.current_dir(expand(dir, vars)?);
+                }
+                for (k, v) in env {
+                    cmd.env(k, expand(v, vars)?);
                 }
                 let mut child = cmd.spawn().map_err(|source| CompileError::Spawn { program: program.clone(), source })?;
                 let (tx, rx) = mpsc::channel();
@@ -246,7 +255,7 @@ steps = [{ export = "vmf", to = "${dir}/x.vmf" }]
 name = "test"
 steps = [
     { copy = "${dir}/a.txt", to = "${dir}/out/b.txt" },
-    { run = "sh", args = ["-c", "echo built; echo warn >&2"] },
+    { run = "sh", args = ["-c", "echo built $OUT; echo warn >&2"], env = { OUT = "${dir}/out" } },
 ]
 "#,
         )
@@ -254,16 +263,21 @@ steps = [
         let mut lines = Vec::new();
         run_profile(&profile, &vars, &mut |l| lines.push(l.to_string()), &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("out/b.txt")).unwrap(), "hi");
-        assert!(lines.contains(&"built".to_string()) && lines.contains(&"warn".to_string()));
+        assert!(lines.contains(&format!("built {}/out", dir.path().display())) && lines.contains(&"warn".to_string()));
 
         let failing = CompileProfile {
             name: "f".into(),
-            steps: vec![Step::Run { run: "sh".into(), args: vec!["-c".into(), "exit 3".into()], wine: false, cwd: None }],
+            steps: vec![Step::Run { run: "sh".into(), args: vec!["-c".into(), "exit 3".into()], wine: false, cwd: None, env: BTreeMap::new() }],
             bake: None,
+            os: None,
         };
         assert!(matches!(run_profile(&failing, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Failed { .. })));
-        let missing =
-            CompileProfile { name: "m".into(), steps: vec![Step::Run { run: "/no/such/tool".into(), args: vec![], wine: false, cwd: None }], bake: None };
+        let missing = CompileProfile {
+            name: "m".into(),
+            steps: vec![Step::Run { run: "/no/such/tool".into(), args: vec![], wine: false, cwd: None, env: BTreeMap::new() }],
+            bake: None,
+            os: None,
+        };
         assert!(matches!(run_profile(&missing, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Spawn { .. })));
         assert!(matches!(run_profile(&profile, &vars, &mut |_| {}, &AtomicBool::new(true)), Err(CompileError::Cancelled)));
     }

@@ -80,3 +80,9 @@ class WitWorld(wit_world.WitWorld):
 
     def load_model(self, path):
         raise Err(f"this plugin reads no models: {path}")
+
+    def list_models(self):
+        return []
+
+    def compile_issues(self, map, log):
+        return []

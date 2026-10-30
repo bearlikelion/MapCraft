@@ -84,11 +84,17 @@ impl Default for PaintBrush {
     }
 }
 
+/// Compile output lines kept to read problems from: the last ones, where compilers report failures.
+const MAX_COMPILE_LOG: usize = 50_000;
+
 pub(crate) struct CompileJob {
     rx: mpsc::Receiver<String>,
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     started: std::time::SystemTime,
+    /// The exporter the profile ran, the map it wrote and that map's name, for reading the output for problems.
+    export: Option<(String, Map, String)>,
+    log: Vec<String>,
 }
 
 /// A leak trail from a compiler's point file, and the point the camera last flew to.
@@ -396,10 +402,8 @@ impl MapCraftApp {
     pub(crate) fn sdk_vars(&self, id: &str, sdk: Option<&Sdk>) -> BTreeMap<String, String> {
         let mut vars = self.prefs.get().sdk_paths.get(id).cloned().unwrap_or_default();
         vars.extend(self.sdk_var_overrides.iter().cloned());
-        for (k, setting) in sdk.iter().flat_map(|s| &s.manifest.paths) {
-            if let (None, Some(d)) = (vars.get(k), &setting.default) {
-                vars.insert(k.clone(), d.clone());
-            }
+        if let Some(s) = sdk {
+            s.apply_path_defaults(&mut vars);
         }
         if let Some(d) = &self.data_dir {
             vars.entry("bake_dir".into()).or_insert_with(|| d.join("bake").to_string_lossy().into_owned());
@@ -697,10 +701,13 @@ impl MapCraftApp {
         self.display = Some((flat, owner));
     }
 
-    /// The map as exports, compiles and plugin checks get it: like [`Self::view_map`], with boolean groups holding only their result.
+    /// The map as exports, compiles and plugin checks get it: like [`Self::view_map`], with boolean groups holding only their result
+    /// and the FGD defaults entities lack written in, as the inspector shows them.
     pub(crate) fn game_map(&mut self) -> Map {
         let doc = self.session.path.clone();
-        mapcraft_engine::flatten_for_game(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc)).0
+        let mut map = mapcraft_engine::flatten_for_game(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc)).0;
+        mapcraft_engine::fill_class_defaults(&mut map, &self.project.game);
+        map
     }
 
     /// The map as drawn and picked: prefab instances, mirror halves and boolean results expanded.
@@ -1782,6 +1789,9 @@ impl MapCraftApp {
                 return;
             }
         }
+        let export = profile.steps.iter().find_map(|s| if let mapcraft_sdk::Step::Export { export, .. } = s { Some(export.clone()) } else { None });
+        let name = path.file_stem().map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
+        let export = export.map(|id| (id, self.game_map(), name));
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
@@ -1801,7 +1811,7 @@ impl MapCraftApp {
             });
             d.store(true, Ordering::Relaxed);
         });
-        self.compile = Some(CompileJob { rx, cancel, done, started: std::time::SystemTime::now() });
+        self.compile = Some(CompileJob { rx, cancel, done, started: std::time::SystemTime::now(), export, log: Vec::new() });
         self.pointfile = None;
         self.show_bottom = true;
         self.bottom_tab = BottomTab::Output;
@@ -1831,18 +1841,46 @@ impl MapCraftApp {
     }
 
     fn poll_compile(&mut self, ctx: &egui::Context) {
-        let Some(job) = &self.compile else { return };
-        self.output.extend(job.rx.try_iter());
-        if job.done.load(Ordering::Relaxed) {
-            self.output.extend(job.rx.try_iter());
-            let started = job.started;
-            self.compile = None;
-            if let Some(trail) = self.session.path.as_deref().and_then(|p| find_pointfile(p, started)) {
-                self.load_pointfile(&trail);
-            }
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        let Some(job) = &mut self.compile else { return };
+        let done = job.done.load(Ordering::Relaxed);
+        let lines: Vec<String> = job.rx.try_iter().collect();
+        job.log.extend(lines.iter().cloned());
+        if job.log.len() > MAX_COMPILE_LOG {
+            job.log.drain(..job.log.len() - MAX_COMPILE_LOG);
         }
+        self.output.extend(lines);
+        if !done {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        let Some(job) = self.compile.take() else { return };
+        if let Some(trail) = self.session.path.as_deref().and_then(|p| find_pointfile(p, job.started)) {
+            self.load_pointfile(&trail);
+        }
+        self.compile_issues(job.export, &job.log);
+    }
+
+    /// Lists the problems the profile's exporter finds in the compile's output, on the nodes they name.
+    fn compile_issues(&mut self, export: Option<(String, Map, String)>, log: &[String]) {
+        let Some((id, map, name)) = export else { return };
+        let Some(plugin) = self.project.plugins.iter_mut().find(|p| p.manifest.exporters.iter().any(|e| e.id == id)) else { return };
+        let found = plugin.compile_issues(&map, &name, log);
+        self.output.extend(plugin.take_log());
+        let found = match found {
+            Ok(found) if !found.is_empty() => found,
+            Ok(_) => return,
+            Err(e) => return self.output.push(e.to_string()),
+        };
+        self.issues = found
+            .into_iter()
+            .map(|i| {
+                let node = i.node.map_or(mapcraft_map::ROOT, |n| self.owner(n));
+                let severity = if i.error { mapcraft_engine::Severity::Error } else { mapcraft_engine::Severity::Warning };
+                mapcraft_engine::Issue { node, face: None, severity, message: i.message, fix: None }
+            })
+            .collect();
+        self.bottom_tab = BottomTab::Issues;
+        self.show_bottom = true;
     }
 
     fn autosave_path(&self) -> Option<PathBuf> {

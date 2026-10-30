@@ -165,7 +165,8 @@ impl Sdk {
     pub fn load(dir: &Path) -> Result<Self, SdkError> {
         let path = dir.join(MANIFEST);
         let text = std::fs::read_to_string(&path).map_err(|source| SdkError::Io { path: path.clone(), source })?;
-        let manifest: Manifest = toml::from_str(&text).map_err(|source| SdkError::Toml { path, source })?;
+        let mut manifest: Manifest = toml::from_str(&text).map_err(|source| SdkError::Toml { path, source })?;
+        manifest.compile.retain(|p| p.os.as_deref().is_none_or(|os| os == std::env::consts::OS));
         if !valid_id(&manifest.id) {
             return Err(SdkError::Invalid(format!("SDK id `{}` must use lowercase letters, digits, '_' or '-'", manifest.id)));
         }
@@ -176,6 +177,18 @@ impl Sdk {
             return Err(SdkError::Invalid("textures.scale must be a non-zero number".into()));
         }
         Ok(Self { dir: dir.to_path_buf(), manifest, user_textures: Vec::new() })
+    }
+
+    /// Fills paths the user left unset with the manifest's defaults, which may name other paths,
+    /// such as `${cstrike}/../bin/cstrike.fgd`; a default naming an unset path stays unset.
+    pub fn apply_path_defaults(&self, vars: &mut BTreeMap<String, String>) {
+        for (k, setting) in &self.manifest.paths {
+            if let (None, Some(d)) = (vars.get(k), &setting.default)
+                && let Ok(value) = expand(d, vars)
+            {
+                vars.insert(k.clone(), value);
+            }
+        }
     }
 
     /// Resolves a manifest path: `${var}`s expanded, relative paths taken from the SDK folder.
@@ -262,6 +275,11 @@ steps = [
     { run = "${godot}", args = ["--path", "${project}", "+map", "${map_name}"] },
     { copy = "${map}", to = "${project}/maps/${map_name}.mcmap" },
 ]
+
+[[compile]]
+name = "Elsewhere"
+os = "plan9"
+steps = []
 "#;
 
     #[test]
@@ -285,6 +303,7 @@ steps = [
         let sdk = found[1].1.as_ref().unwrap();
         assert_eq!(sdk.manifest.units_per_meter, 39.37);
         assert_eq!(sdk.manifest.compile[0].steps.len(), 2);
+        assert_eq!(sdk.manifest.compile.len(), 1, "profiles for another OS are dropped");
 
         let project = root.path().join("games/surfsup");
         let vars = BTreeMap::from([("project".to_string(), project.to_string_lossy().into_owned())]);
@@ -330,6 +349,18 @@ steps = [
             [("metal/plate".to_string(), user.join("metal/plate.png")), ("wall".to_string(), own.join("wall.png"))],
             "the SDK's own folders win a clash"
         );
+    }
+
+    #[test]
+    fn path_defaults_expand_other_paths() {
+        let manifest = "id = \"a\"\nname = \"A\"\n[paths.game]\nprompt = \"g\"\n[paths.fgd]\nprompt = \"f\"\ndefault = \"${game}/bin/a.fgd\"";
+        let sdk = Sdk { dir: PathBuf::new(), manifest: toml::from_str(manifest).unwrap(), user_textures: Vec::new() };
+        let mut vars = BTreeMap::new();
+        sdk.apply_path_defaults(&mut vars);
+        assert!(vars.is_empty(), "a default naming an unset path stays unset");
+        vars.insert("game".to_string(), "/g".to_string());
+        sdk.apply_path_defaults(&mut vars);
+        assert_eq!(vars["fgd"], "/g/bin/a.fgd");
     }
 
     #[test]

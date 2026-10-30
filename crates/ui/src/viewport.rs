@@ -1166,12 +1166,7 @@ impl MapCraftApp {
     /// The keys a new entity of the picked class starts with: its class defaults and model.
     fn new_entity_keys(&self) -> Vec<(String, String)> {
         let class = &self.entity_class;
-        let defaults = self
-            .project
-            .game
-            .class(class)
-            .map(|c| c.properties.iter().filter(|p| p.name != "origin").filter_map(|p| Some((p.name.clone(), p.default.clone()?))).collect())
-            .unwrap_or_default();
+        let defaults = self.project.game.class(class).map(|c| mapcraft_engine::class_defaults(&c)).unwrap_or_default();
         self.project.with_model(class, defaults)
     }
 

@@ -1,8 +1,9 @@
-//! Valve formats the Source plugins share: VPK packages, VMT materials, VTF textures, KeyValues text and LZMA.
+//! Valve formats the Source plugins share: VPK packages, VMT materials, VTF textures, MDL models, KeyValues text and LZMA.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod materials;
+pub mod mdl;
 pub mod vtf;
 
 use std::io::Read;

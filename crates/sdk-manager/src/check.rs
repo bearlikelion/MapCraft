@@ -70,11 +70,7 @@ pub fn check(dir: &Path, vars: &BTreeMap<String, String>, host: Option<&Host>) -
     let m = &sdk.manifest;
     out.push(item(Pass, "manifest", format!("{} {}", m.name, m.version).trim_end().to_string()));
     let mut vars: BTreeMap<String, String> = vars.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
-    for (k, setting) in &m.paths {
-        if let (None, Some(d)) = (vars.get(k), &setting.default) {
-            vars.insert(k.clone(), d.clone());
-        }
-    }
+    sdk.apply_path_defaults(&mut vars);
 
     if m.fgd.is_empty() {
         out.push(item(Warn, "fgd", "no entity definitions are listed"));

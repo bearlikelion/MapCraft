@@ -88,7 +88,7 @@ steps = [
 | `models.class` | Point entity class the Models tab places models with; unset, models can be previewed but not placed |
 | `models.key` | The key that holds a model's path, `model` by default |
 | `files.roots` | More folders plugins may read, such as a game install; ones whose paths are unset are skipped |
-| `paths.<name>` | A folder or program the user picks once; available as `${name}` |
+| `paths.<name>` | A folder or program the user picks once; available as `${name}`. Its `default` may name other paths, such as `"${cstrike}/../bin/cstrike.fgd"`, and stays unset until they are |
 | `compile` | Compile profiles shown in the Run menu |
 
 Relative paths are relative to the SDK folder.
@@ -113,11 +113,12 @@ An unknown variable stops the compile with an error instead of expanding to noth
 
 ## Compile steps
 
-- `{ run = "...", args = [...], cwd = "...", wine = true }` runs a program. With `wine = true`, a Windows tool runs through Wine on Linux and macOS.
+- `{ run = "...", args = [...], cwd = "...", env = { NAME = "..." }, wine = true }` runs a program. `env` sets environment variables for it, such as `LD_LIBRARY_PATH` for tools that load a game's libraries, and its values expand like `args`. With `wine = true`, a Windows tool runs through Wine on Linux and macOS.
 - `{ copy = "...", to = "..." }` copies a file, creating the destination folder.
 - `{ export = "id", to = "..." }` writes the map with the exporter `id` of one of the SDK's plugins, such as a Quake `.map` before `qbsp` runs. Prefabs and mirror copies are resolved first, and layers left out of exports and anything outside an active cordon are dropped.
 
 Export steps run before all other steps, because plugins run in the editor; the other steps then run in order and the profile stops at the first failure.
+A profile with `os = "linux"`, `"windows"` or `"macos"` is listed only on that system, so an SDK can run a game's native tools on each.
 MapCraft asks before running an SDK's programs the first time.
 
 ## Baked lighting

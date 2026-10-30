@@ -127,6 +127,14 @@ impl Guest for Quake {
     fn validate(_map: MapData) -> Vec<Issue> {
         Vec::new()
     }
+
+    fn list_models() -> Vec<String> {
+        Vec::new()
+    }
+
+    fn compile_issues(_map: MapData, _log: Vec<String>) -> Vec<Issue> {
+        Vec::new()
+    }
 }
 
 export!(Quake);

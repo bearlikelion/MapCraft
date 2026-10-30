@@ -6,12 +6,13 @@ Nothing of the game is copied into MapCraft: materials, entity definitions and c
 ## Setup
 
 1. Install Counter-Strike: Source from Steam.
-   The compilers (`vbsp.exe`, `vvis.exe`, `vrad.exe`) and the entity definitions (`cstrike.fgd`) live in the `bin` folder of the Windows version of the game, next to the `cstrike` folder.
+   The Windows version of the game keeps its compilers (`vbsp.exe`, `vvis.exe`, `vrad.exe`) and its entity definitions (`cstrike.fgd`) in the `bin` folder next to the `cstrike` folder.
 2. Install the **Counter-Strike: Source** SDK from the **Add an SDK** window MapCraft opens on its first launch, or from the **Available** tab of **File > SDK Manager**.
 3. Choose **File > New Map**, pick **Counter-Strike: Source** in the SDK list and click **Create**, unless MapCraft already started an empty map on it after the install.
 4. In **File > SDK Settings**, which also opens after the install, set **Counter-Strike: Source game folder** to the `cstrike` folder, such as `.../steamapps/common/Counter-Strike Source/cstrike`.
 
 The SDK reads the game's packages from that folder and from the `hl2` folder beside it, and the entity definitions from `bin/cstrike.fgd` (an FGD file lists every entity a game has, with its keys).
+If `cstrike.fgd` is somewhere else, set **cstrike.fgd** in **File > SDK Settings** to it.
 New brushes get `dev/dev_measuregeneric01b` at Hammer's usual texture scale of 0.25.
 
 ![The New Map window with the SDK list open: None, Counter-Strike: Source, Quake and SurfsUp](img/cstrike-new-map.webp)
@@ -19,7 +20,9 @@ New brushes get `dev/dev_measuregeneric01b` at Hammer's usual texture scale of 0
 ![Counter-Strike: Source SDK Settings with the game folder set](img/cstrike-settings.webp)
 
 > [!NOTE]
-> On Linux, install the Windows version of the game (in Steam, force a Proton compatibility tool for it) and install Wine, which runs the compilers.
+> The Linux version of the game ships neither the entity definitions nor the compilers.
+> Copy `cstrike.fgd`, `base.fgd` and `halflife2.fgd` from the `bin` folder of a Windows install into one folder and set **cstrike.fgd** to the copy.
+> Then either build vbsp, vvis and vrad for Linux from the Source SDK 2013 and copy `vbsp`, `vvis`, `vrad`, `vvis_dll.so` and `vrad_dll.so` into the game's `bin/linux64` folder, beside the libraries they load, or install the Windows version of the game and Wine and use **Run > Compile with Wine**.
 
 ## Materials
 
@@ -35,6 +38,12 @@ Loose materials in `cstrike/materials` and `cstrike/download/materials` are list
 > [!NOTE]
 > The 3D view sizes each texture by its small picture, so it repeats more often there than in the game.
 > The texture axes are still right, and they are what the `.vmf` and the compiled map use.
+
+## Models
+
+Props show as the game's own models in the views, read from its packages: the first body of each part, in its first skin.
+The Models tab lists every model in the game's packages and in `cstrike/models`, and places the one you pick as a `prop_static`.
+A model made only of animations has nothing to show and keeps its box.
 
 ## Open a .vmf
 
@@ -58,8 +67,16 @@ Files from Hammer, Hammer++ or a decompiler such as BSPSource all work.
 ## Export and compile
 
 To play your map, choose **Run > Compile**.
-It exports the map to a `build` folder beside it, runs vbsp, vvis and vrad on it (through Wine on Linux and macOS), and copies the `.bsp` into `cstrike/maps`.
-Then start the game and type `map <name>` in the console.
+It exports the map to a `build` folder beside it, runs vbsp, vvis and vrad on it, and copies the `.bsp` into `cstrike/maps`.
+Then start the game and type `map <name>` in the console, or choose **Run > Build and play**, which compiles and then starts the game on the map.
+
+- **Fast** runs vvis and vrad in their quick modes, for checking layout.
+- **Compile** runs all three with their usual settings.
+- **Final** also lights the map for HDR and with vrad's slower, cleaner `-final` sampling.
+- **Compile with Wine** (Linux only) runs the Windows version's compilers through Wine.
+
+When the compilers report a problem, such as a brush they reject, a missing material or a model a `prop_static` cannot use, the **Issues** panel opens with it, and clicking it selects the brush or entity at fault.
+The exported map also carries the default value of every key an entity does not set, as Hammer writes them, since the compilers and the game never read the FGD.
 
 To open the map in Hammer instead, choose **File > Export > Valve map (VMF)**.
 It writes a `.vmf` that Hammer and Hammer++ open, with:
@@ -68,7 +85,7 @@ It writes a `.vmf` that Hammer and Hammer++ open, with:
 - layers and groups as nested visgroups;
 - every side with its plane, material, texture axes, rotation 0, and its lightmap scale and smoothing groups (16 and 0 unless the face sets them);
 - displacements on world brushes, with their heights and blend alphas;
-- ids counted up in order, so exporting the same map twice gives the same file.
+- solid and entity ids from their place in the map and side ids counted up in order, so exporting the same map twice gives the same file and a compiler's `Brush N` names a brush MapCraft can find.
 
 If a different `.vmf` with that name is already there, it is kept beside the new one as `<name>.vmf.bak`.
 

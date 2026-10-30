@@ -439,7 +439,18 @@ fn disp_rows(out: &mut String, name: &str, n: usize, value: impl Fn(usize) -> Re
     Ok(())
 }
 
+/// The id a solid or entity gets from its place in `map-data.nodes`, so a compiler's message about it can be traced back; the world is 1.
+fn node_id(node: usize) -> String {
+    node.saturating_add(2).to_string()
+}
+
+/// The `map-data.nodes` place of the solid or entity with VMF id `id`.
+pub fn node_of(id: u64) -> Option<usize> {
+    usize::try_from(id.checked_sub(2)?).ok()
+}
+
 impl Writer {
+    /// Numbers sides, which have their own ids.
     fn id(&mut self, depth: usize) -> Result<(), String> {
         self.id += 1;
         pair(&mut self.out, depth, "id", &self.id.to_string())
@@ -493,13 +504,13 @@ impl Writer {
         Ok(())
     }
 
-    fn solid(&mut self, s: &Solid, visgroup: Option<usize>, world: bool) -> Result<(), String> {
+    fn solid(&mut self, s: &Solid, node: usize, visgroup: Option<usize>, world: bool) -> Result<(), String> {
         if s.faces.len() < 4 {
             self.skipped += 1;
             return Ok(());
         }
         open(&mut self.out, 1, "solid");
-        self.id(2)?;
+        pair(&mut self.out, 2, "id", &node_id(node))?;
         for f in &s.faces {
             let (u, v) = f.uv.as_ref().ok_or("a face has no texture axes")?;
             open(&mut self.out, 2, "side");
@@ -575,7 +586,7 @@ pub fn export(map: &MapData) -> Result<Export, String> {
     }
     let visgroup_of = |i: usize| parents.get(i).copied().flatten().and_then(|p| ids.get(p).copied().flatten());
 
-    let mut w = Writer { id: 1, ..Writer::default() };
+    let mut w = Writer::default();
     let out = &mut w.out;
     open(out, 0, "versioninfo");
     pair(out, 1, "editorversion", "400")?;
@@ -599,7 +610,7 @@ pub fn export(map: &MapData) -> Result<Export, String> {
         if let MapNodeKind::Brush(s) = &node.kind
             && !in_entity(i)
         {
-            w.solid(s, visgroup_of(i), true)?;
+            w.solid(s, i, visgroup_of(i), true)?;
         }
     }
     line(&mut w.out, 0, "}");
@@ -610,7 +621,7 @@ pub fn export(map: &MapData) -> Result<Export, String> {
             return Err(format!("node {i} is an entity named `{}`, which a .vmf cannot hold besides the world", e.classname));
         }
         open(&mut w.out, 0, "entity");
-        w.id(1)?;
+        pair(&mut w.out, 1, "id", &node_id(i))?;
         pair(&mut w.out, 1, "classname", &e.classname)?;
         for (k, v) in e.properties.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("id") && !k.eq_ignore_ascii_case("classname")) {
             pair(&mut w.out, 1, k, v)?;
@@ -624,7 +635,7 @@ pub fn export(map: &MapData) -> Result<Export, String> {
         }
         for &b in children.get(i).map_or(&[][..], Vec::as_slice) {
             if let Some(MapNodeKind::Brush(s)) = map.nodes.get(b).map(|n| &n.kind) {
-                w.solid(s, None, false)?;
+                w.solid(s, b, None, false)?;
             }
         }
         editor(&mut w.out, 1, visgroup_of(i))?;
@@ -773,9 +784,12 @@ mod tests {
             all.map(|c| (c.output.clone(), c.target.clone(), c.input.clone(), c.param.clone(), c.delay, c.times)).collect()
         };
         assert_eq!(wires(&again.output), wires(&first), "outputs survive the trip");
-        let ids: Vec<&str> = export.text.lines().filter_map(|l| l.trim().strip_prefix("\"id\" ")).collect();
-        let unique: std::collections::BTreeSet<&&str> = ids.iter().collect();
-        assert_eq!(ids.len(), unique.len(), "ids are unique");
+        for sides in [false, true] {
+            let ids: Vec<&str> =
+                export.text.lines().filter(|l| l.starts_with("\t\t\t\"id\"") == sides).filter_map(|l| l.trim().strip_prefix("\"id\" ")).collect();
+            let unique: std::collections::BTreeSet<&&str> = ids.iter().collect();
+            assert_eq!(ids.len(), unique.len(), "ids are unique among sides, and among solids and entities");
+        }
         assert_eq!(export.text, super::export(&editor_map(&first)).unwrap().text, "ids are stable");
     }
 

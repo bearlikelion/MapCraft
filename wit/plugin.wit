@@ -1,4 +1,4 @@
-package mapcraft:plugin@0.3.0;
+package mapcraft:plugin@0.4.0;
 
 /// Plain data shared by the host and plugins. Lengths are map units (1 unit = 1 inch), Z is up.
 interface types {
@@ -371,6 +371,13 @@ world plugin {
     /// Reads a model a point entity names, such as `progs/ogre.mdl`, for the views; only asked
     /// for files with an extension the manifest's `models` lists.
     export load-model: func(path: string) -> result<model, string>;
+
+    /// Model paths `load-model` reads, such as models inside a game's packages, for the Models tab.
+    export list-models: func() -> list<string>;
+
+    /// Problems a compile's output names, such as a brush a compiler rejected; `map` is what the
+    /// profile's export step wrote and `log` the compilers' output lines.
+    export compile-issues: func(%map: map-data, log: list<string>) -> list<issue>;
 }
 
 /// Generators whose parameters follow a resize in the views.

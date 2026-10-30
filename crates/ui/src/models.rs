@@ -36,6 +36,8 @@ pub(crate) struct Models {
     loaded: HashMap<String, Option<Arc<Model>>>,
     pending: HashSet<String>,
     worker: Option<(mpsc::Sender<String>, mpsc::Receiver<Loaded>)>,
+    /// Pending models a plugin reads, which load on the editor's thread where plugins live.
+    plugin_queue: Vec<String>,
     files: Option<Vec<String>>,
     pub filter: String,
     /// The model the Entity tool places.
@@ -57,6 +59,7 @@ impl Default for Models {
             loaded: HashMap::new(),
             pending: HashSet::new(),
             worker: None,
+            plugin_queue: Vec::new(),
             files: None,
             filter: String::new(),
             chosen: None,
@@ -152,6 +155,11 @@ impl Models {
         if self.loaded.contains_key(path) || self.pending.contains(path) {
             return;
         }
+        if model_file(path).is_none() {
+            self.pending.insert(path.to_string());
+            self.plugin_queue.push(path.to_string());
+            return;
+        }
         let (vfs, units) = (self.vfs.clone(), self.units_per_meter);
         let (requests, _) = self.worker.get_or_insert_with(|| {
             let (requests, rx) = mpsc::channel::<String>();
@@ -244,13 +252,21 @@ impl Models {
         self.previews.insert(path, texture);
     }
 
-    /// Every glTF file in the model folders but the classes' own, listed the first time it is asked for.
-    fn files(&mut self) -> &[String] {
+    /// Every glTF file in the model folders and every model `plugins` list, but the classes' own,
+    /// listed the first time it is asked for.
+    fn files(&mut self, plugins: &mut [mapcraft_plugin_host::Plugin], problems: &mut Vec<String>) -> &[String] {
         let (vfs, fixed) = (&self.vfs, &self.fixed);
         self.files.get_or_insert_with(|| {
             let exts = EXTENSIONS.map(String::from);
             let names = vfs.list(&exts).into_iter().filter_map(|(name, path)| Some(format!("{name}.{}", path.extension()?.to_string_lossy())));
-            names.filter(|n| !fixed.contains(n)).collect()
+            let mut names: Vec<String> = names.collect();
+            for plugin in plugins {
+                match plugin.list_models() {
+                    Ok(list) => names.extend(list),
+                    Err(e) => problems.push(e.to_string()),
+                }
+            }
+            names.into_iter().filter(|n| !fixed.contains(n)).collect()
         })
     }
 }
@@ -289,6 +305,21 @@ impl crate::project::Project {
         }
     }
 
+    /// Loads a few of the models plugins read that the Models tab asked for; true when any loaded.
+    pub fn load_queued_models(&mut self, problems: &mut Vec<String>) -> bool {
+        let take = self.models.plugin_queue.len().min(PREVIEWS_PER_FRAME);
+        let paths: Vec<String> = self.models.plugin_queue.drain(..take).collect();
+        for path in &paths {
+            let model = self.plugin_model(path, problems);
+            self.models.pending.remove(path);
+            if let (Err(e), false) = (&model, self.models.previewing.contains(path)) {
+                problems.push(format!("{path}: {e}; showing a box instead"));
+            }
+            self.models.loaded.insert(path.clone(), model.ok().map(Arc::new));
+        }
+        !paths.is_empty()
+    }
+
     fn plugin_model(&mut self, path: &str, problems: &mut Vec<String>) -> Result<Model, String> {
         let plugin = self.plugins.iter_mut().find(|p| p.reads_model(path)).ok_or("no plugin reads it")?;
         let m = plugin.load_model(path).map_err(|e| e.to_string());
@@ -322,7 +353,7 @@ impl MapCraftApp {
     }
 
     pub(crate) fn poll_models(&mut self, ctx: &egui::Context) {
-        if self.project.models.poll(&mut self.output) {
+        if self.project.models.poll(&mut self.output) | self.project.load_queued_models(&mut self.output) {
             self.scene_dirty = true;
         }
         if self.project.models.busy() {
@@ -337,10 +368,11 @@ impl MapCraftApp {
         }
         let cache = self.data_dir.as_ref().zip(self.project.id()).map(|(d, id)| d.join("model-previews").join(id));
         let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        let models = &mut self.project.models;
+        let (models, plugins) = (&mut self.project.models, &mut self.project.plugins);
         crate::panels::search_field(ui, &mut models.filter, "Search models");
         let filter = models.filter.to_lowercase();
-        let names: Vec<String> = models.files().iter().filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter)).cloned().collect();
+        let names: Vec<String> =
+            models.files(plugins, &mut self.output).iter().filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter)).cloned().collect();
         crate::panels::count_and_previews(ui, &format!("{} models", names.len()), &mut self.show_model_thumbs);
         if models.class.is_none() {
             ui.label(

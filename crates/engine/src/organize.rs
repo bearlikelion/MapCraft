@@ -1,8 +1,31 @@
 use std::collections::BTreeSet;
 
+use mapcraft_fgd::{EntityClass, GameData};
 use mapcraft_map::{Cordon, Face, FaceId, Map, NodeId, NodeKind, Tag, TagId};
 
 use crate::{EngineError, Session};
+
+/// The keys an entity of `class` holds unless set otherwise: its FGD defaults that are not empty, never its origin.
+pub fn class_defaults(class: &EntityClass) -> Vec<(String, String)> {
+    class.properties.iter().filter(|p| p.name != "origin").filter_map(|p| Some((p.name.clone(), p.default.clone().filter(|d| !d.is_empty())?))).collect()
+}
+
+/// Writes the class defaults each entity lacks, as Hammer stores them, since compilers and games never read the FGD.
+pub fn fill_class_defaults(map: &mut Map, game: &GameData) {
+    let mut edit = map.edit();
+    for (id, n) in map.nodes() {
+        let Some(class) = n.kind.entity().and_then(|e| game.class(&e.classname)) else { continue };
+        let mut kind = n.kind.clone();
+        let (NodeKind::World(e) | NodeKind::Entity(e)) = &mut kind else { continue };
+        let missing: Vec<_> = class_defaults(&class).into_iter().filter(|(k, _)| !e.properties.iter().any(|(pk, _)| pk.eq_ignore_ascii_case(k))).collect();
+        if !missing.is_empty() {
+            e.properties.extend(missing);
+            edit.set_kind(id, kind).ok();
+        }
+    }
+    let changes = edit.finish();
+    map.apply(changes);
+}
 
 /// Entities of any of `classes`, ignoring case: the members of an FGD `@AutoVisGroup`.
 pub fn entities_of(map: &Map, classes: &[String]) -> Vec<NodeId> {
@@ -288,6 +311,24 @@ mod tests {
         assert!(s.move_nodes(&[group], ids[1], 0).is_err(), "a brush holds nothing");
         s.undo();
         assert_eq!(s.map.get(ids[0]).unwrap().parent, Some(parent));
+    }
+
+    #[test]
+    fn fill_class_defaults_writes_only_missing_keys() {
+        let game = GameData::parse_str(
+            "@SolidClass = trigger_multiple [ spawnflags(flags) = [ 1 : \"Clients\" : 1 2 : \"NPCs\" : 0 ] wait(float) : \"Wait\" : \"1\" filtername(string) : \"Filter\" : \"\" origin(origin) : \"Origin\" : \"0 0 0\" ]",
+        );
+        let mut s = Session::default();
+        let plain = s.create_point_entity("trigger_multiple", DVec3::ZERO, vec![]).unwrap();
+        let set = s.create_point_entity("trigger_multiple", DVec3::ZERO, vec![("SpawnFlags".into(), "0".into())]).unwrap();
+        let mut map = s.map.clone();
+        fill_class_defaults(&mut map, &game);
+        let keys = |id| map.get(id).unwrap().kind.entity().unwrap().properties.clone();
+        let plain_keys = keys(plain);
+        assert!(plain_keys.contains(&("spawnflags".into(), "1".into())) && plain_keys.contains(&("wait".into(), "1".into())));
+        assert!(!plain_keys.iter().any(|(k, _)| k == "filtername"), "empty defaults are left out");
+        assert_eq!(plain_keys.iter().filter(|(k, _)| k == "origin").count(), 1, "the origin is never replaced");
+        assert!(!keys(set).iter().any(|(k, v)| k == "spawnflags" || (k == "SpawnFlags" && v != "0")), "a key set in any case wins");
     }
 
     #[test]
