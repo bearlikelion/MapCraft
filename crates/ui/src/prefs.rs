@@ -109,7 +109,7 @@ impl Default for ViewPrefs {
 }
 
 impl craft_settings::Settings for Prefs {
-    const APP_ID: &'static str = "mapcraft";
+    const APP_ID: &'static str = crate::APP_ID;
     const SCHEMA_VERSION: u32 = 1;
 }
 

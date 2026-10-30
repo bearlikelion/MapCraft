@@ -58,6 +58,8 @@ pub enum Origin {
     Source,
     /// A folder from the preferences or `MAPCRAFT_SDK_PATH`.
     Folder,
+    /// Shipped in `sdks` next to the executable, updated with it.
+    Bundled,
 }
 
 impl Origin {
@@ -66,26 +68,39 @@ impl Origin {
             Origin::User => "user",
             Origin::Source => "source tree",
             Origin::Folder => "folder",
+            Origin::Bundled => "bundled",
         }
     }
 }
 
 /// The user's data folder, `~/.local/share/mapcraft` on Linux.
 pub fn data_dir() -> Option<PathBuf> {
-    craft_settings::paths::data_dir("mapcraft")
+    craft_settings::paths::data_dir(APP_ID)
 }
+
+/// The settings and data folder name; a branded build sets `MAPCRAFT_APP_ID` to keep its own.
+pub const APP_ID: &str = match option_env!("MAPCRAFT_APP_ID") {
+    Some(id) => id,
+    None => "mapcraft",
+};
 
 /// Where SDKs are installed and created inside a data folder.
 pub fn user_dir(data: &Path) -> PathBuf {
     data.join("sdks")
 }
 
-/// Folders searched for SDKs, each once and user installs first so they shadow other copies: the
-/// data folder's `sdks`, the source tree this was built from, `MAPCRAFT_SDK_PATH`, and `extra`
-/// folders from the preferences. Release packages hold no SDKs; users install them from registries.
+/// Folders searched for SDKs, each once, so earlier copies shadow later ones: `sdks` next to the
+/// executable, the data folder's `sdks`, the source tree this was built from, `MAPCRAFT_SDK_PATH`,
+/// and `extra` folders from the preferences.
 pub fn search_dirs(data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origin)> {
+    let exe = std::env::current_exe().ok();
+    dirs_with(exe.as_deref().and_then(Path::parent).map(|d| d.join("sdks")), data, extra)
+}
+
+fn dirs_with(bundled: Option<PathBuf>, data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origin)> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks");
-    let mut dirs: Vec<(PathBuf, Origin)> = data.map(|d| (user_dir(d), Origin::User)).into_iter().collect();
+    let mut dirs: Vec<(PathBuf, Origin)> = bundled.map(|d| (d, Origin::Bundled)).into_iter().collect();
+    dirs.extend(data.map(|d| (user_dir(d), Origin::User)));
     dirs.push((source.clone(), Origin::Source));
     if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {
         dirs.extend(std::env::split_paths(&paths).map(|p| (p, Origin::Folder)));
@@ -162,5 +177,17 @@ mod tests {
         let surfsup: Vec<_> = found.iter().filter(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == "surfsup")).collect();
         assert_eq!(surfsup.len(), 1);
         assert_eq!(surfsup[0].origin, Origin::Source);
+    }
+
+    #[test]
+    fn bundled_sdks_come_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        for dir in ["app/sdks/demo", "data/sdks/demo"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+            std::fs::write(tmp.path().join(dir).join("sdk.toml"), "id = \"demo\"\nname = \"Demo\"\n").unwrap();
+        }
+        let found = installed(&dirs_with(Some(tmp.path().join("app/sdks")), Some(&tmp.path().join("data")), &[]));
+        let origins: Vec<_> = found.iter().filter(|i| i.dir.ends_with("demo")).map(|i| i.origin).collect();
+        assert_eq!(origins, [Origin::Bundled, Origin::User]);
     }
 }

@@ -258,7 +258,7 @@ impl MapCraftApp {
         let grid = prefs.get().view.grid;
         let data_dir = match &options.settings_dir {
             Some(dir) => Some(dir.join("data")),
-            None => craft_settings::paths::data_dir("mapcraft"),
+            None => mapcraft_sdk_manager::data_dir(),
         };
         let (recovery, running) = data_dir.as_deref().map(crate::dialogs::start_session).unwrap_or_default();
         let cached = data_dir.as_deref().map(|d| mapcraft_plugin_host::Host::with_cache(&d.join("plugin-cache")));
@@ -1495,7 +1495,7 @@ impl MapCraftApp {
             ui.menu_button("Help", |ui| {
                 self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
                 ui.separator();
-                self.action_button(ui, "help.about", "About MapCraft", true);
+                self.action_button(ui, "help.about", &format!("About {}", crate::BRAND), true);
             });
         });
     }
@@ -2019,7 +2019,7 @@ impl MapCraftApp {
 
     fn title(&self) -> String {
         let name = self.session.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_string(), |n| n.to_string_lossy().into_owned());
-        format!("{}{name} - MapCraft", if self.session.is_dirty() { "*" } else { "" })
+        format!("{}{name} - {}", if self.session.is_dirty() { "*" } else { "" }, crate::BRAND)
     }
 }
 

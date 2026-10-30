@@ -19,10 +19,10 @@ fn main() -> eframe::Result<()> {
         }
     }
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("MapCraft")
+        .with_title(mapcraft_ui::BRAND)
         .with_inner_size([1600.0, 1000.0])
         .with_min_inner_size([800.0, 500.0])
-        .with_app_id("mapcraft")
+        .with_app_id(mapcraft_ui::APP_ID)
         // A screenshot run must not take the user's keyboard focus or fill their screen.
         .with_active(options.screenshot.is_none())
         .with_maximized(options.screenshot.is_none());
@@ -31,7 +31,7 @@ fn main() -> eframe::Result<()> {
         Err(e) => log::warn!("window icon: {e}"),
     }
     let native = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("MapCraft", native, Box::new(move |cc| Ok(Box::new(MapCraftApp::new(cc, options)))))
+    eframe::run_native(mapcraft_ui::BRAND, native, Box::new(move |cc| Ok(Box::new(MapCraftApp::new(cc, options)))))
 }
 
 #[cfg(test)]

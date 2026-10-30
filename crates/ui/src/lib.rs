@@ -29,3 +29,10 @@ mod vertex;
 mod viewport;
 
 pub use app::{MapCraftApp, Options};
+pub use mapcraft_sdk_manager::APP_ID;
+
+/// The name in the title bar; a branded build sets `MAPCRAFT_BRAND`.
+pub const BRAND: &str = match option_env!("MAPCRAFT_BRAND") {
+    Some(name) => name,
+    None => "MapCraft",
+};

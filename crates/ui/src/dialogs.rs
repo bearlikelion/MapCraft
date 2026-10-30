@@ -451,14 +451,17 @@ impl MapCraftApp {
 
     fn about_dialog(&mut self, ctx: &egui::Context) {
         let mut open = self.dialogs.about;
-        egui::Window::new("About MapCraft")
+        egui::Window::new(format!("About {}", crate::BRAND))
             .open(&mut open)
             .default_width(360.0)
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading(format!("MapCraft {}", build_version()));
+                ui.heading(format!("{} {}", crate::BRAND, build_version()));
+                if crate::BRAND != "MapCraft" {
+                    ui.label("Powered by MapCraft.");
+                }
                 ui.label("An open-source level editor by Mark Arneman (bearlikelion), released under the MIT license.");
                 ui.hyperlink("https://github.com/bearlikelion/MapCraft");
                 let plugins: Vec<(&str, &str)> = self.project.plugins.iter().map(|p| (p.manifest.name.as_str(), p.manifest.version.as_str())).collect();

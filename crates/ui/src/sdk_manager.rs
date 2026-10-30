@@ -463,7 +463,9 @@ impl MapCraftApp {
 
     fn sdk_card(&self, ui: &mut egui::Ui, registry: &str, e: &Entry, acts: &mut Vec<Act>) {
         let m = &self.sdk_manager;
-        let have = self.sdks.iter().find_map(|i| i.sdk.as_ref().ok().filter(|s| s.manifest.id == e.id));
+        let first = self.sdks.iter().find(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == e.id));
+        let have = first.and_then(|i| i.sdk.as_ref().ok());
+        let bundled = first.is_some_and(|i| i.origin == Origin::Bundled);
         card(ui, m.logos.get(e.logo_source(registry).as_deref()), &e.name, |ui| {
             title(ui, &e.name, &e.version);
             if !e.description.is_empty() {
@@ -485,7 +487,7 @@ impl MapCraftApp {
                     return;
                 }
                 let label = match have {
-                    Some(s) if !manager::newer(&e.version, &s.manifest.version) => None,
+                    Some(s) if bundled || !manager::newer(&e.version, &s.manifest.version) => None,
                     Some(_) => Some("Update…"),
                     None => Some("Install…"),
                 };
