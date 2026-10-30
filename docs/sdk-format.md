@@ -39,17 +39,14 @@ units_per_meter = 39.37
 fgd = ["fgd/surfsup.fgd"]
 
 [textures]
-roots = ["${project}/Assets/Textures"]
+roots = ["textures"]
 extensions = ["png", "jpg"]
 default = "ramps-orange1"
 scale = 1.0
 
 [models]
-roots = ["${project}"]
+roots = ["models"]
 class = "prop_static"
-
-[paths.project]
-prompt = "SurfsUp Godot project folder"
 
 [paths.game]
 prompt = "SurfsUp game executable"

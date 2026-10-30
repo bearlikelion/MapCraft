@@ -21,24 +21,17 @@ const PAINTED: &str = "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[re
 
 #[test]
 fn added_texture_folders_reach_the_material_list_and_plugins() {
-    let (settings, project, extra) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    std::fs::create_dir_all(project.path().join("Assets/Textures")).unwrap();
-    image::RgbaImage::new(2, 2).save(project.path().join("Assets/Textures/wall.png")).unwrap();
+    let (settings, extra) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     std::fs::create_dir_all(extra.path().join("metal")).unwrap();
     image::RgbaImage::new(2, 2).save(extra.path().join("metal/plate.png")).unwrap();
     // Only the Godot plugin lists `.tres` materials, so this one shows the plugin read the folder.
     std::fs::write(extra.path().join("painted.tres"), PAINTED).unwrap();
 
     let map = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
-    let options = Options {
-        settings_dir: Some(settings.path().to_path_buf()),
-        open: Some(map.into()),
-        sdk_vars: vec![("project".into(), project.path().to_string_lossy().into_owned())],
-        ..Options::default()
-    };
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(map.into()), ..Options::default() };
     let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
     let names = listed(&mut h);
-    assert!(names.iter().any(|n| n == "wall") && !names.iter().any(|n| n == "metal/plate"), "{names:?}");
+    assert!(names.iter().any(|n| n == "ramps-orange1") && !names.iter().any(|n| n == "metal/plate"), "{names:?}");
 
     h.state_mut().run_command_for_test("file.sdk_settings");
     h.run_steps(2);
@@ -51,7 +44,7 @@ fn added_texture_folders_reach_the_material_list_and_plugins() {
     h.run_steps(2);
     h.get_by_label("Apply").click();
     let names = listed(&mut h);
-    for name in ["wall", "metal/plate", "painted"] {
+    for name in ["ramps-orange1", "metal/plate", "painted"] {
         assert!(names.iter().any(|n| n == name), "{name} is missing from {names:?}");
     }
 
@@ -64,8 +57,7 @@ fn added_texture_folders_reach_the_material_list_and_plugins() {
 
 #[test]
 fn imported_pictures_stay_with_their_sdk() {
-    let (settings, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    std::fs::create_dir_all(project.path().join("Assets/Textures")).unwrap();
+    let settings = tempfile::tempdir().unwrap();
     for (sdk, name) in [("surfsup", "kept"), ("quake", "quake_only")] {
         let dir = settings.path().join("data/materials").join(sdk);
         std::fs::create_dir_all(&dir).unwrap();
@@ -73,12 +65,7 @@ fn imported_pictures_stay_with_their_sdk() {
     }
 
     let map = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
-    let options = Options {
-        settings_dir: Some(settings.path().to_path_buf()),
-        open: Some(map.into()),
-        sdk_vars: vec![("project".into(), project.path().to_string_lossy().into_owned())],
-        ..Options::default()
-    };
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(map.into()), ..Options::default() };
     let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
     let names = listed(&mut h);
     assert!(names.iter().any(|n| n == "kept") && !names.iter().any(|n| n == "quake_only"), "{names:?}");

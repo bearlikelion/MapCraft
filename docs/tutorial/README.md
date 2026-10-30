@@ -40,19 +40,16 @@ If your current map has unsaved changes, MapCraft asks whether to save them firs
 
 ### Tell it where your game is
 
-The SurfsUp SDK brings its own materials, and takes the rest of the game's textures from your SurfsUp Godot project.
-**SDK Settings** opens right after the install, and again by itself until MapCraft knows where that project is.
+The SurfsUp SDK brings its own materials and props, so you can start building right away.
+To play your map in SurfsUp later, open **File > SDK Settings** (`Ctrl+Shift+Comma`):
 
-1. Click **Browse** next to **SurfsUp Godot project folder** and pick the project folder.
+1. Click **Browse** next to **SurfsUp game executable** and pick the game.
 2. Click **Apply**, or close the window.
 
 A path that does not exist turns red.
 
 > [!NOTE]
-> The other folders are only needed to play the map and to import BSP maps.
-> You can fill them in later with **File > SDK Settings** (`Ctrl+Shift+Comma`).
-
-![SurfsUp SDK Settings with three empty paths, a Browse button marked 1 next to the project folder and Apply marked 2](img/first-sdk-settings.webp)
+> The Counter-Strike: Source folder is only needed to import BSP maps.
 
 ## 2. Find your way around
 

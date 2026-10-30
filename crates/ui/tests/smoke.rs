@@ -129,11 +129,17 @@ fn zoom_is_linked_across_2d_views() {
 #[test]
 fn missing_sdk_paths_open_the_settings() {
     let settings = tempfile::tempdir().unwrap();
-    let map = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
-    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(map.into()), ..Options::default() };
+    let sdk = settings.path().join("data/sdks/needs");
+    std::fs::create_dir_all(&sdk).unwrap();
+    let manifest = "id = \"needs\"\nname = \"Needs\"\n[textures]\nroots = [\"${project}/textures\"]\n[paths.project]\nprompt = \"Project\"\n";
+    std::fs::write(sdk.join("sdk.toml"), manifest).unwrap();
+    let sample = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap")).unwrap();
+    let map = settings.path().join("needs.mcmap");
+    std::fs::write(&map, sample.replacen("\"sdk\": \"surfsup\"", "\"sdk\": \"needs\"", 1)).unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(map), fresh_install: true, ..Options::default() };
     let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
     h.run_steps(3);
-    assert!(h.state().sdk_settings_open_for_test(), "a SurfsUp map without its project folder asks for it");
+    assert!(h.state().sdk_settings_open_for_test(), "a map whose SDK has no folder for its textures asks for it");
 }
 
 fn drag_with(h: &mut Harness<MapCraftApp>, a: Pos2, b: Pos2, modifiers: Modifiers) {

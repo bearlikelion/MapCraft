@@ -9,11 +9,15 @@ use mapcraft_ui::{MapCraftApp, Options};
 
 const BOX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../godot/test/Assets/Models/box.glb");
 
-fn app(settings: &Path, project: &Path) -> Harness<'static, MapCraftApp> {
+/// The sample map on a SurfsUp SDK of the test's own, whose props come from `models` alone.
+fn app(settings: &Path, models: &Path) -> Harness<'static, MapCraftApp> {
+    let sdk = settings.join("data/sdks/surfsup");
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::write(sdk.join("sdk.toml"), format!("id = \"surfsup\"\nname = \"SurfsUp\"\n[models]\nroots = [{models:?}]\nclass = \"prop_static\"\n")).unwrap();
     let options = Options {
         settings_dir: Some(settings.to_path_buf()),
         open: Some(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap").into()),
-        sdk_vars: vec![("project".into(), project.to_string_lossy().into_owned())],
+        fresh_install: true,
         ..Options::default()
     };
     let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));

@@ -107,7 +107,6 @@ These are the paths the SurfsUp SDK asks for, and what each one is for:
 
 | Setting | Used for |
 |---|---|
-| SurfsUp Godot project folder | More materials (from `Assets/Textures`) and props |
 | SurfsUp game executable | **Play in SurfsUp**, which copies the map into the `Maps` folder next to it and makes that folder if needed |
 | Counter-Strike: Source game folder | Stock textures of [imported BSP maps](importing-bsp.md) |
 
