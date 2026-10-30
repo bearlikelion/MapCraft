@@ -14,7 +14,7 @@ assets=apps/mapcraft/assets
 rm -rf "$app"
 mkdir -p "$app/usr/bin" "$app/usr/share/doc/mapcraft" "$app/usr/share/applications" \
 	"$app/usr/share/icons/hicolor/256x256/apps" "$app/usr/share/icons/hicolor/512x512/apps"
-cp target/release/mapcraft "$app/usr/bin/"
+cp "${CARGO_TARGET_DIR:-target}/release/mapcraft" "$app/usr/bin/"
 cp LICENSE "$app/usr/share/doc/mapcraft/"
 cp "$assets/mapcraft.desktop" "$app/usr/share/applications/"
 cp "$assets/mapcraft-256.png" "$app/usr/share/icons/hicolor/256x256/apps/mapcraft.png"

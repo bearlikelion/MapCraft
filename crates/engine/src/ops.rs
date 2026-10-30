@@ -1536,7 +1536,8 @@ mod tests {
 
         s.selection = BTreeSet::from([door]);
         crate::execute(&mut s, "tools.center_origins").unwrap();
-        assert_eq!(s.map.get(door).unwrap().kind.entity().unwrap().origin(), Some(s.bounds_of([door]).unwrap().center()));
+        let (origin, center) = (s.map.get(door).unwrap().kind.entity().unwrap().origin().unwrap(), s.bounds_of([door]).unwrap().center());
+        assert!(origin.abs_diff_eq(center, 1e-6), "{origin:?} is not {center:?}");
         assert_eq!(s.undo_label(), Some("Set origin"));
     }
 

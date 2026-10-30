@@ -98,7 +98,7 @@ For games that load packs, `tools/pack_map.gd` packs an imported map into a `.pc
 
 ## Building
 
-You need CMake 3.17, Ninja, Python 3 and a C++17 compiler.
+You need CMake 3.25, Ninja, Python 3 and a C++17 compiler.
 Windows builds cross-compile with MinGW.
 The macOS build (one library for both Apple Silicon and Intel) has to run on a Mac.
 

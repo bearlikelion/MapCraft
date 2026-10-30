@@ -9,22 +9,12 @@ permissions:
   contents: read
 
 jobs:
+  # Linux builds run on the build server inside Ubuntu 22.04, which keeps the glibc requirement low.
   appimage:
-    # The oldest supported runner keeps the glibc requirement low.
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, build]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Linux packages
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
-      - name: appimagetool
-        run: |
-          curl -sSL -o "$RUNNER_TEMP/appimagetool" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x "$RUNNER_TEMP/appimagetool"
-          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
-          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
-      - run: packaging/appimage.sh
+      - run: packaging/linux-container.sh packaging/appimage.sh
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
@@ -61,41 +51,74 @@ jobs:
           name: macos
           path: dist/MapCraft-macos.zip
 
-  # The macOS library has to be built on a Mac; the addon job below packs it with the others.
+  # The macOS library has to be built on a Mac; ccache keeps godot-cpp from compiling from scratch each release.
   godot-macos:
+    strategy:
+      matrix:
+        target: [template_debug, template_release]
     runs-on: macos-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/../ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v4
       - name: Tools
-        run: brew install ninja
-      - name: Build the extension
-        run: |
-          godot/build.sh macos template_debug
-          godot/build.sh macos template_release
+        run: brew install ninja ccache
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../ccache
+          key: godot-macos-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: godot-macos-${{ matrix.target }}-
+      - run: godot/build.sh macos ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: godot-macos
+          name: godot-macos-${{ matrix.target }}
           path: godot/addons/mapcraft/bin/macos
 
-  godot-addon:
-    needs: [godot-macos]
-    runs-on: ubuntu-24.04
+  godot-linux:
+    runs-on: [self-hosted, build]
     steps:
       - uses: actions/checkout@v4
+      - run: packaging/linux-container.sh bash -c 'godot/build.sh linux template_debug && godot/build.sh linux template_release'
+      - uses: actions/upload-artifact@v4
         with:
-          submodules: true
+          name: godot-linux
+          path: godot/addons/mapcraft/bin/linux
+
+  # Windows libraries cross-compile with MinGW and need no particular glibc.
+  godot-windows:
+    runs-on: [self-hosted, build]
+    env:
+      CCACHE_DIR: /build/ci-cache/ccache-windows
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v4
+      - run: godot/build.sh windows template_debug && godot/build.sh windows template_release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-windows
+          path: godot/addons/mapcraft/bin/windows
+
+  godot-addon:
+    needs: [godot-macos, godot-linux, godot-windows]
+    runs-on: [self-hosted, build]
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: godot-macos
+          pattern: godot-macos-*
           path: godot/addons/mapcraft/bin/macos
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build mingw-w64
-      - name: Build the extension
-        run: |
-          for target in template_debug template_release; do
-            godot/build.sh linux "$target"
-            godot/build.sh windows "$target"
-          done
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: godot-linux
+          path: godot/addons/mapcraft/bin/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: godot-windows
+          path: godot/addons/mapcraft/bin/windows
       - run: packaging/godot-addon.sh
       - uses: actions/upload-artifact@v4
         with:
