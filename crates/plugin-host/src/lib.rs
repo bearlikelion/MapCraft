@@ -109,7 +109,7 @@ mod bindings {
 }
 
 /// The `wit/plugin.wit` package version plugins must import.
-const API: &str = "0.4.0";
+pub const API: &str = "0.4.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};

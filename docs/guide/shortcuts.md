@@ -236,6 +236,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Action | Shortcut |
 |---|---|
 | Keyboard Shortcuts | `F1` |
+| About MapCraft | *none* |
 
 ### UV editor
 

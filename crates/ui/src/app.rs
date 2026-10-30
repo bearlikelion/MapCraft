@@ -1146,6 +1146,7 @@ impl MapCraftApp {
             "file.switch_sdk" => self.dialogs.switch_sdk = true,
             "file.quit" => self.quit_requested = true,
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
+            "help.about" => self.dialogs.about = true,
             "tools.check_problems" => self.check_problems(),
             "layer.new" => {
                 let n = self.session.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).count() + 1;
@@ -1493,6 +1494,8 @@ impl MapCraftApp {
             });
             ui.menu_button("Help", |ui| {
                 self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
+                ui.separator();
+                self.action_button(ui, "help.about", "About MapCraft", true);
             });
         });
     }

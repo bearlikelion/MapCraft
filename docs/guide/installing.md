@@ -57,6 +57,8 @@ The SDK's sample map opens, or, for an SDK without one, its check runs.
 The SurfsUp sample is a curved surf ramp with a start and a finish.
 If **SDK Settings** opens too, MapCraft still needs a folder of your game; [the Tutorial](../tutorial/README.md#tell-it-where-your-game-is) shows how to set it for SurfsUp.
 
+**Help > About MapCraft** shows the version you are running, the loaded plugins and the installed SDKs, which are worth including when you report a bug.
+
 ![The SDK Manager listing Counter-Strike: Source, Quake and SurfsUp, with the Test button next to SurfsUp highlighted](img/install-sdk-manager.webp)
 
 ![The SurfsUp sample map open in MapCraft: a curved orange ramp over a lava floor in the 3D view, and the course from above in the Top view](img/install-sample.webp)

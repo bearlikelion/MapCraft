@@ -14,6 +14,8 @@ jobs:
     runs-on: [self-hosted, build]
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
       - run: packaging/linux-container.sh packaging/appimage.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -29,6 +31,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Version
+        run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
       - run: packaging/windows-zip.sh x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:

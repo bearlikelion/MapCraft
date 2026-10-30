@@ -80,6 +80,15 @@ fn search_rank(query: &str, label: &str, path: &str) -> Option<u8> {
     })
 }
 
+/// The build's version: the `MAPCRAFT_VERSION` a release sets, else `git describe`, else the crate's.
+fn build_version() -> &'static str {
+    pick_version(option_env!("MAPCRAFT_VERSION"), option_env!("MAPCRAFT_GIT_VERSION"), env!("CARGO_PKG_VERSION"))
+}
+
+fn pick_version<'a>(release: Option<&'a str>, git: Option<&'a str>, fallback: &'a str) -> &'a str {
+    [release, git].into_iter().flatten().map(|v| v.strip_prefix('v').unwrap_or(v)).find(|v| !v.is_empty()).unwrap_or(fallback)
+}
+
 #[derive(Default)]
 pub(crate) struct RandomizeDialog {
     pub open: bool,
@@ -92,6 +101,7 @@ pub(crate) struct RandomizeDialog {
 pub(crate) struct Dialogs {
     pub preferences: bool,
     pub shortcuts: bool,
+    pub about: bool,
     pub shortcut_filter: String,
     /// A registry URL or path being typed in Preferences.
     pub new_registry: String,
@@ -190,6 +200,7 @@ impl MapCraftApp {
         self.replace_dialog(ctx);
         self.preferences_dialog(ctx);
         self.shortcuts_dialog(ctx);
+        self.about_dialog(ctx);
         self.recovery_dialog(ctx);
         self.switch_sdk_dialog(ctx);
         self.randomize_dialog(ctx);
@@ -436,6 +447,40 @@ impl MapCraftApp {
         });
         self.dialogs.shortcuts = open && !edit;
         self.dialogs.preferences |= edit;
+    }
+
+    fn about_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.dialogs.about;
+        egui::Window::new("About MapCraft")
+            .open(&mut open)
+            .default_width(360.0)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading(format!("MapCraft {}", build_version()));
+                ui.label("An open-source level editor by Mark Arneman (bearlikelion), released under the MIT license.");
+                ui.hyperlink("https://github.com/bearlikelion/MapCraft");
+                let plugins: Vec<(&str, &str)> = self.project.plugins.iter().map(|p| (p.manifest.name.as_str(), p.manifest.version.as_str())).collect();
+                let sdks: Vec<(&str, &str)> =
+                    self.sdks.iter().filter_map(|i| i.sdk.as_ref().ok()).map(|s| (s.manifest.name.as_str(), s.manifest.version.as_str())).collect();
+                let plugins_title = format!("Plugins, API {}", mapcraft_plugin_host::API);
+                for (title, rows) in [(plugins_title.as_str(), plugins), ("SDKs", sdks)] {
+                    ui.separator();
+                    ui.label(RichText::new(title).strong());
+                    if rows.is_empty() {
+                        ui.label(RichText::new("None").color(TEXT_WEAK));
+                    }
+                    egui::Grid::new(title).num_columns(2).striped(true).show(ui, |ui| {
+                        for (name, version) in rows {
+                            ui.label(name);
+                            ui.monospace(version);
+                            ui.end_row();
+                        }
+                    });
+                }
+            });
+        self.dialogs.about = open;
     }
 
     fn transform_dialog(&mut self, ctx: &egui::Context) {
@@ -764,6 +809,13 @@ mod tests {
         assert_eq!(search_rank("curves", "Spin", "Tools/Curves/Spin"), Some(2));
         assert_eq!(search_rank("dtf", "Drop to Floor", ""), Some(3));
         assert_eq!(search_rank("zzz", "Drop to Floor", "Tools/Drop to Floor"), None);
+    }
+
+    #[test]
+    fn version_prefers_the_release_then_git_then_the_crate() {
+        assert_eq!(pick_version(Some("0.0.5"), Some("v0.0.4-2-gabc1234"), "0.2.0"), "0.0.5");
+        assert_eq!(pick_version(Some(""), Some("v0.0.5-7-gd235bb8-dirty"), "0.2.0"), "0.0.5-7-gd235bb8-dirty");
+        assert_eq!(pick_version(None, None, "0.2.0"), "0.2.0");
     }
 
     #[test]
