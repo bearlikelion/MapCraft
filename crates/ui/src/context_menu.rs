@@ -110,6 +110,12 @@ impl MapCraftApp {
         ui.separator();
         self.menu_item(ui, "tools.hollow", "Hollow");
         self.menu_item(ui, "tools.carve", "Subtract (Carve)");
+        ui.menu_button((icons::slot(Some("box_wireframe")), "Boolean"), |ui| {
+            self.menu_item(ui, "tools.boolean_subtract", "Subtract");
+            self.menu_item(ui, "tools.boolean_add", "Add");
+            self.menu_item(ui, "tools.boolean_release", "Release from Boolean");
+            self.menu_item(ui, "tools.boolean_apply", "Apply Boolean");
+        });
         self.menu_item(ui, "tools.merge", "Merge Brushes");
         self.menu_item(ui, "tool.clip", "Clip");
         self.brush_type_menu(ui);

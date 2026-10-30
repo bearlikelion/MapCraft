@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use mapcraft_engine::pick_target;
+use mapcraft_engine::{FacePick, FaceTransfer, pick_target};
 use mapcraft_geom::{Aabb, DMat4, DQuat, DVec2, DVec3, snap};
 use mapcraft_map::{FaceId, Group, Mirror, NodeId, NodeKind};
 use mapcraft_render::{LineVertex, SELECTED_EDGE, box_lines};
@@ -52,6 +52,15 @@ pub enum Drag {
         anchor: DVec3,
         applied: DVec3,
         clone: bool,
+    },
+    /// Moving the selection in the 3D view from `start`, the point grabbed, across its level or up and down when `vertical`.
+    Move3d {
+        view: usize,
+        start: DVec3,
+        anchor: DVec3,
+        applied: DVec3,
+        clone: bool,
+        vertical: bool,
     },
     Resize {
         view: usize,
@@ -169,6 +178,13 @@ pub enum Drag {
         applied: f64,
         clone: bool,
     },
+    /// An Alt drag in the Face tool carrying `mode` onto each face it reaches from `last`, the face reached before; `done` lights up.
+    Transfer {
+        view: usize,
+        mode: FaceTransfer,
+        last: FacePick,
+        done: BTreeSet<FacePick>,
+    },
 }
 
 pub(crate) const AXES: [(DVec3, Color32); 3] =
@@ -202,7 +218,7 @@ pub(crate) fn dvec(v: Vec2) -> DVec2 {
 fn face_on_ray(map: &mapcraft_map::Map, origin: DVec3, dir: DVec3) -> Option<(NodeId, usize, f64)> {
     let visible = map.visible_nodes();
     map.nodes()
-        .filter(|(id, n)| visible.contains(id) && !n.locked)
+        .filter(|(id, n)| visible.contains(id) && !n.locked && mapcraft_map::boolean::source_op(map, *id).is_none())
         .filter_map(|(id, n)| n.kind.brush()?.ray_hit(origin, dir).map(|(t, i)| (id, i, t)))
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
@@ -243,6 +259,8 @@ impl MapCraftApp {
                 continue;
             }
             let t = match &n.kind {
+                // A boolean group's Add brushes are reached through the pieces of its result.
+                NodeKind::Brush(_) if mapcraft_map::boolean::source_op(map, id) == Some(mapcraft_map::Operation::Add) => None,
                 NodeKind::Brush(b) => b.ray_hit(origin, dir).map(|(t, _)| t),
                 NodeKind::Entity(e) if n.children.is_empty() => self.point_box(e).ray_hit(origin, dir),
                 _ => None,
@@ -262,18 +280,25 @@ impl MapCraftApp {
         self.pick_all(origin, dir, surface).into_iter().next()
     }
 
-    /// Nearest visible brush face on the ray; locked ones count only as a `surface`.
+    /// Nearest visible brush face on the ray, a boolean result's face counting as the face it lies on; locked ones count only as a `surface`.
     pub(crate) fn pick_face(&self, origin: DVec3, dir: DVec3, surface: bool) -> Option<(NodeId, FaceId, f64)> {
-        let map = &self.session.map;
+        let map = self.view_map();
         let reach = if surface { map.visible_nodes() } else { map.editable_nodes() };
         let mut best: Option<(NodeId, FaceId, f64)> = None;
         for (id, n) in map.nodes() {
             let (true, Some(b)) = (reach.contains(&id), n.kind.brush()) else { continue };
+            if mapcraft_map::boolean::source_op(map, id).is_some() {
+                continue;
+            }
             let Some((t, i)) = b.ray_hit(origin, dir) else { continue };
-            if best.is_none_or(|(_, _, bt)| t < bt)
-                && let Some(f) = b.faces.get(i)
-            {
-                best = Some((id, f.id, t));
+            if best.is_some_and(|(_, _, bt)| t >= bt) {
+                continue;
+            }
+            let Some(f) = b.faces.get(i) else { continue };
+            let owner = self.owner(id);
+            let hit = if owner == id { Some((id, f.id)) } else { mapcraft_map::boolean::source_face(&self.session.map, owner, f) };
+            if let Some((id, face)) = hit {
+                best = Some((id, face, t));
             }
         }
         best
@@ -1068,7 +1093,11 @@ impl MapCraftApp {
         let alt = ctx.input(|i| i.modifiers.alt);
         let painting = self.tool == Tool::Sculpt && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
         let primary = response.clicked_by(egui::PointerButton::Primary);
-        if alt && (!cam.is_2d() || (painting && primary)) && (primary || response.clicked_by(egui::PointerButton::Secondary)) {
+        let transfer = self.transfer_mode(ctx.input(|i| i.modifiers)).filter(|_| primary && !cam.is_2d());
+        if let (Some((from, mode)), Some(p)) = (transfer, primary_pos) {
+            // egui counts a quick double click soon after a click elsewhere as a triple click.
+            self.transfer_click(index, rect, p, from, mode, response.double_clicked() || response.triple_clicked());
+        } else if alt && (!cam.is_2d() || (painting && primary)) && (primary || response.clicked_by(egui::PointerButton::Secondary)) {
             if let Some(p) = primary_pos.or(hover) {
                 let (origin, dir) = cam.ray(dvec(p - rect.min), size);
                 if let Some((id, face, t)) = self.pick_face(origin, dir, primary) {
@@ -1181,6 +1210,59 @@ impl MapCraftApp {
         Some(hit - n * lowest.dot(n))
     }
 
+    /// The active picked face and what an Alt click or drag in the Face tool's 3D view carries from it.
+    fn transfer_mode(&self, mods: egui::Modifiers) -> Option<(FacePick, FaceTransfer)> {
+        let from = self.session.active_pick().filter(|_| mods.alt && self.tool == Tool::Face)?;
+        let mode = if mods.command {
+            FaceTransfer::Material
+        } else if mods.shift {
+            FaceTransfer::Rotated
+        } else {
+            FaceTransfer::Projected
+        };
+        Some((from, mode))
+    }
+
+    /// Transfers onto the face clicked, or with a double click onto every face of its brush.
+    fn transfer_click(&mut self, index: usize, rect: Rect, pos: Pos2, from: FacePick, mode: FaceTransfer, double: bool) {
+        let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
+        let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+        let Some((id, face, _)) = self.pick_face(origin, dir, false) else { return };
+        let to: BTreeSet<FacePick> = if double {
+            self.session.map.get(id).and_then(|n| n.kind.brush()).map(|b| b.faces.iter().map(|f| (id, f.id)).collect()).unwrap_or_default()
+        } else {
+            BTreeSet::from([(id, face)])
+        };
+        let serial = self.session.current_serial();
+        if double && self.transfer_step == Some(serial) {
+            self.session.undo();
+        }
+        let result = self.session.transfer_face(from, &to, mode, None);
+        self.transfer_step = Some(self.session.current_serial()).filter(|s| !double && *s != serial);
+        self.status = match result {
+            Ok(()) => mode.label().into(),
+            Err(e) => e.to_string(),
+        };
+        self.mark_changed();
+    }
+
+    /// Carries a transfer drag onto the face under the pointer from the face it reached before.
+    fn transfer_drag(&mut self, index: usize, rect: Rect, pos: Pos2) {
+        let (Drag::Transfer { mode, last, .. }, Some(cam)) = (&self.drag, self.panes.get(index).map(|p| p.camera)) else { return };
+        let (mode, from) = (*mode, *last);
+        let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+        let Some((id, face, _)) = self.pick_face(origin, dir, false).filter(|(id, face, _)| (*id, *face) != from) else { return };
+        if let Err(e) = self.session.transfer_face(from, &BTreeSet::from([(id, face)]), mode, Some("face-transfer")) {
+            self.status = e.to_string();
+            return;
+        }
+        if let Drag::Transfer { last, done, .. } = &mut self.drag {
+            *last = (id, face);
+            done.insert((id, face));
+        }
+        self.mark_changed();
+    }
+
     /// Picks the face under the pointer in the Face tool, as Shift+click does from Select or Move.
     fn pick_face_at(&mut self, index: usize, rect: Rect, pos: Pos2) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
@@ -1291,6 +1373,15 @@ impl MapCraftApp {
     fn begin_drag(&mut self, index: usize, rect: Rect, pos: Pos2, mods: egui::Modifiers) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let size = dvec(rect.size());
+        if !cam.is_2d()
+            && let Some((last, mode)) = self.transfer_mode(mods)
+        {
+            self.session.end_coalesce();
+            self.status = mode.label().into();
+            self.drag = Drag::Transfer { view: index, mode, last, done: BTreeSet::new() };
+            self.transfer_drag(index, rect, pos);
+            return;
+        }
         if self.begin_path_drag(index, rect, pos, mods) {
             return;
         }
@@ -1350,8 +1441,8 @@ impl MapCraftApp {
                 if let Some(start) = closest_on_axis(b.center(), axis, origin, dir) {
                     self.drag = Drag::Axis { view: index, axis, center: b.center(), start, base: b.min.dot(axis), applied: 0.0, clone: mods.command };
                 }
+                return;
             }
-            return;
         }
         match self.tool {
             Tool::Select | Tool::Move | Tool::Scale => {
@@ -1369,14 +1460,14 @@ impl MapCraftApp {
                 let hits = self.pick_all(origin, dir, false);
                 let selected = self.moving_nodes();
                 // The selection under the pointer drags even when something else is nearer the camera.
-                let grabbed = hits.iter().any(|(id, _)| selected.contains(id));
-                match hits.first() {
-                    Some(&(first, _)) => {
-                        if !grabbed {
+                let grabbed = hits.iter().find(|(id, _)| selected.contains(id)).copied();
+                match grabbed.or(hits.first().copied()) {
+                    Some((first, t)) => {
+                        if grabbed.is_none() {
                             self.session.selection = BTreeSet::from([pick_target(&self.session.map, first, self.session.select_mode)]);
                             self.mark_changed();
                         }
-                        let start = cam.plane_point(dvec(pos - rect.min), size);
+                        let start = if cam.is_2d() { cam.plane_point(dvec(pos - rect.min), size) } else { origin + dir * t };
                         let moving = self.moving_nodes();
                         let press = dvec(pos - rect.min);
                         let nearest = self
@@ -1387,12 +1478,18 @@ impl MapCraftApp {
                             .min_by(|a, b| a.0.total_cmp(&b.0))
                             .map(|(_, v)| v);
                         let anchor = nearest.or(self.selection_bounds().map(|b| b.min)).unwrap_or(start);
+                        if !cam.is_2d() {
+                            let vertical = mods.shift || mods.alt;
+                            self.drag = Drag::Move3d { view: index, start, anchor, applied: DVec3::ZERO, clone: mods.command, vertical };
+                            return;
+                        }
                         // Only the in-view part of the anchor moves with the cursor.
                         let (_, _, d) = cam.view.axes();
                         let anchor = anchor - d * (anchor - start).dot(d);
                         self.drag = Drag::Move { view: index, start, anchor, applied: DVec3::ZERO, clone: mods.command };
                     }
-                    None => self.drag = Drag::Marquee { view: index, start: pos },
+                    None if cam.is_2d() => self.drag = Drag::Marquee { view: index, start: pos },
+                    None => {}
                 }
             }
             Tool::Block => {
@@ -1404,7 +1501,7 @@ impl MapCraftApp {
         }
     }
 
-    /// Follows the pointer in a drag; Shift, or Alt where it means nothing else, moves 3D view handles up and down.
+    /// Follows the pointer in a drag; Shift, or Alt where it means nothing else, moves 3D view handles and the selection up and down.
     fn update_drag(&mut self, index: usize, rect: Rect, pos: Pos2, mods: egui::Modifiers) {
         let vertical = mods.shift || mods.alt;
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
@@ -1442,6 +1539,7 @@ impl MapCraftApp {
                 }
             }
             Drag::Rotate { view, .. } if view == index => self.update_rotate(index, rect, pos),
+            Drag::Transfer { view, .. } if view == index => self.transfer_drag(index, rect, pos),
             // Alt on a path point pulls out its handles.
             Drag::Path { view, .. } if view == index => self.update_path_drag(index, rect, pos, mods.shift),
             Drag::Origin { view, entity } if view == index => {
@@ -1467,6 +1565,37 @@ impl MapCraftApp {
                         self.status = e.to_string();
                     }
                     self.drag = Drag::Move { view, start, anchor, applied: total, clone: false };
+                    self.mark_changed();
+                }
+            }
+            Drag::Move3d { view, start, anchor, applied, clone, vertical: was } if view == index => {
+                let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
+                let at = start + applied;
+                let raw = if vertical {
+                    let Some(t) = closest_on_axis(at, DVec3::Z, origin, dir) else { return };
+                    DVec3::new(applied.x, applied.y, applied.z + t)
+                } else {
+                    let t = (at.z - origin.z) / dir.z;
+                    if dir.z.abs() < 1e-9 || t <= 0.0 {
+                        return;
+                    }
+                    let p = origin + dir * t;
+                    DVec3::new(p.x - start.x, p.y - start.y, applied.z)
+                };
+                if vertical != was {
+                    // Taking up the pointer's offset keeps the selection still when the modifier changes.
+                    self.drag = Drag::Move3d { view, start: start + raw - applied, anchor, applied, clone, vertical };
+                    return;
+                }
+                let snap_to = |k: usize| if on_grid { ((anchor[k] + raw[k]) / g).round() * g - anchor[k] } else { raw[k] };
+                let total = if vertical { DVec3::new(applied.x, applied.y, snap_to(2)) } else { DVec3::new(snap_to(0), snap_to(1), applied.z) };
+                self.snap_mark = Some((index, anchor + total, false));
+                if (total - applied).length_squared() > 1e-12 {
+                    self.clone_once(clone);
+                    if let Err(e) = self.session.translate_selection(total - applied, Some("drag-move")) {
+                        self.status = e.to_string();
+                    }
+                    self.drag = Drag::Move3d { view, start, anchor, applied: total, clone: false, vertical };
                     self.mark_changed();
                 }
             }
@@ -1593,6 +1722,7 @@ impl MapCraftApp {
             }
             Drag::ComponentBox { view, start, add, remove } if view == index => self.box_select_components(index, rect, start, pos, add, remove),
             Drag::Move { .. }
+            | Drag::Move3d { .. }
             | Drag::Resize { .. }
             | Drag::Vertex { .. }
             | Drag::Vertex3d { .. }
@@ -1600,6 +1730,7 @@ impl MapCraftApp {
             | Drag::Rotate { .. }
             | Drag::Scale { .. }
             | Drag::Path { .. }
+            | Drag::Transfer { .. }
             | Drag::Origin { .. } => self.session.end_coalesce(),
             d @ Drag::Extrude { .. } => self.end_extrude(d),
             Drag::Block3d { .. } => {

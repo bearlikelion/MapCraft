@@ -96,9 +96,21 @@ pub fn expand_instance(e: &mut Edit, id: NodeId, load: &mut dyn FnMut(&str) -> O
     Ok(created)
 }
 
-/// `map` with mirror halves and prefab instances expanded, each added node's owner in `map` (its instance or mirrored original), and the instances that failed.
+/// `map` as the editor shows it, with mirrors, linked copies, boolean results and prefabs expanded, each added node's owner in `map`, and the instances that failed.
 pub fn flatten(map: &Map, load: &mut dyn FnMut(&str) -> Option<Map>) -> (Map, BTreeMap<NodeId, NodeId>, Vec<String>) {
-    let (mut out, mut owner) = mapcraft_map::mirror::expand(map);
+    flatten_with(mapcraft_map::mirror::expand_live(map), load)
+}
+
+/// `map` as exports and compiles get it: like [`flatten`], but boolean groups hold only their result.
+pub fn flatten_for_game(map: &Map, load: &mut dyn FnMut(&str) -> Option<Map>) -> (Map, Vec<String>) {
+    let (out, _, problems) = flatten_with(mapcraft_map::mirror::expand(map), load);
+    (out, problems)
+}
+
+fn flatten_with(
+    (mut out, mut owner): (Map, BTreeMap<NodeId, NodeId>),
+    load: &mut dyn FnMut(&str) -> Option<Map>,
+) -> (Map, BTreeMap<NodeId, NodeId>, Vec<String>) {
     let instances: Vec<NodeId> = out.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Prefab(_))).map(|(id, _)| id).collect();
     let mut problems = Vec::new();
     for id in instances {

@@ -310,7 +310,7 @@ impl MapCraftApp {
         let yaw = num_or(a, "yaw", 0.0).map_err(msg)?;
         let frags = self.run_plugin(plugin, command, &params)?;
         let made = if spec.generator {
-            let g = Generator { plugin: plugin.into(), command: command.into(), params, origin, angles: DVec3::new(0.0, yaw, 0.0) };
+            let g = Generator { plugin: plugin.into(), command: command.into(), params, origin, angles: DVec3::new(0.0, yaw, 0.0), stretch: None };
             self.session.create_generator(&spec.label, g, frags).map(|_| ())
         } else {
             self.session.insert_output(&spec.label, frags, origin).map(|_| ())

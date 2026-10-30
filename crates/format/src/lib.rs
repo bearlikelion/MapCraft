@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const FORMAT: &str = "mapcraft.map";
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 pub const EXTENSION: &str = "mcmap";
 
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +64,9 @@ struct FileNode {
     derived: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     children: Vec<FileNode>,
+    /// A boolean group's own brushes, kept out of `children` so importers get only its result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<FileNode>,
 }
 
 #[derive(Deserialize)]
@@ -105,10 +108,12 @@ struct Derived {
     next_face: u64,
 }
 
-fn node_value(map: &Map, id: NodeId, derived: &mut Derived) -> Result<Value, FormatError> {
+/// `id` of the expanded `map` as JSON; nodes it shares with `own`, the map as edited, keep their own kind and brushes.
+fn node_value(map: &Map, own: &Map, id: NodeId, derived: &mut Derived) -> Result<Value, FormatError> {
     let node = map.get(id).ok_or(mapcraft_map::EditError::Missing(id))?;
     let is_derived = derived.nodes.contains(&id);
-    let mut kind = std::borrow::Cow::Borrowed(&node.kind);
+    let mine = own.get(id).filter(|_| !is_derived);
+    let mut kind = std::borrow::Cow::Borrowed(mine.map_or(&node.kind, |n| &n.kind));
     let mut file_id = id;
     if is_derived {
         file_id = NodeId(derived.next_node);
@@ -141,9 +146,14 @@ fn node_value(map: &Map, id: NodeId, derived: &mut Derived) -> Result<Value, For
             }
         }
     }
-    let children = node.children.iter().map(|c| node_value(map, *c, derived)).collect::<Result<Vec<_>, _>>()?;
+    let children = node.children.iter().map(|c| node_value(map, own, *c, derived)).collect::<Result<Vec<_>, _>>()?;
     if let (false, Some(obj)) = (children.is_empty(), v.as_object_mut()) {
         obj.insert("children".into(), Value::Array(children));
+    }
+    let dropped: Vec<NodeId> = mine.map(|n| n.children.iter().copied().filter(|c| map.get(*c).is_none()).collect()).unwrap_or_default();
+    let sources = dropped.into_iter().map(|c| node_value(own, own, c, derived)).collect::<Result<Vec<_>, _>>()?;
+    if let (false, Some(obj)) = (sources.is_empty(), v.as_object_mut()) {
+        obj.insert("sources".into(), Value::Array(sources));
     }
     Ok(v)
 }
@@ -171,7 +181,7 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
         next_node: map.nodes().map(|(id, _)| id.0).max().unwrap_or(0).saturating_add(1),
         next_face: map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).map(|f| f.id.0).max().unwrap_or(0).saturating_add(1),
     };
-    let mut doc_map = json!({ "root": node_value(&full, ROOT, &mut derived)? });
+    let mut doc_map = json!({ "root": node_value(&full, map, ROOT, &mut derived)? });
     if let Some(obj) = doc_map.as_object_mut() {
         if !map.tags.is_empty() {
             obj.insert("tags".into(), serde_json::to_value(&map.tags)?);
@@ -183,7 +193,8 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
             obj.insert("extra".into(), serde_json::to_value(&map.extra)?);
         }
     }
-    // Maps without blend data stay readable by builds that only know schema 1.
+    // Each map is written with the lowest schema that holds it, so older builds refuse only maps they would lose data from.
+    let boolean = map.nodes().any(|(_, n)| matches!(&n.kind, NodeKind::Group(g) if g.boolean));
     let blended = map
         .nodes()
         .filter_map(|(_, n)| n.kind.brush())
@@ -191,7 +202,7 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
         .any(|f| f.blend_layer().is_some() || f.disp.as_ref().is_some_and(|d| !d.blend.is_empty()));
     let mut doc = json!({
         "format": FORMAT,
-        "schema_version": if blended { SCHEMA_VERSION } else { 1 },
+        "schema_version": if boolean { 3 } else if blended { 2 } else { 1 },
         "generator": concat!("MapCraft ", env!("CARGO_PKG_VERSION")),
     });
     if let Some(obj) = doc.as_object_mut() {
@@ -296,7 +307,7 @@ pub fn from_str(text: &str) -> Result<MapFile, FormatError> {
     let mut stack = vec![(env.map.root, None)];
     while let Some((f, parent)) = stack.pop() {
         let id = f.id;
-        let kept: Vec<FileNode> = f.children.into_iter().filter(|c| !c.derived).collect();
+        let kept: Vec<FileNode> = f.sources.into_iter().chain(f.children.into_iter().filter(|c| !c.derived)).collect();
         let children: Vec<NodeId> = kept.iter().map(|c| c.id).collect();
         let node = Node { parent, children, kind: f.kind, tags: f.tags, hidden: f.hidden, locked: f.locked, extra: f.extra };
         if nodes.insert(id, node).is_some() {
@@ -320,7 +331,7 @@ pub struct Fragment {
 
 /// The subtrees under `roots` as clipboard text.
 pub fn fragment_to_string(map: &Map, roots: &[NodeId]) -> Result<String, FormatError> {
-    let nodes = roots.iter().map(|id| node_value(map, *id, &mut Derived::default())).collect::<Result<Vec<_>, _>>()?;
+    let nodes = roots.iter().map(|id| node_value(map, map, *id, &mut Derived::default())).collect::<Result<Vec<_>, _>>()?;
     let mut out = String::new();
     write_value(&json!({ "format": CLIPBOARD_FORMAT, "nodes": nodes }), 0, &mut out);
     Ok(out)
@@ -333,7 +344,7 @@ pub fn fragment_from_str(text: &str) -> Result<Vec<Fragment>, FormatError> {
         nodes: Vec<FileNode>,
     }
     fn convert(f: FileNode) -> Fragment {
-        Fragment { kind: f.kind, children: f.children.into_iter().filter(|c| !c.derived).map(convert).collect() }
+        Fragment { kind: f.kind, children: f.sources.into_iter().chain(f.children.into_iter().filter(|c| !c.derived)).map(convert).collect() }
     }
     let clip: Clip = serde_json::from_str(text)?;
     if clip.format != CLIPBOARD_FORMAT {
@@ -498,8 +509,8 @@ mod tests {
         let loaded = from_str(&short.to_string()).unwrap();
         let d = loaded.map.nodes().find_map(|(_, n)| n.kind.brush()?.faces[0].disp.clone()).unwrap();
         assert_eq!((d.blend_at(1), d.blend_at(2), d.blend_at(3)), (1.0, 0.0, 0.0), "a short blend loads and reads tamed");
-        short["schema_version"] = json!(3);
-        assert!(matches!(from_str(&short.to_string()), Err(FormatError::Newer(3))));
+        short["schema_version"] = json!(SCHEMA_VERSION + 1);
+        assert!(matches!(from_str(&short.to_string()), Err(FormatError::Newer(v)) if v == SCHEMA_VERSION + 1));
     }
 
     #[test]

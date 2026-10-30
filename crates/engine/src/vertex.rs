@@ -105,7 +105,7 @@ impl Session {
         let mut e = self.map.edit();
         for (id, item) in items {
             let Some(b) = e.node(*id).and_then(|n| n.kind.brush()) else { continue };
-            if let Some(new) = rebuild(b, item, &self.tex)? {
+            if let Some(new) = rebuild(b, item, &self.tex)?.map(|n| n.like(b)) {
                 e.set_kind(*id, NodeKind::Brush(new))?;
             }
         }

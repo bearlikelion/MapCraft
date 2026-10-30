@@ -28,6 +28,8 @@ pub struct Options {
     pub settings_dir: Option<PathBuf>,
     /// SDK path settings that override the saved ones, as `name=value`.
     pub sdk_vars: Vec<(String, String)>,
+    /// Find SDKs only in the data folder, as a fresh install would (tests and snapshots).
+    pub fresh_install: bool,
 }
 
 pub(crate) struct Pane {
@@ -143,6 +145,8 @@ pub struct MapCraftApp {
     pub(crate) last_click: Option<(usize, Pos2)>,
     /// Face whose material and alignment Alt+Shift+right click applies.
     pub(crate) picked_face: Option<mapcraft_map::Face>,
+    /// The undo step the last face transfer click made, which a double click replaces.
+    pub(crate) transfer_step: Option<u64>,
     pub(crate) thumbs: crate::thumbs::Thumbs,
     /// Larger pictures of materials for UV views.
     pub(crate) uv_images: crate::thumbs::Thumbs,
@@ -181,6 +185,7 @@ pub struct MapCraftApp {
     pub(crate) blend_fill: crate::panels::BlendFillRows,
     /// The status message and when it first showed, so it can give way to tool hints.
     pub(crate) status_shown: (String, Instant),
+    pub(crate) keys: crate::keys::Presses,
     pub(crate) inspector_filter: String,
     /// The class description shows under the inspector header.
     pub(crate) inspector_help: bool,
@@ -218,6 +223,7 @@ pub struct MapCraftApp {
     last_autosave: Instant,
     screenshot: Option<PathBuf>,
     sdk_var_overrides: Vec<(String, String)>,
+    fresh_install: bool,
     frame_pending: bool,
     frame: u64,
     quit_confirmed: bool,
@@ -295,6 +301,7 @@ impl MapCraftApp {
             data_dir,
             last_click: None,
             picked_face: None,
+            transfer_step: None,
             thumbs: crate::thumbs::Thumbs::new(),
             uv_images: crate::thumbs::Thumbs::sized(1024),
             uv_modal: None,
@@ -320,6 +327,7 @@ impl MapCraftApp {
             height_noise: Default::default(),
             blend_fill: Default::default(),
             status_shown: (String::new(), Instant::now()),
+            keys: Default::default(),
             inspector_filter: String::new(),
             inspector_help: false,
             inspector_focus: None,
@@ -345,6 +353,7 @@ impl MapCraftApp {
             last_autosave: Instant::now(),
             screenshot: options.screenshot,
             sdk_var_overrides: options.sdk_vars,
+            fresh_install: options.fresh_install,
             frame_pending: false,
             frame: 0,
             quit_confirmed: false,
@@ -355,6 +364,7 @@ impl MapCraftApp {
         };
         app.session.grid = grid;
         app.rescan_sdks();
+        app.sdk_manager.first_run = !app.sdks.iter().any(|i| i.sdk.is_ok());
         if app.screenshot.is_none() {
             app.control = app.data_dir.as_deref().and_then(|d| crate::control::start(d, &cc.egui_ctx));
         }
@@ -369,8 +379,13 @@ impl MapCraftApp {
     }
 
     pub(crate) fn rescan_sdks(&mut self) {
-        let dirs = mapcraft_sdk_manager::search_dirs(self.data_dir.as_deref(), &self.prefs.get().sdk_dirs);
-        self.sdks = mapcraft_sdk_manager::installed(&dirs);
+        self.sdks = mapcraft_sdk_manager::installed(&self.sdk_search_dirs());
+    }
+
+    fn sdk_search_dirs(&self) -> Vec<(PathBuf, mapcraft_sdk_manager::Origin)> {
+        let mut dirs = mapcraft_sdk_manager::search_dirs(self.data_dir.as_deref(), &self.prefs.get().sdk_dirs);
+        dirs.retain(|(_, origin)| !self.fresh_install || *origin == mapcraft_sdk_manager::Origin::User);
+        dirs
     }
 
     fn sdk_by_id(&self, id: &str) -> Option<Sdk> {
@@ -664,7 +679,10 @@ impl MapCraftApp {
         let derived = |n: &mapcraft_map::Node| {
             matches!(
                 &n.kind,
-                NodeKind::Prefab(_) | NodeKind::Group(mapcraft_map::Group { mirror: Some(_), .. }) | NodeKind::Group(mapcraft_map::Group { link: Some(_), .. })
+                NodeKind::Prefab(_)
+                    | NodeKind::Group(mapcraft_map::Group { mirror: Some(_), .. })
+                    | NodeKind::Group(mapcraft_map::Group { link: Some(_), .. })
+                    | NodeKind::Group(mapcraft_map::Group { boolean: true, .. })
             )
         };
         if !self.session.map.nodes().any(|(_, n)| derived(n)) {
@@ -679,7 +697,13 @@ impl MapCraftApp {
         self.display = Some((flat, owner));
     }
 
-    /// The map as drawn and picked: prefab instances and mirror halves expanded.
+    /// The map as exports, compiles and plugin checks get it: like [`Self::view_map`], with boolean groups holding only their result.
+    pub(crate) fn game_map(&mut self) -> Map {
+        let doc = self.session.path.clone();
+        mapcraft_engine::flatten_for_game(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc)).0
+    }
+
+    /// The map as drawn and picked: prefab instances, mirror halves and boolean results expanded.
     pub(crate) fn view_map(&self) -> &Map {
         self.display.as_ref().map_or(&self.session.map, |(m, _)| m)
     }
@@ -691,6 +715,7 @@ impl MapCraftApp {
 
     pub(crate) fn rebuild_scene(&mut self) {
         self.update_display();
+        let picked = self.shown_faces();
         let Some(gpu) = &mut self.gpu else { return };
         let map = self.display.as_ref().map_or(&self.session.map, |(m, _)| m);
         let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
@@ -701,10 +726,31 @@ impl MapCraftApp {
         let view = &self.prefs.get().view;
         let slope = view.slope_colors.then_some(mapcraft_render::Slope { walkable: view.slope_walkable, surfable: view.slope_surfable });
         let selection = &self.session.selection;
-        let scene = build_scene(map, selection, &self.session.face_selection, &|m| renderer.material_size(m), &self.project, view.colorize, slope);
+        let scene = build_scene(map, selection, &picked, &|m| renderer.material_size(m), &self.project, view.colorize, slope);
         gpu.renderer.set_scene(&scene);
         gpu.renderer.set_bake_stale(self.bake.stale(map));
         self.scene_dirty = false;
+    }
+
+    /// The picked faces, and the faces of boolean results lying on them, as the views mark them.
+    fn shown_faces(&self) -> BTreeSet<(NodeId, mapcraft_map::FaceId)> {
+        let picked = &self.session.face_selection;
+        let mut out = picked.clone();
+        let Some((map, owner)) = self.display.as_ref().filter(|_| !picked.is_empty()) else { return out };
+        for (id, n) in map.nodes() {
+            let (Some(o), Some(b)) = (owner.get(&id), n.kind.brush()) else { continue };
+            for f in &b.faces {
+                if mapcraft_map::boolean::source_face(&self.session.map, *o, f).is_some_and(|p| picked.contains(&p)) {
+                    out.insert((id, f.id));
+                }
+            }
+        }
+        out
+    }
+
+    /// What the exporter `id` writes for the map, for tests.
+    pub fn export_for_test(&mut self, id: &str) -> Result<Vec<u8>, String> {
+        self.export_bytes(id, &mut Vec::new())
     }
 
     /// Number of nodes in the map, for tests.
@@ -772,6 +818,7 @@ impl MapCraftApp {
     /// Replaces the registries the SDK Manager lists, for tests and snapshots.
     pub fn set_registries_for_test(&mut self, registries: Vec<String>) {
         self.prefs.update(|p| p.registries = registries);
+        self.sdk_manager.registries_changed();
     }
 
     /// Where a world point shows in view `index`, for tests that drag things.
@@ -800,6 +847,16 @@ impl MapCraftApp {
     /// View `index`'s camera position, yaw and pitch, for tests.
     pub fn camera_for_test(&self, index: usize) -> (DVec3, f64, f64) {
         self.panes.get(index).map_or((DVec3::ZERO, 0.0, 0.0), |p| (p.camera.position, p.camera.yaw, p.camera.pitch))
+    }
+
+    /// Points view `index`'s camera from `eye` at `target`, for snapshots.
+    pub fn look_for_test(&mut self, index: usize, eye: DVec3, target: DVec3) {
+        if let Some(p) = self.panes.get_mut(index) {
+            let d = target - eye;
+            p.camera.position = eye;
+            p.camera.yaw = d.y.atan2(d.x).to_degrees();
+            p.camera.pitch = d.z.atan2(d.truncate().length()).to_degrees();
+        }
     }
 
     pub fn load_pointfile_for_test(&mut self, path: &Path) {
@@ -851,6 +908,8 @@ impl MapCraftApp {
                 continue;
             }
             if ctx.input_mut(|i| i.consume_shortcut(&sc)) {
+                let label = crate::shortcuts::actions().find(|a| a.0 == id).map_or("", |a| a.1);
+                self.note_key(self.chord(id), label);
                 self.run_action(id);
             }
         }
@@ -965,8 +1024,19 @@ impl MapCraftApp {
                 None => self.status = "This map has never been saved, so there is nothing to revert to".into(),
             },
             "file.reload_assets" => self.reload_assets(),
+            "file.import_gltf" => self.import_gltf_dialog(),
+            "file.export_gltf" => self.export_gltf_dialog(),
             "edit.search" => self.dialogs.search = Some(crate::dialogs::CommandSearch::default()),
             "tools.transform" => self.dialogs.transform.open = true,
+            "tools.roll_cw" | "tools.roll_ccw" | "tools.pitch_cw" | "tools.pitch_ccw" | "tools.yaw_cw" | "tools.yaw_ccw" => {
+                let cam = self.hovered_pane.and_then(|i| self.panes.get(i)).or(self.panes.first()).map(|p| p.camera);
+                if let Some(axis) = cam.and_then(|c| turn_axis(&c, id)) {
+                    if let Err(e) = self.session.rotate_selection(axis, 90.0) {
+                        self.status = e.to_string();
+                    }
+                    self.mark_changed();
+                }
+            }
             "tools.array" => self.open_array(),
             "tools.randomize" => self.dialogs.randomize.open = true,
             "tools.drop_to_floor" => {
@@ -1195,6 +1265,12 @@ impl MapCraftApp {
         let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
         for ev in events {
             match ev {
+                egui::Event::Copy => self.note_key("Ctrl+C".into(), "Copy"),
+                egui::Event::Cut => self.note_key("Ctrl+X".into(), "Cut"),
+                egui::Event::Paste(_) => self.note_key("Ctrl+V".into(), "Paste"),
+                _ => {}
+            }
+            match ev {
                 egui::Event::Copy if self.tool == Tool::Face => self.copy_face(),
                 egui::Event::Paste(_) if self.tool == Tool::Face => self.paste_face(),
                 egui::Event::Copy | egui::Event::Cut => match self.session.copy_selection() {
@@ -1353,6 +1429,7 @@ impl MapCraftApp {
                                 submenus.push(sub);
                                 let icon = match sub {
                                     "Curves" => Some("itinerary"),
+                                    "Boolean" => Some("box_wireframe"),
                                     "UV" => Some("unwrap"),
                                     "Select by Material" => Some("swatches"),
                                     _ => None,
@@ -1403,7 +1480,7 @@ impl MapCraftApp {
 
     pub(crate) fn check_problems(&mut self) {
         self.issues = mapcraft_engine::validate(&self.session.map, self.project.sdk.as_ref().map(|_| &self.project.game));
-        let map = self.view_map().clone();
+        let map = self.game_map();
         let name = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
         let mut found = Vec::new();
         for plugin in self.project.plugins.iter_mut().filter(|p| p.manifest.validates) {
@@ -1517,7 +1594,7 @@ impl MapCraftApp {
             egui::Window::new("SDK Settings").open(&mut open).show(ctx, |ui| {
                 ui.label("This map has no SDK. Pick one with File > New Map.");
                 ui.label("SDK folders searched:");
-                for (d, _) in mapcraft_sdk_manager::search_dirs(self.data_dir.as_deref(), &self.prefs.get().sdk_dirs) {
+                for (d, _) in self.sdk_search_dirs() {
                     ui.monospace(d.display().to_string());
                 }
             });
@@ -2009,6 +2086,7 @@ impl eframe::App for MapCraftApp {
             self.session.view_dir = if p.camera.is_2d() { -p.camera.view.axes().2 } else { p.camera.forward() };
         }
         self.handle_shortcuts(&ctx);
+        self.fit_stretched();
         self.uv_hovered = None;
         if self.scene_dirty {
             self.rebuild_scene();
@@ -2026,7 +2104,10 @@ impl eframe::App for MapCraftApp {
         egui::Panel::left("left").resizable(true).default_size(260.0).show(ui, |ui| self.left_panel(ui));
         egui::Panel::left("tools").resizable(false).exact_size(44.0).show(ui, |ui| self.tool_palette(ui));
         egui::Panel::right("inspector").resizable(true).default_size(300.0).min_size(240.0).show(ui, |ui| self.inspector(ui));
-        egui::CentralPanel::no_frame().show(ui, |ui| self.central(ui));
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            self.central(ui);
+            self.draw_keys(ui);
+        });
         self.dialogs(&ctx);
         self.extra_dialogs(&ctx);
         self.sdk_manager_window(&ctx);
@@ -2063,9 +2144,44 @@ impl eframe::App for MapCraftApp {
     }
 }
 
+/// The axis a TrenchBroom turn action (`tools.roll_cw` and friends) turns 90 degrees about.
+/// A 2D view turns about its own axes; the 3D view keeps roll and pitch level, snapped to the
+/// world axis nearest the camera's heading, and yaws about Z.
+fn turn_axis(cam: &Camera, id: &str) -> Option<DVec3> {
+    let (forward, right, up) = if cam.is_2d() {
+        let (r, u, toward) = cam.view.axes();
+        (-toward, r, u)
+    } else {
+        let (c, s) = (cam.yaw.to_radians().cos(), cam.yaw.to_radians().sin());
+        let f = if c.abs() >= s.abs() { DVec3::X * c.signum() } else { DVec3::Y * s.signum() };
+        (f, f.cross(DVec3::Z), DVec3::Z)
+    };
+    let (kind, dir) = id.strip_prefix("tools.")?.split_once('_')?;
+    let axis = match kind {
+        "roll" => -forward,
+        "pitch" => right,
+        "yaw" => up,
+        _ => return None,
+    };
+    Some(if dir == "cw" { -axis } else { axis })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turns_follow_the_view() {
+        let mut cam = Camera { yaw: 80.0, ..Camera::new(View::Perspective) };
+        assert_eq!(turn_axis(&cam, "tools.yaw_cw"), Some(-DVec3::Z), "clockwise seen from above, as Rotate 90° Clockwise");
+        assert_eq!(turn_axis(&cam, "tools.roll_cw"), Some(DVec3::Y), "a camera looking mostly along +Y rolls about it");
+        assert_eq!(turn_axis(&cam, "tools.pitch_ccw"), Some(DVec3::X), "and pitches about its right, +X");
+        cam.view = View::Top;
+        assert_eq!(turn_axis(&cam, "tools.roll_ccw"), Some(DVec3::Z), "counter-clockwise on screen in the Top view");
+        cam.view = View::Front;
+        assert_eq!(turn_axis(&cam, "tools.yaw_ccw"), Some(DVec3::Z), "a 2D view yaws about its up axis");
+        assert_eq!(turn_axis(&cam, "tools.flip_x"), None);
+    }
 
     #[test]
     fn maps_sharing_a_name_get_their_own_autosaves() {

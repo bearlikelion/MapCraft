@@ -81,6 +81,11 @@ pub struct Ramp {
     /// Straight runs before and after a curve.
     pub lead_in: f64,
     pub lead_out: f64,
+    /// Trim bands along each surf face from its top and from its bottom edge, measured down the face.
+    pub trim_top: f64,
+    pub trim_bottom: f64,
+    /// How far trim stands off the surf face.
+    pub trim_depth: f64,
 }
 
 impl Default for Ramp {
@@ -105,6 +110,9 @@ impl Default for Ramp {
             end_slope: 0.0,
             lead_in: 0.0,
             lead_out: 0.0,
+            trim_top: 0.0,
+            trim_bottom: 0.0,
+            trim_depth: 1.0,
         }
     }
 }
@@ -224,6 +232,61 @@ pub fn profile_parts(r: &Ramp) -> Vec<Vec<DVec2>> {
     vec![close(pts)]
 }
 
+fn convex(p: &[DVec2]) -> bool {
+    let n = p.len();
+    n >= 3 && (0..n).all(|i| (p[(i + 1) % n] - p[i]).perp_dot(p[(i + 2) % n] - p[(i + 1) % n]) > EPSILON)
+}
+
+/// Slabs standing `trim_depth` off the surf line within `trim_top` of its highest points and `trim_bottom` of its lowest, one convex part per line segment.
+fn trim_parts(r: &Ramp) -> Vec<Vec<DVec2>> {
+    if r.trim_depth <= EPSILON || r.width <= EPSILON || r.height <= EPSILON {
+        return Vec::new();
+    }
+    let tip = if r.style == Style::Thin { 0.0 } else { r.tip.clamp(0.0, r.height - EPSILON) };
+    let line = slope_line(r.surf, r.width, r.height, tip, r.ridge);
+    let Some(last) = line.len().checked_sub(1).filter(|n| *n > 0) else { return Vec::new() };
+    let at: Vec<f64> = std::iter::once(0.0)
+        .chain(line.windows(2).scan(0.0, |s, w| {
+            *s += w[0].distance(w[1]);
+            Some(*s)
+        }))
+        .collect();
+    let (lo, hi) = line.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+    let mut spans = Vec::new();
+    for (band, level) in [(r.trim_top, hi), (r.trim_bottom, lo)] {
+        let on = |i: usize| line.get(i).is_some_and(|p| (p.y - level).abs() <= EPSILON);
+        if band > EPSILON {
+            // A flat ridge or trough floor at that level is trimmed whole.
+            spans.extend((0..line.len()).filter(|i| on(*i)).map(|i| (at[i] - band, at[if on(i + 1) { i + 1 } else { i }] + band)));
+        }
+    }
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in spans {
+        match merged.last_mut() {
+            Some(m) if a <= m.1 => m.1 = m.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    // Ends within a unit of a corner move onto it, so no sliver is left past the corner.
+    let snap = |t: f64| at.iter().copied().find(|v| (v - t).abs() < 1.0).unwrap_or(t).clamp(0.0, at[last]);
+    let point = |t: f64| {
+        let k = at.partition_point(|v| *v <= t).clamp(1, last);
+        let span = at[k] - at[k - 1];
+        if span <= EPSILON { line[k] } else { line[k - 1].lerp(line[k], (t - at[k - 1]) / span) }
+    };
+    let mut parts = Vec::new();
+    for (a, b) in merged.into_iter().map(|(a, b)| (snap(a), snap(b))) {
+        let mut band = vec![point(a)];
+        band.extend(line.iter().zip(&at).filter(|(_, s)| **s > a + EPSILON && **s < b - EPSILON).map(|(p, _)| *p));
+        band.push(point(b));
+        band.dedup_by(|x, y| same(*x, *y));
+        let outer = offset_polyline(&band, -r.trim_depth);
+        parts.extend(band.windows(2).zip(outer.windows(2)).map(|(i, o)| close(vec![i[0], i[1], o[1], o[0]])).filter(|p| convex(p)));
+    }
+    parts
+}
+
 fn on_line(a: DVec2, b: DVec2, line: &[DVec2]) -> bool {
     line.windows(2).any(|w| (same(a, w[0]) && same(b, w[1])) || (same(a, w[1]) && same(b, w[0])))
 }
@@ -292,6 +355,42 @@ pub fn path_length(r: &Ramp) -> f64 {
         _ => r.size * a,
     }
     .abs()
+}
+
+/// The ramp stretched by `s` along its own axes, keeping its angles; a curve stays round, following whichever axis of its plane was stretched more.
+pub fn scaled(r: &Ramp, s: DVec3) -> Ramp {
+    let more = |a: f64, b: f64| if a.ln().abs() >= b.ln().abs() { a } else { b };
+    let (along, across, up) = match r.shape {
+        Shape::Straight => (s.x, s.y, s.z),
+        Shape::Up | Shape::Down | Shape::Arc | Shape::Dip => (more(s.x, s.z), s.y, more(s.x, s.z)),
+        _ => (more(s.x, s.y), more(s.x, s.y), s.z),
+    };
+    let tip = if r.style == Style::Thin { 0.0 } else { r.tip };
+    let slope = DVec2::new(r.width, r.height - tip);
+    let stretched = DVec2::new(across * slope.x, up * slope.y).length();
+    // A slab's depth across its slope scales with the cross-section's area over the slope's length.
+    let depth = across * up * slope.length() / stretched.max(EPSILON);
+    let down_slope = stretched / slope.length().max(EPSILON);
+    // Settings this shape and style ignore stay as they are.
+    let used = |yes: bool, k: f64| if yes { k } else { 1.0 };
+    Ramp {
+        size: r.size * along,
+        gap: r.gap * along,
+        end_slope: r.end_slope * used(r.shape == Shape::Straight, along),
+        lead_in: r.lead_in * along,
+        lead_out: r.lead_out * along,
+        width: r.width * across,
+        ridge: r.ridge * across,
+        height: r.height * up,
+        tip: r.tip * used(r.style == Style::Wedge, up),
+        thickness: r.thickness * used(r.style == Style::Thin, depth),
+        drop: r.drop * s.z,
+        rise: r.rise * used(r.shape == Shape::Spiral, s.z),
+        trim_top: r.trim_top * down_slope,
+        trim_bottom: r.trim_bottom * down_slope,
+        trim_depth: r.trim_depth * depth,
+        ..r.clone()
+    }
 }
 
 fn frame(r: &Ramp, t: f64) -> DAffine3 {
@@ -421,7 +520,20 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
         return Err("A curved ramp needs an angle above zero.".into());
     }
     let tip = if r.style == Style::Thin { 0.0 } else { r.tip };
-    let line = slope_line(r.surf, r.width, r.height, tip, r.ridge);
+    sweep(r, &parts, &slope_line(r.surf, r.width, r.height, tip, r.ridge))
+}
+
+/// The ramp's trim as brushes, empty when it has none.
+pub fn trim(r: &Ramp) -> Result<Vec<Piece>, String> {
+    let parts = trim_parts(r);
+    if parts.is_empty() {
+        return Ok(Vec::new());
+    }
+    sweep(r, &parts, &[])
+}
+
+/// Brushes for cross-section `parts` swept along the ramp's path; edges on `line` are surf faces.
+fn sweep(r: &Ramp, parts: &[Vec<DVec2>], line: &[DVec2]) -> Result<Vec<Piece>, String> {
     let frames = frames(r);
     let closed = is_closed(r.shape, r.angle, r.rise);
     let steps = if closed { frames.len() } else { frames.len().saturating_sub(1) };
@@ -439,7 +551,7 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
         if u0 >= u1 {
             return Err("The gap is longer than a piece of the ramp; use fewer segments or a smaller gap.".into());
         }
-        for part in &parts {
+        for part in parts {
             let end = |u: f64| -> Vec<DVec3> { part.iter().map(|p| a.transform_point3(local(*p)).lerp(b.transform_point3(local(*p)), u)).collect() };
             let (mut pa, mut pb) = (end(u0), end(u1));
             // Sloped ends lean each point along the path by how far below the peak it sits.
@@ -465,7 +577,7 @@ pub fn build(r: &Ramp) -> Result<Vec<Piece>, String> {
             for j in 0..part.len() {
                 let k = (j + 1) % part.len();
                 let (p, q) = (part[j], part[k]);
-                let slot = edge_slot(p, q, &line);
+                let slot = edge_slot(p, q, line);
                 // Counter-clockwise, so outward is the edge direction turned clockwise.
                 let d = q - p;
                 let outward = local(DVec2::new(d.y, -d.x));
@@ -578,6 +690,91 @@ mod tests {
         let pyramid = Ramp { surf: Surf::Both, size: 0.0, end_slope: 512.0, ..Ramp::default() };
         let (lo, hi) = zs(&build(&pyramid).unwrap());
         assert_eq!((lo, hi), (0.0, pyramid.height));
+    }
+
+    #[test]
+    fn stretched_settings_build_the_stretched_ramp() {
+        let r = Ramp { surf: Surf::Both, ridge: 32.0, end_slope: 128.0, drop: 64.0, ..Ramp::default() };
+        let s = DVec3::new(1.5, 2.0, 0.75);
+        let want: Vec<DVec3> = build(&r).unwrap().iter().flat_map(|p| corners(p).map(|q| q * s).collect::<Vec<_>>()).collect();
+        let got: Vec<DVec3> = build(&scaled(&r, s)).unwrap().iter().flat_map(|p| corners(p).collect::<Vec<_>>()).collect();
+        assert_eq!(want.len(), got.len());
+        assert!(want.iter().zip(&got).all(|(a, b)| a.distance(*b) < 1e-6), "{want:?} {got:?}");
+
+        let curve = scaled(&Ramp { shape: Shape::Right, ..Ramp::default() }, DVec3::new(2.0, 1.2, 1.0));
+        assert_eq!((curve.size, curve.width, curve.height, curve.angle), (2048.0, 768.0, 544.0, 90.0), "a curve stays round");
+
+        let t = Ramp { trim_top: 64.0, trim_depth: 2.0, ..Ramp::default() };
+        let low = |r: &Ramp| zs(&trim(r).unwrap()).0;
+        assert!((low(&scaled(&t, s)) - low(&t) * s.z).abs() < 1e-6, "the band keeps its place down the stretched face");
+    }
+
+    #[test]
+    fn trim_is_off_by_default_and_leaves_the_collision_alone() {
+        assert!(trim(&Ramp::default()).unwrap().is_empty());
+        let points = |r: &Ramp| build(r).unwrap().iter().flat_map(|p| corners(p).collect::<Vec<_>>()).collect::<Vec<_>>();
+        for r in [Ramp::default(), Ramp { shape: Shape::Spiral, surf: Surf::Both, bank: 10.0, ..Ramp::default() }] {
+            let trimmed = Ramp { trim_top: 64.0, trim_bottom: 32.0, trim_depth: 4.0, ..r.clone() };
+            assert!(!trim(&trimmed).unwrap().is_empty());
+            assert_eq!(points(&r), points(&trimmed), "the ramp's own brushes do not change");
+        }
+    }
+
+    #[test]
+    fn trim_bands_sit_on_the_surf_face() {
+        let r = Ramp { trim_top: 64.0, trim_bottom: 32.0, trim_depth: 2.0, ..Ramp::default() };
+        let face = build(&r).unwrap().remove(0).faces.into_iter().find(|f| f.slot == Slot::Surf).unwrap();
+        let (n, o) = (face.normal(), face.points[0]);
+        let pieces = trim(&r).unwrap();
+        assert_eq!(pieces.len(), 2, "a band at the top and one at the bottom");
+        let sin = (r.height - r.tip) / DVec2::new(r.width, r.height - r.tip).length();
+        let mut bands: Vec<(f64, f64)> = pieces
+            .iter()
+            .map(|p| {
+                assert!(corners(p).all(|q| (-1e-6..=2.0 + 1e-6).contains(&(q - o).dot(n))), "the band stands off the face, never into it");
+                assert!(corners(p).any(|q| ((q - o).dot(n) - 2.0).abs() < 1e-6) && p.faces.iter().any(|f| f.normal().dot(n) > 1.0 - 1e-9));
+                corners(p).filter(|q| (*q - o).dot(n).abs() < 1e-6).fold((f64::MAX, f64::MIN), |(lo, hi), q| (lo.min(q.z), hi.max(q.z)))
+            })
+            .collect();
+        bands.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!((bands[0].0 - r.tip).abs() < 1e-6 && (bands[0].1 - r.tip - 32.0 * sin).abs() < 1e-6, "{bands:?}");
+        assert!((bands[1].0 - r.height + 64.0 * sin).abs() < 1e-6 && (bands[1].1 - r.height).abs() < 1e-6, "{bands:?}");
+    }
+
+    #[test]
+    fn trim_covers_both_sides_peaks_and_floors() {
+        let both = Ramp { surf: Surf::Both, trim_top: 64.0, trim_bottom: 32.0, ..Ramp::default() };
+        let parts = trim_parts(&both);
+        assert_eq!(parts.len(), 4, "two halves of the cap and a band at each foot");
+        assert_eq!(parts.iter().filter(|p| p.iter().map(|q| q.x).sum::<f64>() < 0.0).count(), 2, "as much on each side");
+        let top = parts.iter().flatten().map(|p| p.y).fold(f64::MIN, f64::max);
+        assert!(top > both.height + both.trim_depth, "the cap stands over the pointy peak: {top}");
+        assert_eq!(trim_parts(&Ramp { ridge: 64.0, trim_bottom: 0.0, ..both }).len(), 3, "a flat ridge is capped whole");
+        let trough = Ramp { surf: Surf::Inside, ridge: 128.0, trim_bottom: 32.0, ..Ramp::default() };
+        assert_eq!(trim_parts(&trough).len(), 3, "the floor and the foot of each wall");
+        assert!(trim_parts(&Ramp { trim_top: 64.0, trim_depth: 0.0, ..Ramp::default() }).is_empty());
+    }
+
+    #[test]
+    fn trim_follows_curves_piece_by_piece() {
+        let r = Ramp { shape: Shape::Right, smoothness: 16, trim_top: 48.0, trim_depth: 2.0, ..Ramp::default() };
+        let (ramp, band) = (build(&r).unwrap(), trim(&r).unwrap());
+        assert_eq!(band.len(), ramp.len());
+        for (piece, strip) in ramp.iter().zip(&band) {
+            let face = piece.faces.iter().find(|f| f.slot == Slot::Surf).unwrap();
+            let (n, o) = (face.normal(), face.points[0]);
+            assert!(strip.faces.iter().any(|f| f.normal().dot(n) > 1.0 - 1e-9), "the band's face is parallel to the surf face");
+            assert!(corners(strip).all(|q| (-1e-6..=2.0 + 1e-6).contains(&(q - o).dot(n))));
+        }
+        for w in band.windows(2) {
+            let mut shared: Vec<DVec3> = Vec::new();
+            for p in corners(&w[0]).filter(|p| corners(&w[1]).any(|q| p.distance(q) < 1e-6)) {
+                if !shared.iter().any(|s| s.distance(p) < 1e-6) {
+                    shared.push(p);
+                }
+            }
+            assert_eq!(shared.len(), 4, "neighboring pieces share the whole end of the band");
+        }
     }
 
     #[test]

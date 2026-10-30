@@ -1,5 +1,7 @@
 # Organizing
 
+As a map grows, you need ways to keep related pieces together, find things and get what you are not working on out of the way.
+This page covers selecting, grouping, layers, the scene tree, hiding, locking, tags and cordons.
 A map is a tree: the world at the top, then layers, groups, entities, brushes and prefabs.
 
 ## Selection modes
@@ -12,23 +14,29 @@ The **Groups**, **Objects** and **Solids** buttons on the top bar (a group frame
 | **Objects** | `Alt+2` | The entity or loose brush, ignoring groups |
 | **Solids** | `Alt+3` | The one brush |
 
-- `Ctrl+Click` adds an object to the selection, or takes it out; `Shift+Click` does too in a 2D view.
+- `Ctrl+Click` adds an object to the selection, or takes it out.
+  `Shift+Click` does too in a 2D view.
 - In the 3D view, `Shift+Click` picks the face under the pointer in the [Face tool](tools.md#face) instead.
-- `Ctrl+A` selects everything you can click: hidden, tagged off, out of cordon and locked objects, and everything inside a hidden or locked layer or group, are left out.
+- `Ctrl+A` selects everything you can click.
 - `Ctrl+Shift+A` selects nothing.
 - The modes are also under **Edit > Selection Mode**.
 
 ![Two copies of the scene tree side by side: in Groups mode a click selects the whole Ramp 3 group, in Solids mode it selects one brush inside it](img/organizing-modes.webp "Left: Groups selects the whole ramp. Right: Solids selects one brush.")
 
+> [!NOTE]
+> `Ctrl+A` leaves out hidden, tagged off, out of cordon and locked objects, and everything inside a hidden or locked layer or group.
+
 ## Drill select
 
-Click the same spot again, in the same view, to select the object behind the one you have.
-Keep clicking to cycle through everything under the pointer.
+To reach something hidden behind another object, click the same spot again in the same view.
+Each click selects the object behind the one you have, so keep clicking to cycle through everything under the pointer.
 
 ## Groups
 
+Groups keep pieces that belong together, such as the brushes of one ramp, so you can select and move them as one.
+
 1. Select some objects.
-2. Press `Ctrl+G` (**Tools > Group**, or the **Group** button above the scene tree).
+2. Press `Ctrl+G` (**Tools > Group**, or **Group the selection**, the group frame icon above the scene tree).
 
 The new group is named Group, sits where the first selected object was, and ends up selected.
 Rename it by typing a new name into the inspector's header.
@@ -44,6 +52,7 @@ Rename it by typing a new name into the inspector's header.
 ## Linked copies
 
 A linked copy shows another group's contents and follows every change to it, like Blender's linked duplicates.
+Use them for pieces that repeat, so you fix one and every copy updates.
 
 1. Select a group.
 2. Press `Alt+D` (**Edit > Duplicate Linked**).
@@ -52,7 +61,8 @@ The copy lands one grid step away and is selected.
 A selection that is not a single group is grouped first, and that group becomes the original.
 
 - Move, turn, flip or scale each copy on its own; a flipped copy is a mirror image.
-- Edit inside the original (switch to **Objects** or **Solids** to reach it) and every copy changes. Moving the original group itself moves only the original.
+- Edit inside the original (switch to **Objects** or **Solids** to reach it) and every copy changes.
+  Moving the original group itself moves only the original.
 - **Edit here** (**Tools > Edit Linked Copy Here**) makes this copy the original, so you can edit through it.
 - **Make real** (**Tools > Make Linked Copy Real**) turns a copy into an ordinary group that no longer follows.
 - In the inspector's link section, the pointer icon selects the original from a copy (**Select original**), or every copy from an original (**Select copies**).
@@ -66,25 +76,28 @@ The saved map holds each copy's contents too, so the game sees them without know
 
 ## Where new objects go
 
-New brushes, entities, zones, generators and prefabs go into one place: the world, a layer or a group.
+New brushes, entities, zones, generators and prefabs all go into one place: the world, a layer or a group.
 Its name shows in orange in the scene tree.
+To change it, do either of these:
 
 - Right click a layer, group or the world in the scene tree and choose **New objects go here**.
-- Or select a layer or group and click **Put new objects here**, the pin icon in the inspector's header; click it again to send new objects back to the world.
+- Select a layer or group and click **Put new objects here**, the pin icon in the inspector's header.
+  Click it again to send new objects back to the world.
 
 ![Right clicking the Gameplay layer in the scene tree opens a menu with New objects go here and Delete](img/organizing-new-objects.webp)
 
 ## Layers
 
-Layers sit right under the world and hold groups, entities, brushes and prefabs.
+Layers split a map into big parts, such as the course, the hazards or a reference you are working from.
+They sit right under the world and hold groups, entities, brushes and prefabs.
 They cannot be nested.
 
 - **New Layer**, the **+** above the scene tree (`Ctrl+Shift+N`), adds a numbered layer and makes it where new objects go.
 - Rename a layer by typing into the inspector's header.
-- Tick **Leave out of exports** to keep a layer out of Godot and the compiles, for reference pieces or work in progress.
+- Turn on the **Leave out of exports** switch to keep a layer out of Godot and the compiles, for reference pieces or work in progress.
 - Each import lands in a layer of its own.
 
-![A new layer, Layer 4, selected in the scene tree, with its name in the inspector's header and the Leave out of exports box below](img/organizing-layer.webp)
+![A new layer, Layer 4, selected in the scene tree, with its name in the inspector's header and the Leave out of exports switch below](img/organizing-layer.webp)
 
 ## The scene tree
 
@@ -108,9 +121,13 @@ Type in the **Search** box above the tree to find a brush, entity, group or laye
 - The tree shows only the matches and the layers, groups and entities they are in, unfolded.
 - The matching text is orange, and a brush found by its material shows that material after its name.
 - `Enter` selects the first match and focuses the views on it; press it again for the next match.
-- The box keeps the keyboard after `Enter`, so press `Down` to hand the keys back to the editor and keep the filter, for example to delete what you found.
 - `Escape` clears the box, hands the keys back and brings the whole tree back, scrolled to the selection.
-- Rows cannot be folded while the box has text.
+
+> [!TIP]
+> The box keeps the keyboard after `Enter`.
+> Press `Down` to hand the keys back to the editor and keep the filter, for example to delete what you found.
+
+Rows cannot be folded while the box has text.
 
 ### Drag to reorder or reparent
 
@@ -121,11 +138,16 @@ Drag a row and drop it:
 
 A line or outline shows where it will land.
 Dragging a selected row moves the whole selection, and each move is one undo step.
-A brush entity only takes brushes, layers stay under the world, and a generator group (such as a surf ramp) refuses drops because it rebuilds its own contents.
 
 ![Dragging Ramp 1 onto the Hazards layer: an orange outline around Hazards shows it will land inside](img/organizing-drag.webp)
 
+> [!NOTE]
+> A brush entity only takes brushes, and layers stay under the world.
+> A generator group (such as a surf ramp) refuses drops because it rebuilds its own contents.
+
 ## Hide, isolate and show all
+
+Hide what is in the way while you work, then bring it back.
 
 | Command | Key | Does |
 |---|---|---|
@@ -140,28 +162,33 @@ A brush entity only takes brushes, layers stay under the world, and a generator 
 ![Ramp 3 isolated: the 3D view shows only that ramp and the scene tree shows closed eyes on the hidden objects](img/organizing-isolate.webp)
 
 > [!TIP]
-> To keep something out of Godot and the compiles, put it on a layer and tick **Leave out of exports**.
+> To keep something out of Godot and the compiles, put it on a layer and turn on **Leave out of exports**.
 
 ## Lock and unlock
+
+Locking keeps objects visible but stops clicks from reaching them.
 
 | Command | Key | Does |
 |---|---|---|
 | **View > Lock Selected** | `Ctrl+Alt+K` | Locks the selection so it cannot be clicked, sculpted or carved |
 | **View > Unlock All** | `Ctrl+Alt+Shift+K` | Unlocks everything |
 
+Lock a reference layer, such as an imported map you are zoning, so clicks only reach what you are building.
 Locking a layer, group or brush entity locks everything inside it too.
 Locking can be undone and is saved with the map.
-Lock a reference layer, such as an imported map you are zoning, so clicks only reach what you are building.
-Locked objects still catch what you place: blocks drawn in the 3D view, new entities and clip points land on them, and Alt+click still samples their materials.
+
+> [!NOTE]
+> Locked objects still catch what you place: blocks drawn in the 3D view, new entities and clip points land on them, and Alt+click still samples their materials.
 
 ## Tags
 
 Tags are labels on objects, like Hammer's visgroups.
-An object can carry several.
+An object can carry several, so you can show, hide or select a set of objects that lives in different groups and layers.
 
 1. Select the objects.
 2. Open the **Tags** tab (`Ctrl+2`).
-3. Type a name into **New tag** and click **Tag selection**. With no name you get Tag 1, Tag 2 and so on.
+3. Type a name into **New tag** and click **Tag selection**.
+   With no name you get Tag 1, Tag 2 and so on.
 
 Each tag's row has:
 
@@ -170,13 +197,14 @@ Each tag's row has:
 - how many objects carry it;
 - **Select** (the pointer), which selects them;
 - **Add the selection** and **Take the selection out** (a plus and a minus in a square), which add the selection to the tag or take it out;
-- a trash can that deletes the tag (the objects stay).
+- a trash can (**Delete the tag**) that deletes the tag; the objects stay.
 
 ![The Tags tab with Tag 1 on one object, and the Zones auto tags Timing and Hazards below it](img/organizing-tags.webp)
 
 ### Auto tags
 
-When the SDK's entity definitions (its FGD) list `@AutoVisGroup` sets, they show under **Auto tags**, grouped under their parent name, like Hammer's auto visgroups.
+Auto tags group entities by class for you, like Hammer's auto visgroups.
+They come from `@AutoVisGroup` sets in the SDK's entity definitions (its FGD) and show under **Auto tags**, grouped under their parent name.
 The SurfsUp SDK has **Zones** with **Timing** and **Hazards**.
 Each set gathers the entities of the classes it lists; hover its name to see them.
 
@@ -197,7 +225,7 @@ Cordons sit below the tags in the **Tags** tab.
 The cordon turns on and shows as a blue box; only what touches it stays visible.
 
 - The checkbox turns a cordon on or off.
-- **Fit** (arrows pointing in) fits a cordon to the current selection.
+- **Fit to the selection** (arrows pointing in) fits a cordon to the current selection.
 - Cordons can be renamed and deleted, and every change can be undone.
 
 ![A cordon around Ramp 3: the 3D view shows only the ramp inside a blue box, with Cordon 1 listed in the Tags tab](img/organizing-cordon.webp)

@@ -2,6 +2,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod boolean;
 mod brush;
 mod cover;
 pub mod curve;
@@ -16,7 +17,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use brush::{ANTI_TILE, AntiTile, Bevel, Brush, BrushError, Face, Justify, TexAxis, TexDefaults, blend_layer, is_tool_material, share_edge, wrap_runs};
+pub use boolean::Operation;
+pub use brush::{
+    ANTI_TILE, AntiTile, Bevel, Brush, BrushError, CONTENT_FLAGS, Face, Justify, TexAxis, TexDefaults, blend_layer, is_tool_material, share_edge, wrap_runs,
+};
 pub use cover::covered_faces;
 pub use curve::{CurveOp, Path, PathPoint};
 pub use disp::{BlendRole, Displacement};

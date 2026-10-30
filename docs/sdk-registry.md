@@ -3,12 +3,25 @@
 A registry is a JSON file, `index.json`, that lists SDKs and where to download them.
 The SDK Manager (File > SDK Manager…) and `mapcraft-cli sdk` read it to install and update SDKs.
 The official registry is the MapCraftSDKs repository; anyone can host another one in the same format, on a web server or in a folder.
+MapCraft's downloads hold no SDKs: every game's SDK installs from a registry.
 
 ## Where MapCraft looks
 
 Preferences > SDK registries lists the registries, the official one first.
 Each entry is an `https://` or `http://` URL, or a path to an `index.json` on disk.
 Use a local path for a private registry or for testing.
+
+## The first launch
+
+When MapCraft starts and finds no SDK, it opens the **Add an SDK** window.
+It lists every registry's SDKs as cards with their logo, name, version, description, author and size, and an **Install…** button on each.
+While the registries load it shows a spinner; when one does not load, such as offline, it says so and offers **Retry**.
+**Not now** closes the window, and it opens again at the next launch until an SDK is installed.
+The SDK Manager's Available tab shows the same cards.
+
+Once an SDK is installed, from either window, MapCraft loads it and opens its SDK Settings so the user can point it at their game.
+An untitled map that is still empty and has no SDK starts over on the new SDK, as **File > New Map** would.
+Any other map keeps its SDK, and the status bar says that **File > New Map** starts a map on the new one.
 
 ## Format
 
@@ -30,7 +43,8 @@ Use a local path for a private registry or for testing.
       "sha256": "9f2c...64 hex digits...",
       "size": 193512,
       "min_mapcraft": "0.2.0",
-      "plugins": ["godot", "source-bsp", "surfsup"]
+      "plugins": ["godot", "source-bsp", "surfsup"],
+      "logo": "surfsup/logo.jpg"
     }
   ]
 }
@@ -59,18 +73,28 @@ Each entry:
 | `size` | yes | Size of the zip in bytes, at most 512 MiB |
 | `min_mapcraft` | no | The oldest MapCraft version the SDK works with |
 | `plugins` | no | Ids of the plugins the zip ships |
+| `logo` | no | A PNG or JPEG logo's URL, or a path relative to the registry file |
 
 Unknown keys are ignored, so later versions can add keys without breaking older readers.
 A registry with a missing required key, a bad id, a duplicate id or a malformed checksum is refused as a whole, so a mistake is caught before anyone installs from it.
 
-A relative `download` resolves against the registry's own location: next to a local `index.json`, or beside the registry URL.
+A relative `download` or `logo` resolves against the registry's own location: next to a local `index.json`, or beside the registry URL.
 Entries in a remote registry always resolve to URLs, so a remote registry can never make MapCraft read a local file.
+
+## Logos
+
+An SDK folder may hold `logo.png` or `logo.jpg`; 460 by 215 pixels, the shape of a Steam header image, fits the card best.
+The SDK Manager shows it on the SDK's card; an installed SDK shows its own file, and a registry entry the file its `logo` names.
+Only PNG and JPEG load, of at most 1 MiB and 4096 pixels a side.
+Logos load in the background and are kept in the `logos` folder of the user's data folder, so each one downloads once per SDK version.
+An SDK without a logo, or with one that does not load, gets a tile with its name instead.
 
 ## The zip
 
 The zip holds one SDK folder, either at its root or inside a single folder.
 `mapcraft-cli sdk package <dir>` makes one: every file except hidden ones, under `<id>/`, with fixed timestamps so the same files always give the same checksum.
 It prints the entry to add to `index.json`, with `sha256`, `size` and `min_mapcraft` filled in from the archive and `sdk.toml`.
+When the folder has a logo, the entry gets `"logo": "<id>/logo.png"` (or `.jpg`), for a registry that keeps each SDK's folder beside its `index.json`, as MapCraftSDKs does.
 
 ## Installing
 
@@ -83,12 +107,12 @@ That is `~/.local/share/mapcraft/sdks` on Linux, `%LOCALAPPDATA%\mapcraft\sdks` 
 - The SDK unpacks into a staging folder first; an older copy is swapped out only once the new one has loaded, and comes back if the swap fails.
 - An SDK installed or updated this way asks again before its compile profiles first run a program.
 
-User SDKs load before bundled ones, so an update from a registry replaces a copy shipped with MapCraft without touching it.
+User SDKs load before the source tree's and those in other SDK folders, so an installed copy wins over a development one without touching it.
 
 ## Removing
 
 Only SDKs in the user's data folder can be removed.
-SDKs next to the MapCraft executable, in the source tree or in folders from the preferences are never deleted.
+SDKs in the source tree, in `MAPCRAFT_SDK_PATH` or in folders from the preferences are never deleted.
 
 ## Checks
 

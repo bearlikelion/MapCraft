@@ -67,11 +67,22 @@ pub fn expand(s: &str, vars: &BTreeMap<String, String>) -> Result<String, Compil
         let after = rest.get(start + 2..).unwrap_or_default();
         let end = after.find('}').ok_or_else(|| CompileError::Unclosed(s.to_string()))?;
         let name = after.get(..end).unwrap_or_default();
-        out.push_str(vars.get(name).ok_or_else(|| CompileError::UnknownVar(name.to_string()))?);
+        match vars.get(name) {
+            Some(value) => out.push_str(value),
+            None => out.push_str(&folder_of(name, vars)?),
+        }
         rest = after.get(end + 1..).unwrap_or_default();
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// `${x_dir}` is the folder holding `${x}`, such as a game's folder from its executable.
+fn folder_of(name: &str, vars: &BTreeMap<String, String>) -> Result<String, CompileError> {
+    let unknown = |n: &str| CompileError::UnknownVar(n.to_string());
+    let base = name.strip_suffix("_dir").ok_or_else(|| unknown(name))?;
+    let path = vars.get(base).ok_or_else(|| unknown(base))?;
+    Ok(Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 /// `map`, `map_dir`, `map_name`, `sdk_dir` and `cpu_count`.
@@ -217,6 +228,9 @@ steps = [{ export = "vmf", to = "${dir}/x.vmf" }]
         assert_eq!(expand("plain $ text", &vars).unwrap(), "plain $ text");
         assert!(matches!(expand("${missing}", &vars), Err(CompileError::UnknownVar(v)) if v == "missing"));
         assert!(matches!(expand("${a", &vars), Err(CompileError::Unclosed(_))));
+        let game = BTreeMap::from([("game".to_string(), "/games/SurfsUp/SurfsUp.x86_64".to_string())]);
+        assert_eq!(expand("${game_dir}/Maps", &game).unwrap(), "/games/SurfsUp/Maps", "a path's folder comes with it");
+        assert!(matches!(expand("${maps_dir}", &game), Err(CompileError::UnknownVar(v)) if v == "maps"), "the unset path is named");
         assert_eq!(builtin_vars(Path::new("/maps/surf_x.mcmap"), Path::new("/sdk"))["map_name"], "surf_x");
     }
 

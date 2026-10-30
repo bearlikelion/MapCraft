@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use mapcraft_geom::DVec3;
 use mapcraft_map::{BlendRole, NodeKind};
 use mapcraft_plugin_host::{Channel, ChannelMap, Context, Host, MaterialInfo, Pbr, Plugin};
 use mapcraft_sdk::Vfs;
@@ -41,6 +42,14 @@ fn surf_ramp_and_bhop() {
     assert!(b.faces.iter().any(|f| f.material == "ramps-orange1"), "the surf face takes the surf material");
     assert!(b.faces.iter().any(|f| f.material == "dev/grid"), "other faces fall back to the current material");
 
+    let mut trimmed = params.clone();
+    trimmed["trim_top"] = json!(64.0);
+    trimmed["trim_material"] = json!("trim");
+    let out = p.run("surf_ramp", &trimmed, &ctx()).unwrap();
+    assert_eq!(out.len(), 2, "the ramp and its trim");
+    assert!(matches!(&out[1].kind, NodeKind::Entity(e) if e.classname == "func_illusionary"), "trim is drawn but never collides");
+    assert!(out[1].children.iter().all(|c| matches!(&c.kind, NodeKind::Brush(b) if b.faces.iter().all(|f| f.material == "trim"))));
+
     params["shape"] = json!("Right");
     params["smoothness"] = json!(8.0);
     assert_eq!(p.run("surf_ramp", &params, &ctx()).unwrap().len(), 8);
@@ -62,6 +71,11 @@ fn surf_ramp_and_bhop() {
     let bhop = p.manifest.commands.iter().find(|c| c.id == "bhop").unwrap().defaults();
     assert_eq!(p.run("bhop", &bhop, &ctx()).unwrap().len(), 30);
     assert!(p.run("nope", &bhop, &ctx()).is_err());
+
+    let fitted = p.scale_params("surf_ramp", &ramp.defaults(), DVec3::new(2.0, 1.0, 1.5)).unwrap().unwrap();
+    assert_eq!((fitted["size"].as_f64(), fitted["height"].as_f64(), fitted["shape"].as_str()), (Some(2048.0), Some(816.0), Some("Straight")));
+    assert!(fitted["trim_depth"].as_f64().is_some_and(|d| d > 1.0), "trim depth follows the slab: {}", fitted["trim_depth"]);
+    assert!(p.scale_params("bhop", &bhop, DVec3::splat(2.0)).unwrap().is_none(), "a generator the plugin cannot fit keeps its stretch");
 }
 
 #[test]
@@ -93,6 +107,7 @@ fn godot_materials() {
     let host = Host::new().unwrap();
     let Some(mut p) = load(&host, "godot", Vfs::new(vec![dir.path().into()])) else { return };
     assert!(p.manifest.materials);
+    assert!(p.scale_params("any", &json!({}), DVec3::ONE).unwrap().is_none(), "plugins built without `resize` still load");
     let pbr = |normal: Option<&str>, normal_dx, roughness_value, metallic_value| Pbr {
         normal: normal.map(String::from),
         normal_dx,

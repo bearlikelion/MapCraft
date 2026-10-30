@@ -41,17 +41,17 @@ Besides the folders it always searches, MapCraft reads SDKs from each folder in 
 
 ## Release packages
 
-The packaging scripts write to `dist/`; the first three build the plugins and the editor first.
+The packaging scripts write to `dist/`; the first three build the editor first.
+The packages hold no SDKs: on its first launch MapCraft offers to install one from the [SDK registry](sdk-registry.md#the-first-launch), so the plugins and the `sdks/` submodule are not needed to package it.
 
 - `packaging/appimage.sh` writes `MapCraft-x86_64.AppImage`.
-  It needs `appimagetool` on `PATH`, or its path in `APPIMAGETOOL`, and puts the SDKs in `usr/share/mapcraft/sdks`.
+  It needs `appimagetool` on `PATH`, or its path in `APPIMAGETOOL`.
 - `packaging/windows-zip.sh [target]` writes `MapCraft-windows-x86_64.zip`.
-  It cross builds for `x86_64-pc-windows-gnu` (MinGW) unless given a target, and puts the SDKs in an `sdks` folder beside `MapCraft.exe`.
-- `packaging/macos-app.sh` writes `MapCraft-macos.zip`, a universal (Apple Silicon and Intel) `MapCraft.app` with the SDKs in `Contents/Resources/sdks`.
+  It cross builds for `x86_64-pc-windows-gnu` (MinGW) unless given a target.
+- `packaging/macos-app.sh` writes `MapCraft-macos.zip`, a universal (Apple Silicon and Intel) `MapCraft.app`.
   It runs on a Mac with the `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets, joins the two builds with `lipo`, makes the icon with `iconutil`, and signs the app ad hoc, since Apple Silicon only runs signed code.
 - `packaging/godot-addon.sh` writes `MapCraft-godot-addon.zip` from `godot/addons/mapcraft`, after `godot/build.sh` has built its libraries.
 
-Only folders of `sdks/` that hold an `sdk.toml` ship.
 Pushing a `v*` tag runs the Release workflow, which builds the AppImage on Ubuntu 22.04 (to keep the glibc requirement low), the Windows zip with MSVC, the macOS app, and the Godot addon with its Linux, Windows and macOS libraries (the macOS one built on a Mac), then publishes all four as a GitHub release.
 Running the workflow by hand builds everything without publishing, to try a release first.
 

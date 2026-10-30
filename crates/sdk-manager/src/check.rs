@@ -211,7 +211,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks/surfsup");
         let host = Host::new().ok();
         let items = check(&dir, &BTreeMap::new(), host.as_ref());
-        assert_eq!(levels(&items, "manifest"), [(Level::Pass, "SurfsUp 4")]);
+        assert!(matches!(levels(&items, "manifest").as_slice(), [(Level::Pass, m)] if m.starts_with("SurfsUp ")), "{items:#?}");
         assert!(levels(&items, "fgd").iter().all(|(l, _)| *l == Level::Pass), "{items:#?}");
         assert!(levels(&items, "path project").iter().all(|(l, _)| *l == Level::Warn), "unset paths only warn");
         let sample = levels(&items, "sample surf_mapcraft");

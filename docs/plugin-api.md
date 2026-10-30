@@ -19,6 +19,8 @@ A plugin exports eight functions:
 | `validate` | Checks the map and returns problems for Check for Problems |
 | `load-model` | Reads a model a point entity names, for the views |
 
+A plugin built against the `scalable-plugin` world also exports `resize.scale-params`, which lets its generators follow a resize (see [Generator groups](#generator-groups)).
+
 It can call five host functions:
 
 | Import | Purpose |
@@ -70,7 +72,16 @@ A displacement on a face without exactly four corners is kept but draws and expo
 A command with `generator: true` puts its output in a group that remembers the plugin, the command, the parameters and where the group sits.
 Selecting the group shows the parameters in the inspector; changing one runs the command again and replaces the group's contents, as one undo step per edit.
 Moving or turning the group moves the generator with it.
-Exporters and engine importers see ordinary brushes, so a map made with a generator does not need the plugin to load.
+The output can hold entities with their own brushes too, such as the Surf Ramp's `func_illusionary` trim.
+Exporters and engine importers see ordinary brushes and entities, so a map made with a generator does not need the plugin to load.
+
+Resizing the group in the views stretches its output, and the group keeps that stretch for every rebuild, so changing a parameter afterwards keeps the new size.
+A plugin can fold a resize into the parameters instead, so the inspector shows the new size: build it against the `scalable-plugin` world, which is `plugin` plus the `resize` interface, and implement `scale-params`.
+When a resize ends, the editor calls it with the command, its parameters and how far the resize stretched each of the output's own axes (2 is twice as long), then rebuilds the group from the parameters it returns, in the same undo step as the resize.
+Return parameters whose output is the stretched output, or as near to it as the command allows; parameters left out keep their values.
+Return `none` to keep the stretch on the group, for example for a mirror (a negative scale) or a layout that cannot follow it.
+The editor only asks about stretches along the output's own axes; a tilt or a skew always stays on the group.
+The SurfsUp plugin's Surf Ramp is a complete example.
 
 ## Importers
 
@@ -218,3 +229,4 @@ The WIT package is `mapcraft:plugin@0.3.0`.
 Until 1.0 the API may change between releases, and a plugin built for another API version is not loaded and the Output panel asks for it to be rebuilt.
 Version 0.2.0 added face `attrs` and `disp` and material `uv-scale`, `pixelated` and `blend`, so a plugin built for 0.1, in an SDK or in the user's plugins folder, is not loaded and the Output panel asks for it to be rebuilt against 0.2.
 Version 0.3.0 added material `folder`, so a plugin built for 0.2 is not loaded until it is rebuilt against 0.3; a plugin that does not group its materials sets it to `none`.
+The `resize` interface and the `scalable-plugin` world are an optional part of 0.3.0: the editor uses `resize` when a plugin exports it, so plugins built against `plugin` load as before.

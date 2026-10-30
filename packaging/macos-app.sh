@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/MapCraft-macos.zip: a universal (Apple Silicon and Intel) MapCraft.app with the SDKs and their plugins.
+# Builds dist/MapCraft-macos.zip: a universal (Apple Silicon and Intel) MapCraft.app; SDKs install from the SDK Manager.
 # Runs on macOS with the aarch64-apple-darwin and x86_64-apple-darwin Rust targets installed.
 set -euo pipefail
 
@@ -7,19 +7,14 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 version="${MAPCRAFT_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 
-cargo xtask plugins
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
 	cargo build --release -p mapcraft --target "$target"
 done
 
 app=dist/MapCraft.app
 rm -rf "$app" dist/MapCraft-macos.zip
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/sdks"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create -output "$app/Contents/MacOS/mapcraft" target/aarch64-apple-darwin/release/mapcraft target/x86_64-apple-darwin/release/mapcraft
-# The editor looks for Contents/Resources/sdks beside Contents/MacOS; only the SDK folders of the sdks repository ship.
-for sdk in sdks/*/; do
-	[ -f "$sdk/sdk.toml" ] && cp -r "$sdk" "$app/Contents/Resources/sdks/"
-done
 cp LICENSE "$app/Contents/Resources/LICENSE.txt"
 
 icons=dist/mapcraft.iconset

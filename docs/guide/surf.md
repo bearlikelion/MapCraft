@@ -1,7 +1,8 @@
 # Surf ramps and bhop
 
-The SurfsUp SDK adds two shapes to the Block tool: **Surf Ramp** and **Bhop Platforms**.
-Both stay editable after you place them.
+Surf ramps are the steep slopes players slide along, and bhop (bunny hop) platforms are the blocks they jump between.
+The SurfsUp SDK adds both to the Block tool as two shapes: **Surf Ramp** and **Bhop Platforms**.
+Both stay editable after you place them, so you can keep tuning a ramp until it plays right.
 
 ## Place a ramp
 
@@ -9,19 +10,41 @@ Both stay editable after you place them.
 2. Set **Facing** in the inspector, or click the turn icon next to it to add a quarter turn.
 3. Click in a view to place it: on the ground or a face in the 3D view, or at the last block's depth in a 2D view.
 
-A yellow ghost shows where it will land, and stays where the pointer left it while you change settings.
+A yellow ghost shows where the ramp will land.
+It stays where the pointer left it while you change settings.
 `Alt+B` switches back to the plain shapes.
-The **Plugins** menu makes the same ramps from a window instead.
 
-![Surf Ramp picked in the top bar (1), the 90° turn button (2) and the yellow ghost in the Top view (3)](img/first-ramp.webp)
+![Surf Ramp picked in the top bar (1), the quarter-turn icon next to Facing (2) and the yellow ghost in the Top view (3)](img/first-ramp.webp)
+
+> [!TIP]
+> The **Plugins** menu makes the same ramps from a window instead.
 
 ## Edit a placed ramp
 
 A placed ramp is a group that remembers its settings.
-Select it with the Select tool (`Q`) and change its settings in the inspector: the ramp rebuilds as you type, as one undo step.
+Select it with the Select tool (`Q`) and change its settings in the inspector.
+The ramp rebuilds as you type, all in one undo step.
 Each shape also remembers the settings you last used, until you quit.
 
-![A curved ramp selected in all four views, with its Shape, Turn, Length, Angle, Rise, Bank and Segments outlined in the inspector](img/surf-ramp-settings.webp)
+You can also resize it in a view, with the Select tool's handles or the Scale tool.
+When you let go, the settings take the new size, in the same undo step:
+
+- **Length or radius**, **Gap**, **Lead in**, **Lead out** and **End slope** follow the ramp's length.
+- **Width** and **Ridge** follow its width.
+- **Height**, **Tip** and **Drop** follow its height, and **Rise** does on a spiral.
+- **Thickness** follows the slab on a thin ramp.
+- **Trim top** and **Trim bottom** follow the length of the surf face, and **Trim depth** scales like **Thickness**.
+
+**Angle**, **Bank**, **Shape** and **Segments** stay as you set them.
+A taller or narrower box makes the surf face steeper, so check [Keep it surfable](#keep-it-surfable) after a big change.
+A curve stays round: it grows by whichever side you stretched more, so stretching a 90 degree turn longer also makes it wider.
+Moving and turning a ramp keep its settings as they are.
+
+A ramp that is mirrored, tilted, or resized at an angle to its own direction keeps that change on top of its settings, and the inspector says so; changing a setting keeps it too.
+Bhop platforms work the same way: a resized group keeps its new size when you change a setting.
+Vertex edits, clips and face drags on a ramp's brushes are replaced the next time you change a setting, so ungroup the ramp first to keep them.
+
+![A curved ramp selected in the Top and Side views, with its Shape, Turn, Length, Angle, Rise, Bank and Segments outlined in the inspector](img/surf-ramp-settings.webp)
 
 ## Pick a shape
 
@@ -44,6 +67,9 @@ Each shape also remembers the settings you last used, until you quit.
 
 ## Shape the cross-section
 
+The cross-section is the ramp's profile, what you would see if you cut straight across it.
+These settings shape it:
+
 | Setting | Does |
 |---|---|
 | **Style** | **Wedge** is a solid ramp; **Thin** is a slab under the surf face |
@@ -60,16 +86,35 @@ Each shape also remembers the settings you last used, until you quit.
 | **Surf**, **Side** and **Bottom material** | Empty uses the current material; the bucket (**Use current material**) fills one in |
 | **UV scale** | Map units per texel; the texture runs along the ramp and down its faces, as SURGE lays it out |
 
+## Add trim
+
+Trim is a strip of another material along the top or bottom of each surf face, such as a metal edge on a pointy ramp.
+The ramp underneath still does the colliding, so trim never changes how the ramp surfs.
+
+| Setting | Does |
+|---|---|
+| **Trim top** | How far down each surf face the top trim reaches; it also caps a pointy peak, and covers a flat ridge whole |
+| **Trim bottom** | How far up each surf face the bottom trim reaches from its low edge; it covers an Inside trough's floor whole |
+| **Trim depth** | How far the trim stands off the surf face |
+| **Trim material** | Empty uses the side material |
+
+**Trim top** and **Trim bottom** are 0 by default, which means no trim; **Trim depth** is 1.
+The trim follows curves, gaps and both sides of a ramp.
+It is a `func_illusionary` in the ramp's group, so players see it but pass through it, and SurfsUp draws it without collision.
+Keep **Trim depth** small: players surf on the ramp underneath, so their feet sit that far inside the trim.
+
 ## Keep it surfable
 
-A face is surfable when it is steeper than 45.573 degrees; anything flatter is floor players can walk on.
+A face is surfable when it is steeper than 45.573 degrees.
+Anything flatter is floor that players can walk on.
 The default ramp is 544 tall and 384 wide with a 64 tip, about 51 degrees.
 
 If a ramp comes out too flat, the Output panel (`Ctrl+5`) says so.
 Make it taller or narrower to steepen it.
 
 > [!NOTE]
-> The angle is `atan((height - tip) / width)`. [Surf mapping](../surf-mapping.md) has the geometry behind it.
+> The angle is `atan((height - tip) / width)`.
+> [Surf mapping](../surf-mapping.md) has the geometry behind it.
 
 ## Smooth curves
 
@@ -79,7 +124,8 @@ A 90 degree turn needs 18 segments or more.
 The Output panel warns when a curve has too few.
 
 > [!TIP]
-> In Godot, the SurfsUp entity map turns on trimesh collision, so the seams between pieces cannot catch players. See [Play it in Godot](godot.md#import-options).
+> In Godot, the SurfsUp entity map turns on trimesh collision, so the seams between pieces cannot catch players.
+> See [Play it in Godot](godot.md#import-options).
 
 ![A curved ramp in the Top view built from 14 pieces, with Segments outlined in the inspector](img/surf-segments.webp)
 
@@ -89,16 +135,24 @@ The Output panel warns when a curve has too few.
 2. Pick a **Pattern**: **Linear**, **Grid** or **Spiral**.
 3. Click in a view to place them.
 
-**Platforms** sets how many.
-Each pattern has its own settings, named after it in the inspector, such as **Spacing** and **Rise** for Linear or **Radius** and **Rise per turn** for Spiral.
-**Shape** makes them boxes, triangles or cylinders, **Size variation** and **Jitter** make them uneven, and **Face the path** turns each one toward the next.
+**Platforms** sets how many there are.
+The inspector lists every pattern's settings together in the **Bhop Platforms** section; hover one to see which pattern it belongs to.
+Linear uses **Spacing** and **Rise**, for example, and Spiral uses **Radius** and **Rise per turn**.
+
+To vary them:
+
+- **Shape** makes them boxes, triangles or cylinders.
+- **Size variation** and **Jitter** make them uneven.
+- **Face the path** turns each one toward the next.
 
 ![Thirty orange platforms climbing in a spiral, with the Spiral pattern outlined in the inspector](img/surf-bhop.webp)
 
 ## Zones
 
 Zones are see-through boxes that the game watches: start and finish timers, checkpoints, teleports and kill boxes.
-[Your first map](first-map.md#6-add-start-and-finish-zones) shows how to make one, and [Entities and zones](entities.md) lists every zone class.
+[Zone from Selection](entities.md#zone-from-selection) fits one to a platform, and [Entities and zones](entities.md) lists every zone class.
+
+A few rules keep them working:
 
 - Make zones at least 256 units tall, so players cannot jump over them.
 - Make them at least 64 units thick, so fast players cannot skip through them between ticks.

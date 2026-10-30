@@ -12,8 +12,12 @@ my-game/
   fgd/              entity definitions the manifest lists
   plugins/<id>.wasm one file per id in `plugins`
   samples/*.mcmap   example maps; the SDK Manager's Test button opens the first one
+  logo.png          or logo.jpg, shown on the SDK's card; 460 by 215 pixels fits best
   README.md         what the SDK is for and how to set it up
 ```
+
+The logo is optional, PNG or JPEG only, at most 1 MiB; there is no `sdk.toml` key for it.
+`mapcraft-cli sdk package` adds it to the registry entry, as described in [`sdk-registry.md`](sdk-registry.md#logos).
 
 File > SDK Manager… lists every SDK MapCraft found, checks them, installs more from registries and makes new ones from a template.
 `mapcraft-cli sdk new <dir> --id <id> --name <name>` writes the same template.
@@ -47,15 +51,15 @@ class = "prop_static"
 [paths.project]
 prompt = "SurfsUp Godot project folder"
 
-[paths.godot]
-prompt = "Godot editor executable"
+[paths.game]
+prompt = "SurfsUp game executable"
 kind = "file"
 
 [[compile]]
-name = "Build and play"
+name = "Play in SurfsUp"
 steps = [
-    { copy = "${map}", to = "${project}/maps/${map_name}.mcmap" },
-    { run = "${godot}", args = ["--path", "${project}", "--", "+map", "${map_name}"] },
+    { copy = "${map}", to = "${game_dir}/Maps/${map_name}.mcmap" },
+    { run = "${game}", args = ["+map", "${map_name}"] },
 ]
 ```
 
@@ -102,6 +106,7 @@ Besides the `paths` the user set, these are always available:
 | `${map_name}` | Its file name without extension |
 | `${sdk_dir}` | The SDK folder |
 | `${cpu_count}` | Number of CPU threads |
+| `${<path>_dir}` | The folder holding one of the `paths`, such as `${game_dir}` for the folder of the `game` executable |
 | `${bake_dir}` | The editor's bake folder, where bake profiles write; list it in `files.roots` so the plugin that reads the bake can |
 
 An unknown variable stops the compile with an error instead of expanding to nothing.
@@ -129,7 +134,8 @@ Until the new bake lands after a change to the brushes, the Lit view draws the b
 MapCraft searches these folders in order and uses the first SDK with a given id:
 
 1. `sdks` in the user's data folder, where the SDK Manager installs and creates SDKs.
-2. An `sdks` folder beside the executable or up to four folders above it, and `../share/mapcraft/sdks`.
-3. The `sdks` folder of the source tree MapCraft was built from.
-4. Folders in `MAPCRAFT_SDK_PATH`.
-5. Extra SDK folders from Preferences.
+2. The `sdks` folder of the source tree MapCraft was built from.
+3. Folders in `MAPCRAFT_SDK_PATH`.
+4. Extra SDK folders from Preferences.
+
+Release downloads hold no SDKs, so a fresh install finds none and opens the Add an SDK window described in [`sdk-registry.md`](sdk-registry.md#the-first-launch).

@@ -64,7 +64,7 @@ Worldspawn keys, as ericw-tools reads them:
 
 ## Godot sky and sun
 
-A `light_environment` without `_light` is read the way the MapCraft Godot addon builds its sky and sun (see the [Godot addon](../godot/README.md#entity-maps)), so tuning its keys in the inspector previews the look the game gets.
+A `light_environment` without `_light` is read the way the MapCraft Godot addon builds its sky and sun (see the [Godot addon](../godot/README.md#sky-and-sun)), so tuning its keys in the inspector previews the look the game gets.
 
 - Lit draws Godot's procedural sky behind the map from `sky_top_color`, `sky_horizon_color` and `ground_color`, with a glow around the sun.
 - The sun shines along `angles`, pitch in degrees below the horizon, with `sun_color` and `sun_energy`.

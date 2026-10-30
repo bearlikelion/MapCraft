@@ -70,6 +70,8 @@ pub struct Session {
     pub(crate) heightmap: Option<(Vec<(NodeId, FaceId)>, Vec<Vec<f64>>, bool)>,
     /// Something the last edit wants the user to know, such as displacements it flattened.
     pub notice: Option<String>,
+    /// Stretched generator groups the last transform touched, for the editor to fold into their parameters with [`Session::refit`].
+    pub stretched: BTreeSet<NodeId>,
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     next_serial: u64,
@@ -103,6 +105,7 @@ impl Session {
             paint_stroke: None,
             heightmap: None,
             notice: None,
+            stretched: BTreeSet::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             next_serial: 1,
@@ -131,7 +134,8 @@ impl Session {
         Ok(())
     }
 
-    fn current_serial(&self) -> u64 {
+    /// The last undo step's serial, which no other step shares; 0 with none.
+    pub fn current_serial(&self) -> u64 {
         self.undo.last().map_or(0, |t| t.serial)
     }
 
@@ -173,17 +177,9 @@ impl Session {
         // Any edit makes a paint stroke's starting weights and the last heightmap stale; their own edits restore them after storing.
         self.paint_stroke = None;
         self.heightmap = None;
+        self.stretched.clear();
         let before = self.selection.clone();
-        let mut touched: BTreeSet<NodeId> = changes.nodes.keys().copied().collect();
-        let mut inverse = self.map.apply(changes);
-        // Curve groups follow their sources in the same step; a few rounds let one feed another.
-        for _ in 0..4 {
-            let Some(rebuilt) = crate::curves::follow(&self.map, &touched) else { break };
-            touched = rebuilt.nodes.keys().copied().collect();
-            let mut both = self.map.apply(rebuilt);
-            both.merge(inverse);
-            inverse = both;
-        }
+        let mut inverse = self.apply_following(changes);
         self.redo.clear();
         if let (Some(key), Some(top)) = (key, self.undo.last_mut())
             && top.coalesce.as_deref() == Some(key)
@@ -201,6 +197,34 @@ impl Session {
         self.prune_selection();
     }
 
+    /// Applies `changes` and lets curve groups follow their sources; returns the inverse of both.
+    fn apply_following(&mut self, changes: Changes) -> Changes {
+        let mut touched: BTreeSet<NodeId> = changes.nodes.keys().copied().collect();
+        let mut inverse = self.map.apply(changes);
+        // A few rounds let one curve feed another.
+        for _ in 0..4 {
+            let Some(rebuilt) = crate::curves::follow(&self.map, &touched) else { break };
+            touched = rebuilt.nodes.keys().copied().collect();
+            let mut both = self.map.apply(rebuilt);
+            both.merge(inverse);
+            inverse = both;
+        }
+        inverse
+    }
+
+    /// Folds `changes` into the last undo step, the edit that made them necessary; a step of its own once that one is saved.
+    pub(crate) fn amend(&mut self, label: &str, changes: Changes) {
+        if self.undo.last().is_none_or(|t| t.serial == self.saved_serial) {
+            return self.apply(label, changes);
+        }
+        let mut inverse = self.apply_following(changes);
+        if let Some(top) = self.undo.last_mut() {
+            inverse.merge(std::mem::take(&mut top.inverse));
+            top.inverse = inverse;
+        }
+        self.prune_selection();
+    }
+
     /// Ends a coalescing run so the next edit starts a new undo step.
     pub fn end_coalesce(&mut self) {
         self.paint_stroke = None;
@@ -212,6 +236,7 @@ impl Session {
     /// Reverts the run of edits under `key` without a redo step, as when a drag is cancelled; false when the last edit is not under it.
     pub fn cancel_coalesce(&mut self, key: &str) -> bool {
         self.paint_stroke = None;
+        self.stretched.clear();
         let mut cancelled = false;
         while self.undo.last().is_some_and(|t| t.coalesce.as_deref() == Some(key)) {
             let Some(t) = self.undo.pop() else { break };
@@ -226,6 +251,7 @@ impl Session {
 
     pub fn undo(&mut self) -> bool {
         self.paint_stroke = None;
+        self.stretched.clear();
         self.heightmap = None;
         let Some(t) = self.undo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);
@@ -237,6 +263,7 @@ impl Session {
 
     pub fn redo(&mut self) -> bool {
         self.paint_stroke = None;
+        self.stretched.clear();
         self.heightmap = None;
         let Some(t) = self.redo.pop() else { return false };
         let inverse = self.map.apply(t.inverse);

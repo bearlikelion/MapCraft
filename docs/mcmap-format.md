@@ -18,7 +18,8 @@ This page is the reference for importers such as the Godot extension, a Unity im
 
 - `format` is always `mapcraft.map`.
 - `schema_version` is an integer; readers refuse versions newer than they know.
-  MapCraft writes 2 when some displacement carries blend data (`blend` weights or a second layer, see Displacements), so older builds refuse a painted map instead of dropping its paint on save; every other map is written as 1.
+  MapCraft writes 3 when the map has a boolean group (see Boolean groups), so older builds refuse it instead of opening an empty group.
+  Otherwise it writes 2 when some displacement carries blend data (`blend` weights or a second layer, see Displacements), so older builds refuse a painted map instead of dropping its paint on save; every other map is written as 1.
 - `sdk` is the id of the SDK the map was made with and may be missing.
 - `view` holds editor state (cameras, layout) and is not part of the map.
 - `tags` is a list of `{id, name, color, parent, hidden}`; nodes list the tag ids they carry.
@@ -28,21 +29,22 @@ This page is the reference for importers such as the Godot extension, a Unity im
 ## Nodes
 
 `map.root` is a tree of nodes.
-Every node has an `id` (unique integer), a `type`, and optionally `children`, `tags`, `hidden`, `locked`, `extra` and `derived`.
+Every node has an `id` (unique integer), a `type`, and optionally `children`, `tags`, `hidden`, `locked`, `extra`, `derived` and `sources`.
 
 | `type` | Fields | Children |
 |---|---|---|
 | `world` | `classname` (`worldspawn`), `properties` | anything except `world` |
 | `layer` | `name`, `color`, `omit_from_export` | groups, entities, brushes, prefabs, paths |
-| `group` | `name`, `generator`, `mirror`, `link`, `curve` | groups, entities, brushes, prefabs, paths |
+| `group` | `name`, `generator`, `mirror`, `link`, `curve`, `boolean` | groups, entities, brushes, prefabs, paths |
 | `entity` | `classname`, `properties`, `connections` | brushes (a brush entity) or none (a point entity) |
-| `brush` | `faces` | none |
+| `brush` | `faces`, `operation` | none |
 | `prefab` | `path`, `origin`, `angles`, `overrides` | none |
 | `path` | `points`, `closed` | none |
 
 `properties` is a list of `[key, value]` string pairs in file order; keys can repeat in imported data.
 `connections` is a list of `{output, target, input, param, delay, times_to_fire}`; `times_to_fire` of -1 means every time.
-A `generator` (`{plugin, command, params, origin, angles}`) marks a group whose children were produced by a plugin; importers treat them as ordinary children.
+A `generator` (`{plugin, command, params, origin, angles, stretch}`) marks a group whose children were produced by a plugin; importers treat them as ordinary children.
+`stretch`, when present, is a 3x3 matrix as nine numbers, column by column, applied to the plugin's output before `origin` and `angles` place it: a resize, tilt or mirror that the parameters do not describe.
 A prefab's `path` is relative to the map that contains it; `angles` are pitch, yaw and roll in degrees.
 
 ## Mirror groups
@@ -69,6 +71,22 @@ Without `source` the group is an original, and `frame` moves with it.
 With `source` (a group id) the group is a copy: its children are the source's children moved by `frame` times the inverse of the source's frame, written like mirror copies as subtrees flagged `"derived": true`.
 Importers treat them like any other nodes; MapCraft drops them on load and builds them again.
 A copy of a group that holds copies gets those copies' contents too, and a copy inside a mirror group is mirrored with it.
+
+## Boolean groups
+
+A group with `"boolean": true` cuts and adds brushes: its own brushes each carry an `operation`, `"add"` (the default, left out) or `"subtract"`, and the group stands for every Add brush less every Subtract brush.
+The writer emits that result as ordinary convex brushes in the group's `children`, each flagged `"derived": true`, with ids and face ids numbered after the map's own.
+The group's own brushes go in `sources`, a list of nodes beside `children` that importers skip.
+Importers need not know about booleans: walking `children` as usual gives the result and never a Subtract brush.
+MapCraft reads `sources` back as the group's first children, drops the derived ones, and builds the result again.
+
+How the result is made:
+
+- Each Add brush is cut by each Subtract brush in turn; the order of the brushes does not matter.
+  Add brushes are not merged with each other, so two that overlap give pieces that overlap.
+- A face opened by a cut is the Subtract brush's face turned around, with its material and texture axes.
+- Other children of the group, such as entities and groups, are written as usual and take no part.
+- A linked copy of a boolean group cuts its copied brushes the same way.
 
 ## Paths and curve groups
 
@@ -115,6 +133,7 @@ Its children are written as ordinary nodes, so importers treat it like any other
   This is the Valve220 and VMF convention.
 - `rotation` is informational; the axes already include it.
 - `attrs` holds per-face game attributes such as `lightmapscale` or `smoothing_groups` as strings.
+  `contents` holds content flags, which the editor's face transfer leaves alone.
   `anti_tile` set to `macro` or `hex` hides the texture's repetition in MapCraft's views and in the Godot importer; any other value, or none, means off, and writers leave the key out rather than writing `off`.
 - Face `id`s are unique within a map and stable across saves.
 

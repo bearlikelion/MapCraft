@@ -1,6 +1,6 @@
 # Hotkeys
 
-These are the keys to learn first.
+These are the keys worth learning first, since you will use them on every map.
 [Keyboard shortcuts](shortcuts.md) lists every shortcut and shows how to change them.
 
 ![A keyboard with MapCraft's hotkeys colored by kind: the tools in orange on the left hand side, the view keys in blue, hide and show in purple, the grid keys in green, and Escape, F1, F9, Enter, Delete and the arrow keys in white](img/hotkeys-keyboard.webp#wide)
@@ -12,6 +12,8 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 ![The MapCraft hotkeys cheat sheet: every key in five columns, grouped as Tools, Tool options, Sculpt, Run and help, File, Edit, Panels, Brushes, Curves, Organize, Prefabs, View, Render and grid, Hide and lock, Fly and pan, UV editor, Vertex tool, and Mouse and fixed keys](img/hotkeys-cheatsheet.webp#wide "Click the sheet to open it full size for printing.")
 
 ## Pick a tool
+
+Most tool keys sit on the left hand side of the keyboard, so you can switch tools without letting go of the mouse.
 
 | Key | Tool |
 |---|---|
@@ -52,9 +54,10 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 | `Ctrl+D` | Duplicates the selection |
 | `Delete` | Deletes the selection; in the Clip tool it takes back the last clip point, and in the Vertex tool it deletes the picked corners |
 | `Ctrl+A`, `Ctrl+Shift+A` | Selects everything, or nothing |
-| `Alt+1`, `Alt+2`, `Alt+3` | Clicks pick whole groups, objects, or single brushes |
+| `Alt+1`, `Alt+2`, `Alt+3` | Makes clicks pick whole groups, objects, or single brushes |
 | Arrow keys | Nudge the selection one grid step in the 2D view under the pointer; `Shift` nudges one unit and `Ctrl` nudges a copy |
 | `Ctrl` + drag | Moves a copy of the selection |
+| `Alt` + drag | Moves the selection up and down in the 3D view |
 | `End` | Drops the selection onto the floor below it |
 | `Ctrl+G`, `Ctrl+U` | Group, ungroup |
 | `H`, `I`, `U` | Hide the selection, show only the selection, show everything |
@@ -80,5 +83,5 @@ The cheat sheet shows every key in the MapCraft preset on one screen, grouped by
 ## Coming from Hammer or TrenchBroom
 
 The keys on this page are the MapCraft preset.
-To use Hammer or TrenchBroom keys instead, open **Edit > Preferences** (`Ctrl+Comma`) and pick the **Hammer** or **TrenchBroom** preset under **Shortcuts**.
+If your hands already know Hammer or TrenchBroom, you can switch: open **Edit > Preferences** (`Ctrl+Comma`) and pick the **Hammer** or **TrenchBroom** preset under **Shortcuts**.
 [Keyboard shortcuts](shortcuts.md#change-a-shortcut) shows how.

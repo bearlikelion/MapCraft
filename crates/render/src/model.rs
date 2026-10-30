@@ -128,12 +128,67 @@ fn percent_decoded(uri: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-struct Doc<'a> {
-    root: json::Root,
+pub(crate) struct Doc<'a> {
+    pub root: json::Root,
     buffers: Vec<Option<Cow<'a, [u8]>>>,
 }
 
-impl Doc<'_> {
+impl<'a> Doc<'a> {
+    /// A `.glb` or `.gltf` file with its buffers; `read` fetches the files its URIs name.
+    pub fn parse(bytes: &'a [u8], read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Self, String> {
+        let (text, bin) = if bytes.starts_with(b"glTF") { split_glb(bytes)? } else { (bytes, None) };
+        let root = json::Root::from_slice(text).map_err(|e| format!("not glTF: {e}"))?;
+        let buffers = root
+            .buffers
+            .iter()
+            .enumerate()
+            .map(|(i, b)| match &b.uri {
+                None if i == 0 => bin.map(Cow::Borrowed),
+                None => None,
+                Some(uri) => data_uri(uri).or_else(|| read(&percent_decoded(uri))).map(Cow::Owned),
+            })
+            .collect();
+        Ok(Self { root, buffers })
+    }
+
+    /// Each node of the scene that has a mesh, and where it sits in map space: glTF (x, y, z) at
+    /// map (x, -z, y) times `units_per_meter`.
+    pub fn meshes(&self, units_per_meter: f64) -> Result<Vec<(&json::Node, &json::Mesh, DMat4)>, String> {
+        let scene = self.root.scene.and_then(|s| self.root.get(s)).or(self.root.scenes.first()).ok_or("no scene")?;
+        let to_map = DMat4::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let to_map = DMat4::from_scale(DVec3::splat(units_per_meter)) * to_map;
+        let mut out = Vec::new();
+        let mut left = MAX_NODES;
+        let mut stack: Vec<(json::Index<json::Node>, DMat4, usize)> = scene.nodes.iter().take(left).map(|n| (*n, to_map, 0)).collect();
+        while let Some((index, parent, depth)) = stack.pop() {
+            let Some(node) = self.root.get(index).filter(|_| depth < MAX_DEPTH) else { continue };
+            let at = parent * node_matrix(node);
+            let children = node.children.as_deref().unwrap_or_default();
+            let children = children.get(..left.min(children.len())).unwrap_or_default();
+            left -= children.len();
+            stack.extend(children.iter().map(|c| (*c, at, depth + 1)));
+            let Some(mesh) = node.mesh.and_then(|m| self.root.get(m)) else { continue };
+            // A skinned mesh ignores its node's transform; without its joints it shows in its bind pose.
+            out.push((node, mesh, if node.skin.is_some() { to_map } else { at }));
+        }
+        Ok(out)
+    }
+
+    /// A triangle primitive's positions and its triangles, leaving out those with an index out of range.
+    pub fn triangles(&self, prim: &json::mesh::Primitive) -> Result<Option<(Vec<DVec3>, Vec<[u32; 3]>)>, String> {
+        let positions = prim.attributes.get(&Checked::Valid(json::mesh::Semantic::Positions)).and_then(|a| self.read(*a, 3));
+        let (Checked::Valid(json::mesh::Mode::Triangles), Some(pos)) = (prim.mode, positions) else { return Ok(None) };
+        let pos: Vec<DVec3> = pos.as_chunks::<3>().0.iter().map(|p| DVec3::from_array(*p)).collect();
+        let n = pos.len();
+        let mut indices: Vec<u32> = match prim.indices {
+            Some(a) => self.read(a, 1).ok_or("unreadable indices")?.into_iter().map(|i| i as u32).collect(),
+            None => (0..n as u32).collect(),
+        };
+        indices.truncate(indices.len() / 3 * 3);
+        let tris = indices.as_chunks::<3>().0.iter().filter(|t| t.iter().all(|i| (*i as usize) < n)).copied().collect();
+        Ok(Some((pos, tris)))
+    }
+
     fn view(&self, index: json::Index<json::buffer::View>) -> Option<&[u8]> {
         let view = self.root.get(index)?;
         let data = self.buffers.get(view.buffer.value())?.as_deref()?;
@@ -142,7 +197,7 @@ impl Doc<'_> {
     }
 
     /// An accessor's first `width` components of each element; normalized integers become -1 to 1 or 0 to 1.
-    fn read(&self, index: json::Index<json::Accessor>, width: usize) -> Option<Vec<f64>> {
+    pub fn read(&self, index: json::Index<json::Accessor>, width: usize) -> Option<Vec<f64>> {
         let acc = self.root.get(index)?;
         let (Checked::Valid(ty), Checked::Valid(json::accessor::GenericComponentType(ct)), None) = (acc.type_, acc.component_type, &acc.sparse) else {
             return None;
@@ -167,7 +222,7 @@ impl Doc<'_> {
         Some(out)
     }
 
-    fn picture(&self, image: usize, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Picture> {
+    pub fn picture(&self, image: usize, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<Picture> {
         let img = self.root.images.get(image)?;
         let bytes: Cow<[u8]> = match (img.buffer_view, &img.uri) {
             (Some(v), _) => Cow::Borrowed(self.view(v)?),
@@ -207,23 +262,7 @@ fn node_matrix(node: &json::Node) -> DMat4 {
 /// glTF is Y up in meters; the model comes out Z up in map units, with glTF (x, y, z) at map
 /// (x, -z, y), the inverse of how the Godot importer turns map axes into Godot's.
 pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>>, units_per_meter: f64) -> Result<Model, String> {
-    let (text, bin) = if bytes.starts_with(b"glTF") { split_glb(bytes)? } else { (bytes, None) };
-    let root = json::Root::from_slice(text).map_err(|e| format!("not glTF: {e}"))?;
-    let buffers = root
-        .buffers
-        .iter()
-        .enumerate()
-        .map(|(i, b)| match &b.uri {
-            None if i == 0 => bin.map(Cow::Borrowed),
-            None => None,
-            Some(uri) => data_uri(uri).or_else(|| read(&percent_decoded(uri))).map(Cow::Owned),
-        })
-        .collect();
-    let doc = Doc { root, buffers };
-    let scene = doc.root.scene.and_then(|s| doc.root.get(s)).or(doc.root.scenes.first()).ok_or("no scene")?;
-    let to_map = DMat4::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-    let to_map = DMat4::from_scale(DVec3::splat(units_per_meter)) * to_map;
-
+    let doc = Doc::parse(bytes, read)?;
     let mut model = Model { name: name.to_string(), ..Model::default() };
     let mut pictures: Vec<(Option<usize>, usize)> = Vec::new();
     let mut texture_of = |image: Option<usize>, model: &mut Model| {
@@ -235,24 +274,12 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
         pictures.push((image, model.textures.len() - 1));
         model.textures.len() - 1
     };
-    let (mut triangles, mut visited) = (0usize, 0usize);
-    let mut stack: Vec<(json::Index<json::Node>, DMat4, usize)> = scene.nodes.iter().map(|n| (*n, to_map, 0)).collect();
-    while let Some((index, parent, depth)) = stack.pop() {
-        visited += 1;
-        let Some(node) = doc.root.get(index).filter(|_| depth < MAX_DEPTH && visited <= MAX_NODES) else { continue };
-        let at = parent * node_matrix(node);
-        stack.extend(node.children.iter().flatten().map(|c| (*c, at, depth + 1)));
-        let Some(mesh) = node.mesh.and_then(|m| doc.root.get(m)) else { continue };
-        // A skinned mesh ignores its node's transform; without its joints it shows in its bind pose.
-        let at = if node.skin.is_some() { to_map } else { at };
+    let mut triangles = 0usize;
+    for (_, mesh, at) in doc.meshes(units_per_meter)? {
         let turn = at.inverse().transpose();
         for prim in &mesh.primitives {
-            if prim.mode != Checked::Valid(json::mesh::Mode::Triangles) {
-                continue;
-            }
             let attr = |s: json::mesh::Semantic| prim.attributes.get(&Checked::Valid(s)).copied();
-            let Some(pos) = attr(json::mesh::Semantic::Positions).and_then(|a| doc.read(a, 3)) else { continue };
-            let pos = pos.as_chunks::<3>().0;
+            let Some((pos, tris)) = doc.triangles(prim)? else { continue };
             let n = pos.len();
             let material = prim.material.and_then(|m| doc.root.get(m));
             let pbr = material.map(|m| &m.pbr_metallic_roughness);
@@ -260,17 +287,11 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
             let image = base.and_then(|t| doc.root.get(t.index)).map(|t| t.source.value());
             let uvs = attr(json::mesh::Semantic::TexCoords(base.map_or(0, |t| t.tex_coord))).and_then(|a| doc.read(a, 2));
             let normals = attr(json::mesh::Semantic::Normals).and_then(|a| doc.read(a, 3)).filter(|v| v.len() == 3 * n);
-            let mut indices: Vec<u32> = match prim.indices {
-                Some(a) => doc.read(a, 1).ok_or("unreadable indices")?.into_iter().map(|i| i as u32).collect(),
-                None => (0..n as u32).collect(),
-            };
-            indices.truncate(indices.len() / 3 * 3);
-            let tris: Vec<[u32; 3]> = indices.as_chunks::<3>().0.iter().filter(|t| t.iter().all(|i| (*i as usize) < n)).copied().collect();
             triangles += tris.len();
             if triangles > MAX_TRIANGLES {
                 return Err(format!("more than {MAX_TRIANGLES} triangles"));
             }
-            let positions: Vec<DVec3> = pos.iter().map(|p| at.transform_point3(DVec3::from_array(*p))).collect();
+            let positions: Vec<DVec3> = pos.iter().map(|p| at.transform_point3(*p)).collect();
             let normals: Vec<[f32; 3]> = match normals {
                 Some(v) => {
                     v.as_chunks::<3>().0.iter().map(|n| turn.transform_vector3(DVec3::from_array(*n)).normalize_or(DVec3::Z).as_vec3().to_array()).collect()
@@ -479,6 +500,8 @@ pub(crate) mod tests {
         }
         let cyclic = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"children":[1]},{"children":[0]}]}"#;
         assert!(load_gltf("cyclic.gltf", cyclic.as_bytes(), &|_| None, 39.37).is_err());
+        let wide = format!(r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],"nodes":[{{"children":[{}]}}]}}"#, vec!["0"; 2000].join(","));
+        assert!(load_gltf("wide.gltf", wide.as_bytes(), &|_| None, 39.37).is_err(), "a node listing itself many times stays within the node cap");
         assert!(load_gltf("junk.gltf", b"{nope", &|_| None, 39.37).is_err());
     }
 

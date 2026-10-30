@@ -140,6 +140,7 @@ impl Mirror {
                 mirror: g.mirror.map(|m| m.transformed(&self.matrix())),
                 link: g.link.as_ref().map(|l| Box::new(l.transformed(&self.matrix()))),
                 curve: None,
+                boolean: g.boolean,
             }),
             NodeKind::Path(p) => NodeKind::Path(p.transformed(&self.matrix())),
             NodeKind::Layer(_) | NodeKind::World(_) => return Vec::new(),
@@ -188,8 +189,17 @@ pub fn insert(e: &mut Edit, src: &Map, parent: NodeId, items: Vec<Mirrored>) -> 
     Ok(out)
 }
 
-/// `map` with each mirror group's derived half added, and each added node's original; inner groups expand first so outer ones copy them.
+/// `map` as games get it, mirror halves and linked copies added and boolean groups' own brushes replaced by their result, with each added node's original.
 pub fn expand(map: &Map) -> (Map, BTreeMap<NodeId, NodeId>) {
+    expand_with(map, true)
+}
+
+/// Like [`expand`], but boolean groups keep their own brushes beside their result, as the editor shows them.
+pub fn expand_live(map: &Map) -> (Map, BTreeMap<NodeId, NodeId>) {
+    expand_with(map, false)
+}
+
+fn expand_with(map: &Map, game: bool) -> (Map, BTreeMap<NodeId, NodeId>) {
     let groups: Vec<NodeId> = map.subtree(ROOT).into_iter().rev().filter(|id| is_mirror_group(map, *id)).collect();
     let mut out = map.clone();
     let mut owner = BTreeMap::new();
@@ -203,6 +213,7 @@ pub fn expand(map: &Map) -> (Map, BTreeMap<NodeId, NodeId>) {
         out.apply(c);
     }
     crate::link::expand(&mut out, &mut owner);
+    crate::boolean::expand(&mut out, &mut owner, game);
     (out, owner)
 }
 

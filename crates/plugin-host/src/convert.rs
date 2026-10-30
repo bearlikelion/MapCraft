@@ -162,6 +162,22 @@ pub(crate) fn params(spec: &CommandSpec, values: &Json) -> Vec<t::Param> {
         .collect()
 }
 
+/// `values` with the plugin's `changed` ones in their place, clamped as a run would see them; values that come out the same keep their form.
+pub(crate) fn scaled_params(spec: &CommandSpec, values: &Json, changed: Vec<t::Param>) -> Json {
+    let mut merged = values.as_object().cloned().unwrap_or_default();
+    for p in changed.into_iter().filter(|p| spec.params.iter().any(|s| s.id == p.id)) {
+        merged.insert(p.id, value_json(p.value));
+    }
+    let mut out = values.as_object().cloned().unwrap_or_default();
+    for (old, new) in params(spec, values).into_iter().zip(params(spec, &Json::Object(merged))) {
+        let value = value_json(new.value);
+        if value_json(old.value) != value {
+            out.insert(new.id, value);
+        }
+    }
+    Json::Object(out)
+}
+
 fn vec3(p: &t::Vec3) -> DVec3 {
     DVec3::new(p.x, p.y, p.z)
 }

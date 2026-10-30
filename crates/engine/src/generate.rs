@@ -2,14 +2,14 @@ use std::collections::BTreeSet;
 
 use mapcraft_format::Fragment;
 use mapcraft_geom::{DMat4, DVec3};
-use mapcraft_map::{Generator, Group, NodeId, NodeKind};
+use mapcraft_map::{Changes, Generator, Group, NodeId, NodeKind};
 
 use crate::ops::insert_fragments;
 use crate::{EngineError, Session};
 
 /// Where a generator's output goes.
 pub fn generator_transform(g: &Generator) -> DMat4 {
-    crate::prefab::placement(g.origin, g.angles)
+    crate::prefab::placement(g.origin, g.angles) * g.stretch.as_deref().map_or(DMat4::IDENTITY, |s| DMat4::from_mat3(*s))
 }
 
 impl Session {
@@ -63,19 +63,30 @@ impl Session {
 
     /// Replaces a generator group's contents with new output for `generator`'s parameters.
     pub fn regenerate(&mut self, group: NodeId, generator: Generator, frags: Vec<Fragment>, coalesce: Option<&str>) -> Result<(), EngineError> {
+        let c = self.regeneration(group, generator, frags)?;
+        self.apply_coalesced("Edit generator", c, coalesce);
+        Ok(())
+    }
+
+    /// Like [`Session::regenerate`] for a group in [`Session::stretched`], as part of the edit that stretched it.
+    pub fn refit(&mut self, group: NodeId, generator: Generator, frags: Vec<Fragment>) -> Result<(), EngineError> {
+        let c = self.regeneration(group, generator, frags)?;
+        self.amend("Edit generator", c);
+        Ok(())
+    }
+
+    fn regeneration(&self, group: NodeId, generator: Generator, frags: Vec<Fragment>) -> Result<Changes, EngineError> {
         let Some(node) = self.map.get(group) else { return Err(mapcraft_map::EditError::Missing(group).into()) };
-        let NodeKind::Group(mut g) = node.kind.clone() else { return Ok(()) };
-        let m = generator_transform(&generator);
         let mut e = self.map.edit();
+        let NodeKind::Group(mut g) = node.kind.clone() else { return Ok(e.finish()) };
+        let m = generator_transform(&generator);
         for child in &node.children {
             e.remove(*child)?;
         }
         g.generator = Some(generator);
         e.set_kind(group, NodeKind::Group(g))?;
         insert_fragments(&mut e, group, frags, &m, true)?;
-        let c = e.finish();
-        self.apply_coalesced("Edit generator", c, coalesce);
-        Ok(())
+        Ok(e.finish())
     }
 }
 
@@ -95,6 +106,54 @@ mod tests {
     fn bounds(s: &Session, group: NodeId) -> Aabb {
         let child = s.map.get(group).unwrap().children[0];
         s.map.get(child).unwrap().kind.brush().unwrap().bounds().unwrap()
+    }
+
+    fn generator(s: &Session, group: NodeId) -> Generator {
+        let NodeKind::Group(Group { generator: Some(g), .. }) = s.map.get(group).unwrap().kind.clone() else { panic!() };
+        g
+    }
+
+    fn near(a: Aabb, min: DVec3, max: DVec3) -> bool {
+        a.min.abs_diff_eq(min, 1e-9) && a.max.abs_diff_eq(max, 1e-9)
+    }
+
+    /// A resize the parameters do not hold stays on the group, so editing them keeps it; folding it into them is part of the resize.
+    #[test]
+    fn resizes_survive_parameter_edits() {
+        use mapcraft_geom::DMat3;
+        let mut s = Session::default();
+        let g = Generator {
+            plugin: "surfsup".into(),
+            command: "bhop".into(),
+            params: json!({"size": [32, 32, 32]}),
+            origin: DVec3::ZERO,
+            angles: DVec3::new(0.0, 90.0, 0.0),
+            stretch: None,
+        };
+        let group = s.create_generator("Bhop", g, block(32.0)).unwrap();
+        let wide = DMat4::from_scale(DVec3::new(2.0, 1.0, 1.0));
+        s.transform_selection(&wide, "Scale", None).unwrap();
+        assert_eq!(s.stretched, BTreeSet::from([group]));
+        let stretched = generator(&s, group);
+        assert!(stretched.stretch.as_deref().unwrap().abs_diff_eq(DMat3::from_diagonal(DVec3::new(1.0, 2.0, 1.0)), 1e-9), "world X is the turned output's Y");
+
+        let tall = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::new(32.0, 64.0, 32.0)), &TexDefaults::default());
+        let fitted = Generator { params: json!({"size": [32, 64, 32]}), stretch: None, ..stretched };
+        s.refit(group, fitted, vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new() }]).unwrap();
+        assert!(near(bounds(&s, group), DVec3::new(-64.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)));
+        s.undo();
+        assert!(near(bounds(&s, group), DVec3::new(-32.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)), "one undo takes back the resize and its refit");
+        assert_eq!(generator(&s, group).params, json!({"size": [32, 32, 32]}));
+        s.redo();
+
+        s.transform_selection(&wide, "Scale", None).unwrap();
+        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new() }], None).unwrap();
+        assert!(near(bounds(&s, group), DVec3::new(-128.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)), "an edit keeps the resize");
+
+        s.rotate_selection(DVec3::X, 90.0).unwrap();
+        let turned = bounds(&s, group);
+        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall), children: Vec::new() }], None).unwrap();
+        assert!(near(bounds(&s, group), turned.min, turned.max), "and so does a tilt");
     }
 
     /// An import's `worldspawn` fills in the world's keys without replacing the open map's own.
@@ -128,6 +187,7 @@ mod tests {
             params: json!({"size": 32}),
             origin: DVec3::new(100.0, 0.0, 0.0),
             angles: DVec3::ZERO,
+            stretch: None,
         };
         let group = s.create_generator("Bhop", g.clone(), block(32.0)).unwrap();
         assert_eq!(bounds(&s, group).min, DVec3::new(100.0, 0.0, 0.0));

@@ -1,4 +1,4 @@
-//! Files dropped on the window: maps open, files a plugin imports go in a new layer.
+//! Files dropped on the window: maps open, glTF files and files a plugin imports are added to the map.
 
 use std::path::{Path, PathBuf};
 
@@ -12,10 +12,12 @@ impl MapCraftApp {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         if is_map(path) {
             format!("Open {name}")
+        } else if is_gltf(path) {
+            format!("Import {name} as brushes")
         } else if let Some((_, importer)) = self.importer_for(path) {
             format!("Import {name} as {} into a new layer", importer.label)
         } else {
-            format!("MapCraft cannot open {name}: it is not a .mcmap and no loaded plugin imports it")
+            format!("MapCraft cannot open {name}: it is not a .mcmap, .glb or .gltf and no loaded plugin imports it")
         }
     }
 
@@ -40,6 +42,8 @@ impl MapCraftApp {
     fn drop_file(&mut self, path: PathBuf) {
         if is_map(&path) {
             self.open_dialog_path(path);
+        } else if is_gltf(&path) {
+            self.import_gltf(&path);
         } else if let Some((plugin, importer)) = self.importer_for(&path) {
             self.import_path(&plugin, &importer, &path);
         } else {
@@ -50,4 +54,8 @@ impl MapCraftApp {
 
 fn is_map(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(mapcraft_format::EXTENSION))
+}
+
+fn is_gltf(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb") || e.eq_ignore_ascii_case("gltf"))
 }

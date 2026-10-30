@@ -374,7 +374,7 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 34] = [
+            const FIXED: [(&str, &str); 38] = [
                 ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
                 ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
@@ -384,7 +384,13 @@ impl MapCraftApp {
                 ("Slide a face, keeping its shape", "Alt+Shift+Drag"),
                 ("Extrude into a new brush", "Ctrl+Shift+Drag"),
                 ("Stamp a copy along a face", "Ctrl+Alt+Shift+Drag"),
-                ("Pick a face's material", "Alt+Click"),
+                ("Pick a face's material, unless a face is picked in the Face tool", "Alt+Click"),
+                ("Transfer the active face's material and alignment as it is, in the Face tool", "Alt+Click, Alt+Drag, Alt+Double-click"),
+                (
+                    "Transfer the active face's material and alignment wrapped around corners, in the Face tool",
+                    "Alt+Shift+Click, Alt+Shift+Drag, Alt+Shift+Double-click",
+                ),
+                ("Transfer only the active face's material, in the Face tool", "Ctrl+Alt+Click, Ctrl+Alt+Drag, Ctrl+Alt+Double-click"),
                 ("Apply or wrap the picked material", "Alt+Right Click, Alt+Shift+Right Click"),
                 ("Fly the 3D camera", "Right Drag + WASD"),
                 ("Change the fly speed", "Right Drag + Scroll"),
@@ -399,6 +405,7 @@ impl MapCraftApp {
                 ("Apply a bevel being sized", "Click, Enter"),
                 ("Cancel a bevel being sized", "Escape, Right Click"),
                 ("Move a 3D vertex handle or block height up and down", "Shift+Drag, Alt+Drag"),
+                ("Move the selection up and down in the 3D view", "Alt+Drag"),
                 ("Add a third clip point that tilts the cut", "Click in another view"),
                 ("Clip along a face", "Double-click the face in the 3D view"),
                 ("Move a clip point", "Drag the point"),
@@ -602,6 +609,19 @@ impl MapCraftApp {
                         ui.selectable_value(&mut prefs.keymap, p, p.label());
                     }
                 });
+                ui.end_row();
+                ui.label("Show pressed keys");
+                let shown = prefs.view.show_keys.map_or("Off", crate::keys::Corner::label);
+                egui::ComboBox::from_id_salt("show-keys")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut prefs.view.show_keys, None, "Off");
+                        for c in crate::keys::Corner::ALL {
+                            ui.selectable_value(&mut prefs.view.show_keys, Some(c), c.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Shows each shortcut you press over the views, for screen recordings");
                 ui.end_row();
             });
             ui.separator();

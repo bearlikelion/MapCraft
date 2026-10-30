@@ -343,7 +343,7 @@ fn loft(p: &Profile, rings: &[DMat4], motion: &dyn Fn(DVec3) -> DVec3) -> Vec<Br
 
 /// A face across the sweep, textured as the profile face would be if moved there.
 fn cap(p: &Profile, m: &DMat4, tri: [DVec3; 3]) -> Option<Face> {
-    let mut f = Brush { faces: vec![p.face.clone()] }.transformed(m, true).ok()?.faces.pop()?;
+    let mut f = Brush { faces: vec![p.face.clone()], ..Brush::default() }.transformed(m, true).ok()?.faces.pop()?;
     (f.id, f.points, f.disp) = (FaceId(0), tri, None);
     Some(f)
 }

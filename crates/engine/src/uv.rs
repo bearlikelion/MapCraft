@@ -1,12 +1,47 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use mapcraft_geom::{Aabb, DAffine2, DVec2, DVec3, EPSILON};
-use mapcraft_map::{Face, FaceId, Map, NodeId, TexAxis, TexDefaults, share_edge};
+use mapcraft_map::{CONTENT_FLAGS, Face, FaceId, Map, NodeId, TexAxis, TexDefaults, share_edge};
 
 use crate::{EngineError, Session};
 
 /// A face of a brush, as the Face tool picks it.
 pub type FacePick = (NodeId, FaceId);
+
+/// What a face transfer (TrenchBroom's Alt+click) carries from one face to another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceTransfer {
+    /// Material, attributes and the UV axes as they are, which stretches on faces turned far away.
+    Projected,
+    /// Material, attributes and the UV axes turned onto the target about the line the planes share.
+    Rotated,
+    Material,
+}
+
+impl FaceTransfer {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Projected => "Transfer material and alignment (projected)",
+            Self::Rotated => "Transfer material and alignment (rotated)",
+            Self::Material => "Transfer material",
+        }
+    }
+
+    fn apply(self, f: &mut Face, src: &Face) {
+        match self {
+            Self::Material => {
+                f.material = src.material.clone();
+                return;
+            }
+            Self::Projected => (f.material, f.u, f.v, f.rotation) = (src.material.clone(), src.u, src.v, src.rotation),
+            Self::Rotated => f.wrap_from(src),
+        }
+        let contents = f.attrs.remove(CONTENT_FLAGS);
+        f.attrs = src.attrs.clone();
+        f.attrs.remove(CONTENT_FLAGS);
+        f.attrs.extend(contents.map(|c| (CONTENT_FLAGS.to_string(), c)));
+    }
+}
 
 /// Every face of `brushes` with its polygon.
 pub fn face_polygons<'a>(map: &'a Map, brushes: &BTreeSet<NodeId>) -> Vec<(FacePick, &'a Face, Vec<DVec3>)> {
@@ -126,6 +161,12 @@ impl Session {
             let fresh = Face::new(f.points, &tex);
             (f.u, f.v, f.rotation) = (fresh.u, fresh.v, 0.0);
         })
+    }
+
+    /// Gives the faces `to` what `mode` carries from face `from`; their content flags always stay.
+    pub fn transfer_face(&mut self, from: FacePick, to: &BTreeSet<FacePick>, mode: FaceTransfer, coalesce: Option<&str>) -> Result<(), EngineError> {
+        let src = self.picked_face(from).cloned().ok_or(EngineError::NothingSelected)?;
+        self.edit_face_set(to, mode.label(), coalesce, |f| mode.apply(f, &src))
     }
 }
 
@@ -277,5 +318,83 @@ mod tests {
             let fresh = Face::new(f.points, &s.tex);
             assert_eq!((f.u, f.v, f.rotation), (fresh.u, fresh.v, 0.0));
         }
+    }
+
+    fn one(s: &Session, id: NodeId, keep: impl Fn(DVec3) -> bool) -> FacePick {
+        *picks(s, id, keep).first().unwrap()
+    }
+
+    #[test]
+    fn transfers_copy_the_alignment_or_only_the_material_and_keep_content_flags() {
+        let mut s = Session::default();
+        s.tex.material = "dev".into();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let (top, side, bottom) = (one(&s, a, |n| n.z > 0.5), one(&s, a, |n| n.x > 0.5), one(&s, a, |n| n.z < -0.5));
+        s.face_selection = BTreeSet::from([top]);
+        s.edit_faces("Look", None, |f| {
+            f.material = "ramps/orange".into();
+            f.rotate_texture(30.0);
+            f.u.offset = 5.0;
+            f.v.scale = 0.5;
+            f.attrs = BTreeMap::from([("lightmapscale".into(), "8".into()), (CONTENT_FLAGS.into(), "1".into())]);
+        })
+        .unwrap();
+        s.face_selection = BTreeSet::from([side]);
+        s.edit_faces("Flags", None, |f| {
+            f.attrs.insert(CONTENT_FLAGS.into(), "32".into());
+        })
+        .unwrap();
+        let (src, before) = (face(&s, top), face(&s, side));
+
+        s.transfer_face(top, &BTreeSet::from([side]), FaceTransfer::Material, None).unwrap();
+        let f = face(&s, side);
+        assert_eq!(f.material, "ramps/orange");
+        assert_eq!((f.u, f.v, f.rotation, &f.attrs), (before.u, before.v, before.rotation, &before.attrs), "material only keeps the alignment");
+
+        s.transfer_face(top, &BTreeSet::from([side]), FaceTransfer::Projected, None).unwrap();
+        let f = face(&s, side);
+        assert_eq!((f.u, f.v, f.rotation), (src.u, src.v, src.rotation), "the axes are copied as they are");
+        assert_eq!(f.attrs.get("lightmapscale").map(String::as_str), Some("8"));
+        assert_eq!(f.attrs.get(CONTENT_FLAGS).map(String::as_str), Some("32"), "content flags stay");
+        assert_eq!(f.points, before.points);
+        assert_eq!(s.undo_label(), Some(FaceTransfer::Projected.label()));
+
+        s.transfer_face(top, &BTreeSet::from([bottom]), FaceTransfer::Rotated, None).unwrap();
+        assert!(!face(&s, bottom).attrs.contains_key(CONTENT_FLAGS), "nor do a target's missing ones arrive");
+        assert!(s.transfer_face((a, FaceId(9999)), &BTreeSet::from([side]), FaceTransfer::Projected, None).is_err());
+    }
+
+    #[test]
+    fn rotated_transfers_run_on_around_corners_and_chain_from_the_last_face() {
+        let mut s = Session::default();
+        s.tex.material = "dev".into();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let (top, side, bottom) = (one(&s, a, |n| n.z > 0.5), one(&s, a, |n| n.x > 0.5), one(&s, a, |n| n.z < -0.5));
+        s.face_selection = BTreeSet::from([top]);
+        s.edit_faces("Look", None, |f| {
+            f.rotate_texture(30.0);
+            f.u.scale = 0.5;
+            f.v.offset = 7.0;
+        })
+        .unwrap();
+        let before = (face(&s, side), face(&s, bottom));
+
+        // A drag: the bottom takes the texture from the side, the face transferred to before it.
+        s.transfer_face(top, &BTreeSet::from([side]), FaceTransfer::Rotated, Some("transfer")).unwrap();
+        s.transfer_face(side, &BTreeSet::from([bottom]), FaceTransfer::Rotated, Some("transfer")).unwrap();
+        let (t, x, b) = (face(&s, top), face(&s, side), face(&s, bottom));
+        for y in [0.0, 16.0, 64.0] {
+            let (upper, lower) = (DVec3::new(64.0, y, 64.0), DVec3::new(64.0, y, 0.0));
+            for d in [0.0, 8.0, 64.0] {
+                assert!(x.texel(upper - DVec3::Z * d).abs_diff_eq(t.texel(upper + DVec3::X * d), 1e-9), "the side reads as the top unfolded, at its density");
+                assert!(b.texel(lower - DVec3::X * d).abs_diff_eq(x.texel(lower - DVec3::Z * d), 1e-9), "the bottom as the side unfolded");
+            }
+        }
+        s.undo();
+        assert_eq!((face(&s, side), face(&s, bottom)), before, "the whole drag is one undo step");
+
+        s.transfer_face(top, &BTreeSet::from([side]), FaceTransfer::Projected, None).unwrap();
+        let p = face(&s, side);
+        assert!(p.texel(DVec3::new(64.0, 8.0, 0.0)).abs_diff_eq(p.texel(DVec3::new(64.0, 8.0, 64.0)), 1e-9), "projected, the texture stretches down the side");
     }
 }

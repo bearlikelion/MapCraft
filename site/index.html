@@ -21,8 +21,10 @@
 <header class="top">
 	<div class="top-inner">
 		<a class="brand" href="#main"><img src="assets/mapcraft.svg" width="28" height="28" alt="">MapCraft</a>
+		<div class="search" role="search"><input type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">/</kbd><div class="search-results" role="listbox" hidden></div></div>
 		<nav aria-label="Site">
 			<a class="opt" href="#download">Download</a>
+			<a href="tutorial/index.html">Tutorial</a>
 			<a href="guide/index.html">Guide</a>
 			<a href="technical/index.html">Technical</a>
 			<a data-repo-path="">GitHub</a>
@@ -33,154 +35,347 @@
 <main id="main">
 
 <section class="hero">
-	<div class="hero-grid">
-		<div class="hero-copy">
-			<h1>MapCraft</h1>
-			<p class="pitch">A level editor for brush-based maps in the style of Hammer and TrenchBroom, with a Godot-style scene tree. It comes with SDKs for SurfsUp, Counter-Strike: Source and Quake.</p>
-
-			<div class="get" id="download">
-				<h2>Download <span class="get-version" id="dl-tag">latest</span></h2>
-				<ul class="dl-list">
-					<li><a class="dl-btn primary" data-asset="MapCraft-windows-x86_64.zip" data-repo-path="/releases/latest/download/MapCraft-windows-x86_64.zip">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4.6 10.4 3.4v8.1H2zM11.6 3.2 22 1.8v9.7H11.6zM2 12.7h8.4v8.1L2 19.6zM11.6 12.7H22v9.7l-10.4-1.4z"/></svg>
-						<b>Windows</b><small>64-bit zip</small>
-					</a></li>
-					<li><a class="dl-btn" data-asset="MapCraft-x86_64.AppImage" data-repo-path="/releases/latest/download/MapCraft-x86_64.AppImage">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2c-2.6 0-4.2 2.1-4.2 5 0 1.6.4 2.6-.6 4.1C5.9 13.2 4 15.8 4.6 18.6c.2.9.9 1.4 1.7 1.6l2.3.6c.8.2 1.5.9 2.3.9h2.2c.8 0 1.5-.7 2.3-.9l2.3-.6c.8-.2 1.5-.7 1.7-1.6.6-2.8-1.3-5.4-2.6-7.3-1-1.5-.6-2.5-.6-4.1 0-2.9-1.6-5-4.2-5zm-1.6 4.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zm3.2 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zM12 9.1c.9 0 2 .5 2 1s-1.1 1.1-2 1.1-2-.6-2-1.1 1.1-1 2-1zm-2.2 3.3c.7.4 1.4.6 2.2.6s1.5-.2 2.2-.6c.8 1.4 1.4 3.1 1.1 4.8-.2 1-1.3 1.6-3.3 1.6s-3.1-.6-3.3-1.6c-.3-1.7.3-3.4 1.1-4.8z"/></svg>
-						<b>Linux</b><small>AppImage</small>
-					</a></li>
-					<li><a class="dl-btn" data-asset="MapCraft-macos.zip" data-repo-path="/releases/latest/download/MapCraft-macos.zip">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9s-1.9-.9-3.2-.8c-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.2.8c1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.5-1-2.5-3.9zM14 5.3c.7-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1.1.1 2.1-.5 2.8-1.3z"/></svg>
-						<b>macOS</b><small>Apple Silicon and Intel</small>
-					</a></li>
-					<li><a class="dl-btn" data-asset="MapCraft-godot-addon.zip" data-repo-path="/releases/latest/download/MapCraft-godot-addon.zip">
-						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5zm2 1.3v6.5l6 3v-6.5zm14 0-6 3v6.5l6-3zM12 5.2 6.3 8 12 10.9 17.7 8z"/></svg>
-						<b>Godot addon</b><small>For Godot 4.4+</small>
-					</a></li>
-				</ul>
-			</div>
-		</div>
-
-		<figure class="hero-mark">
-			<picture>
-				<source srcset="assets/mapcraft-mark.svg" media="(prefers-color-scheme: dark)">
-				<img src="assets/mapcraft.svg" width="256" height="256" alt="The MapCraft logo: a block letter M built from four brushes, selected as it would be in the editor.">
-			</picture>
+	<div class="hero-views">
+		<figure class="hero-view">
+			<img src="assets/hero-3d.webp" width="1920" height="1280" fetchpriority="high" alt="A boss room built in MapCraft, in the 3D view's Lit render mode: a golden domed shrine of white pillars on a checkered floor.">
+			<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+		</figure>
+		<figure class="hero-view">
+			<img src="assets/hero-top.webp" width="1320" height="1320" fetchpriority="high" alt="The same room in the Top view: the round shrine, the stairs and the walls as colored outlines on the grid.">
+			<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
 		</figure>
 	</div>
+	<div class="hero-inner">
+		<div class="hero-copy">
+			<h1>MapCraft</h1>
+			<p class="pitch">A free, open-source level editor for brush-based maps, in the style of Hammer and TrenchBroom, ready for SurfsUp, Counter-Strike: Source and Quake.</p>
+		</div>
+
+		<div class="get" id="download">
+			<h2>Download <span class="get-version" id="dl-tag">latest</span></h2>
+			<ul class="dl-list">
+				<li><a class="dl-btn primary" data-asset="MapCraft-windows-x86_64.zip" data-repo-path="/releases/latest/download/MapCraft-windows-x86_64.zip">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4.6 10.4 3.4v8.1H2zM11.6 3.2 22 1.8v9.7H11.6zM2 12.7h8.4v8.1L2 19.6zM11.6 12.7H22v9.7l-10.4-1.4z"/></svg>
+					<b>Windows</b><small>64-bit zip</small>
+				</a></li>
+				<li><a class="dl-btn" data-asset="MapCraft-x86_64.AppImage" data-repo-path="/releases/latest/download/MapCraft-x86_64.AppImage">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2c-2.6 0-4.2 2.1-4.2 5 0 1.6.4 2.6-.6 4.1C5.9 13.2 4 15.8 4.6 18.6c.2.9.9 1.4 1.7 1.6l2.3.6c.8.2 1.5.9 2.3.9h2.2c.8 0 1.5-.7 2.3-.9l2.3-.6c.8-.2 1.5-.7 1.7-1.6.6-2.8-1.3-5.4-2.6-7.3-1-1.5-.6-2.5-.6-4.1 0-2.9-1.6-5-4.2-5zm-1.6 4.1a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zm3.2 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zM12 9.1c.9 0 2 .5 2 1s-1.1 1.1-2 1.1-2-.6-2-1.1 1.1-1 2-1zm-2.2 3.3c.7.4 1.4.6 2.2.6s1.5-.2 2.2-.6c.8 1.4 1.4 3.1 1.1 4.8-.2 1-1.3 1.6-3.3 1.6s-3.1-.6-3.3-1.6c-.3-1.7.3-3.4 1.1-4.8z"/></svg>
+					<b>Linux</b><small>AppImage</small>
+				</a></li>
+				<li><a class="dl-btn" data-asset="MapCraft-macos.zip" data-repo-path="/releases/latest/download/MapCraft-macos.zip">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9s-1.9-.9-3.2-.8c-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.2.8c1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.5-1-2.5-3.9zM14 5.3c.7-.8 1.1-1.9 1-3-.9 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1.1.1 2.1-.5 2.8-1.3z"/></svg>
+					<b>macOS</b><small>Apple Silicon and Intel</small>
+				</a></li>
+				<li><a class="dl-btn" data-asset="MapCraft-godot-addon.zip" data-repo-path="/releases/latest/download/MapCraft-godot-addon.zip">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5zm2 1.3v6.5l6 3v-6.5zm14 0-6 3v6.5l6-3zM12 5.2 6.3 8 12 10.9 17.7 8z"/></svg>
+					<b>Godot addon</b><small>For Godot 4.4+</small>
+				</a></li>
+				
+			</ul>
+		</div>
+	</div>
+	<p class="hero-credit"><code>boss_golden_reliquary</code>, a room from mFPS</p>
 </section>
 
 <section class="band" id="tour" aria-labelledby="tour-title">
 	<div class="band-inner">
-		<h2 class="band-title" id="tour-title">Features</h2>
-		<ul class="tour">
-			<li class="card">
-				<img src="assets/card-views.webp" width="800" height="500" loading="lazy" alt="Top, front, side and 3D views of a surf course beside the scene tree.">
-				<h3><a href="guide/views.html">Four views and a scene tree</a></h3>
-				<p>Top, front, side and 3D views, laid out as in Hammer.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-surf.webp" width="800" height="500" loading="lazy" alt="A curved surf ramp and its parameters in the inspector.">
-				<h3><a href="guide/surf.html">Surf ramp generator</a></h3>
-				<p>Ramps keep their settings and rebuild when you change them.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-tools.webp" width="800" height="500" loading="lazy" alt="The Clip tool previewing a cut across a ramp.">
-				<h3><a href="guide/tools.html">Brush tools</a></h3>
-				<p>Clip, carve, hollow, merge and extrude, with a preview.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-lit.webp" width="800" height="500" loading="lazy" alt="The same surf ramp split in two: flat in Textured, and in Lit with the sky behind it and its cracked surface shaded by the sun.">
-				<h3><a href="guide/views.html#render-modes">Lit preview</a></h3>
-				<p>PBR materials under the map's sky, sun and lights.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-terrain.webp" width="800" height="500" loading="lazy" alt="Rocky displacement mountains around a surf course in the Lit view.">
-				<h3><a href="guide/displacements.html">Terrain</a></h3>
-				<p>Sculpt displacements, or load a heightmap.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-blender.webp" width="800" height="450" loading="lazy" alt="The right click menu over a curved surf ramp in the Vertex tool, with Select Mode open on Vertex, Edge and Face, then Merge at Center and Bevel Edges.">
-				<h3><a href="guide/tools.html#vertex">Vertex, UV and curve tools</a></h3>
-				<p>Bevels, a UV editor and Bezier paths, modeled on Blender.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-mirror.webp" width="800" height="500" loading="lazy" alt="A mirror group: one half of a map built by hand and the other half drawn by MapCraft.">
-				<h3><a href="guide/mirror-groups.html">Mirrors and prefabs</a></h3>
-				<p>Mirror groups, linked copies and prefabs stay in sync.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-keys.webp" width="672" height="420" loading="lazy" alt="The Keyboard Shortcuts window with a search box.">
-				<h3><a href="guide/shortcuts.html">Keyboard presets</a></h3>
-				<p>Hammer and TrenchBroom key layouts, or your own.</p>
-			</li>
-			<li class="card">
-				<img src="assets/card-godot.webp" width="640" height="400" loading="lazy" alt="The Run menu with the SurfsUp play profiles.">
-				<h3><a href="guide/sdks-and-plugins.html">SDKs and plugins</a></h3>
-				<p>Each game is an SDK; Run compiles for CS:S or starts SurfsUp.</p>
-			</li>
-		</ul>
+		<h2 class="band-title" id="tour-title">What it does</h2>
+		<div class="tour">
+			<div class="tour-list" role="tablist" aria-label="Features" aria-orientation="vertical">
+				<button role="tab" id="tab-views" aria-controls="feat-views" aria-selected="true" tabindex="0"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M15 13a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V6h14zM13 1a2 2 0 0 1 2 2v2H1V3a2 2 0 0 1 2-2zm-3 1a1 1 0 1 0 0 2 1 1 0 0 0 0-2m3 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2"/></svg><b>Four views and a scene tree</b></button>
+				<button role="tab" id="tab-tools" aria-controls="feat-tools" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M8 8.299v6.432l-5.474-2.948a1 1 0 0 1-.526-.88V5.097l.002-.03zM15 5.098v5.804c0 .368-.203.707-.526.881L9 14.731V8.299l5.997-3.23q.001.015.003.029M8.026 1.255a1 1 0 0 1 .948 0l5.498 2.96L8.5 7.433 2.527 4.216z"/></svg><b>Brush tools</b></button>
+				<button role="tab" id="tab-vertex" aria-controls="feat-vertex" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M10 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4"/><path fill="currentColor" d="M13 1a2 2 0 0 1 2 2v7.172l-.01.197a2 2 0 0 1-.576 1.217l-2.828 2.828-.146.133a2 2 0 0 1-1.268.453H3l-.204-.01A2 2 0 0 1 1 13V5.828a2 2 0 0 1 .453-1.267l.133-.147 2.828-2.828A2 2 0 0 1 5.828 1zM5.828 2a1 1 0 0 0-.707.293L2.414 5H7v1H2v7a1 1 0 0 0 1 1h7V9h1v4.586l2.707-2.707a1 1 0 0 0 .293-.707V3a1 1 0 0 0-.035-.259l-1.611 1.613-.707-.708 1.61-1.612A1 1 0 0 0 13 2z"/></svg><b>Vertex, UV and curve tools</b></button>
+				<button role="tab" id="tab-surf" aria-controls="feat-surf" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M8.106 2.43A1 1 0 0 1 9.75 3.57L6.766 7.874a7 7 0 0 1 1.39 1.79A7 7 0 0 1 8.925 12H14a1 1 0 0 1 0 2H2a1 1 0 0 1-.822-1.57zM3.91 12h2.988a5 5 0 0 0-.5-1.382 5 5 0 0 0-.787-1.075z"/></svg><b>Surf ramp generator</b></button>
+				<button role="tab" id="tab-terrain" aria-controls="feat-terrain" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M7.549 3.448a.5.5 0 0 1 .902 0l3.442 7.228 1.14-2.963a.5.5 0 0 1 .934 0L16 13H0l3.038-7.377a.5.5 0 0 1 .924 0l1.183 2.872z"/></svg><b>Terrain</b></button>
+				<button role="tab" id="tab-mirror" aria-controls="feat-mirror" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1a1 1 0 0 1 1 1v12a1 1 0 1 1-2 0V2a1 1 0 0 1 1-1M5.04 2.24c.214-.5.96-.348.96.196V13a1 1 0 0 1-1 1H.758a.5.5 0 0 1-.46-.697zM10 2.436c0-.544.746-.696.96-.197l4.741 11.064a.5.5 0 0 1-.393.693l-.066.004H11a1 1 0 0 1-.995-.898L10 13zM11 13h3.483L11 4.872z"/></svg><b>Mirrors and prefabs</b></button>
+				<button role="tab" id="tab-lit" aria-controls="feat-lit" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8"/><path fill="currentColor" d="M10 3h3v3l2 2-2 2v3h-3l-2 2-2-2H3v-3L1 8l2-2V3h3l2-2zM8 3a5 5 0 1 0 0 10A5 5 0 0 0 8 3"/></svg><b>Lit preview</b></button>
+				<button role="tab" id="tab-keys" aria-controls="feat-keys" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M3 12H1v-2h2zM12 12H4v-2h8zM15 12h-2v-2h2zM4 9H1V7h3zM7 9H5V7h2zM10 9H8V7h2zM15 9h-4V7h4zM3 6H1V4h2zM6 6H4V4h2zM9 6H7V4h2zM12 6h-2V4h2zM15 6h-2V4h2z"/></svg><b>Keyboard presets</b></button>
+				<button role="tab" id="tab-run" aria-controls="feat-run" aria-selected="false" tabindex="-1"><svg class="ic" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 16 16"><path fill="currentColor" d="M9 1a2 2 0 0 1 2 2v1.83c0 .093.076.17.17.17a.18.18 0 0 0 .151-.084 2 2 0 1 1 0 2.168.18.18 0 0 0-.15-.084.17.17 0 0 0-.171.17V9a2 2 0 0 1-2 2H7.17a.17.17 0 0 0-.17.17.18.18 0 0 0 .084.151 2 2 0 1 1-2.168 0 .18.18 0 0 0 .084-.15.17.17 0 0 0-.17-.171H3a2 2 0 0 1-2-2V7.171C1 7.077 1.077 7 1.171 7a.18.18 0 0 1 .15.084 2 2 0 1 0 0-2.168.18.18 0 0 1-.15.084A.17.17 0 0 1 1 4.829V3a2 2 0 0 1 2-2z"/></svg><b>SDKs and plugins</b></button>
+			</div>
+			<figure class="tour-panel" role="tabpanel" id="feat-views" aria-labelledby="tab-views">
+				<img src="assets/card-views.webp" width="1280" height="800" loading="eager" decoding="async" alt="Top, front, side and 3D views of a surf course beside the scene tree.">
+				<figcaption><p>Top, front, side and 3D, laid out as in Hammer.</p><a href="guide/views.html">Getting around in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-tools" aria-labelledby="tab-tools">
+				<img src="assets/card-tools.webp" width="960" height="600" loading="lazy" decoding="async" alt="The Clip tool previewing a cut across a ramp.">
+				<figcaption><p>Clip, carve, hollow, merge and extrude, with a preview.</p><a href="guide/tools.html">Tools in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-vertex" aria-labelledby="tab-vertex">
+				<img src="assets/card-blender.webp" width="960" height="600" loading="lazy" decoding="async" alt="The right click menu over a curved surf ramp in the Vertex tool: Select Mode, Merge at Center, Bevel Edges and Delete Vertices, with the ramp's corners drawn as yellow points.">
+				<figcaption><p>Bevels, a UV editor and Bezier paths, modeled on Blender.</p><a href="guide/tools.html#vertex">Vertex tool in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-surf" aria-labelledby="tab-surf">
+				<img src="assets/card-surf.webp" width="960" height="600" loading="lazy" decoding="async" alt="A curved surf ramp and its parameters in the inspector.">
+				<figcaption><p>Ramps keep their settings and rebuild when you change them.</p><a href="guide/surf.html">Surf ramps and bhop in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-terrain" aria-labelledby="tab-terrain">
+				<img src="assets/card-terrain.webp" width="1000" height="625" loading="lazy" decoding="async" alt="Rocky displacement mountains around a surf course in the Lit view.">
+				<figcaption><p>Sculpt displacements, or load a heightmap.</p><a href="guide/displacements.html">Terrain in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-mirror" aria-labelledby="tab-mirror">
+				<img src="assets/card-mirror.webp" width="960" height="600" loading="lazy" decoding="async" alt="A mirror group: one half of a curved ramp built by hand and the other half drawn by MapCraft.">
+				<figcaption><p>Mirror groups, linked copies and prefabs stay in sync.</p><a href="guide/mirror-groups.html">Mirror groups in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-lit" aria-labelledby="tab-lit">
+				<img src="assets/card-lit.webp" width="1200" height="750" loading="lazy" decoding="async" alt="The same boss room split down the middle: flat in Textured on the left, and in Lit on the right, where its lights shade the gold and marble.">
+				<figcaption><p>PBR materials under the map's sky, sun and lights.</p><a href="guide/views.html#render-modes">Render modes in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-keys" aria-labelledby="tab-keys">
+				<img src="assets/card-keys.webp" width="960" height="600" loading="lazy" decoding="async" alt="The Keyboard Shortcuts window with a search box.">
+				<figcaption><p>Hammer and TrenchBroom key layouts, or your own.</p><a href="guide/shortcuts.html">Keyboard shortcuts in the guide</a></figcaption>
+			</figure>
+			<figure class="tour-panel" role="tabpanel" hidden id="feat-run" aria-labelledby="tab-run">
+				<img src="assets/card-godot.webp" width="960" height="600" loading="lazy" decoding="async" alt="The Run menu with the SurfsUp play profiles.">
+				<figcaption><p>Each game is an SDK. Run compiles for CS:S or starts SurfsUp.</p><a href="guide/sdks-and-plugins.html">SDKs and plugins in the guide</a></figcaption>
+			</figure>
+		</div>
 	</div>
 </section>
 
-<section class="band" id="start" aria-labelledby="start-title">
+<section class="band learn" id="tutorial" aria-labelledby="tutorial-title">
 	<div class="band-inner">
 		<div class="band-head">
-			<h2 id="start-title">Your first map</h2>
-			<a href="guide/first-map.html">Step by step guide</a>
+			<div>
+				<h2 id="tutorial-title">Tutorial</h2>
+				<p>Never made a map? Build a room you can walk around in, one step at a time, in about 20 minutes.</p>
+			</div>
 		</div>
-		<ol class="steps-row">
-			<li><h3>Install</h3><p>Unzip on Windows or macOS. On Linux, make the AppImage executable and run it.</p></li>
-			<li><h3>Choose an SDK</h3><p>File &gt; New Map, then choose SurfsUp, Counter-Strike: Source or Quake.</p></li>
-			<li><h3>Set your game folder</h3><p>Choose it when SDK Settings asks.</p></li>
-			<li><h3>Build and run</h3><p>Press B to draw a block, add a spawn, then press Run.</p></li>
-		</ol>
+		<div class="learn-body">
+			<figure class="learn-shot">
+				<img src="tutorial/img/tutorial-result.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="The room you build in the tutorial, in the 3D view's Lit mode: a painted floor and four walls under an open sky.">
+				<figcaption>What you will build</figcaption>
+			</figure>
+			<div class="learn-steps">
+				<ol>
+					<li><a href="tutorial/index.html#1-start-a-new-map">Start a new map</a></li>
+					<li><a href="tutorial/index.html#2-find-your-way-around">Find your way around</a></li>
+					<li><a href="tutorial/index.html#3-set-the-grid">Set the grid</a></li>
+					<li><a href="tutorial/index.html#4-draw-a-block">Draw a block</a></li>
+					<li><a href="tutorial/index.html#5-make-it-taller">Make it taller</a></li>
+					<li><a href="tutorial/index.html#6-hollow-it-into-a-room">Hollow it into a room</a></li>
+					<li><a href="tutorial/index.html#7-look-inside">Look inside</a></li>
+					<li><a href="tutorial/index.html#8-paint-it">Paint it</a></li>
+					<li><a href="tutorial/index.html#9-add-a-spawn-point">Add a spawn point</a></li>
+					<li><a href="tutorial/index.html#10-add-a-sun-and-see-it-lit">Add a sun and see it lit</a></li>
+					<li><a href="tutorial/index.html#11-save">Save</a></li>
+					<li><a href="tutorial/index.html#12-check-for-problems">Check for problems</a></li>
+					<li><a href="tutorial/index.html#13-play-it">Play it</a></li>
+				</ol>
+				<a class="learn-go" href="tutorial/index.html">Start the tutorial</a>
+			</div>
+		</div>
 	</div>
 </section>
 
-<section class="band" id="docs" aria-labelledby="docs-title">
+<section class="band made" id="made" aria-labelledby="made-title">
 	<div class="band-inner">
-		<h2 class="band-title" id="docs-title">Docs</h2>
-		<div class="split">
-			<div class="door">
-				<h3>Guide</h3>
-				<p>How to make maps.</p>
-				<ul>
-					<li><a href="guide/first-map.html">Your first map</a></li>
-					<li><a href="guide/views.html">Getting around</a></li>
-					<li><a href="guide/tools.html">Tools</a></li>
-					<li><a href="guide/surf.html">Surf ramps and bhop</a></li>
-					<li><a href="guide/godot.html">Play it in Godot</a></li>
-					<li><a href="guide/index.html"><b>All guide pages</b></a></li>
-				</ul>
+		<div class="band-head">
+			<div>
+				<h2 id="made-title">Made with MapCraft</h2>
+				<p>Surf maps, a Quake map and dungeon rooms, each in 3D and from the Top view.</p>
 			</div>
-			<div class="door tech">
-				<h3>Technical <span class="tag-opt">optional</span></h3>
-				<p>Building, plugins, SDKs and file formats.</p>
-				<ul>
-					<li><a href="technical/building.html">Building from source</a></li>
-					<li><a href="technical/plugin-api.html">Plugin API</a></li>
-					<li><a href="technical/sdk-format.html">SDK manifests</a></li>
-					<li><a href="technical/mcmap-format.html">The .mcmap format</a></li>
-					<li><a href="technical/godot.html">Godot addon</a></li>
-					<li><a href="technical/index.html"><b>All technical pages</b></a></li>
-				</ul>
+			<div class="made-nav">
+				<p class="made-count" aria-live="polite"><b>1</b> of 7</p>
+				<button class="step prev" type="button" aria-label="Previous map"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg></button>
+				<button class="step next" type="button" aria-label="Next map"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
 			</div>
+		</div>
+
+		<div class="showcase" aria-roledescription="carousel" aria-label="Maps made with MapCraft">
+			<ul class="slides" tabindex="0" aria-label="Use the left and right arrow keys to change maps">
+				<li class="slide" aria-roledescription="slide" aria-label="1 of 7: surf_weave" data-name="surf_weave" data-meta="SurfsUp, 49152 × 49152 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-weave.webp" width="1800" height="1200" loading="eager" decoding="async" alt="Lava and ice surf ramps winding around a bowl of rocky mountains under a blue sky, in the Lit view.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-weave-top.webp" width="1200" height="1200" loading="eager" decoding="async" alt="The course from the Top view: four stages of curving ramps joined in a loop.">
+						</figure>
+						<button class="open" type="button" aria-label="View surf_weave full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>surf_weave</code></h3>
+						<p class="meta">SurfsUp, 49152 × 49152 units</p>
+						<p>A four-stage surf map that loops around a bowl of sculpted mountains, on lava and ice ramps.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="2 of 7: surf_colossus" data-name="surf_colossus" data-meta="SurfsUp, 61568 × 43648 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-colossus.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="Orange curved surf ramps hanging in a tall gray concrete hall, in the Lit view.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-colossus-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The whole six-stage course from the Top view: winding ramp lines inside the outlines of its halls.">
+						</figure>
+						<button class="open" type="button" aria-label="View surf_colossus full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>surf_colossus</code></h3>
+						<p class="meta">SurfsUp, 61568 × 43648 units</p>
+						<p>A six-stage surf map. Each stage is a sealed hall joined to the next by a teleport, and its ramps come from the Surf Ramp generator, so they stay editable.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="3 of 7: quicksand_cove" data-name="quicksand_cove" data-meta="Quake, 3968 × 3328 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-quicksand.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="A sandy cove in the Lit view: plank bridges over dark water, a beach and rock walls under a cloudy sky, with a fish surfacing.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-quicksand-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The cove from the Top view: its rooms, pit and entities as colored outlines.">
+						</figure>
+						<button class="open" type="button" aria-label="View quicksand_cove full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>quicksand_cove</code></h3>
+						<p class="meta">Quake, 3968 × 3328 units</p>
+						<p>A Quake map around a sandy cove: a quicksand pit, a sea crossed on planks to a key island, and a secret room in the west wall.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="4 of 7: encounter_ember_necropolis" data-name="encounter_ember_necropolis" data-meta="mFPS, Crypt, 1280 × 1280 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-ember_necropolis.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="A black marble crypt with gold lattice arches around the walls and a spire in a sunken ember pit.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-ember_necropolis-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The crypt from the Top view: the ring of arches and the pit as colored outlines.">
+						</figure>
+						<button class="open" type="button" aria-label="View encounter_ember_necropolis full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>encounter_ember_necropolis</code></h3>
+						<p class="meta">mFPS, Crypt, 1280 × 1280 units</p>
+						<p>A black marble crypt ringed with gold lattice arches, with a spire rising from a sunken ember pit.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="5 of 7: boss_brood_throne" data-name="boss_brood_throne" data-meta="mFPS, Hive, 1920 × 1536 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-brood_throne.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="A green ribbed hive chamber with a red carpet running up to the throne.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-brood_throne-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The chamber from the Top view as colored outlines on the grid.">
+						</figure>
+						<button class="open" type="button" aria-label="View boss_brood_throne full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>boss_brood_throne</code></h3>
+						<p class="meta">mFPS, Hive, 1920 × 1536 units</p>
+						<p>A ribbed green hive chamber, with a red carpet running up to the throne.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="6 of 7: boss_glacier_cavern" data-name="boss_glacier_cavern" data-meta="mFPS, Wilds, 2048 × 1536 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-glacier_cavern.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="An ice cavern with frozen blue columns and icicles over a dark floor.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-glacier_cavern-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The cavern from the Top view: its columns and ledges as colored outlines.">
+						</figure>
+						<button class="open" type="button" aria-label="View boss_glacier_cavern full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>boss_glacier_cavern</code></h3>
+						<p class="meta">mFPS, Wilds, 2048 × 1536 units</p>
+						<p>An ice cavern of frozen blue columns and icicles over a dark stone floor.</p>
+					</div>
+				</li>
+				<li class="slide" aria-roledescription="slide" aria-label="7 of 7: encounter_overgrown_courtyard" data-name="encounter_overgrown_courtyard" data-meta="mFPS, Ruins and Wilds, 1280 × 1280 units">
+					<div class="panes">
+						<figure class="pane">
+							<figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption>
+							<img src="assets/made-overgrown_courtyard.webp" width="1800" height="1200" loading="lazy" decoding="async" alt="A mossy courtyard with a broken arch, a grassy slope and a tree growing from a fountain.">
+						</figure>
+						<figure class="pane">
+							<figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption>
+							<img src="assets/made-overgrown_courtyard-top.webp" width="1200" height="1200" loading="lazy" decoding="async" alt="The courtyard from the Top view: the arch, slope and fountain as colored outlines.">
+						</figure>
+						<button class="open" type="button" aria-label="View encounter_overgrown_courtyard full size"></button>
+					</div>
+					<div class="slide-info">
+						<h3><code>encounter_overgrown_courtyard</code></h3>
+						<p class="meta">mFPS, Ruins and Wilds, 1280 × 1280 units</p>
+						<p>A mossy courtyard with a broken arch, a grassy slope and a tree growing out of a fountain.</p>
+					</div>
+				</li>
+			</ul>
+			<ol class="filmstrip" aria-label="All maps">
+				<li><button type="button" aria-current="true" aria-label="Show surf_weave"><img src="assets/made-weave-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show surf_colossus"><img src="assets/made-colossus-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show quicksand_cove"><img src="assets/made-quicksand-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show encounter_ember_necropolis"><img src="assets/made-ember_necropolis-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show boss_brood_throne"><img src="assets/made-brood_throne-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show boss_glacier_cavern"><img src="assets/made-glacier_cavern-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+				<li><button type="button" aria-label="Show encounter_overgrown_courtyard"><img src="assets/made-overgrown_courtyard-thumb.webp" width="300" height="200" loading="lazy" alt=""></button></li>
+			</ol>
 		</div>
 	</div>
 </section>
+
+<dialog class="viewer" aria-labelledby="viewer-title">
+	<div class="viewer-head">
+		<h2 id="viewer-title"><code></code></h2>
+		<p class="viewer-meta"></p>
+		<button class="step prev" type="button" aria-label="Previous map"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg></button>
+		<button class="step next" type="button" aria-label="Next map"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
+		<button class="step close" type="button" aria-label="Close" autofocus><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+	</div>
+	<div class="viewer-panes panes">
+		<figure class="pane"><figcaption class="pane-head"><b>3D</b><span class="lit">Lit</span></figcaption><img src="assets/made-weave.webp" width="1800" height="1200" loading="lazy" alt=""></figure>
+		<figure class="pane"><figcaption class="pane-head"><b>Top</b><span class="x">x</span><span class="y">y</span></figcaption><img src="assets/made-weave-top.webp" width="1200" height="1200" loading="lazy" alt=""></figure>
+	</div>
+</dialog>
 
 </main>
 
 <footer class="foot">
 	<div class="foot-inner">
 		<p>MapCraft is made by <a href="https://github.com/bearlikelion">Mark</a> and is free under the <a data-repo-path="/blob/main/LICENSE">MIT License</a>.</p>
-		<p>Screenshots use textures from SurfsUp.</p>
+		<p>Screenshots use textures from SurfsUp, mFPS and Quake.</p>
 	</div>
 </footer>
 
+<script src="search.js" data-root="" defer></script>
+<script src="made.js" defer></script>
 <script>
 (() => {
+	const tabs = [...document.querySelectorAll(".tour-list [role=tab]")];
+	const pick = (t, focus) => {
+		for (const x of tabs) {
+			const on = x === t;
+			x.setAttribute("aria-selected", String(on));
+			x.tabIndex = on ? 0 : -1;
+			document.getElementById(x.getAttribute("aria-controls")).hidden = !on;
+		}
+		if (focus) t.focus();
+		const list = t.parentElement;
+		if (focus !== undefined && list.scrollWidth > list.clientWidth) list.scrollTo({ left: t.offsetLeft - 24, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+	};
+	tabs.forEach((t, i) => {
+		t.addEventListener("click", () => pick(t, false));
+		t.addEventListener("keydown", (e) => {
+			const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+			const to = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : step ? (i + step + tabs.length) % tabs.length : -1;
+			if (to < 0) return;
+			e.preventDefault();
+			pick(tabs[to], true);
+		});
+	});
+	if (tabs[0]) pick(tabs[0]);
+	// Hidden panels load their pictures once the page is in, so switching never shows an empty frame.
+	addEventListener("load", () => document.querySelectorAll(".tour-panel img").forEach((i) => (i.loading = "eager")));
+
 	const repo = document.documentElement.dataset.repo;
 	for (const a of document.querySelectorAll("a[data-repo-path]")) a.href = repo + a.dataset.repoPath;
 

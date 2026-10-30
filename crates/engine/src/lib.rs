@@ -2,6 +2,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod boolean;
 mod commands;
 pub mod control;
 mod curves;
@@ -24,10 +25,10 @@ pub use issues::{Fix, Issue, LINK_KEYS, Severity, is_broken_link, is_unresolved,
 pub use noise::{FractalType, HeightNoise, NoiseType};
 pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape};
 pub use organize::{entities_of, find_entities};
-pub use prefab::{expand_instance, flatten, prefab_transform};
+pub use prefab::{expand_instance, flatten, flatten_for_game, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};
 pub use terrain::{BlendFill, Falloff, Sculpt, SculptMode};
-pub use uv::{FacePick, face_polygons, uv_islands};
+pub use uv::{FacePick, FaceTransfer, face_polygons, uv_islands};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

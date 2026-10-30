@@ -75,7 +75,7 @@ pub(crate) fn model_file(raw: &str) -> Option<String> {
 }
 
 /// `uri` taken from the folder `path` is in, with `..` resolved; `None` when it climbs out.
-fn beside(path: &str, uri: &str) -> Option<String> {
+pub(crate) fn beside(path: &str, uri: &str) -> Option<String> {
     let mut parts: Vec<&str> = path.split('/').collect();
     parts.pop();
     for c in uri.split('/') {
@@ -90,7 +90,7 @@ fn beside(path: &str, uri: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn read_capped(vfs: &Vfs, rel: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_capped(vfs: &Vfs, rel: &str) -> Option<Vec<u8>> {
     let file = vfs.find(rel)?;
     (std::fs::metadata(&file).ok()?.len() <= MAX_MODEL_BYTES).then(|| std::fs::read(&file).ok())?
 }

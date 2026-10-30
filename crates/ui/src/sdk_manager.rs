@@ -1,23 +1,27 @@
 //! File > SDK Manager: installed SDKs with checks, SDKs from registries, and new SDKs from the
-//! template or a TrenchBroom game.
+//! template or a TrenchBroom game; and the Add an SDK window a fresh install opens with.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use egui::{Color32, RichText};
+use egui::{Color32, ColorImage, RichText, TextureHandle, Vec2, vec2};
 use mapcraft_sdk::Sdk;
 use mapcraft_sdk_manager::{self as manager, Entry, Item, Level, Origin, Registry, TrenchBroomImport};
 
 use crate::app::MapCraftApp;
-use crate::chrome::{ACCENT, TEXT_WEAK};
+use crate::chrome::{ACCENT, TEXT, TEXT_WEAK};
 
 const PASS: Color32 = Color32::from_rgb(110, 200, 80);
 const WARN: Color32 = Color32::from_rgb(230, 190, 60);
 const FAIL: Color32 = Color32::from_rgb(232, 90, 80);
+
+/// Logos are drawn this size; registry logos are 460 by 215 pixels.
+const LOGO: Vec2 = vec2(136.0, 64.0);
+const MAX_LOGO: u64 = 1 << 20;
 
 fn level_color(level: Level) -> Color32 {
     match level {
@@ -67,15 +71,120 @@ struct Download {
 type Fetched = Vec<(String, Result<Registry, String>)>;
 type ImportJob = Job<Result<(Sdk, Vec<String>), String>>;
 
+/// SDK logos by source, decoded on worker threads; one that failed stays `None` and shows the name tile.
+#[derive(Default)]
+struct Logos {
+    loaded: HashMap<String, Option<TextureHandle>>,
+    loading: Vec<(String, Job<Option<ColorImage>>)>,
+}
+
+impl Logos {
+    /// Starts loading `source` unless it is loaded or loading; a remote one is kept in `cache`
+    /// under a name that changes with `version`.
+    fn want(&mut self, source: String, cache: Option<&Path>, version: &str) {
+        if self.loaded.contains_key(&source) || self.loading.iter().any(|(s, _)| *s == source) {
+            return;
+        }
+        let file = cache.filter(|_| source.starts_with("http")).map(|c| c.join(manager::sha256_hex(format!("{source} {version}").as_bytes())));
+        let s = source.clone();
+        self.loading.push((source, Job::spawn(move || load_logo(&s, file.as_deref()))));
+    }
+
+    /// Uploads finished logos; true while some are still loading.
+    fn poll(&mut self, ctx: &egui::Context) -> bool {
+        let loaded = &mut self.loaded;
+        self.loading.retain(|(source, job)| {
+            let Some(img) = job.poll() else { return true };
+            let tex = img.ok().flatten().map(|i| ctx.load_texture(format!("logo:{source}"), i, egui::TextureOptions::LINEAR));
+            loaded.insert(source.clone(), tex);
+            false
+        });
+        !self.loading.is_empty()
+    }
+
+    fn get(&self, source: Option<&str>) -> Option<&TextureHandle> {
+        self.loaded.get(source?)?.as_ref()
+    }
+}
+
+fn load_logo(source: &str, cache: Option<&Path>) -> Option<ColorImage> {
+    if let Some(img) = cache.and_then(|c| std::fs::read(c).ok()).and_then(|b| decode_logo(&b)) {
+        return Some(img);
+    }
+    let bytes = manager::fetch(source, MAX_LOGO, &mut |_, _| {}, &AtomicBool::new(false)).ok()?;
+    let img = decode_logo(&bytes)?;
+    if let Some(c) = cache {
+        let _ = c.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(c, &bytes);
+    }
+    Some(img)
+}
+
+/// A PNG or JPEG of at most 4096 pixels a side, shrunk to twice the drawn size.
+fn decode_logo(bytes: &[u8]) -> Option<ColorImage> {
+    let format = image::guess_format(bytes).ok().filter(|f| matches!(f, image::ImageFormat::Png | image::ImageFormat::Jpeg))?;
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    reader.limits(limits);
+    let rgba = reader.decode().ok()?.thumbnail(LOGO.x as u32 * 2, LOGO.y as u32 * 2).to_rgba8();
+    Some(ColorImage::from_rgba_unmultiplied([rgba.width() as usize, rgba.height() as usize], rgba.as_raw()))
+}
+
+/// The logo fitted into a `LOGO` sized tile, or the SDK's name on a tile colored from it.
+fn logo_tile(ui: &mut egui::Ui, logo: Option<&TextureHandle>, name: &str) {
+    let (rect, _) = ui.allocate_exact_size(LOGO, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    if let Some(t) = logo {
+        painter.rect_filled(rect, 4.0, crate::chrome::BG);
+        let size = t.size_vec2();
+        let scale = (LOGO.x / size.x).min(LOGO.y / size.y);
+        egui::Image::new((t.id(), size)).corner_radius(4).paint_at(ui, egui::Rect::from_center_size(rect.center(), size * scale));
+        return;
+    }
+    let hue = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 360;
+    painter.rect_filled(rect, 4.0, egui::ecolor::Hsva::new(hue as f32 / 360.0, 0.45, 0.32, 1.0));
+    let text = painter.layout(name.to_string(), egui::FontId::proportional(15.0), TEXT, LOGO.x - 16.0);
+    painter.galley(rect.center() - text.size() / 2.0, text, TEXT);
+}
+
+/// A rounded card with a logo tile left of `body`.
+fn card(ui: &mut egui::Ui, logo: Option<&TextureHandle>, name: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::group(ui.style()).fill(ui.visuals().faint_bg_color).corner_radius(6).inner_margin(10).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_top(|ui| {
+            logo_tile(ui, logo, name);
+            ui.add_space(4.0);
+            ui.vertical(body);
+        });
+    });
+}
+
+fn title(ui: &mut egui::Ui, name: &str, version: &str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(name).strong().size(15.0));
+        ui.label(RichText::new(version).color(TEXT_WEAK));
+    });
+}
+
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1 << 20 { format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20)) } else { format!("{} KiB", bytes.div_ceil(1024)) }
+}
+
 #[derive(Default)]
 pub(crate) struct SdkManager {
     pub open: bool,
+    /// The Add an SDK window, shown at startup while no SDK is found.
+    pub first_run: bool,
     tab: Tab,
     /// The last check of each SDK folder.
     checks: BTreeMap<PathBuf, Vec<Item>>,
     running: Vec<(PathBuf, Job<Vec<Item>>)>,
-    registries: Fetched,
+    /// `None` until fetched; loads whenever a list of them shows.
+    registries: Option<Fetched>,
     fetching: Option<Job<Fetched>>,
+    logos: Logos,
     confirm_install: Option<(String, Entry)>,
     /// Folder name of the user SDK waiting for the remove confirmation.
     confirm_remove: Option<String>,
@@ -94,9 +203,10 @@ impl SdkManager {
         self.checks.get(dir)
     }
 
-    /// Forgets fetched registries so the Available tab loads them again.
+    /// Forgets fetched registries, and any fetch under way, so they load again.
     pub(crate) fn registries_changed(&mut self) {
-        self.registries.clear();
+        self.registries = None;
+        self.fetching = None;
     }
 }
 
@@ -109,6 +219,8 @@ enum Act {
     Remove(String),
     Refresh,
     Install(String, Entry),
+    Cancel,
+    NotNow,
     Create,
     BrowseImport,
     Import,
@@ -144,11 +256,18 @@ fn check_results(ui: &mut egui::Ui, items: &[Item]) {
 impl MapCraftApp {
     pub(crate) fn sdk_manager_window(&mut self, ctx: &egui::Context) {
         self.poll_sdk_jobs(ctx);
-        if !self.sdk_manager.open {
-            return;
+        let m = &self.sdk_manager;
+        let lists = m.first_run || m.open && m.tab == Tab::Available;
+        let shown = m.first_run || m.open;
+        if lists && m.registries.is_none() && m.fetching.is_none() {
+            self.fetch_registries();
         }
-        let mut open = true;
+        if shown {
+            self.want_logos();
+        }
         let mut acts = Vec::new();
+        self.first_run_window(ctx, &mut acts);
+        let mut open = self.sdk_manager.open;
         egui::Window::new("SDK Manager").open(&mut open).default_size([700.0, 560.0]).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 for (t, label, icon) in
@@ -176,6 +295,48 @@ impl MapCraftApp {
         self.sdk_modals(ctx);
     }
 
+    /// Queues the logos of registry entries and installed SDKs.
+    fn want_logos(&mut self) {
+        let cache = self.data_dir.as_ref().map(|d| d.join("logos"));
+        let m = &mut self.sdk_manager;
+        for (url, reg) in m.registries.iter().flatten() {
+            for e in reg.iter().flat_map(|r| &r.sdks) {
+                if let Some(source) = e.logo_source(url) {
+                    m.logos.want(source, cache.as_deref(), &e.version);
+                }
+            }
+        }
+        for logo in self.sdks.iter().filter_map(|i| i.logo.as_ref()) {
+            m.logos.want(logo.to_string_lossy().into_owned(), None, "");
+        }
+    }
+
+    fn first_run_window(&self, ctx: &egui::Context, acts: &mut Vec<Act>) {
+        if !self.sdk_manager.first_run {
+            return;
+        }
+        let screen = ctx.content_rect();
+        egui::Modal::new(egui::Id::new("add-sdk")).show(ctx, |ui| {
+            ui.set_width((screen.width() - 64.0).clamp(300.0, 620.0));
+            ui.heading("Add an SDK");
+            ui.label("An SDK teaches MapCraft a game: its entities, materials and compile tools. Install one to start, then point it at your game in the SDK Settings that open next.");
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height((screen.height() - 240.0).max(160.0)).show(ui, |ui| self.sdk_cards(ui, acts));
+            if let Some((false, text)) = &self.sdk_manager.note {
+                ui.colored_label(FAIL, text);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("File > SDK Manager installs more later.").color(TEXT_WEAK));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Not now").clicked() {
+                        acts.push(Act::NotNow);
+                    }
+                });
+            });
+        });
+    }
+
     fn installed_tab(&self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         if self.sdks.is_empty() {
             ui.label("No SDKs found. Install one from Available or make one in Create.");
@@ -187,13 +348,12 @@ impl MapCraftApp {
             let shadowed = id.is_some_and(|id| earlier.iter().any(|e| e.sdk.as_ref().is_ok_and(|s| s.manifest.id == id)));
             let running = self.sdk_manager.running.iter().any(|(d, _)| *d == inst.dir);
             let folder = inst.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.strong(sdk.map_or(folder.as_str(), |s| s.manifest.name.as_str()));
-                    if let Some(s) = sdk {
-                        ui.label(RichText::new(&s.manifest.version).color(TEXT_WEAK));
-                    }
+            let name = sdk.map_or(folder.as_str(), |s| s.manifest.name.as_str());
+            let logo = self.sdk_manager.logos.get(inst.logo.as_ref().map(|p| p.to_string_lossy()).as_deref());
+            ui.add_space(4.0);
+            card(ui, logo, name, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    title(ui, name, sdk.map_or("", |s| s.manifest.version.as_str()));
                     ui.label(RichText::new(inst.origin.label()).small().color(ACCENT));
                     if id.is_some() && self.session.sdk.as_deref() == id && !shadowed {
                         ui.label(RichText::new("used by this map").small().color(PASS));
@@ -212,7 +372,7 @@ impl MapCraftApp {
                 if shadowed {
                     ui.label(RichText::new("A copy with the same id is listed above and loads instead.").color(TEXT_WEAK));
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(sdk.is_some(), crate::icons::button(Some("cog"), "Configure"))
                         .on_hover_text("Set the folders and programs it uses")
@@ -252,82 +412,100 @@ impl MapCraftApp {
     }
 
     fn available_tab(&self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
-        let m = &self.sdk_manager;
         ui.horizontal(|ui| {
-            if ui.add_enabled(m.fetching.is_none(), crate::icons::button(Some("arrows_clockwise"), "Refresh")).clicked() {
+            if ui.add_enabled(self.sdk_manager.fetching.is_none(), crate::icons::button(Some("arrows_clockwise"), "Refresh")).clicked() {
                 acts.push(Act::Refresh);
-            }
-            if m.fetching.is_some() {
-                ui.spinner();
             }
             ui.label(RichText::new("Registries are listed in Preferences.").color(TEXT_WEAK));
         });
-        if let Some(d) = &m.download {
-            let [done, total] = [&d.progress[0], &d.progress[1]].map(|a| a.load(Ordering::Relaxed));
-            let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        ui.add_space(4.0);
+        self.sdk_cards(ui, acts);
+    }
+
+    /// Every registry's SDKs as cards, or why there are none.
+    fn sdk_cards(&self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let m = &self.sdk_manager;
+        let Some(registries) = m.registries.as_ref().filter(|_| m.fetching.is_none()) else {
             ui.horizontal(|ui| {
-                let text = format!("Installing {} ({} of {} KiB)", d.entry.name, done >> 10, total >> 10);
-                ui.add(egui::ProgressBar::new(fraction.min(1.0)).text(text).desired_width(420.0));
-                if ui.button("Cancel").clicked() {
-                    d.cancel.store(true, Ordering::Relaxed);
+                ui.spinner();
+                ui.label("Loading the list of SDKs…");
+            });
+            return;
+        };
+        if registries.is_empty() {
+            ui.label("No SDK registries are set. Add one in Edit > Preferences.");
+        }
+        for (url, reg) in registries {
+            match reg {
+                Ok(reg) => {
+                    if registries.len() > 1 {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(if reg.name.is_empty() { url } else { &reg.name }).strong()).on_hover_text(url);
+                    }
+                    if reg.sdks.is_empty() {
+                        ui.label(RichText::new(format!("{} lists no SDKs yet.", if reg.name.is_empty() { url } else { &reg.name })).color(TEXT_WEAK));
+                    }
+                    for e in &reg.sdks {
+                        ui.add_space(4.0);
+                        self.sdk_card(ui, url, e, acts);
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(FAIL, "The list of SDKs did not load. Check your connection, then Retry.");
+                    ui.label(RichText::new(e).size(11.0).color(TEXT_WEAK));
+                }
+            }
+        }
+        if registries.iter().any(|(_, r)| r.is_err()) && ui.add(crate::icons::button(Some("arrows_clockwise"), "Retry")).clicked() {
+            acts.push(Act::Refresh);
+        }
+    }
+
+    fn sdk_card(&self, ui: &mut egui::Ui, registry: &str, e: &Entry, acts: &mut Vec<Act>) {
+        let m = &self.sdk_manager;
+        let have = self.sdks.iter().find_map(|i| i.sdk.as_ref().ok().filter(|s| s.manifest.id == e.id));
+        card(ui, m.logos.get(e.logo_source(registry).as_deref()), &e.name, |ui| {
+            title(ui, &e.name, &e.version);
+            if !e.description.is_empty() {
+                ui.label(&e.description);
+            }
+            let by = (!e.author.is_empty()).then(|| format!("By {}", e.author));
+            let small = [by, (!e.license.is_empty()).then(|| e.license.clone()), Some(size_text(e.size))];
+            ui.label(RichText::new(small.into_iter().flatten().collect::<Vec<_>>().join(", ")).size(11.0).color(TEXT_WEAK));
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                if let Some(d) = m.download.as_ref().filter(|d| d.entry.id == e.id) {
+                    let [done, total] = [&d.progress[0], &d.progress[1]].map(|a| a.load(Ordering::Relaxed));
+                    let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                    let text = format!("Installing, {} of {}", size_text(done), size_text(total));
+                    ui.add(egui::ProgressBar::new(fraction.min(1.0)).text(text).desired_width(ui.available_width().min(280.0)));
+                    if ui.button("Cancel").clicked() {
+                        acts.push(Act::Cancel);
+                    }
+                    return;
+                }
+                let label = match have {
+                    Some(s) if !manager::newer(&e.version, &s.manifest.version) => None,
+                    Some(_) => Some("Update…"),
+                    None => Some("Install…"),
+                };
+                if let Some(why) = e.unsupported() {
+                    ui.colored_label(WARN, why);
+                } else if let Some(label) = label {
+                    if ui.add_enabled(m.download.is_none(), crate::icons::button(Some("cloud_arrow_down"), label)).clicked() {
+                        acts.push(Act::Install(registry.to_string(), e.clone()));
+                    }
+                } else {
+                    ui.label(RichText::new("Installed").color(PASS));
+                }
+                if let Some(s) = have.filter(|s| s.manifest.version != e.version) {
+                    ui.label(RichText::new(format!("installed: {}", s.manifest.version)).color(TEXT_WEAK));
+                }
+                if !e.homepage.is_empty() {
+                    ui.hyperlink_to("Homepage", &e.homepage);
                 }
             });
-        }
-        for (url, reg) in &m.registries {
-            ui.add_space(6.0);
-            let reg = match reg {
-                Ok(r) => r,
-                Err(e) => {
-                    ui.label(RichText::new(url).monospace().small().color(TEXT_WEAK));
-                    ui.colored_label(FAIL, e.strip_prefix(&format!("{url}: ")).unwrap_or(e));
-                    continue;
-                }
-            };
-            ui.label(RichText::new(if reg.name.is_empty() { url } else { &reg.name }).strong()).on_hover_text(url);
-            if reg.sdks.is_empty() {
-                ui.label("No SDKs are listed yet.");
-            }
-            for e in &reg.sdks {
-                let have = self.sdks.iter().find_map(|i| i.sdk.as_ref().ok().filter(|s| s.manifest.id == e.id));
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.strong(&e.name);
-                        ui.label(RichText::new(&e.version).color(TEXT_WEAK));
-                        ui.label(RichText::new(format!("{} KiB", e.size.div_ceil(1024))).small().color(TEXT_WEAK));
-                    });
-                    if !e.description.is_empty() {
-                        ui.label(&e.description);
-                    }
-                    let by = if e.author.is_empty() { "Unknown author".to_string() } else { format!("By {}", e.author) };
-                    let license = if e.license.is_empty() { "no license given" } else { &e.license };
-                    ui.label(RichText::new(format!("{by}, {license}")).color(TEXT_WEAK));
-                    ui.horizontal(|ui| {
-                        let busy = m.download.is_some();
-                        let label = match have {
-                            Some(s) if !manager::newer(&e.version, &s.manifest.version) => None,
-                            Some(_) => Some("Update…"),
-                            None => Some("Install…"),
-                        };
-                        if let Some(why) = e.unsupported() {
-                            ui.colored_label(WARN, why);
-                        } else if let Some(label) = label {
-                            if ui.add_enabled(!busy, crate::icons::button(Some("cloud_arrow_down"), label)).clicked() {
-                                acts.push(Act::Install(url.clone(), e.clone()));
-                            }
-                        } else {
-                            ui.label(RichText::new("Up to date").color(PASS));
-                        }
-                        if let Some(s) = have {
-                            ui.label(RichText::new(format!("installed: {}", s.manifest.version)).color(TEXT_WEAK));
-                        }
-                        if !e.homepage.is_empty() {
-                            ui.hyperlink_to("Homepage", &e.homepage);
-                        }
-                    });
-                });
-            }
-        }
+        });
     }
 
     fn create_tab(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -387,12 +565,7 @@ impl MapCraftApp {
 
     fn sdk_act(&mut self, act: Act) {
         match act {
-            Act::Tab(t) => {
-                self.sdk_manager.tab = t;
-                if t == Tab::Available && self.sdk_manager.registries.is_empty() && self.sdk_manager.fetching.is_none() {
-                    self.fetch_registries();
-                }
-            }
+            Act::Tab(t) => self.sdk_manager.tab = t,
             Act::Configure(sdk) => {
                 self.sdk_settings_for = Some(sdk);
                 self.show_sdk_dialog = true;
@@ -413,6 +586,12 @@ impl MapCraftApp {
             Act::Remove(folder) => self.sdk_manager.confirm_remove = Some(folder),
             Act::Refresh => self.fetch_registries(),
             Act::Install(registry, entry) => self.sdk_manager.confirm_install = Some((registry, entry)),
+            Act::Cancel => {
+                if let Some(d) = &self.sdk_manager.download {
+                    d.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            Act::NotNow => self.sdk_manager.first_run = false,
             Act::Create => self.create_sdk(),
             Act::BrowseImport => {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -500,9 +679,25 @@ impl MapCraftApp {
         }
     }
 
+    /// Loads a newly installed SDK and opens its settings. An untitled, unchanged map with no SDK
+    /// starts over on it, as File > New Map would; any other map keeps its SDK.
+    fn sdk_installed(&mut self, sdk: Sdk) {
+        let id = sdk.manifest.id.clone();
+        self.sdk_changed(&id);
+        if self.session.path.is_none() && !self.session.is_dirty() && self.project.sdk.is_none() {
+            self.new_now(Some(id.clone()));
+        } else if self.session.sdk.as_deref() != Some(id.as_str()) {
+            let name = &sdk.manifest.name;
+            self.status = format!("Installed {name}; this map keeps its SDK, and File > New Map starts a map on {name}");
+        }
+        self.sdk_settings_for = Some(sdk);
+        self.show_sdk_dialog = true;
+        self.sdk_manager.first_run = false;
+    }
+
     fn poll_sdk_jobs(&mut self, ctx: &egui::Context) {
         let m = &mut self.sdk_manager;
-        let mut busy = false;
+        let mut busy = m.logos.poll(ctx);
         m.running.retain(|(dir, job)| match job.poll() {
             None => {
                 busy = true;
@@ -517,7 +712,7 @@ impl MapCraftApp {
         match m.fetching.as_ref().map(Job::poll) {
             Some(None) => busy = true,
             Some(Some(result)) => {
-                m.registries = result.unwrap_or_else(|e| vec![(String::new(), Err(e))]);
+                m.registries = Some(result.unwrap_or_else(|e| vec![(String::new(), Err(e))]));
                 m.fetching = None;
             }
             None => {}
@@ -535,8 +730,8 @@ impl MapCraftApp {
                 Ok(sdk) => (true, format!("Installed {} {} into {}", sdk.manifest.name, sdk.manifest.version, sdk.dir.display())),
                 Err(e) => (false, format!("{} was not installed: {e}", entry.name)),
             });
-            if result.is_ok() {
-                self.sdk_changed(&entry.id);
+            if let Ok(sdk) = result {
+                self.sdk_installed(sdk);
             }
         }
         match imported {
@@ -561,14 +756,15 @@ impl MapCraftApp {
             let mut choice = None;
             egui::Modal::new(egui::Id::new("sdk-install")).show(ctx, |ui| {
                 ui.set_max_width(460.0);
-                ui.heading(format!("Install {} {}?", e.name, e.version));
+                ui.heading(format!("Install {}?", e.name));
                 egui::Grid::new("sdk-install-grid").num_columns(2).show(ui, |ui| {
                     let plugins = if e.plugins.is_empty() { "none".to_string() } else { e.plugins.join(", ") };
                     let rows = [
+                        ("Version", e.version.as_str()),
                         ("Author", if e.author.is_empty() { "unknown" } else { &e.author }),
                         ("License", if e.license.is_empty() { "not given" } else { &e.license }),
                         ("Plugins", &plugins),
-                        ("Size", &format!("{} KiB", e.size.div_ceil(1024))),
+                        ("Size", &size_text(e.size)),
                         ("From", &e.source(&registry)),
                     ];
                     for (k, v) in rows {

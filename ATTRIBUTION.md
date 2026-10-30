@@ -14,12 +14,7 @@ Third-party assets also have an `.attribution` file next to them with the full d
 | `godot/test/Assets/Textures/stripes.png` | Stripes test texture | Mark Arneman | MIT |
 | `godot/test/Assets/Models/box.glb` | Box test model | Mark Arneman | MIT |
 | `site/assets/mapcraft.svg` | MapCraft app icon (Block M) | Mark Arneman | MIT |
-| `site/assets/hero.webp` | MapCraft editor with a curved surf ramp selected | Mark Arneman | MIT |
-| `site/assets/views.webp` | Four views, scene tree and entity inspector | Mark Arneman | MIT |
-| `site/assets/generator-ramp.webp` | Surf Ramp block shape with ghost preview | Mark Arneman | MIT |
-| `site/assets/generator-bhop.webp` | Bhop Platforms block shape with ghost preview | Mark Arneman | MIT |
-| `site/assets/sculpt.webp` | Displacement sculpted with the Sculpt tool | Mark Arneman | MIT |
-| `site/assets/clip.webp` | Clip tool preview on a surf ramp | Mark Arneman | MIT |
-| `site/assets/shortcuts.webp` | Keyboard Shortcuts window and keymap presets | Mark Arneman | MIT |
-| `site/assets/plugins.webp` | Plugins menu | Mark Arneman | MIT |
-| `site/assets/godot-run.webp` | Run menu with the Godot profiles | Mark Arneman | MIT |
+| `site/assets/hero-3d.webp`, `site/assets/hero-top.webp` | The boss_golden_reliquary room from mFPS in MapCraft's 3D and Top views | Mark Arneman | MIT |
+| `site/assets/made-*.webp` (21 pictures) | surf_weave, surf_colossus, quicksand_cove and mFPS dungeon rooms in the 3D and Top views, with thumbnails | Mark Arneman | MIT |
+| `site/assets/card-*.webp` (9 pictures) | Feature screenshots of the editor | Mark Arneman | MIT |
+| `sdks/surfsup/models/y_bot.glb` | Y Bot, the SurfsUp SDK's player start model | Adobe Mixamo | Mixamo terms of use |

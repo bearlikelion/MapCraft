@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use mapcraft_geom::{DMat3, DMat4, DVec2, DVec3};
 pub use mapcraft_map::is_tool_material;
-use mapcraft_map::{AntiTile, Entity, Face, FaceId, Map, NodeId, NodeKind, TexAxis};
+use mapcraft_map::{AntiTile, Entity, Face, FaceId, Map, NodeId, NodeKind, Operation, TexAxis};
 
 use crate::model::{Model, entity_transform, placed_bounds};
 
@@ -154,6 +154,7 @@ const TOOL_ALPHA: f32 = 0.3;
 
 pub const WORLD_EDGE: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
 pub const SELECTED_EDGE: [f32; 4] = [1.0, 0.1, 0.1, 1.0];
+pub const SUBTRACT_EDGE: [f32; 4] = [1.0, 0.6, 0.15, 1.0];
 const SELECTED_TINT: [f32; 4] = [1.0, 0.62, 0.55, 1.0];
 const PICKED_FACE_EDGE: [f32; 4] = [0.0, 0.8, 1.0, 1.0];
 const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
@@ -248,6 +249,20 @@ pub fn build_scene(
         match &node.kind {
             NodeKind::Brush(b) => {
                 let Ok(solid) = b.solid() else { continue };
+                // A boolean group's own brushes are outlines only; its result shows their faces.
+                if let Some(op) = mapcraft_map::boolean::source_op(map, id) {
+                    let color = match (selected, op) {
+                        (true, _) => SELECTED_EDGE,
+                        (false, Operation::Subtract) => SUBTRACT_EDGE,
+                        (false, Operation::Add) => continue,
+                    };
+                    for w in solid.faces.iter().flatten() {
+                        for (a, b) in w.0.iter().zip(w.0.iter().cycle().skip(1)) {
+                            scene.selected_edges.extend([LineVertex::new(*a, color), LineVertex::new(*b, color)]);
+                        }
+                    }
+                    continue;
+                }
                 let world = if colorize { object_color(id) } else { WORLD_EDGE };
                 let edge = if selected { SELECTED_EDGE } else { entity_color.unwrap_or(world) };
                 let displaced: BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();

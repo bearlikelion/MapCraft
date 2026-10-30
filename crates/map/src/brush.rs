@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use mapcraft_geom::{Aabb, DAffine2, DMat3, DMat4, DVec2, DVec3, EPSILON, Plane, Side, Solid, SolidError, convex_hull};
 use serde::{Deserialize, Serialize};
 
+use crate::boolean::Operation;
 use crate::disp::{Displacement, ray_triangle};
 use crate::{Extra, FaceId};
 
@@ -16,6 +17,9 @@ pub struct TexAxis {
 
 /// The face attribute that turns on anti-tiling.
 pub const ANTI_TILE: &str = "anti_tile";
+
+/// The face attribute holding content flags, as Quake 2 style games keep them.
+pub const CONTENT_FLAGS: &str = "contents";
 
 /// How a face hides its texture's repetition in the views and in Godot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -336,6 +340,9 @@ fn strip_face(src: &Face, prev: &Face, points: [DVec3; 3]) -> Face {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Brush {
     pub faces: Vec<Face>,
+    /// What the brush does inside a boolean group; reshaping keeps it.
+    #[serde(default, skip_serializing_if = "Operation::is_add")]
+    pub operation: Operation,
 }
 
 impl Brush {
@@ -349,7 +356,7 @@ impl Brush {
             [DVec3::new(x.x, n.y, x.z), DVec3::new(n.x, n.y, x.z), DVec3::new(n.x, x.y, x.z)],
             [DVec3::new(n.x, x.y, n.z), DVec3::new(n.x, n.y, n.z), DVec3::new(x.x, n.y, n.z)],
         ];
-        Self { faces: pts.into_iter().map(|p| Face::new(p, tex)).collect() }
+        Self { faces: pts.into_iter().map(|p| Face::new(p, tex)).collect(), ..Self::default() }
     }
 
     /// The convex hull of `points`; each face takes its texture from the face of `like` it matches
@@ -483,7 +490,7 @@ impl Brush {
         if lock {
             face.lock_texture(t);
         }
-        Self::pruned(b.faces).ok()
+        Self::pruned(b.faces).ok().map(|n| n.like(self))
     }
 
     /// Face `id` pushed `distance` along its normal keeping its shape: outward the brush gains the
@@ -506,7 +513,7 @@ impl Brush {
             moved.lock_texture(n * distance);
         }
         let solid = b.solid().ok()?;
-        (solid.volume() > EPSILON).then_some(b)
+        (solid.volume() > EPSILON).then_some(b.like(self))
     }
 
     /// Face `id` moved by `delta` keeping its shape while the faces around it tilt; `None` when a moved corner would be swallowed.
@@ -523,7 +530,7 @@ impl Brush {
         if !moved.iter().all(|m| corners.iter().any(|c| c.distance_squared(*m) < 1e-4)) {
             return None;
         }
-        b.adopt_face(face, delta, lock).then_some(b)
+        b.adopt_face(face, delta, lock).then(|| b.like(self))
     }
 
     /// Gives the face lying on `face`'s plane moved by `t` the id and texture of `face`; false when there is none.
@@ -633,9 +640,9 @@ impl Brush {
 
     /// The brush with faces that cut nothing away removed.
     pub fn pruned(faces: Vec<Face>) -> Result<Self, BrushError> {
-        let b = Self { faces };
+        let b = Self { faces, ..Self::default() };
         let solid = b.solid()?;
-        Ok(Self { faces: b.faces.into_iter().zip(solid.faces).filter_map(|(f, w)| w.map(|_| f)).collect() })
+        Ok(Self { faces: b.faces.into_iter().zip(solid.faces).filter_map(|(f, w)| w.map(|_| f)).collect(), ..Self::default() })
     }
 
     /// Applies an affine transform; with `lock` the texture stays fixed to the surface.
@@ -667,6 +674,12 @@ impl Brush {
         b
     }
 
+    /// Takes `from`'s boolean operation, for a brush reshaped from it.
+    pub fn like(mut self, from: &Self) -> Self {
+        self.operation = from.operation;
+        self
+    }
+
     pub fn with_new_ids(mut self) -> Self {
         for f in &mut self.faces {
             f.id = FaceId(0);
@@ -686,7 +699,7 @@ impl Brush {
                 back.push(cut.clone());
                 let mut front = self.clone().with_new_ids().faces;
                 front.push(cut.reversed());
-                let part = |faces| Self::pruned(faces).ok().map(|b| b.keep_unreshaped_grids(std::slice::from_ref(self)));
+                let part = |faces| Self::pruned(faces).ok().map(|b| b.like(self).keep_unreshaped_grids(std::slice::from_ref(self)));
                 Ok((part(front), part(back)))
             }
         }
@@ -711,7 +724,7 @@ impl Brush {
                     let mut inside = rest.faces.clone();
                     inside.push(face.clone());
                     if let Ok(b) = Self::pruned(outside) {
-                        out.push(b.with_new_ids().keep_unreshaped_grids(std::slice::from_ref(self)));
+                        out.push(b.with_new_ids().like(self).keep_unreshaped_grids(std::slice::from_ref(self)));
                     }
                     let Ok(b) = Self::pruned(inside) else { return Ok(out) };
                     rest_solid = b.solid()?;
@@ -829,7 +842,7 @@ impl Brush {
                 }
             }
         }
-        Self::pruned(faces)
+        Self::pruned(faces).map(|b| b.like(self))
     }
 
     /// Walls of the given thickness around a hollow interior.

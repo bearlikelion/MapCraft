@@ -151,13 +151,16 @@ impl MapCraftApp {
                 return format!("{what} {} units; release to finish, Esc cancels", crate::measure::units(amount));
             }
             Drag::Rotate { applied, .. } => return format!("Turned {applied} degrees; release to finish"),
+            Drag::Move { applied, .. } | Drag::Move3d { applied, .. } => return moved(*applied),
+            Drag::Axis { axis, applied, .. } => return moved(*axis * *applied),
+            Drag::Transfer { mode, done, .. } => return format!("{} onto {} faces; release to finish, Ctrl+Z undoes the whole drag", mode.label(), done.len()),
             _ => return "Release to finish; Ctrl+Z undoes the whole drag".into(),
         }
         match self.tool {
             Tool::Select => {
-                "Click to select, click again to pick the object behind; drag to move, drag the white handles to resize; Shift+drag a face extrudes".into()
+                "Click to select, click again to pick the object behind; drag to move, Alt+drag up and down in the 3D view; drag the white handles to resize; Shift+drag a face extrudes".into()
             }
-            Tool::Move => "Drag in a 2D view or along the arrows in the 3D view to move the selection".into(),
+            Tool::Move => "Drag the selection or one of its arrows to move it; Alt+drag moves it up and down in the 3D view".into(),
             Tool::Extrude => {
                 "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt stamps one, Alt slides the face keeping its shape".into()
             }
@@ -196,8 +199,9 @@ impl MapCraftApp {
                 "Drag on a displacement to paint the current material, or to soften blend edges with Blur; Ctrl paints the face's own material back, Alt+click picks the material under the pointer".into()
             }
             Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
+            Tool::Face if self.session.active_pick().is_none() => "Click faces in the 3D view; Alt+click picks a material, Alt+right click applies it".into(),
             Tool::Face => {
-                "Click faces in the 3D view; Ctrl+C copies a face and Ctrl+V pastes it on the picked faces; Alt+click picks, Alt+right click applies".into()
+                "Alt+click, drag or double-click faces in the 3D view to give them the active face's material and alignment; Alt+Shift wraps it around corners, Ctrl+Alt takes the material only; Ctrl+C and Ctrl+V copy and paste a face".into()
             }
             Tool::Path => format!(
                 "Click to add path points, drag to pull out handles; click the first point to close, Enter starts a new path; pick faces and {} sweeps them along it",
@@ -757,6 +761,13 @@ impl MapCraftApp {
             });
         });
     }
+}
+
+/// The status bar's reading of how far a drag has moved the selection.
+fn moved(d: DVec3) -> String {
+    // Adding zero turns a negative zero into a plain one.
+    let u = |v: f64| crate::measure::units(v + 0.0);
+    format!("Moved {} {} {}; release to finish, Ctrl+Z undoes the whole drag", u(d.x), u(d.y), u(d.z))
 }
 
 fn short_label(view: View) -> &'static str {

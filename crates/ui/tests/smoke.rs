@@ -1317,6 +1317,54 @@ fn a_2d_drag_moves_the_selection_under_a_nearer_brush() {
 }
 
 #[test]
+fn the_3d_view_drags_the_selection_across_and_alt_drags_it_up() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let id = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.run_steps(2);
+    let (from, to) = (h.state().screen_for_test(0, DVec3::new(32.0, 32.0, 64.0)), h.state().screen_for_test(0, DVec3::new(132.0, 32.0, 64.0)));
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(96.0, 0.0, 0.0), "a drag slides the brush across the level of its top, onto the grid");
+
+    let (from, to) = (h.state().screen_for_test(0, DVec3::new(128.0, 32.0, 64.0)), h.state().screen_for_test(0, DVec3::new(128.0, 32.0, 114.0)));
+    drag_with(&mut h, from, to, Modifiers::ALT);
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(96.0, 0.0, 48.0), "Alt drags it straight up, onto the grid");
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(96.0, 0.0, 0.0), "one undo takes back the whole drag");
+
+    let (from, across) = (h.state().screen_for_test(0, DVec3::new(128.0, 32.0, 64.0)), h.state().screen_for_test(0, DVec3::new(176.0, 32.0, 64.0)));
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    for k in 1..=4 {
+        h.hover_at(from + (across - from) * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    h.hover_at(across);
+    h.run_steps(1);
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(144.0, 0.0, 0.0), "pressing Alt partway through leaves the brush where it is");
+    let up = h.state().screen_for_test(0, DVec3::new(176.0, 32.0, 114.0));
+    for k in 1..=4 {
+        h.hover_at(across + (up - across) * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    h.event(Event::PointerButton { pos: up, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::ALT });
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(144.0, 0.0, 48.0), "then lifts it");
+
+    h.state_mut().session_for_test().selection.clear();
+    let (from, to) = (h.state().screen_for_test(0, DVec3::new(176.0, 32.0, 112.0)), h.state().screen_for_test(0, DVec3::new(176.0, 132.0, 112.0)));
+    drag_with(&mut h, from, to, Modifiers::COMMAND);
+    assert_eq!(h.state().node_count_for_test(), 3, "Ctrl+drag on an unselected brush picks it and moves a copy");
+    assert_eq!(bounds(&mut h, id).min, DVec3::new(144.0, 0.0, 48.0), "leaving the original");
+    let copy = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    assert_eq!(bounds(&mut h, copy).min, DVec3::new(144.0, 96.0, 48.0));
+}
+
+#[test]
 fn shift_click_picks_a_face_from_the_select_tool() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();
@@ -1341,6 +1389,70 @@ fn shift_click_picks_a_face_from_the_select_tool() {
     assert_eq!(picked[0], (b, top));
     click(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
     assert!(h.state_mut().session_for_test().face_selection.is_empty(), "now in the Face tool, Ctrl+Shift+click toggles faces");
+}
+
+#[test]
+fn alt_click_transfers_from_the_picked_face() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::{Face, NodeId};
+    fn faces(h: &mut Harness<MapCraftApp>, id: NodeId) -> Vec<Face> {
+        h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().faces.clone()
+    }
+    fn top(h: &mut Harness<MapCraftApp>, id: NodeId) -> Face {
+        faces(h, id).into_iter().find(|f| f.plane().unwrap().normal.z > 0.9).unwrap()
+    }
+    let settings = tempfile::tempdir().unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let s = h.state_mut().session_for_test();
+    let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    let b = s.create_brush(Aabb::new(DVec3::new(128.0, 0.0, 0.0), DVec3::new(192.0, 64.0, 64.0))).unwrap();
+    s.selection.clear();
+    h.run_steps(2);
+    let source = top(&mut h, a).id;
+    let s = h.state_mut().session_for_test();
+    s.face_selection = std::collections::BTreeSet::from([(a, source)]);
+    s.edit_faces("Look", None, |f| {
+        f.material = "ramps/orange".into();
+        f.rotate_texture(30.0);
+    })
+    .unwrap();
+    s.face_selection.clear();
+    h.run_steps(2);
+    let click = |h: &mut Harness<MapCraftApp>, at: Pos2, modifiers: Modifiers, times: usize| {
+        h.event(Event::ModifiersChanged(modifiers));
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..times {
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers });
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers });
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+    };
+    let (on_a, on_b) = (h.state().screen_for_test(0, DVec3::new(32.0, 32.0, 64.0)), h.state().screen_for_test(0, DVec3::new(160.0, 32.0, 64.0)));
+    click(&mut h, on_a, Modifiers::SHIFT, 1);
+    let side = |h: &mut Harness<MapCraftApp>| faces(h, b).into_iter().find(|f| f.plane().unwrap().normal.x > 0.9).unwrap();
+    let before = side(&mut h);
+    click(&mut h, on_b, Modifiers::ALT | Modifiers::COMMAND, 2);
+    assert!(faces(&mut h, b).iter().all(|f| f.material == "ramps/orange"), "Ctrl+Alt+double-click gives every face of the brush the material");
+    assert_eq!(side(&mut h).u, before.u, "and only the material");
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert!(faces(&mut h, b).iter().all(|f| f.material != "ramps/orange"), "one undo takes back the whole double click");
+
+    click(&mut h, on_b, Modifiers::ALT, 1);
+    let (src, got) = (top(&mut h, a), top(&mut h, b));
+    assert_eq!((got.material.as_str(), got.u, got.v), ("ramps/orange", src.u, src.v), "Alt+click gives the clicked face the picked face's look");
+    assert_eq!(h.state().status_for_test(), "Transfer material and alignment (projected)");
+    assert_eq!(h.state_mut().session_for_test().face_selection.len(), 1, "the source stays picked");
+
+    h.state_mut().session_for_test().face_selection.clear();
+    h.run_steps(2);
+    click(&mut h, on_b, Modifiers::ALT, 1);
+    assert!(h.state().status_for_test().starts_with("Picked"), "with no face picked, Alt+click picks the material");
 }
 
 #[test]
@@ -1608,6 +1720,38 @@ fn showing_the_inspector_writes_nothing() {
     assert_eq!(s.undo_label().map(String::from), label);
 }
 
+#[test]
+fn io_sections_show_only_for_classes_with_io() {
+    use mapcraft_geom::DVec3;
+    let settings = tempfile::tempdir().unwrap();
+    let sdk = settings.path().join("data/sdks/io-test");
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::write(sdk.join("sdk.toml"), "id = \"io-test\"\nname = \"IO Test\"\nfgd = [\"io.fgd\"]\n").unwrap();
+    let fgd = "@BaseClass = Targetname [ targetname(target_source) : \"Name\" input Kill(void) : \"\" output OnUser1(void) : \"\" ]\n\
+        @PointClass base(Targetname) = logic_relay : \"\" []\n\
+        @PointClass = info_marker : \"\" []";
+    std::fs::write(sdk.join("io.fgd"), fgd).unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    h.state_mut().run_command_for_test("file.switch_sdk");
+    h.run_steps(2);
+    h.get_by_label("IO Test").click();
+    h.run_steps(3);
+
+    let s = h.state_mut().session_for_test();
+    let marker = s.create_point_entity("info_marker", DVec3::ZERO, Vec::new()).unwrap();
+    s.selection = std::collections::BTreeSet::from([marker]);
+    h.run_steps(2);
+    assert!(h.query_by_label("Outputs").is_none() && h.query_by_label("Inputs").is_none(), "a class without I/O has no I/O sections");
+
+    let s = h.state_mut().session_for_test();
+    let relay = s.create_point_entity("logic_relay", DVec3::splat(64.0), Vec::new()).unwrap();
+    s.selection = std::collections::BTreeSet::from([relay]);
+    h.run_steps(2);
+    assert!(h.query_by_label("Outputs").is_some() && h.query_by_label("Inputs").is_some(), "inherited I/O shows both sections");
+}
+
 fn type_keys(h: &mut Harness<MapCraftApp>, label: &str, keys: &[&str]) {
     h.get_by_label(label).focus();
     h.run_steps(1);
@@ -1671,4 +1815,95 @@ fn brush_rows_show_world_and_keep_flipped_textures() {
     type_keys(&mut h, "Texture scale", &["2"]);
     let faces = h.state_mut().session_for_test().map.get(b).unwrap().kind.brush().unwrap().faces.clone();
     assert!(faces.iter().all(|f| f.u.scale == -2.0 && f.v.scale == -2.0), "flipped textures stay flipped");
+}
+
+#[test]
+fn resizing_a_ramp_updates_its_settings() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use mapcraft_map::{Group, NodeKind};
+    let settings = tempfile::tempdir().unwrap();
+    let sample = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdks/surfsup/samples/surf_mapcraft.mcmap");
+    let options = Options {
+        settings_dir: Some(settings.path().to_path_buf()),
+        open: Some(sample.into()),
+        sdk_vars: vec![("project".into(), settings.path().display().to_string())],
+        ..Options::default()
+    };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let ramp = |h: &mut Harness<MapCraftApp>, id| {
+        let s = h.state_mut().session_for_test();
+        let NodeKind::Group(Group { generator: Some(g), .. }) = s.map.get(id).unwrap().kind.clone() else { panic!() };
+        let b: Aabb = s.map.subtree(id).iter().filter_map(|n| s.map.get(*n)?.kind.brush()?.bounds().ok()).reduce(|a, b| a.union(&b)).unwrap();
+        (g, b)
+    };
+    let s = h.state_mut().session_for_test();
+    let straight = |n: &mapcraft_map::Node| matches!(&n.kind, NodeKind::Group(Group { generator: Some(g), .. }) if g.params["shape"] == "Straight");
+    let id = s.map.nodes().find(|(_, n)| straight(n)).unwrap().0;
+    s.selection = std::collections::BTreeSet::from([id]);
+    h.state_mut().run_command_for_test("view.frame_selection");
+    h.run_steps(3);
+    let (before, b) = ramp(&mut h, id);
+    assert_eq!(before.params["size"].as_f64(), Some(b.size().x));
+
+    let edge = DVec3::new(b.max.x, b.center().y, 0.0);
+    let (from, to) = (h.state().screen_for_test(1, edge), h.state().screen_for_test(1, edge + DVec3::X * 640.0));
+    drag_with(&mut h, from, to, Modifiers::NONE);
+    h.run_steps(2);
+    let (after, resized) = ramp(&mut h, id);
+    assert!(resized.size().x > b.size().x + 256.0, "the drag lengthens the ramp: {resized:?}");
+    assert_eq!(after.params["size"].as_f64(), Some(resized.size().x), "Length follows the resize");
+    assert_eq!((&after.params["width"], after.stretch), (&before.params["width"], None));
+
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    let (undone, back) = ramp(&mut h, id);
+    assert_eq!((&undone.params["size"], back), (&before.params["size"], b), "one undo takes back the resize and the new Length");
+}
+
+fn wait_for(h: &mut Harness<MapCraftApp>, done: impl Fn(&Harness<MapCraftApp>) -> bool) -> bool {
+    for _ in 0..400 {
+        h.run_steps(1);
+        if done(h) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+#[test]
+fn a_fresh_install_offers_sdks_and_opens_the_settings_of_the_one_installed() {
+    use mapcraft_sdk_manager as manager;
+    let dir = tempfile::tempdir().unwrap();
+    let registry = dir.path().join("registry");
+    let src = registry.join("demo");
+    manager::create(&src, "demo", "Demo Game").unwrap();
+    image::RgbaImage::from_pixel(46, 21, image::Rgba([40, 140, 220, 255])).save(src.join("logo.png")).unwrap();
+    let (_, entry) = manager::package(&src, &registry, None).unwrap();
+    assert_eq!(entry.logo, "demo/logo.png");
+    let index = registry.join("index.json");
+    let reg = manager::Registry { format: manager::FORMAT.into(), version: manager::VERSION, name: "Local".into(), sdks: vec![entry] };
+    std::fs::write(&index, serde_json::to_string(&reg).unwrap()).unwrap();
+
+    let settings = dir.path().join("settings");
+    let options = Options { settings_dir: Some(settings.clone()), fresh_install: true, ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.state_mut().set_registries_for_test(vec![index.to_string_lossy().into_owned()]);
+    assert!(h.state().sdk_ids_for_test().is_empty(), "the source tree's SDKs are not found");
+    assert!(wait_for(&mut h, |h| h.query_by_label("Install…").is_some()), "the window lists the registry's SDKs");
+    assert!(h.query_by_label("Add an SDK").is_some() && h.query_by_label("Demo Game").is_some());
+    // The window centers itself again once the list fills it.
+    h.run_steps(3);
+
+    h.get_by_label("Install…").click();
+    h.run_steps(2);
+    h.get_by_label("Install").click();
+    assert!(wait_for(&mut h, |h| h.state().sdk_settings_open_for_test()), "SDK Settings opens once it is installed");
+    assert!(settings.join("data/sdks/demo/sdk.toml").is_file());
+    assert_eq!(h.state().sdk_ids_for_test(), ["demo"]);
+    assert_eq!(h.state_mut().session_for_test().sdk.as_deref(), Some("demo"), "the untitled map starts on the new SDK");
+    h.run_steps(2);
+    assert!(h.query_by_label("Add an SDK").is_none(), "the window closes");
+    assert!(h.query_by_label("Demo Game SDK Settings").is_some());
 }

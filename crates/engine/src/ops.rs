@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3, Solid, Winding};
+use mapcraft_geom::{Aabb, DMat3, DMat4, DQuat, DVec3, Solid, Winding};
 use mapcraft_map::{Brush, BrushError, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
 
 use crate::{EngineError, Session};
@@ -120,7 +120,10 @@ pub(crate) fn moved_placement(m: &DMat4, origin: DVec3, mut angles: DVec3) -> (D
 /// A group's generator placement and mirror plane moved by `m`, so they stay with its children.
 fn moved_group(mut g: Group, m: &DMat4) -> Group {
     if let Some(generator) = &mut g.generator {
+        let before = crate::generator_transform(generator);
         (generator.origin, generator.angles) = moved_placement(m, generator.origin, generator.angles);
+        let rest = crate::prefab::placement(generator.origin, generator.angles).inverse() * *m * before;
+        generator.stretch = Some(DMat3::from_mat4(rest)).filter(|s| !s.abs_diff_eq(DMat3::IDENTITY, 1e-9)).map(Box::new);
     }
     g.mirror = g.mirror.map(|mirror| mirror.transformed(m));
     g.link = g.link.map(|l| Box::new(l.transformed(m)));
@@ -342,7 +345,7 @@ impl Session {
                 }
             }
             if changed {
-                e.set_kind(id, NodeKind::Brush(Brush::from_vertices(&verts, &b.faces, &self.tex)?))?;
+                e.set_kind(id, NodeKind::Brush(Brush::from_vertices(&verts, &b.faces, &self.tex)?.like(&b)))?;
             }
         }
         let c = e.finish();
@@ -487,11 +490,17 @@ impl Session {
         if self.face_selection.is_empty() {
             return Err(EngineError::NothingSelected);
         }
+        let picks = self.face_selection.clone();
+        self.edit_face_set(&picks, label, coalesce, f)
+    }
+
+    /// Edits the faces `picks` in one undo step.
+    pub fn edit_face_set(&mut self, picks: &BTreeSet<(NodeId, FaceId)>, label: &str, coalesce: Option<&str>, f: impl Fn(&mut Face)) -> Result<(), EngineError> {
         let mut e = self.map.edit();
-        let brushes: BTreeSet<NodeId> = self.face_selection.iter().map(|(id, _)| *id).collect();
+        let brushes: BTreeSet<NodeId> = picks.iter().map(|(id, _)| *id).collect();
         for id in brushes {
             let Some(mut b) = e.node(id).and_then(|n| n.kind.brush()).cloned() else { continue };
-            for face in b.faces.iter_mut().filter(|x| self.face_selection.contains(&(id, x.id))) {
+            for face in b.faces.iter_mut().filter(|x| picks.contains(&(id, x.id))) {
                 f(face);
             }
             if e.node(id).and_then(|n| n.kind.brush()) != Some(&b) {
@@ -557,6 +566,9 @@ impl Session {
         self.transform_nodes(&mut e, &roots, m)?;
         let c = e.finish();
         self.apply_coalesced(label, c, coalesce);
+        let map = &self.map;
+        let stretched = |id: &NodeId| map.get(*id).is_some_and(|n| matches!(&n.kind, NodeKind::Group(Group { generator: Some(g), .. }) if g.stretch.is_some()));
+        self.stretched = roots.iter().flat_map(|r| map.subtree(*r)).filter(stretched).collect();
         Ok(())
     }
 

@@ -38,7 +38,7 @@ log = "0.4"
 tempfile = "3"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
-gltf-json = "1.4"
+gltf-json = { version = "1.4", features = ["names"] }
 base64 = "0.22"
 fastnoise-lite = "1.1"
 

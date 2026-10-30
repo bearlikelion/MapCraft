@@ -372,3 +372,17 @@ world plugin {
     /// for files with an extension the manifest's `models` lists.
     export load-model: func(path: string) -> result<model, string>;
 }
+
+/// Generators whose parameters follow a resize in the views.
+interface resize {
+    use types.{param, vec3};
+
+    /// Parameters for the generator `command` whose output is its output for `params` stretched by `scale` along its own axes, about its origin; none keeps the stretch.
+    scale-params: func(command: string, params: list<param>, scale: vec3) -> option<list<param>>;
+}
+
+/// A plugin that also exports `resize`; the editor loads plugins built against either world.
+world scalable-plugin {
+    include plugin;
+    export resize;
+}

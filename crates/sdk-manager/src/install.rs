@@ -140,7 +140,7 @@ fn unpack_and_swap(bytes: &[u8], id: &str, sdks: &Path, stage: &Path) -> Result<
 }
 
 /// Removes the SDK `id` from the user's `sdks` folder. Only that folder is ever touched, so SDKs
-/// bundled with MapCraft or in a source tree cannot be removed.
+/// in a source tree or another SDK folder cannot be removed.
 pub fn uninstall(sdks: &Path, id: &str) -> Result<(), Error> {
     let dir = sdks.join(id);
     if !valid_id(id) || !dir.join(MANIFEST).is_file() {
@@ -184,7 +184,8 @@ fn walk(dir: &Path) -> Result<Vec<String>, Error> {
 
 /// Zips the SDK in `dir` as `<id>/...` into `out/<id>-<version>.zip` and returns the archive's
 /// path and its registry entry. `download` is `base_url/<zip name>`, or the zip name alone,
-/// relative to the registry. The same files always give the same zip and checksum.
+/// relative to the registry; `logo` is `<id>/logo.png` or `.jpg` when the folder has one. The
+/// same files always give the same zip and checksum.
 pub fn package(dir: &Path, out: &Path, base_url: Option<&str>) -> Result<(PathBuf, Entry), Error> {
     let sdk = Sdk::load(dir)?;
     let m = &sdk.manifest;
@@ -219,6 +220,8 @@ pub fn package(dir: &Path, out: &Path, base_url: Option<&str>) -> Result<(PathBu
         size: bytes.len() as u64,
         min_mapcraft: MAPCRAFT_VERSION.into(),
         plugins: m.plugins.clone(),
+        // Registries such as MapCraftSDKs keep each SDK's folder, named by its id, beside index.json.
+        logo: crate::logo(dir).and_then(|p| Some(format!("{}/{}", m.id, p.file_name()?.to_string_lossy()))).unwrap_or_default(),
     };
     Ok((path, entry))
 }
@@ -309,6 +312,11 @@ mod tests {
         std::fs::write(src.join(".hidden"), "skip me").unwrap();
 
         let dist = dir.path().join("dist");
+        assert_eq!(package(&src, &dist, None).unwrap().1.logo, "", "a folder without a logo gets none");
+        std::fs::write(src.join("logo.jpg"), "jpeg").unwrap();
+        std::fs::write(src.join("logo.png"), "png").unwrap();
+        let hosted = package(&src, &dist, Some("https://example.com/releases")).unwrap().1;
+        assert_eq!(hosted.logo, "demo/logo.png", "the logo stays beside the registry even when zips are hosted elsewhere");
         let (zip, entry) = package(&src, &dist, None).unwrap();
         assert_eq!(entry.download, "demo-0.1.0.zip");
         assert_eq!(entry.sha256, sha256_hex(&std::fs::read(&zip).unwrap()));
@@ -326,6 +334,7 @@ mod tests {
         assert_eq!(installed.dir, sdks.join("demo"));
         assert!(seen > 0);
         assert!(!sdks.join("demo/.hidden").exists());
+        assert_eq!(crate::logo(&installed.dir), Some(sdks.join("demo/logo.png")));
         assert!(!sdks.join(STAGING).exists());
 
         std::fs::write(sdks.join("demo/stale.txt"), "old").unwrap();

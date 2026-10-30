@@ -59,6 +59,9 @@ pub struct Entry {
     /// Ids of the plugins the zip ships.
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// A PNG or JPEG logo's URL, or a path relative to the registry file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub logo: String,
 }
 
 impl Registry {
@@ -97,16 +100,12 @@ impl Entry {
     /// Where the zip downloads from: `download` itself when it is a URL, else relative to `registry`.
     /// Entries of a remote registry always resolve to URLs, never to local files.
     pub fn source(&self, registry: &str) -> String {
-        if is_url(&self.download) {
-            return self.download.clone();
-        }
-        if is_url(registry) {
-            let base = registry.rsplit_once('/').map_or(registry, |(b, _)| b);
-            return format!("{base}/{}", self.download.trim_start_matches('/'));
-        }
-        // Keeping the registry's trailing separator stops join adding a native one, so `/` paths stay `/` on Windows.
-        let dir = registry.strip_prefix("file://").unwrap_or(registry).trim_end_matches(|c| !std::path::is_separator(c));
-        Path::new(dir).join(&self.download).to_string_lossy().into_owned()
+        resolve(&self.download, registry)
+    }
+
+    /// Where the logo loads from, resolved like `download`, or `None` when the entry has none.
+    pub fn logo_source(&self, registry: &str) -> Option<String> {
+        (!self.logo.trim().is_empty()).then(|| resolve(self.logo.trim(), registry))
     }
 
     /// Why this MapCraft cannot install the entry, if it cannot.
@@ -114,6 +113,20 @@ impl Entry {
         let min = self.min_mapcraft.trim();
         (!min.is_empty() && crate::newer(min, MAPCRAFT_VERSION)).then(|| format!("needs MapCraft {min} or newer"))
     }
+}
+
+/// `path` itself when it is a URL, else relative to `registry`; a remote registry always gives URLs.
+fn resolve(path: &str, registry: &str) -> String {
+    if is_url(path) {
+        return path.to_string();
+    }
+    if is_url(registry) {
+        let base = registry.rsplit_once('/').map_or(registry, |(b, _)| b);
+        return format!("{base}/{}", path.trim_start_matches('/'));
+    }
+    // Keeping the registry's trailing separator stops join adding a native one, so `/` paths stay `/` on Windows.
+    let dir = registry.strip_prefix("file://").unwrap_or(registry).trim_end_matches(|c| !std::path::is_separator(c));
+    Path::new(dir).join(path).to_string_lossy().into_owned()
 }
 
 fn is_url(s: &str) -> bool {
@@ -205,7 +218,25 @@ mod tests {
             size: 10,
             min_mapcraft: "0.1.0".into(),
             plugins: vec![],
+            logo: String::new(),
         }
+    }
+
+    #[test]
+    fn logos_resolve_like_downloads() {
+        let mut e = entry("demo");
+        assert_eq!(e.logo_source("https://example.com/sdks/index.json"), None);
+        assert!(!serde_json::to_string(&e).unwrap().contains("logo"), "an entry without a logo prints no key");
+        e.logo = "demo/logo.jpg".into();
+        assert_eq!(e.logo_source("https://example.com/sdks/index.json").as_deref(), Some("https://example.com/sdks/demo/logo.jpg"));
+        assert_eq!(e.logo_source("/srv/reg/index.json").as_deref(), Some("/srv/reg/demo/logo.jpg"));
+        e.logo = "https://cdn.example.com/demo.png".into();
+        assert_eq!(e.logo_source("/srv/reg/index.json").as_deref(), Some("https://cdn.example.com/demo.png"));
+        e.logo = "/home/user/secret.png".into();
+        let remote = e.logo_source("https://example.com/index.json").unwrap();
+        assert_eq!(remote, "https://example.com/home/user/secret.png", "a remote registry never reads local files");
+        let text = r#"{"id":"demo","name":"Demo","version":"1","download":"demo.zip","sha256":"","size":1,"logo":"demo/logo.png"}"#;
+        assert_eq!(serde_json::from_str::<Entry>(text).unwrap().logo, "demo/logo.png");
     }
 
     #[test]

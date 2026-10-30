@@ -26,6 +26,14 @@ fn has_faces(s: &Session) -> bool {
     !s.face_selection.is_empty()
 }
 
+fn in_boolean(s: &Session) -> bool {
+    s.selection.iter().any(|id| mapcraft_map::boolean::group_of(&s.map, *id).is_some())
+}
+
+fn has_boolean(s: &Session) -> bool {
+    in_boolean(s) || s.selection.iter().any(|id| crate::boolean::is_flagged(&s.map, *id))
+}
+
 fn has_link_copy(s: &Session) -> bool {
     s.selection.iter().any(|id| mapcraft_map::link::copy_of(&s.map, *id).is_some())
 }
@@ -180,6 +188,38 @@ const COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec { id: "tools.carve", label: "Carve", menu: "Tools/Carve", shortcut: Some("Ctrl+Shift+C"), enabled: has_selection, run: Session::carve },
+    CommandSpec {
+        id: "tools.boolean_subtract",
+        label: "Subtract",
+        menu: "Tools/Boolean/Subtract",
+        shortcut: Some("Ctrl+Shift+B"),
+        enabled: has_selection,
+        run: |s| s.make_boolean(mapcraft_map::Operation::Subtract).map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.boolean_add",
+        label: "Add",
+        menu: "Tools/Boolean/Add",
+        shortcut: Some("Ctrl+Alt+B"),
+        enabled: has_selection,
+        run: |s| s.make_boolean(mapcraft_map::Operation::Add).map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.boolean_release",
+        label: "Release from Boolean",
+        menu: "Tools/Boolean/Release",
+        shortcut: None,
+        enabled: in_boolean,
+        run: Session::release_from_boolean,
+    },
+    CommandSpec {
+        id: "tools.boolean_apply",
+        label: "Apply Boolean",
+        menu: "Tools/Boolean/Apply",
+        shortcut: None,
+        enabled: has_boolean,
+        run: Session::apply_boolean,
+    },
     CommandSpec {
         id: "tools.hollow",
         label: "Hollow",

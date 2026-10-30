@@ -11,7 +11,7 @@ mod convert;
 use std::path::Path;
 
 use mapcraft_sdk::Vfs;
-use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable, TypedFunc};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
@@ -113,6 +113,9 @@ const API: &str = "0.3.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};
+
+/// `resize.scale-params`, which only plugins built against the `scalable-plugin` world export.
+type ScaleParams = TypedFunc<(String, Vec<types::Param>, types::Vec3), (Option<Vec<types::Param>>,)>;
 
 /// Fuel for one call; roughly a few seconds of work.
 const FUEL: u64 = 20_000_000_000;
@@ -256,9 +259,13 @@ impl Host {
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(FUEL).map_err(wasm_err)?;
-        let bindings = Bindings::instantiate(&mut store, &component, &self.linker).map_err(wasm_err)?;
+        let instance = self.linker.instantiate(&mut store, &component).map_err(wasm_err)?;
+        let bindings = Bindings::new(&mut store, &instance).map_err(wasm_err)?;
+        let resize = instance.get_export_index(&mut store, None, &format!("mapcraft:plugin/resize@{API}"));
+        let scale_params =
+            resize.and_then(|r| instance.get_export_index(&mut store, Some(&r), "scale-params")).and_then(|f| instance.get_typed_func(&mut store, f).ok());
         let manifest = convert::manifest(bindings.call_manifest(&mut store).map_err(wasm_err)?);
-        Ok(Plugin { manifest, store, bindings, fuel: FUEL, broken: false })
+        Ok(Plugin { manifest, store, bindings, scale_params, fuel: FUEL, broken: false })
     }
 }
 
@@ -267,6 +274,7 @@ pub struct Plugin {
     pub manifest: Manifest,
     store: Store<State>,
     bindings: Bindings,
+    scale_params: Option<ScaleParams>,
     fuel: u64,
     broken: bool,
 }
@@ -319,6 +327,25 @@ impl Plugin {
         match result {
             Ok(Ok(out)) => Ok(self.flat_note(convert::output(out, ctx))),
             Ok(Err(message)) => Err(self.failed(message)),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// Parameters for the generator `command` that make its output for `params` stretched by `scale` along its own axes; `None` when the plugin does not say.
+    pub fn scale_params(&mut self, command: &str, params: &serde_json::Value, scale: mapcraft_geom::DVec3) -> Result<Option<serde_json::Value>, PluginError> {
+        let Some(f) = self.scale_params else { return Ok(None) };
+        let spec = self
+            .manifest
+            .commands
+            .iter()
+            .find(|c| c.id == command)
+            .ok_or_else(|| PluginError::UnknownCommand(self.manifest.id.clone(), command.into()))?
+            .clone();
+        let current = convert::params(&spec, params);
+        self.begin()?;
+        match f.call(&mut self.store, (command.into(), current, types::Vec3 { x: scale.x, y: scale.y, z: scale.z })) {
+            Ok((Some(list),)) => Ok(Some(convert::scaled_params(&spec, params, list))),
+            Ok((None,)) => Ok(None),
             Err(e) => Err(self.trapped(e)),
         }
     }

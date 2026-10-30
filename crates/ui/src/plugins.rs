@@ -1,6 +1,6 @@
 use egui::{Align, Layout};
-use mapcraft_geom::DVec3;
-use mapcraft_map::{Generator, NodeId};
+use mapcraft_geom::{DMat3, DVec3};
+use mapcraft_map::{Generator, Group, NodeId, NodeKind};
 use mapcraft_plugin_host::{CommandSpec, Context};
 use serde_json::Value;
 
@@ -94,7 +94,14 @@ impl MapCraftApp {
             let origin = self.placement_point();
             match self.run_plugin(&d.plugin, &d.command.id, &d.params) {
                 Ok(frags) if d.command.generator => {
-                    let g = Generator { plugin: d.plugin.clone(), command: d.command.id.clone(), params: d.params.clone(), origin, angles: DVec3::ZERO };
+                    let g = Generator {
+                        plugin: d.plugin.clone(),
+                        command: d.command.id.clone(),
+                        params: d.params.clone(),
+                        origin,
+                        angles: DVec3::ZERO,
+                        stretch: None,
+                    };
                     if let Err(e) = self.session.create_generator(&d.command.label, g, frags) {
                         self.status = e.to_string();
                     }
@@ -115,58 +122,127 @@ impl MapCraftApp {
         }
     }
 
-    /// File > Import: one entry per importer of the loaded plugins.
+    /// File > Import: glTF, then one entry per importer of the loaded plugins.
     pub(crate) fn import_menu(&mut self, ui: &mut egui::Ui) {
         let importers: Vec<(String, mapcraft_plugin_host::ImporterSpec)> =
             self.project.plugins.iter().flat_map(|p| p.manifest.importers.iter().map(|i| (p.manifest.id.clone(), i.clone()))).collect();
-        ui.add_enabled_ui(!importers.is_empty(), |ui| {
-            ui.menu_button((crate::icons::slot(Some("file_arrow_down")), "Import"), |ui| {
-                for (plugin, importer) in importers {
-                    if ui.add(crate::icons::button(None, format!("{}…", importer.label))).clicked() {
-                        self.import_file(&plugin, &importer);
-                    }
+        ui.menu_button((crate::icons::slot(Some("file_arrow_down")), "Import"), |ui| {
+            self.action_button(ui, "file.import_gltf", "glTF (.glb, .gltf)…", true);
+            for (plugin, importer) in importers {
+                if ui.add(crate::icons::button(None, format!("{}…", importer.label))).clicked() {
+                    self.import_file(&plugin, &importer);
                 }
-            })
-        })
-        .response
-        .on_disabled_hover_text("This SDK's plugins import no file formats");
+            }
+        });
     }
 
-    /// File > Export: one entry per exporter of the loaded plugins.
+    /// File > Export: glTF, then one entry per exporter of the loaded plugins.
     pub(crate) fn export_menu(&mut self, ui: &mut egui::Ui) {
         let exporters: Vec<mapcraft_plugin_host::ImporterSpec> = self.project.plugins.iter().flat_map(|p| p.manifest.exporters.clone()).collect();
-        ui.add_enabled_ui(!exporters.is_empty(), |ui| {
-            ui.menu_button((crate::icons::slot(Some("file_arrow_up")), "Export"), |ui| {
-                for exporter in exporters {
-                    if ui.add(crate::icons::button(None, format!("{}…", exporter.label))).clicked() {
-                        self.export_dialog(&exporter);
-                    }
+        ui.menu_button((crate::icons::slot(Some("file_arrow_up")), "Export"), |ui| {
+            self.action_button(ui, "file.export_gltf", "glTF (.glb)…", true);
+            for exporter in exporters {
+                if ui.add(crate::icons::button(None, format!("{}…", exporter.label))).clicked() {
+                    self.export_dialog(&exporter);
                 }
-            })
-        })
-        .response
-        .on_disabled_hover_text("This SDK's plugins export no file formats");
+            }
+        });
     }
 
-    fn export_dialog(&mut self, exporter: &mapcraft_plugin_host::ImporterSpec) {
+    /// Asks where to export, starting beside the map with its name.
+    fn export_path(&self, label: &str, extensions: &[String]) -> Option<std::path::PathBuf> {
         let stem = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
-        let ext = exporter.extensions.first().cloned().unwrap_or_default();
-        let mut dialog = rfd::FileDialog::new().add_filter(&exporter.label, &exporter.extensions).set_file_name(format!("{stem}.{ext}"));
+        let ext = extensions.first().cloned().unwrap_or_default();
+        let mut dialog = rfd::FileDialog::new().add_filter(label, extensions).set_file_name(format!("{stem}.{ext}"));
         if let Some(dir) = self.session.path.as_ref().and_then(|p| p.parent()) {
             dialog = dialog.set_directory(dir);
         }
-        let Some(path) = dialog.save_file() else { return };
+        dialog.save_file()
+    }
+
+    fn export_dialog(&mut self, exporter: &mapcraft_plugin_host::ImporterSpec) {
+        let Some(path) = self.export_path(&exporter.label, &exporter.extensions) else { return };
         match self.export_to(&exporter.id, &path) {
             Ok(()) => self.status = format!("Exported {}", path.display()),
             Err(e) => self.status = e,
         }
     }
 
-    /// The map, with prefabs and mirrors resolved, as the exporter `id` writes it; what the plugin says goes in `log`.
+    /// File > Export > glTF: the visible brushes, with prefabs, mirrors and booleans resolved, as a `.glb`.
+    pub(crate) fn export_gltf_dialog(&mut self) {
+        let Some(path) = self.export_path("glTF binary", &["glb".to_string()]) else { return };
+        let map = self.game_map();
+        let renderer = self.gpu.as_ref().map(|g| &g.renderer);
+        let project = &self.project;
+        let size = |m: &str| renderer.and_then(|r| r.material_size(m));
+        let bytes = mapcraft_render::export_glb(&map, &size, &|m| project.material_picture(m), project.models.units_per_meter);
+        match bytes.and_then(|b| self.write_export(&path, &b)) {
+            Ok(()) => self.status = format!("Exported {}", path.display()),
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// File > Import > glTF.
+    pub(crate) fn import_gltf_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("glTF", &["glb", "gltf"]).pick_file() {
+            self.import_gltf(&path);
+        }
+    }
+
+    /// Adds the meshes of the glTF file at `path` as brushes, in a group named after it, in one undo step.
+    pub(crate) fn import_gltf(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let folder = mapcraft_sdk::Vfs::new(path.parent().map(std::path::Path::to_path_buf).into_iter().collect());
+        let Some(bytes) = crate::models::read_capped(&folder, &name) else {
+            self.status = format!("cannot read {}, or it is bigger than {} MB", path.display(), mapcraft_render::MAX_MODEL_BYTES >> 20);
+            return;
+        };
+        let read = |uri: &str| crate::models::read_capped(&folder, &crate::models::beside(&name, uri)?);
+        let units = self.project.models.units_per_meter;
+        let (project, gpu) = (&mut self.project, &mut self.gpu);
+        let mut size = |m: &str| {
+            let gpu = gpu.as_mut()?;
+            project.upload_materials(&mut gpu.renderer, std::iter::once(m));
+            gpu.renderer.material_size(m)
+        };
+        let imported = match mapcraft_render::import_gltf(&name, &bytes, &read, units, &mut size, &self.session.tex.material) {
+            Ok(i) => i,
+            Err(e) => {
+                self.output.push(format!("Cannot import {name}: {e}"));
+                self.show_bottom = true;
+                self.status = e;
+                return;
+            }
+        };
+        if let Some(dir) = self.material_cache().filter(|_| !imported.pictures.is_empty()) {
+            let pictures: Vec<mapcraft_plugin_host::ImportedMaterial> = imported
+                .pictures
+                .into_iter()
+                .map(|(name, p)| mapcraft_plugin_host::ImportedMaterial { name, width: p.width, height: p.height, rgba: p.rgba, size: None })
+                .collect();
+            let saved = self.project.cache_materials(&dir, &pictures);
+            if saved > 0 {
+                self.output.push(format!("Kept {saved} material pictures from {name} in {}", dir.display()));
+            }
+        }
+        if imported.split > 0 {
+            self.output.push(format!("{} mesh objects in {name} are not convex and came in as one thin brush per face", imported.split));
+        }
+        match self.session.insert_output(&format!("Import {name}"), vec![imported.group], DVec3::ZERO) {
+            Ok(_) => {
+                self.status = format!("Imported {name}");
+                self.mark_changed();
+                self.frame_selection();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    /// The map, with prefabs, mirrors and booleans resolved, as the exporter `id` writes it; what the plugin says goes in `log`.
     pub(crate) fn export_bytes(&mut self, id: &str, log: &mut Vec<String>) -> Result<Vec<u8>, String> {
         let ctx = self.plugin_context();
         let name = self.session.path.as_ref().and_then(|p| p.file_stem()).map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
-        let map = self.view_map().clone();
+        let map = self.game_map();
         let plugin = self
             .project
             .plugins
@@ -183,7 +259,11 @@ impl MapCraftApp {
         let mut log = Vec::new();
         let result = self.export_bytes(id, &mut log);
         self.output.extend(log);
-        let bytes = result?;
+        self.write_export(path, &result?)
+    }
+
+    /// Writes exported `bytes` into `path`, keeping the file it replaces as a `.bak` when it differs.
+    pub(crate) fn write_export(&mut self, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         }
@@ -341,6 +421,7 @@ impl MapCraftApp {
             params: shape.params.clone(),
             origin,
             angles: DVec3::new(0.0, shape.yaw, 0.0),
+            stretch: None,
         }
     }
 
@@ -372,6 +453,9 @@ impl MapCraftApp {
         if !self.section(ui, &section) {
             return;
         }
+        if generator.stretch.is_some() {
+            inspect::note(ui, Note::Info, "Resized or tilted past what these settings describe; changing them keeps that.");
+        }
         let mut params = generator.params.clone();
         let material = self.session.tex.material.clone();
         let ctx = ui.ctx().clone();
@@ -391,6 +475,41 @@ impl MapCraftApp {
         }
         self.mark_changed();
     }
+
+    /// Once a resize is let go, rebuilds the generator groups it stretched from settings their plugins fit to the new size.
+    pub(crate) fn fit_stretched(&mut self) {
+        if self.session.stretched.is_empty() || !matches!(self.drag, crate::viewport::Drag::None) {
+            return;
+        }
+        for id in std::mem::take(&mut self.session.stretched) {
+            let Some(NodeKind::Group(Group { generator: Some(g), .. })) = self.session.map.get(id).map(|n| &n.kind) else { continue };
+            let (Some(scale), Some(plugin)) = (g.stretch.as_deref().copied().and_then(axis_scale), self.project.plugin(&g.plugin)) else { continue };
+            let g = g.clone();
+            let fitted = plugin.scale_params(&g.command, &g.params, scale);
+            self.output.extend(plugin.take_log());
+            let params = match fitted {
+                Ok(Some(params)) => params,
+                Ok(None) => continue,
+                Err(e) => {
+                    self.status = e.to_string();
+                    continue;
+                }
+            };
+            let made = self
+                .run_plugin(&g.plugin, &g.command, &params)
+                .and_then(|frags| self.session.refit(id, Generator { params, stretch: None, ..g }, frags).map_err(|e| e.to_string()));
+            if let Err(e) = made {
+                self.status = e;
+            }
+        }
+        self.mark_changed();
+    }
+}
+
+/// How far a stretch scales each of the output's own axes, when it does nothing else.
+fn axis_scale(m: DMat3) -> Option<DVec3> {
+    let d = DVec3::new(m.x_axis.x, m.y_axis.y, m.z_axis.z);
+    DMat3::from_diagonal(d).abs_diff_eq(m, 1e-9 * d.abs().max_element().max(1.0)).then_some(d)
 }
 
 /// Every edge of the brushes in `frags`, for drawing them as wireframe.

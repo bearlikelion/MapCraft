@@ -1,4 +1,4 @@
-use mapcraft_geom::{Aabb, DVec3};
+use mapcraft_geom::{Aabb, DMat3, DVec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{Brush, Entity, Extra, NodeId, TagId};
@@ -98,6 +98,9 @@ pub struct Group {
     /// When set, the children are built from other nodes; see [`crate::curve`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<Box<crate::CurveOp>>,
+    /// When set, its own brushes add or subtract and games get the result; see [`crate::boolean`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub boolean: bool,
 }
 
 /// A plugin command whose output fills a group, placed by `origin` and `angles` (pitch, yaw,
@@ -111,6 +114,9 @@ pub struct Generator {
     pub origin: DVec3,
     #[serde(default)]
     pub angles: DVec3,
+    /// A resize, tilt or mirror in the output's own axes that the parameters and `angles` do not describe, applied before they place it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<Box<DMat3>>,
 }
 
 /// Another map instanced into this one.

@@ -15,6 +15,8 @@ pub(crate) const SIZE: f32 = 16.0;
 const BRUSH: Color32 = Color32::from_rgb(0xfc, 0x7f, 0x7f);
 const ENTITY: Color32 = Color32::from_rgb(0x8e, 0xef, 0x97);
 const PREFAB: Color32 = Color32::from_rgb(0x8d, 0xa5, 0xf3);
+/// Boolean groups, in the views' color for Subtract brushes.
+pub(crate) const BOOLEAN: Color32 = Color32::from_rgb(0xff, 0x99, 0x26);
 pub(crate) const GENERATOR: Color32 = Color32::from_rgb(0xff, 0xca, 0x5f);
 
 macro_rules! catalog {
@@ -114,6 +116,10 @@ pub(crate) fn action_icon(id: &str) -> Option<&'static str> {
         "edit.select_solids" | "uv.cube_projection" => "cube",
         "tools.ungroup" => "Ungroup",
         "tools.carve" => "knife",
+        "tools.boolean_subtract" => "dash_in_square",
+        "tools.boolean_add" => "plus_sign_in_square",
+        "tools.boolean_release" => "arrow_up_from_line",
+        "tools.boolean_apply" => "Unlinked",
         "tools.zone_from_selection" => "flag_checkered",
         "tools.snap_to_grid" => "SnapGrid",
         "tools.mirror" | "tools.flip_x" | "tools.flip_y" => "mirror_horizontally",
@@ -201,6 +207,8 @@ pub(crate) fn node_icon(kind: &NodeKind, entity_color: Option<Color32>) -> (&'st
         NodeKind::Group(g) if g.generator.is_some() => ("magic_wand", GENERATOR),
         NodeKind::Group(g) if g.curve.is_some() => ("itinerary", crate::curves::PATH_COLOR),
         NodeKind::Group(g) if g.mirror.is_some() => ("mirror_horizontally", MIRROR),
+        NodeKind::Group(g) if g.boolean => ("box_wireframe", BOOLEAN),
+        NodeKind::Brush(b) if !b.operation.is_add() => ("dash_in_square", BOOLEAN),
         NodeKind::Group(_) => ("folder", TEXT_WEAK),
         NodeKind::Entity(_) => ("diamond", entity_color.unwrap_or(ENTITY)),
         NodeKind::Brush(_) => ("cube", BRUSH),
@@ -227,12 +235,15 @@ mod tests {
             params: serde_json::Value::Null,
             origin: Default::default(),
             angles: Default::default(),
+            stretch: None,
         };
         let kinds = [
             NodeKind::World(Entity::default()),
             NodeKind::Layer(Layer::default()),
             NodeKind::Group(Group::default()),
             NodeKind::Group(Group { generator: Some(generator), ..Group::default() }),
+            NodeKind::Group(Group { boolean: true, ..Group::default() }),
+            NodeKind::Brush(Brush { operation: mapcraft_map::Operation::Subtract, ..Brush::default() }),
             NodeKind::Entity(Entity::default()),
             NodeKind::Brush(Brush::default()),
             NodeKind::Prefab(Prefab::default()),

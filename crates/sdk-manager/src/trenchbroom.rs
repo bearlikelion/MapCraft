@@ -837,7 +837,7 @@ mod tests {
         let vars = BTreeMap::from([("project".to_string(), project.to_string_lossy().into_owned())]);
         let gd = sdk.game_data(&vars).unwrap();
         assert!(gd.class("info_player_start").is_some() && gd.class("func_detail").is_some() && gd.diagnostics.is_empty());
-        assert_eq!(sdk.vfs(&vars).unwrap().find_material("base/wall", &m.textures.extensions), Some(project.join("Assets/Textures/base/wall.png")));
+        assert_eq!(sdk.vfs(&vars).find_material("base/wall", &m.textures.extensions), Some(project.join("Assets/Textures/base/wall.png")));
         let items = crate::check(&dir, &vars, None);
         assert!(items.iter().any(|i| i.what == "plugin quake" && i.level == crate::Level::Fail), "the missing plugin shows in the check");
         assert!(items.iter().filter(|i| i.what != "plugin quake").all(|i| i.level != crate::Level::Fail), "{items:#?}");

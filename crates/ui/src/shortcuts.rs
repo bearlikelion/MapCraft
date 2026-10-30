@@ -69,6 +69,12 @@ impl Preset {
                 ("view.show_all", "Ctrl+Shift+I"),
                 ("view.grid_smaller", "Minus"),
                 ("view.grid_larger", "Plus"),
+                ("tools.roll_cw", "Alt+Up"),
+                ("tools.roll_ccw", "Alt+Down"),
+                ("tools.pitch_cw", "Alt+PageUp"),
+                ("tools.pitch_ccw", "Alt+PageDown"),
+                ("tools.yaw_cw", "Alt+Left"),
+                ("tools.yaw_ccw", "Alt+Right"),
             ],
         }
     }
@@ -81,6 +87,8 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.save", "Save", "Ctrl+S"),
     ("file.save_as", "Save As", "Ctrl+Shift+S"),
     ("file.revert", "Revert", ""),
+    ("file.import_gltf", "Import glTF", ""),
+    ("file.export_gltf", "Export glTF", ""),
     ("file.reload_assets", "Reload Assets", "F5"),
     ("edit.search", "Search Commands", "F3"),
     ("edit.preferences", "Preferences", "Ctrl+Comma"),
@@ -88,6 +96,12 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("tools.array", "Array", "Ctrl+Shift+D"),
     ("tools.randomize", "Randomize Transform", ""),
     ("tools.replace_materials", "Replace Materials", ""),
+    ("tools.roll_cw", "Roll 90° Clockwise", ""),
+    ("tools.roll_ccw", "Roll 90° Counter-Clockwise", ""),
+    ("tools.pitch_cw", "Pitch 90° Clockwise", ""),
+    ("tools.pitch_ccw", "Pitch 90° Counter-Clockwise", ""),
+    ("tools.yaw_cw", "Yaw 90° Clockwise", ""),
+    ("tools.yaw_ccw", "Yaw 90° Counter-Clockwise", ""),
     ("file.sdk_settings", "SDK Settings", "Ctrl+Shift+Comma"),
     ("file.switch_sdk", "Switch SDK", ""),
     ("file.sdk_manager", "SDK Manager", ""),
@@ -225,6 +239,8 @@ mod tests {
             }
         }
         assert_eq!(chord("tools.carve", Preset::TrenchBroom, &none).as_deref(), Some("Ctrl+K"));
+        assert_eq!(chord("tools.yaw_cw", Preset::TrenchBroom, &none).as_deref(), Some("Alt+Left"));
+        assert_eq!(chord("tools.yaw_cw", Preset::MapCraft, &none), None);
         for preset in Preset::ALL {
             let mut seen: Vec<(KeyboardShortcut, &str)> = Vec::new();
             for (sc, id) in bindings(preset, &none) {

@@ -11,9 +11,9 @@ mod validate;
 
 use glam::DVec3;
 use mapcraft::plugin::host;
-use mapcraft::plugin::types::{Brush, CommandSpec, Face, Hull, ImporterSpec, IntegerRange, NumberRange, ParamKind, ParamSpec, TexAxis, Value, Vec3};
+use mapcraft::plugin::types::{Brush, CommandSpec, Entity, Face, Hull, ImporterSpec, IntegerRange, NumberRange, ParamKind, ParamSpec, TexAxis, Value, Vec3};
 
-wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
+wit_bindgen::generate!({ path: "../../wit", world: "scalable-plugin" });
 
 const SHAPES: &[&str] = &["Straight", "Left", "Right", "Up", "Down", "Dip", "Arc", "Spiral", "S-Curve"];
 
@@ -127,6 +127,16 @@ fn ramp_command() -> CommandSpec {
                 ParamKind::Number(NumberRange { min: 0.01, max: 64.0, step: 0.05 }),
                 Value::Number(1.0),
             ),
+            number("trim_top", "Trim top", "Trim this far down each surf face from its top; 0 for none", 0.0, 8192.0, d.trim_top),
+            number("trim_bottom", "Trim bottom", "Trim this far up each surf face from its bottom edge; 0 for none", 0.0, 8192.0, d.trim_bottom),
+            spec(
+                "trim_depth",
+                "Trim depth",
+                "How far the trim stands off the surf face",
+                ParamKind::Number(NumberRange { min: 0.25, max: 256.0, step: 0.25 }),
+                Value::Number(d.trim_depth),
+            ),
+            material("trim_material", "Trim material", "Empty uses the side material"),
         ],
     }
 }
@@ -173,9 +183,9 @@ fn pick<T: Copy>(options: &[&str], values: &[T], chosen: &str) -> T {
     values[options.iter().position(|o| *o == chosen).unwrap_or(0)]
 }
 
-fn surf_ramp(p: &Params) -> Result<Output, String> {
+fn ramp_settings(p: &Params) -> ramp::Ramp {
     use ramp::{Shape, Style, Surf, Turn};
-    let r = ramp::Ramp {
+    ramp::Ramp {
         shape: pick(
             SHAPES,
             &[Shape::Straight, Shape::Left, Shape::Right, Shape::Up, Shape::Down, Shape::Dip, Shape::Arc, Shape::Spiral, Shape::SCurve],
@@ -199,7 +209,15 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
         end_slope: p.num("end_slope", 0.0),
         lead_in: p.num("lead_in", 0.0),
         lead_out: p.num("lead_out", 0.0),
-    };
+        trim_top: p.num("trim_top", 0.0),
+        trim_bottom: p.num("trim_bottom", 0.0),
+        trim_depth: p.num("trim_depth", 1.0),
+    }
+}
+
+fn surf_ramp(p: &Params) -> Result<Output, String> {
+    use ramp::{Shape, Style};
+    let r = ramp_settings(p);
     // Every surf face spans the full width horizontally, whichever side it is on.
     let face = ramp::slope_angle(r.width, r.height, if r.style == Style::Thin { 0.0 } else { r.tip });
     if face < ramp::SURF_MIN_ANGLE {
@@ -213,32 +231,38 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
         }
     }
     let (surf, side) = (p.text("surf_material"), p.text("side_material"));
-    let bottom = if p.text("bottom_material").is_empty() { side } else { p.text("bottom_material") };
+    let or_side = |id: &str| if p.text(id).is_empty() { side } else { p.text(id) };
+    let (bottom, trim) = (or_side("bottom_material"), or_side("trim_material"));
     let scale = p.num("uv_scale", 1.0);
     let axis = |(a, offset): ramp::UvAxis| TexAxis { axis: v(a.normalize_or_zero()), offset: offset / scale, scale: scale / a.length().max(1e-9) };
-    let brushes = ramp::build(&r)?
-        .into_iter()
-        .map(|piece| {
-            let faces = piece
-                .faces
-                .into_iter()
-                .map(|f| Face {
-                    points: (v(f.points[0]), v(f.points[1]), v(f.points[2])),
-                    material: match f.slot {
-                        ramp::Slot::Surf => surf,
-                        ramp::Slot::Side => side,
-                        ramp::Slot::Bottom => bottom,
-                    }
-                    .to_string(),
-                    uv: f.uv.map(|(u, w)| (axis(u), axis(w))),
-                    attrs: Vec::new(),
-                    disp: None,
-                })
-                .collect();
-            Brush::Faces(faces)
-        })
-        .collect();
-    Ok(Output { brushes, entities: Vec::new(), groups: Vec::new(), materials: Vec::new() })
+    let brush = |piece: ramp::Piece, [surf, side, bottom]: [&str; 3]| {
+        let faces = piece
+            .faces
+            .into_iter()
+            .map(|f| Face {
+                points: (v(f.points[0]), v(f.points[1]), v(f.points[2])),
+                material: match f.slot {
+                    ramp::Slot::Surf => surf,
+                    ramp::Slot::Side => side,
+                    ramp::Slot::Bottom => bottom,
+                }
+                .to_string(),
+                uv: f.uv.map(|(u, w)| (axis(u), axis(w))),
+                attrs: Vec::new(),
+                disp: None,
+            })
+            .collect();
+        Brush::Faces(faces)
+    };
+    let brushes = ramp::build(&r)?.into_iter().map(|piece| brush(piece, [surf, side, bottom])).collect();
+    let strips: Vec<Brush> = ramp::trim(&r)?.into_iter().map(|piece| brush(piece, [trim; 3])).collect();
+    // Trim is drawn but never collides, so it cannot catch players.
+    let entities = if strips.is_empty() {
+        Vec::new()
+    } else {
+        vec![Entity { classname: "func_illusionary".into(), properties: Vec::new(), connections: Vec::new(), brushes: strips }]
+    };
+    Ok(Output { brushes, entities, groups: Vec::new(), materials: Vec::new() })
 }
 
 fn bhop(p: &Params) -> Output {
@@ -342,6 +366,34 @@ impl Guest for SurfsUp {
 
     fn validate(map: MapData) -> Vec<Issue> {
         validate::check(&map)
+    }
+}
+
+impl exports::mapcraft::plugin::resize::Guest for SurfsUp {
+    fn scale_params(command: String, params: Vec<Param>, scale: Vec3) -> Option<Vec<Param>> {
+        let s = DVec3::new(scale.x, scale.y, scale.z);
+        if command != "surf_ramp" || !s.is_finite() || s.min_element() <= 0.0 {
+            return None;
+        }
+        let r = ramp::scaled(&ramp_settings(&Params(params)), s);
+        let lengths = [
+            ("size", r.size),
+            ("rise", r.rise),
+            ("width", r.width),
+            ("height", r.height),
+            ("tip", r.tip),
+            ("thickness", r.thickness),
+            ("drop", r.drop),
+            ("ridge", r.ridge),
+            ("gap", r.gap),
+            ("end_slope", r.end_slope),
+            ("lead_in", r.lead_in),
+            ("lead_out", r.lead_out),
+            ("trim_top", r.trim_top),
+            ("trim_bottom", r.trim_bottom),
+            ("trim_depth", r.trim_depth),
+        ];
+        Some(lengths.into_iter().map(|(id, n)| Param { id: id.into(), value: Value::Number(n) }).collect())
     }
 }
 

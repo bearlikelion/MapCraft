@@ -1,23 +1,24 @@
 # Keyboard shortcuts
 
 Menu items, panels, tools and switches can all have shortcuts, and you can change any of them.
-The Hammer and TrenchBroom presets use those editors' keys.
+The Hammer and TrenchBroom presets use those editors' keys, so you can keep the keys you already know.
 [Hotkeys](hotkeys.md) covers the keys you use most, and its [cheat sheet](hotkeys.md#every-key-on-one-page) prints every key on one page.
 
 ## See every shortcut
 
 Press `F1` for the list of every shortcut, with a search box.
-**Edit in Preferences** opens Preferences to change them.
+**Edit in Preferences** opens Preferences so you can change them.
 
-Menus and tooltips show the current key.
+Menus and tooltips also show the current key, so you can pick them up as you go.
 
 ## Search commands
 
-Press `F3` (**Edit > Search Commands**) and type part of a command's name, such as `drop` or `hollow`.
-The list shows each match with its icon and key; hover one for its menu.
-`Up` and `Down` move through the list, `Enter` or a click runs the command, and `Escape` closes it.
-Commands that cannot run right now are grayed out, and the ones you ran last come first.
-Typing the first letters of each word, such as `dtf` for Drop to Floor, also finds a command.
+When you know what you want but not where it lives, press `F3` (**Edit > Search Commands**) and type part of a command's name, such as `drop` or `hollow`.
+
+- The list shows each match with its icon and key; hover one to see its menu.
+- `Up` and `Down` move through the list, `Enter` or a click runs the command, and `Escape` closes it.
+- Commands that cannot run right now are grayed out, and the ones you ran last come first.
+- Typing the first letters of each word also finds a command, such as `dtf` for Drop to Floor.
 
 ![The Keyboard Shortcuts window with its search box and the File shortcuts at the top](img/shortcuts-f1.webp)
 
@@ -27,17 +28,30 @@ Typing the first letters of each word, such as `dtf` for Drop to Floor, also fin
 2. Pick a preset under **Shortcuts**: MapCraft, Hammer or TrenchBroom.
 3. Open **Key bindings** and type a chord such as `Ctrl+Shift+K` next to an action, or clear it to unbind the action.
 
-The **Reset** button after an action's key returns it to the preset's key.
+To go back to the preset's key, click the circular arrow after the action's key (**Back to the preset's chord**).
 
-![Preferences with the Shortcuts preset menu open on MapCraft, Hammer and TrenchBroom, and Key bindings below](img/shortcuts-preferences.webp)
+![Preferences (1) with the Shortcuts preset menu open on MapCraft, Hammer and TrenchBroom (2), and Key bindings below (3)](img/shortcuts-preferences.webp)
 
 - Keys you type win over the preset, so they survive a preset switch.
 - A chord MapCraft cannot read turns red.
 - No two actions share a key in any preset.
 
 > [!NOTE]
-> Some keys only work in one place, where they win over the same key elsewhere.
-> The UV editor's keys work with the pointer over a UV editor, the Vertex tool's keys (select modes, Merge, Bevel and Delete) work in the Vertex tool, and Remove Last Clip Point (`Delete`) works in the Clip tool.
+> Some keys only work in one place, where they win over the same key elsewhere:
+> - the UV editor's keys work with the pointer over a UV editor;
+> - the Vertex tool's keys (select modes, Merge, Bevel and Delete) work in the Vertex tool;
+> - Remove Last Clip Point (`Delete`) works in the Clip tool.
+
+## Show pressed keys
+
+For screen recordings and tutorials, MapCraft can show each shortcut you press over the views.
+Pick a corner under **Show pressed keys** in **Edit > Preferences** (`Ctrl+Comma`): Top Left, Top Right, Bottom Left or Bottom Right.
+It is off to start with.
+
+- Each press shows its keys as the menus write them, such as `Ctrl+Shift+D`, and the command it ran.
+- The last four presses stack up, the newest nearest the corner, and each fades out after a second and a half.
+- Pressing the same shortcut again counts it, such as `x3`, instead of adding another line.
+- Keys typed into text fields, such as the inspector or a search box, are not shown.
 
 ## All shortcuts
 
@@ -55,6 +69,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Save | `Ctrl+S` |
 | Save As | `Ctrl+Shift+S` |
 | Revert | *none* |
+| Import glTF | *none* |
+| Export glTF | *none* |
 | Reload Assets | `F5` |
 | SDK Settings | `Ctrl+Shift+Comma` |
 | Switch SDK | *none* |
@@ -114,11 +130,21 @@ The tables are generated from the editor's code, so they match the version this 
 | Array | `Ctrl+Shift+D` |
 | Randomize Transform | *none* |
 | Replace Materials | *none* |
+| Roll 90° Clockwise | *none* |
+| Roll 90° Counter-Clockwise | *none* |
+| Pitch 90° Clockwise | *none* |
+| Pitch 90° Counter-Clockwise | *none* |
+| Yaw 90° Clockwise | *none* |
+| Yaw 90° Counter-Clockwise | *none* |
 | Check for Problems | `Alt+P` |
 | New Layer | `Ctrl+Shift+N` |
 | Edit Linked Copy Here | *none* |
 | Make Linked Copy Real | *none* |
 | Carve | `Ctrl+Shift+C` |
+| Subtract | `Ctrl+Shift+B` |
+| Add | `Ctrl+Alt+B` |
+| Release from Boolean | *none* |
+| Apply Boolean | *none* |
 | Hollow | `Ctrl+H` |
 | Zone from Selection | *none* |
 | Snap Selection to Grid | `Ctrl+B` |
@@ -141,6 +167,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Flip Z | `Ctrl+Alt+L` |
 | Merge Brushes | `Ctrl+J` |
 | Apply Current Material | `Shift+T` |
+| Clear Material | *none* |
 | Texture Lock | `Shift+L` |
 
 ### Prefabs
@@ -246,6 +273,11 @@ The tables are generated from the editor's code, so they match the version this 
 | Sculpt: Noise | `5` |
 | Sculpt: Paint | `6` |
 | Sculpt: Blur | `7` |
+| Blend Current Material | *none* |
+| Remove Blend Material | *none* |
+| Fill Blend | *none* |
+| Invert Blend | *none* |
+| Clear Blend | *none* |
 
 ### Mouse and fixed keys
 
@@ -262,7 +294,10 @@ These cannot be rebound.
 | Slide a face, keeping its shape | `Alt+Shift+Drag` |
 | Extrude into a new brush | `Ctrl+Shift+Drag` |
 | Stamp a copy along a face | `Ctrl+Alt+Shift+Drag` |
-| Pick a face's material | `Alt+Click` |
+| Pick a face's material, unless a face is picked in the Face tool | `Alt+Click` |
+| Transfer the active face's material and alignment as it is, in the Face tool | `Alt+Click, Alt+Drag, Alt+Double-click` |
+| Transfer the active face's material and alignment wrapped around corners, in the Face tool | `Alt+Shift+Click, Alt+Shift+Drag, Alt+Shift+Double-click` |
+| Transfer only the active face's material, in the Face tool | `Ctrl+Alt+Click, Ctrl+Alt+Drag, Ctrl+Alt+Double-click` |
 | Apply or wrap the picked material | `Alt+Right Click, Alt+Shift+Right Click` |
 | Fly the 3D camera | `Right Drag + WASD` |
 | Change the fly speed | `Right Drag + Scroll` |
@@ -277,6 +312,7 @@ These cannot be rebound.
 | Apply a bevel being sized | `Click, Enter` |
 | Cancel a bevel being sized | `Escape, Right Click` |
 | Move a 3D vertex handle or block height up and down | `Shift+Drag, Alt+Drag` |
+| Move the selection up and down in the 3D view | `Alt+Drag` |
 | Add a third clip point that tilts the cut | `Click in another view` |
 | Clip along a face | `Double-click the face in the 3D view` |
 | Move a clip point | `Drag the point` |
@@ -310,5 +346,11 @@ These actions change when you pick a preset; everything else keeps the keys abov
 | Show All | `U` | `Ctrl+Shift+I` |
 | Smaller Grid | `[` | `Minus` |
 | Larger Grid | `]` | `Plus` |
+| Roll 90° Clockwise | *none* | `Alt+Up` |
+| Roll 90° Counter-Clockwise | *none* | `Alt+Down` |
+| Pitch 90° Clockwise | *none* | `Alt+PageUp` |
+| Pitch 90° Counter-Clockwise | *none* | `Alt+PageDown` |
+| Yaw 90° Clockwise | *none* | `Alt+Left` |
+| Yaw 90° Counter-Clockwise | *none* | `Alt+Right` |
 
 <!-- shortcuts:end -->

@@ -1,10 +1,10 @@
-//! Size labels on boxes being drawn or resized, and highlights on the faces a drag moves.
+//! Size labels on boxes being drawn or resized and on the selection, and highlights on the faces a drag moves.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 use mapcraft_geom::{Aabb, DVec3, Plane};
 
 use crate::app::MapCraftApp;
-use crate::viewport::{Drag, dvec};
+use crate::viewport::{Drag, Tool, dvec};
 
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
 /// The renderer's selection red, `SELECTED_EDGE`.
@@ -39,17 +39,19 @@ pub(crate) fn label(painter: &egui::Painter, at: Pos2, align: Align2, text: Stri
 }
 
 impl MapCraftApp {
-    /// The box whose size is shown: a block being drawn, or the selection being resized or extruded.
+    /// The box whose size is shown: a block being drawn, the selection being resized or extruded, or the selection the select tools outline.
     pub(crate) fn measured_box(&self) -> Option<Aabb> {
         match &self.drag {
             Drag::Block { start, end, .. } => Some(self.block_box(*start, *end)),
             Drag::Resize { applied, .. } | Drag::Scale { applied, .. } => Some(*applied),
             Drag::Extrude { created, .. } => created.iter().filter_map(|id| self.node_bounds(*id)).chain(self.selection_bounds()).reduce(|a, b| a.union(&b)),
-            _ => self.block_3d_box(),
+            _ => {
+                self.block_3d_box().or_else(|| self.selection_bounds().filter(|_| matches!(self.tool, Tool::Select | Tool::Move | Tool::Rotate | Tool::Scale)))
+            }
         }
     }
 
-    /// The faces the current drag moves, or an extrude would move, as world polygons.
+    /// The faces the current drag moves or transfers onto, or an extrude would move, as world polygons.
     pub(crate) fn manipulated_faces(&self) -> Vec<Vec<DVec3>> {
         match &self.drag {
             Drag::Resize { view, handle, applied, .. } => {
@@ -84,6 +86,10 @@ impl MapCraftApp {
                     })
                     .map(|w| w.0)
                     .collect()
+            }
+            Drag::Transfer { done, .. } => {
+                let brushes = done.iter().map(|(id, _)| *id).collect();
+                mapcraft_engine::face_polygons(&self.session.map, &brushes).into_iter().filter(|(p, ..)| done.contains(p)).map(|(.., w)| w).collect()
             }
             Drag::None => self.extrude_hover.as_ref().map(|h| h.polygons.clone()).unwrap_or_default(),
             _ => Vec::new(),

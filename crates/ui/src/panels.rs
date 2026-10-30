@@ -5,7 +5,8 @@ use mapcraft_engine::{BlendFill, FractalType, HeightNoise, NoiseType, Severity};
 use mapcraft_fgd::{EntityClass, Property};
 use mapcraft_geom::DVec2;
 use mapcraft_map::{
-    AntiTile, Axis, Brush, Connection, Cordon, CurveOp, Entity, Face, Group, Justify, Layer, Mirror, NodeId, NodeKind, Path, Prefab, PropertyOverride, ROOT,
+    AntiTile, Axis, Brush, Connection, Cordon, CurveOp, Entity, Face, Group, Justify, Layer, Mirror, NodeId, NodeKind, Operation, Path, Prefab,
+    PropertyOverride, ROOT,
 };
 
 use crate::app::{BottomTab, LeftTab, MapCraftApp};
@@ -1206,7 +1207,7 @@ impl MapCraftApp {
 
         if single && !world {
             dirty |= self.outputs_section(ui, &mut e, class.as_ref(), &targets);
-            self.inputs_section(ui, first);
+            self.inputs_section(ui, first, class.as_ref());
         }
 
         if single {
@@ -1341,6 +1342,9 @@ impl MapCraftApp {
     /// The entity's outputs, edited in place on `e`; true when one changed.
     fn outputs_section(&mut self, ui: &mut egui::Ui, e: &mut Entity, class: Option<&EntityClass>, targets: &[(String, String)]) -> bool {
         let count = e.connections.len();
+        if count == 0 && class.is_none_or(|c| c.outputs.is_empty()) {
+            return false;
+        }
         if !self.section(ui, &Section { key: "entity.outputs", title: "Outputs", badge: count.to_string(), closed: count == 0, ..Default::default() }) {
             return false;
         }
@@ -1391,8 +1395,11 @@ impl MapCraftApp {
         dirty
     }
 
-    fn inputs_section(&mut self, ui: &mut egui::Ui, id: NodeId) {
+    fn inputs_section(&mut self, ui: &mut egui::Ui, id: NodeId, class: Option<&EntityClass>) {
         let inputs = self.inputs_to(id);
+        if inputs.is_empty() && class.is_none_or(|c| c.inputs.is_empty()) {
+            return;
+        }
         if !self.section(ui, &Section { key: "entity.inputs", title: "Inputs", badge: inputs.len().to_string(), closed: true, ..Default::default() }) {
             return;
         }
@@ -1483,6 +1490,24 @@ impl MapCraftApp {
             }
             r
         });
+        let map = &self.session.map;
+        let ops: BTreeSet<Option<Operation>> = self.session.selection.iter().map(|id| mapcraft_map::boolean::source_op(map, *id)).collect();
+        let mut op = ops.first().copied().flatten().filter(|_| ops.len() == 1);
+        let mut switched = false;
+        if !ops.contains(&None) {
+            let options = [
+                (Some(Operation::Add), "Add", "Fills its shape; the group's Subtract brushes cut it"),
+                (Some(Operation::Subtract), "Subtract", "Cuts its shape out of the group's Add brushes and lines the hole with its faces"),
+            ];
+            let tip = "What the brush does in its boolean group";
+            inspect::row(ui, &Prop { label: "Boolean", key: "boolean", tip, wide: true, ..Default::default() }, |ui| {
+                let mut r = ui.scope(|ui| switched = Self::segmented(ui, &mut op, &options)).response;
+                if switched {
+                    r.mark_changed();
+                }
+                r
+            });
+        }
         let (mut browse, mut bucket) = (false, false);
         let material_prop = Prop { label: "Material", key: "material", val: if mixed_material { Val::Mixed } else { Val::Set }, ..Default::default() };
         inspect::row(ui, &material_prop, |ui| {
@@ -1511,6 +1536,9 @@ impl MapCraftApp {
                 self.status = e.to_string();
             }
             self.mark_changed();
+        }
+        if let (true, Some(op)) = (switched, op) {
+            self.run_command(if op.is_add() { "tools.boolean_add" } else { "tools.boolean_subtract" });
         }
         if browse {
             self.run_action("panel.materials");
@@ -1648,10 +1676,20 @@ impl MapCraftApp {
             }
         } else if g.mirror.is_some() {
             "Mirror group".to_string()
+        } else if g.boolean {
+            let ops: Vec<Operation> = map.get(id).map_or(Vec::new(), |n| n.children.iter().filter_map(|c| mapcraft_map::boolean::source_op(map, *c)).collect());
+            let cuts = ops.iter().filter(|o| !o.is_add()).count();
+            format!("Boolean: {} add, {cuts} subtract", ops.len() - cuts)
         } else {
             children_text(map.get(id).map_or(0, |n| n.children.len()))
         };
-        let icon = self.node_icon_of(&NodeKind::Group(Group { generator: g.generator.clone(), mirror: g.mirror, curve: g.curve.clone(), ..Group::default() }));
+        let icon = self.node_icon_of(&NodeKind::Group(Group {
+            generator: g.generator.clone(),
+            mirror: g.mirror,
+            curve: g.curve.clone(),
+            boolean: g.boolean,
+            ..Group::default()
+        }));
         let buttons = if g.curve.is_none() && copy.is_none() { vec![self.active_button(id)] } else { Vec::new() };
         let mut name = g.name.clone();
         let out = inspect::header(ui, icon, Title::Edit(&mut name, "Group name"), "", &buttons, |ui| {
@@ -1676,12 +1714,15 @@ impl MapCraftApp {
         if let Some(op) = g.curve.as_deref().cloned() {
             self.curve_section(ui, id, op);
         }
+        if g.boolean {
+            self.boolean_section(ui);
+        }
         let link = g.link.as_deref().copied();
         if let Some(link) = link {
             self.link_section(ui, id, link);
         }
         if link.is_none_or(|l| l.source.is_none()) {
-            let others = g.generator.is_some() || g.mirror.is_some() || g.curve.is_some() || link.is_some();
+            let others = g.generator.is_some() || g.mirror.is_some() || g.curve.is_some() || g.boolean || link.is_some();
             self.brushes_section(ui, others);
         }
     }
@@ -1738,6 +1779,17 @@ impl MapCraftApp {
         if let Some(ids) = select {
             self.session.selection = ids.into_iter().collect();
             self.mark_changed();
+        }
+    }
+
+    fn boolean_section(&mut self, ui: &mut egui::Ui) {
+        let tip = "Its Add brushes less its Subtract brushes; games get only the result.";
+        if !self.section(ui, &Section { key: "boolean", title: "Boolean", tip, icon: Some(("box_wireframe", icons::BOOLEAN)), ..Default::default() }) {
+            return;
+        }
+        let tip = format!("Replace the brushes with the result as plain brushes  ({})", self.chord("tools.boolean_apply"));
+        if inspect::actions(ui, &[Action { icon: "Unlinked", label: "Apply", tip: &tip, enabled: true }]).is_some() {
+            self.run_action("tools.boolean_apply");
         }
     }
 

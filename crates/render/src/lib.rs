@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod camera;
+mod gltf_map;
 mod model;
 mod scene;
 
@@ -13,6 +14,7 @@ use mapcraft_map::AntiTile;
 use wgpu::util::DeviceExt;
 
 pub use camera::{Camera, View};
+pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
 pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
 pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,

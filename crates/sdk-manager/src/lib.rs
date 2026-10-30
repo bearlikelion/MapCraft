@@ -54,8 +54,6 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 pub enum Origin {
     /// Installed or created by the user; the only kind that may be removed.
     User,
-    /// Shipped next to the MapCraft executable.
-    Bundled,
     /// The source tree MapCraft was built from.
     Source,
     /// A folder from the preferences or `MAPCRAFT_SDK_PATH`.
@@ -66,7 +64,6 @@ impl Origin {
     pub fn label(self) -> &'static str {
         match self {
             Origin::User => "user",
-            Origin::Bundled => "bundled",
             Origin::Source => "source tree",
             Origin::Folder => "folder",
         }
@@ -84,18 +81,11 @@ pub fn user_dir(data: &Path) -> PathBuf {
 }
 
 /// Folders searched for SDKs, each once and user installs first so they shadow other copies: the
-/// data folder's `sdks`, an `sdks` folder beside the executable or up to four folders above it (a
-/// build in `target/release` finds the source tree's), the installed share folder, the source
-/// tree this was built from, `MAPCRAFT_SDK_PATH`, and `extra` folders from the preferences.
+/// data folder's `sdks`, the source tree this was built from, `MAPCRAFT_SDK_PATH`, and `extra`
+/// folders from the preferences. Release packages hold no SDKs; users install them from registries.
 pub fn search_dirs(data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origin)> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks");
     let mut dirs: Vec<(PathBuf, Origin)> = data.map(|d| (user_dir(d), Origin::User)).into_iter().collect();
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        dirs.extend(exe_dir.ancestors().take(5).map(|d| (d.join("sdks"), Origin::Bundled)));
-        dirs.push((exe_dir.join("../share/mapcraft/sdks"), Origin::Bundled));
-        // Inside a macOS app bundle the executable is in Contents/MacOS and the SDKs in Contents/Resources.
-        dirs.push((exe_dir.join("../Resources/sdks"), Origin::Bundled));
-    }
     dirs.push((source.clone(), Origin::Source));
     if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {
         dirs.extend(std::env::split_paths(&paths).map(|p| (p, Origin::Folder)));
@@ -119,6 +109,7 @@ pub struct Installed {
     pub dir: PathBuf,
     pub origin: Origin,
     pub sdk: Result<Sdk, String>,
+    pub logo: Option<PathBuf>,
 }
 
 /// Every SDK folder in the search folders, in search order.
@@ -126,9 +117,14 @@ pub fn installed(dirs: &[(PathBuf, Origin)]) -> Vec<Installed> {
     let mut out = Vec::new();
     for (dir, origin) in dirs {
         let found = mapcraft_sdk::discover(std::slice::from_ref(dir));
-        out.extend(found.into_iter().map(|(dir, sdk)| Installed { dir, origin: *origin, sdk: sdk.map_err(|e| e.to_string()) }));
+        out.extend(found.into_iter().map(|(dir, sdk)| Installed { logo: logo(&dir), dir, origin: *origin, sdk: sdk.map_err(|e| e.to_string()) }));
     }
     out
+}
+
+/// The SDK folder's logo: `logo.png`, else `logo.jpg`.
+pub fn logo(dir: &Path) -> Option<PathBuf> {
+    ["logo.png", "logo.jpg"].into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
 }
 
 /// Whether version `a` is newer than `b`: numerically for dotted numbers, else when they differ.

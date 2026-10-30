@@ -12,6 +12,7 @@ mod dialogs;
 mod drop;
 mod icons;
 mod inspect;
+mod keys;
 mod measure;
 mod models;
 mod panels;

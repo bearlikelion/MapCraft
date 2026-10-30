@@ -124,21 +124,10 @@ impl Project {
             }
             Err(e) => p.problems.push(e.to_string()),
         }
-        match sdk.vfs(&p.vars) {
-            Ok(vfs) => {
-                p.materials = vfs
-                    .list(&sdk.manifest.textures.extensions)
-                    .into_iter()
-                    .map(|(name, path)| Material { name, image: Some(path), ..Material::default() })
-                    .collect();
-                p.vfs = vfs;
-            }
-            Err(e) => p.problems.push(e.to_string()),
-        }
-        match sdk.model_vfs(&p.vars) {
-            Ok(vfs) => p.models = crate::models::Models::new(vfs, &sdk.manifest, &p.game),
-            Err(e) => p.problems.push(e.to_string()),
-        }
+        p.vfs = sdk.vfs(&p.vars);
+        p.materials =
+            p.vfs.list(&sdk.manifest.textures.extensions).into_iter().map(|(name, path)| Material { name, image: Some(path), ..Material::default() }).collect();
+        p.models = crate::models::Models::new(sdk.model_vfs(&p.vars), &sdk.manifest, &p.game);
         if let Some(host) = host {
             p.load_plugins(host, user_plugins);
         }
@@ -307,6 +296,20 @@ impl Project {
         }
         let path = self.vfs.find_material(name, &self.sdk.as_ref()?.manifest.textures.extensions)?;
         Some(Material { name: name.to_string(), image: Some(path), ..Material::default() })
+    }
+
+    /// The picture a material is drawn with, decoded.
+    pub fn material_picture(&self, name: &str) -> Option<mapcraft_render::Picture> {
+        let m = self.find_material(name)?;
+        if let Some(p) = &m.pixels {
+            return Some(mapcraft_render::Picture { width: p.width, height: p.height, rgba: p.rgba.clone() });
+        }
+        let image = match (&m.image, m.color) {
+            (Some(path), _) => image::open(path).ok()?.to_rgba8(),
+            (None, Some(c)) => RgbaImage::from_raw(SWATCH, SWATCH, swatch(c))?,
+            (None, None) => return None,
+        };
+        Some(mapcraft_render::Picture { width: image.width(), height: image.height(), rgba: image.into_raw() })
     }
 
     /// Decodes and uploads every material in `names` the renderer does not have yet; returns how many failed.

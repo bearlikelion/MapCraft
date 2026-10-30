@@ -1,13 +1,15 @@
 # Prefabs
 
-A prefab is a piece of a map kept in its own `.mcmap` file and placed as instances, like a Godot scene or a Hammer instance.
+A prefab is a piece of a map kept in its own `.mcmap` file, such as a start area you use on every map.
+You place it as instances, like a Godot scene or a Hammer instance.
 Change the prefab file, reload prefabs, and every instance updates.
 
 ## Save the selection as a prefab
 
 1. Save your map first, so the prefab's path is stored relative to the map's folder.
 2. Select what the prefab should hold.
-3. Press `Ctrl+Shift+P` (**Tools > Save Selection as Prefab**) and pick a file name; the dialog starts in the map's folder.
+3. Press `Ctrl+Shift+P` (**Tools > Save Selection as Prefab**) and pick a file name.
+   The dialog starts in the map's folder.
 
 The selection is written to that file, centered on the grid point nearest its middle.
 In your map it is replaced by an instance of the file at that point.
@@ -19,7 +21,7 @@ In your map it is replaced by an instance of the file at that point.
 Press `Ctrl+Alt+P` (**Tools > Insert Prefab**) and pick a `.mcmap` file.
 The instance lands on the grid point nearest where the pointer last was, goes where new objects go, and is selected.
 
-Any `.mcmap` file can be a prefab.
+Any `.mcmap` file can be a prefab, so you can drop one map into another.
 
 ## Work with an instance
 
@@ -31,7 +33,7 @@ Select an instance to see in the inspector:
 - the prefab's name in the header, with its path under it;
 - **Origin** and **Angles** in the **Transform** section, which place it;
 - **Open prefab**, the folder icon in the header, which opens the prefab's own file for editing (asking to save your map first);
-- **Make local**, the icon beside it, described below.
+- **Make local**, the broken chain link icon beside it, described below.
 
 If the prefab file cannot be loaded, the inspector says so in a red note.
 
@@ -39,6 +41,7 @@ If the prefab file cannot be loaded, the inspector says so in a red note.
 
 ## Overrides
 
+Overrides let one instance differ from the prefab without touching the file.
 The inspector's **Overrides** section lists each entity in the prefab with its keys, except `origin`.
 Change a value there to change it for this instance only.
 
@@ -49,14 +52,14 @@ Change a value there to change it for this instance only.
 
 ## Make Prefab Local
 
-`Ctrl+Shift+U` (**Tools > Make Prefab Local**, or **Make local** in the inspector) turns the selected instances into ordinary objects.
+`Ctrl+Shift+U` (**Tools > Make Prefab Local**, or **Make local** in the inspector) turns the selected instances into ordinary objects you can edit directly.
 
 - Each instance becomes a group named after the prefab's path, holding a copy of its contents in place.
 - Overrides are applied to the copies.
 - Instances nested inside it are made local too.
 - Layers in the prefab become groups, and mirror groups come in with their mirrored half made real.
 
-![After Make Prefab Local, the instance is a plain group named start_area.mcmap holding its brushes](img/prefabs-local.webp)
+![After Make Prefab Local, the instance is a plain group named start_area.mcmap holding its info_player_start and zone_start](img/prefabs-local.webp)
 
 ## Reload Prefabs
 
@@ -73,7 +76,8 @@ Nesting deeper than 16 levels is refused the same way.
 
 ## Prefabs in Godot
 
-- The Godot addon loads each instance's prefab `.mcmap` as a scene instance, looking for it relative to the map, so the prefab files must be in the Godot project too.
+- The Godot addon loads each instance's prefab `.mcmap` as a scene instance, looking for it relative to the map.
+  This means the prefab files must be in the Godot project too.
 - It does not apply overrides yet.
 - The SurfsUp SDK's Run profiles copy only the map file into the game.
 

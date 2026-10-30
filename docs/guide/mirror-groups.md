@@ -1,6 +1,7 @@
 # Mirror groups
 
-A mirror group draws the other half of a symmetric map from the half you build.
+Many maps are symmetric, such as a surf ramp that arches over the middle or a level for two teams.
+A mirror group lets you build one half while MapCraft draws the other half from it, so the two halves always match.
 
 ## Make a mirror group
 
@@ -10,7 +11,8 @@ A mirror group draws the other half of a symmetric map from the half you build.
 
 The other half appears, mirrored left and right across a plane at a fixed X.
 
-- The selection goes into a new group named Mirror. If you selected one group, that group becomes the mirror group instead.
+- The selection goes into a new group named Mirror.
+  If you selected one group, that group becomes the mirror group instead.
 - The plane goes through the edge of your half nearest the map's origin, or through 0 when your half spans the origin.
 - The group's **Carry textures** starts as the top bar's **Texture lock** setting.
 
@@ -20,6 +22,8 @@ The other half appears, mirrored left and right across a plane at a fixed X.
 > Mirrors can nest: build a quarter, mirror it, then select the mirror group, mirror it again and set the outer group's **Axis** to Y.
 
 ## How the mirror follows
+
+Keep working on your half as usual, and the mirrored half keeps up:
 
 - The mirrored half follows every edit to your half.
 - Clicking the mirrored half selects the original it copies (or its group, depending on the selection mode).
@@ -43,13 +47,15 @@ Select the mirror group to change it in the inspector.
 
 - A brush touching the plane meets its copy with no gap.
 - A brush crossing the plane adds only the part its reflection does not already fill, and a brush centered on the plane adds nothing.
-- Point entities get the mirrored position and turn to face the way the reflection does. A point entity or prefab lying on the plane is not doubled.
+- Point entities get the mirrored position and turn to face the way the reflection does.
+  A point entity or prefab lying on the plane is not doubled.
 - Prefabs are copied as prefabs, turned rather than flipped.
 
 Check for Problems checks the mirrored half too, and reports its problems on the originals.
 
 ## Make Mirror Real
 
+When you want to edit the two halves apart, make the mirror real.
 **Tools > Make Mirror Real**, or **Make real** in the inspector, turns the mirrored half into ordinary objects inside the group and stops mirroring.
 It works when a mirror group is selected, changes nothing in the views, and is one undo step.
 

@@ -198,18 +198,17 @@ impl Sdk {
         Ok(gd)
     }
 
-    /// The texture folders: the manifest's, then the user's.
-    pub fn vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
-        let mut roots = self.manifest.textures.roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?;
-        roots.extend(self.user_textures.iter().cloned());
-        Ok(Vfs::new(roots))
+    /// The texture folders: the manifest's whose paths are set, then the user's.
+    pub fn vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
+        let roots = self.manifest.textures.roots.iter().filter_map(|r| self.resolve(r, vars).ok());
+        Vfs::new(roots.chain(self.user_textures.iter().cloned()).collect())
     }
 
-    /// Where model paths resolve: the `[models]` folders, else the texture folders.
-    pub fn model_vfs(&self, vars: &BTreeMap<String, String>) -> Result<Vfs, SdkError> {
+    /// Where model paths resolve: the `[models]` folders whose paths are set, else the texture folders.
+    pub fn model_vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
         let models = &self.manifest.models.roots;
         let roots = if models.is_empty() { &self.manifest.textures.roots } else { models };
-        Ok(Vfs::new(roots.iter().map(|r| self.resolve(r, vars)).collect::<Result<Vec<_>, _>>()?))
+        Vfs::new(roots.iter().filter_map(|r| self.resolve(r, vars).ok()).collect())
     }
 
     /// What plugins may read: the texture folders, the user's folders and files, then the extra file folders that are set.
@@ -296,14 +295,14 @@ steps = [
         let mut quake = sdk.clone();
         quake.manifest.map_size = Some([-4096, 4096]);
         assert_eq!(quake.game_data(&vars).unwrap().map_size, Some((-4096, 4096)), "the manifest wins");
-        assert_eq!(sdk.vfs(&vars).unwrap().roots(), [project.join("Assets/Textures")]);
-        assert_eq!(sdk.model_vfs(&vars).unwrap().roots(), sdk.vfs(&vars).unwrap().roots(), "models default to the texture folders");
+        assert_eq!(sdk.vfs(&vars).roots(), [project.join("Assets/Textures")]);
+        assert_eq!(sdk.model_vfs(&vars).roots(), sdk.vfs(&vars).roots(), "models default to the texture folders");
         assert_eq!((sdk.manifest.models.class.as_deref(), sdk.manifest.models.key.as_str()), (None, "model"));
         let mut props = sdk.clone();
         props.manifest.models = toml::from_str("roots = [\"${project}\"]\nclass = \"prop_static\"").unwrap();
-        assert_eq!(props.model_vfs(&vars).unwrap().roots(), std::slice::from_ref(&project));
+        assert_eq!(props.model_vfs(&vars).roots(), std::slice::from_ref(&project));
         assert_eq!(props.manifest.models.key, "model");
-        assert!(sdk.vfs(&BTreeMap::new()).is_err());
+        assert!(sdk.vfs(&BTreeMap::new()).roots().is_empty(), "folders whose paths are unset are left out");
     }
 
     #[test]
@@ -320,7 +319,7 @@ steps = [
         sdk.manifest.files.roots = vec!["${game}".into()];
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let vars = BTreeMap::from([("project".to_string(), s(&root.path().join("p"))), ("game".to_string(), s(&game))]);
-        let vfs = sdk.vfs(&vars).unwrap();
+        let vfs = sdk.vfs(&vars);
         assert_eq!(vfs.roots(), [own.clone(), user.clone(), root.path().join("gone"), wad.clone()]);
         let plugins = sdk.plugin_vfs(&vars);
         assert_eq!(plugins.roots(), [own.clone(), user.clone(), wad, game], "missing folders are left out of what plugins read, single files are not");

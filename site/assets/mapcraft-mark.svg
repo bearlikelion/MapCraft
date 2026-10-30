@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="24 24 208 208">
-  <!-- The Block M of mapcraft.svg without its tile, for dark pages -->
-  <path fill="#C46A16" d="M32 64h48l16-16H48zM160 64h48l16-16h-48z"/>
-  <path fill="#9A5210" d="M208 64v144l16-16V48zM80 120v88l16-16v-88z"/>
-  <path fill="#9AA1AC" d="M80 64l40 64 16-16-40-64z"/>
-  <path fill="#5E6570" d="M160 120l-40 64 16-16 40-64z"/>
-  <path fill="#F28C28" d="M32 64h48v144H32zM160 64h48v144h-48z"/>
-  <path fill="#D6DAE0" d="M80 64l40 64v56l-40-64zM160 64l-40 64v56l40-64z"/>
-</svg>

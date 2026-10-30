@@ -2,9 +2,12 @@
 //! `cargo run -p mapcraft-ui --example snapshot -- out.png [map.mcmap] [steps]`.
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
-//! `--drag x,y x,y`, `--hold x,y x,y`, `--hover x,y`, `--scroll <lines>`, `--key <name>`, `--type <text>`, `--select-all`, `--wait <ms>`; `--var name=value` sets an SDK path
+//! `--drag x,y x,y`, `--hold x,y x,y` (`alt-`, `shift-` and `ctrl-` before `click-at`, `drag` or `hold` hold those keys, as in `--alt-shift-click-at`), `--hover x,y`, `--scroll <lines>`, `--key <name>` (or a chord such as `Ctrl+Shift+D`), `--type <text>`, `--select-all`, `--wait <ms>`,
+//! `--look x,y,z x,y,z` (points the 3D camera from the first point at the second); `--size WxH` sets the window size
+//! (1600x1000 by default) and `--scale <n>` its pixels per point; `--var name=value` sets an SDK path
 //! and `--registry <url|path>` replaces the SDK Manager's registries; `--settings <dir>` keeps the
-//! settings and data folder there instead of a throwaway one.
+//! settings and data folder there instead of a throwaway one; `--fresh` finds SDKs only in that data
+//! folder, as a fresh install would, so the editor opens with the Add an SDK window.
 
 use std::path::PathBuf;
 
@@ -16,6 +19,13 @@ use mapcraft_ui::{MapCraftApp, Options};
 fn pos(s: &str) -> Pos2 {
     let (x, y) = s.split_once(',').unwrap_or(("0", "0"));
     Pos2::new(x.trim().parse().unwrap_or(0.0), y.trim().parse().unwrap_or(0.0))
+}
+
+fn modifiers(step: &str) -> Modifiers {
+    [("alt-", Modifiers::ALT), ("shift-", Modifiers::SHIFT), ("ctrl-", Modifiers::COMMAND)]
+        .iter()
+        .filter(|(k, _)| step.contains(k))
+        .fold(Modifiers::NONE, |m, (_, x)| m | *x)
 }
 
 fn press(h: &Harness<MapCraftApp>, p: Pos2, pressed: bool, modifiers: Modifiers) {
@@ -33,6 +43,8 @@ fn main() {
     let mut keep = false;
     let mut steps: Vec<(String, Vec<String>)> = Vec::new();
     let mut registries = Vec::new();
+    let mut size = egui::Vec2::new(1600.0, 1000.0);
+    let mut scale = 1.0;
     let mut it = args.iter().skip(1).peekable();
     while let Some(a) = it.next() {
         let take =
@@ -44,16 +56,22 @@ fn main() {
                 }
             }
             "--registry" => registries.extend(it.next().cloned()),
+            "--fresh" => options.fresh_install = true,
+            "--scale" => scale = it.next().and_then(|s| s.parse().ok()).unwrap_or(scale),
+            "--size" => {
+                if let Some((w, h)) = it.next().and_then(|s| s.split_once('x')) {
+                    size = egui::Vec2::new(w.parse().unwrap_or(size.x), h.parse().unwrap_or(size.y));
+                }
+            }
             "--settings" => keep = it.next().map(PathBuf::from).inspect(|d| options.settings_dir = Some(d.clone())).is_some(),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
-            "--command" | "--click" | "--click-at" | "--alt-click-at" | "--right-click-at" | "--key" | "--type" | "--wait" | "--hover" | "--scroll" => {
-                steps.push((a.clone(), take(1, &mut it)))
-            }
-            "--drag" | "--hold" => steps.push((a.clone(), take(2, &mut it))),
+            "--command" | "--click" | "--key" | "--type" | "--wait" | "--hover" | "--scroll" => steps.push((a.clone(), take(1, &mut it))),
+            s if s.ends_with("click-at") => steps.push((a.clone(), take(1, &mut it))),
+            s if s == "--look" || s.ends_with("drag") || s.ends_with("hold") => steps.push((a.clone(), take(2, &mut it))),
             path => options.open = Some(PathBuf::from(path)),
         }
     }
-    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    let mut h = Harness::builder().with_size(size).with_pixels_per_point(scale).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
     if !registries.is_empty() {
         h.state_mut().set_registries_for_test(registries);
     }
@@ -69,6 +87,13 @@ fn main() {
                 }
             }
             "--command" => h.state_mut().run_command_for_test(arg),
+            "--look" => {
+                let point = |s: &str| {
+                    let v: Vec<f64> = s.split(',').map(|n| n.trim().parse().unwrap_or(0.0)).collect();
+                    mapcraft_geom::DVec3::new(v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0), v.get(2).copied().unwrap_or(0.0))
+                };
+                h.state_mut().look_for_test(0, point(arg), point(args.get(1).map(String::as_str).unwrap_or_default()));
+            }
             "--hover" => h.hover_at(pos(arg)),
             "--scroll" => h.event(Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Line,
@@ -77,13 +102,20 @@ fn main() {
                 modifiers: Modifiers::NONE,
             }),
             "--key" => {
-                if let Some(k) = egui::Key::from_name(arg) {
-                    h.key_press(k);
+                let (mods, name) = arg.rsplit_once('+').unwrap_or(("", arg));
+                let m = mods.split('+').fold(Modifiers::NONE, |m, part| match part {
+                    "Ctrl" => m | Modifiers::COMMAND,
+                    "Shift" => m | Modifiers::SHIFT,
+                    "Alt" => m | Modifiers::ALT,
+                    _ => m,
+                });
+                if let Some(k) = egui::Key::from_name(name) {
+                    h.key_press_modifiers(m, k);
                 }
             }
             "--type" => h.event(Event::Text(arg.into())),
-            "--click-at" | "--alt-click-at" => {
-                let m = if step == "--alt-click-at" { Modifiers::ALT } else { Modifiers::NONE };
+            s if s.ends_with("click-at") && s != "--right-click-at" => {
+                let m = modifiers(s);
                 let p = pos(arg);
                 h.event(Event::ModifiersChanged(m));
                 h.hover_at(p);
@@ -103,19 +135,22 @@ fn main() {
                     h.run_steps(1);
                 }
             }
-            "--drag" | "--hold" => {
+            s if s.ends_with("drag") || s.ends_with("hold") => {
                 let (a, b) = (pos(arg), pos(args.get(1).map(String::as_str).unwrap_or_default()));
+                let m = modifiers(s);
+                h.event(Event::ModifiersChanged(m));
                 h.hover_at(a);
                 h.run_steps(1);
-                press(&h, a, true, Modifiers::NONE);
+                press(&h, a, true, m);
                 h.run_steps(1);
                 for i in 1..=8 {
                     h.hover_at(a + (b - a) * (i as f32 / 8.0));
                     h.run_steps(1);
                 }
-                if step == "--drag" {
-                    press(&h, b, false, Modifiers::NONE);
+                if step.ends_with("drag") {
+                    press(&h, b, false, m);
                     h.run_steps(1);
+                    h.event(Event::ModifiersChanged(Modifiers::NONE));
                 }
             }
             _ => {}

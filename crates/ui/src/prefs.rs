@@ -75,6 +75,8 @@ pub struct ViewPrefs {
     pub slope_surfable: f64,
     /// 3D views draw the sky; off, sky faces draw like other faces.
     pub sky: bool,
+    /// The corner of the views that shows each shortcut pressed; `None` hides them.
+    pub show_keys: Option<crate::keys::Corner>,
 }
 
 impl Default for ViewPrefs {
@@ -95,6 +97,7 @@ impl Default for ViewPrefs {
             slope_walkable: 45.573,
             slope_surfable: 72.0,
             sky: true,
+            show_keys: None,
         }
     }
 }

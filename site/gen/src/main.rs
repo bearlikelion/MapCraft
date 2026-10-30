@@ -1,5 +1,5 @@
-//! Builds the MapCraft website: copies `site/`, then renders the guide in `docs/guide/`, the
-//! technical docs in `docs/` and `godot/README.md`.
+//! Builds the MapCraft website: copies `site/`, then renders the tutorial in `docs/tutorial/`, the
+//! guide in `docs/guide/`, the technical docs in `docs/` and `godot/README.md`.
 //!
 //! `cargo run --manifest-path site/gen/Cargo.toml -- [--out DIR] [--sync]`
 //! writes to `target/site` by default; `--sync` also rewrites the shortcut table in
@@ -22,12 +22,54 @@ type Result<T> = std::result::Result<T, String>;
 const DEFAULT_REPO: &str = "https://github.com/bearlikelion/MapCraft";
 const SHORTCUTS_START: &str = "<!-- shortcuts:start -->";
 const SHORTCUTS_END: &str = "<!-- shortcuts:end -->";
-const SECTIONS: [&str; 2] = ["Guide", "Technical"];
+const SECTIONS: [&str; 3] = ["Tutorial", "Guide", "Technical"];
 /// Folders whose `img/` is copied beside their pages.
-const IMAGES: [(&str, &str); 2] = [("docs/guide", "guide"), ("docs", "technical")];
+const IMAGES: [(&str, &str); 3] = [("docs/tutorial", "tutorial"), ("docs/guide", "guide"), ("docs", "technical")];
+/// The header's search box; `search.js` fills its results from `search-index.js`.
+const SEARCH: &str = r#"<div class="search" role="search"><input type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">/</kbd><div class="search-results" role="listbox" hidden></div></div>"#;
+/// The editor icon shown beside each page in the sidebar, from `crates/ui/assets/icons/at-icons`.
+const PAGE_ICONS: &[(&str, &str)] = &[
+    ("docs/tutorial/README.md", "flag_checkered"),
+    ("docs/guide/README.md", "house"),
+    ("docs/guide/installing.md", "cloud_arrow_down"),
+    ("docs/guide/views.md", "orbit"),
+    ("docs/guide/hotkeys.md", "keyboard"),
+    ("docs/guide/tools.md", "cursor"),
+    ("docs/guide/materials.md", "swatches"),
+    ("docs/guide/entities.md", "location"),
+    ("docs/guide/surf.md", "angle"),
+    ("docs/guide/curves.md", "road"),
+    ("docs/guide/displacements.md", "mountains"),
+    ("docs/guide/organizing.md", "layers"),
+    ("docs/guide/mirror-groups.md", "mirror_horizontally"),
+    ("docs/guide/prefabs.md", "delivery_box"),
+    ("docs/guide/godot.md", "play"),
+    ("docs/guide/trenchbroom.md", "file_cog"),
+    ("docs/guide/importing-bsp.md", "file_arrow_down"),
+    ("docs/guide/importing-sdk.md", "folder_open"),
+    ("docs/guide/gltf.md", "cube"),
+    ("docs/guide/cstrike.md", "reticle"),
+    ("docs/guide/sdks-and-plugins.md", "jigsaw_piece"),
+    ("docs/guide/shortcuts.md", "list_unordered"),
+    ("docs/README.md", "house"),
+    ("docs/architecture.md", "node_graph_root"),
+    ("docs/building.md", "wrench"),
+    ("docs/plugin-api.md", "jigsaw_piece"),
+    ("docs/sdk-format.md", "file_cog"),
+    ("docs/sdk-registry.md", "globe"),
+    ("docs/mcmap-format.md", "files"),
+    ("docs/lighting.md", "sun"),
+    ("docs/surf-mapping.md", "angle"),
+    ("docs/trenchbroom-import.md", "file_arrow_down"),
+    ("docs/mcp-server.md", "window_terminal"),
+    ("docs/ai-agents.md", "magic_wand"),
+    ("godot/README.md", "play"),
+];
 const FONTS: &str = "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..900&family=Source+Sans+3:ital,wght@0,400..700;1,400&family=JetBrains+Mono:wght@400..600&display=swap";
 
 struct Page {
+    /// A sidebar link to another section's front page, which is rendered with its own section.
+    link_only: bool,
     /// Repository path of the Markdown source.
     src: String,
     /// Site path of the generated page.
@@ -92,20 +134,31 @@ fn run() -> Result<()> {
         }
     }
     let ctx = Ctx { root: &root, pages: &pages, repo: &repo };
-    for p in &pages {
+    for p in pages.iter().filter(|p| !p.link_only) {
         write(&out.join(&p.out), &render(p, &ctx))?;
     }
-    println!("site: {} pages in {}", pages.len(), out.display());
+    write(&out.join("search-index.js"), &search_index(&pages))?;
+    println!("site: {} pages in {}", pages.iter().filter(|p| !p.link_only).count(), out.display());
     Ok(())
 }
 
-/// Every page in sidebar order: the guide, then the technical docs.
+/// Every page in sidebar order: the tutorial, the guide, then the technical docs.
 fn collect(root: &Path) -> Result<Vec<Page>> {
     let guide = md_files(&root.join("docs/guide"))?.into_iter().map(|n| format!("docs/guide/{n}")).collect();
     let mut technical: Vec<String> = md_files(&root.join("docs"))?.into_iter().map(|n| format!("docs/{n}")).collect();
     technical.push("godot/README.md".into());
-    let mut pages = section(root, "Guide", "docs/guide/README.md", "guide", guide)?;
+    let mut pages = section(root, "Tutorial", "docs/tutorial/README.md", "tutorial", Vec::new())?;
+    pages.extend(section(root, "Guide", "docs/guide/README.md", "guide", guide)?);
     pages.extend(section(root, "Technical", "docs/README.md", "technical", technical)?);
+    // A section index that links another section's front page under one of its groups lists it there too.
+    let fronts: Vec<(String, String, String)> =
+        pages.iter().filter(|p| p.out.ends_with("/index.html") && !p.link_only).map(|p| (p.src.clone(), p.out.clone(), p.title.clone())).collect();
+    for p in pages.iter_mut().filter(|p| p.link_only) {
+        if let Some((_, out, _)) = fronts.iter().find(|(src, _, _)| *src == p.src) {
+            p.out.clone_from(out);
+        }
+    }
+    pages.retain(|p| !p.link_only || p.out.ends_with("/index.html"));
     Ok(pages)
 }
 
@@ -119,6 +172,10 @@ fn section(root: &Path, name: &'static str, index: &str, dir: &str, srcs: Vec<St
     for line in text.lines() {
         if let Some(h) = line.strip_prefix("## ") {
             group = h.trim().to_string();
+            continue;
+        }
+        // Only the grouped lists set the order; links in the intro text do not.
+        if group.is_empty() {
             continue;
         }
         for l in links(line) {
@@ -139,6 +196,14 @@ fn section(root: &Path, name: &'static str, index: &str, dir: &str, srcs: Vec<St
         let text = read(&root.join(&src))?;
         rest.push((at.unwrap_or(usize::MAX), page(src.clone(), format!("{dir}/{file}.html"), name, group, text)));
     }
+    for (at, (src, group)) in order.iter().enumerate() {
+        let other = src.ends_with("README.md") && src != index && !rest.iter().any(|(_, p): &(usize, Page)| p.src == *src);
+        if other && root.join(src).is_file() {
+            let mut link = page(src.clone(), String::new(), name, group.clone(), read(&root.join(src))?);
+            link.link_only = true;
+            rest.push((at, link));
+        }
+    }
     rest.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())));
     let mut pages = vec![page(index.to_string(), format!("{dir}/index.html"), name, String::new(), text)];
     pages.extend(rest.into_iter().map(|(_, p)| p));
@@ -147,12 +212,29 @@ fn section(root: &Path, name: &'static str, index: &str, dir: &str, srcs: Vec<St
 
 fn page(src: String, out: String, section: &'static str, group: String, text: String) -> Page {
     let title = text.lines().find_map(|l| l.strip_prefix("# ")).map_or_else(|| stem(&src).to_string(), |t| t.replace('`', ""));
-    Page { src, out, title, section, group, text }
+    Page { link_only: false, src, out, title, section, group, text }
 }
 
 fn render(p: &Page, ctx: &Ctx) -> String {
-    let (body, toc) = markdown(&p.text, p, ctx, true);
-    layout(p, ctx, &body, &toc)
+    let (mut body, toc) = markdown(&p.text, p, ctx, true);
+    // "On this page" follows the intro: a list under it on narrow windows, a column of its own on wide ones.
+    if toc.len() > 1 {
+        let mut list = String::from("<nav class=\"toc\" aria-label=\"On this page\">\n<p>On this page</p>\n<ul>\n");
+        for h in &toc {
+            let _ = writeln!(list, "<li><a href=\"#{}\">{}</a></li>", h.id, esc(&h.text));
+        }
+        list.push_str("</ul>\n</nav>\n");
+        let at = body.find("</section>\n").map_or(0, |i| i + "</section>\n".len());
+        body.insert_str(at, &list);
+    }
+    layout(p, ctx, &body)
+}
+
+/// An editor icon as inline SVG, so it takes the link's color; empty when the page has none.
+fn icon(root: &Path, src: &str) -> String {
+    let name = PAGE_ICONS.iter().find(|(s, _)| *s == src).map_or("files", |(_, n)| *n);
+    let svg = fs::read_to_string(root.join(format!("crates/ui/assets/icons/at-icons/{name}.svg"))).unwrap_or_default();
+    svg.replacen("<svg ", "<svg class=\"ic\" aria-hidden=\"true\" focusable=\"false\" ", 1).replace('\n', "")
 }
 
 /// A block of a page: the text under one heading, and the screenshots that go beside it.
@@ -161,10 +243,17 @@ struct Block<'a> {
     text: Vec<Event<'a>>,
     media: String,
     wide: String,
+    /// Wide pictures written before any text, shown right under the heading.
+    lead: String,
 }
 
 impl Block<'_> {
-    fn html(self) -> String {
+    fn html(mut self) -> String {
+        let mut head = String::new();
+        if !self.lead.is_empty() && !self.text.is_empty() {
+            html::push_html(&mut head, self.text.drain(..1));
+            head = format!("{head}<div class=\"block-lead\">\n{}</div>\n", self.lead);
+        }
         let mut text = String::new();
         html::push_html(&mut text, self.text.into_iter());
         if self.level == 0 {
@@ -173,7 +262,8 @@ impl Block<'_> {
         let (class, media) = if self.media.is_empty() { ("", String::new()) } else { (" has-media", format!("<div class=\"block-media\">\n{}</div>\n", self.media)) };
         let wide = if self.wide.is_empty() { String::new() } else { format!("<div class=\"block-wide\">\n{}</div>\n", self.wide) };
         let kind = if self.level == 1 { "intro" } else { "block" };
-        format!("<section class=\"{kind} l{}{class}\">\n<div class=\"block-text\">\n{text}</div>\n{media}{wide}</section>\n", self.level)
+        let class = if head.is_empty() { class.to_string() } else { format!("{class} has-lead") };
+        format!("<section class=\"{kind} l{}{class}\">\n{head}<div class=\"block-text\">\n{text}</div>\n{media}{wide}</section>\n", self.level)
     }
 }
 
@@ -183,7 +273,7 @@ fn markdown(text: &str, p: &Page, ctx: &Ctx, blocks: bool) -> (String, Vec<Headi
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM;
     let dir = ctx.root.join(p.src.rsplit_once('/').map_or("", |(d, _)| d));
     let mut done: Vec<Block> = Vec::new();
-    let mut block = Block { level: if blocks { 1 } else { 0 }, text: Vec::new(), media: String::new(), wide: String::new() };
+    let mut block = Block { level: if blocks { 1 } else { 0 }, text: Vec::new(), media: String::new(), wide: String::new(), lead: String::new() };
     let mut toc = Vec::new();
     let mut ids = BTreeSet::new();
     let mut heading: Option<(usize, Vec<Event>)> = None;
@@ -213,8 +303,15 @@ fn markdown(text: &str, p: &Page, ctx: &Ctx, blocks: bool) -> (String, Vec<Headi
                 let buf = para.take().unwrap_or_default();
                 match figures(&buf, &dir) {
                     Some(figs) => {
+                        // Only the heading so far: the picture leads the block.
+                        let first = blocks && block.level > 1 && block.text.len() <= 1;
                         for (wide, fig) in figs {
-                            if wide || !blocks { block.wide.push_str(&fig) } else { block.media.push_str(&fig) }
+                            match (wide, first) {
+                                (true, true) => block.lead.push_str(&fig),
+                                (true, false) => block.wide.push_str(&fig),
+                                _ if !blocks => block.wide.push_str(&fig),
+                                _ => block.media.push_str(&fig),
+                            }
                         }
                     }
                     None => {
@@ -228,7 +325,7 @@ fn markdown(text: &str, p: &Page, ctx: &Ctx, blocks: bool) -> (String, Vec<Headi
             Event::Start(Tag::Heading { level, .. }) => {
                 let level = level as usize;
                 if blocks && (2..=3).contains(&level) {
-                    let next = Block { level, text: Vec::new(), media: String::new(), wide: String::new() };
+                    let next = Block { level, text: Vec::new(), media: String::new(), wide: String::new(), lead: String::new() };
                     done.push(std::mem::replace(&mut block, next));
                 }
                 heading = Some((level, Vec::new()));
@@ -265,6 +362,71 @@ fn markdown(text: &str, p: &Page, ctx: &Ctx, blocks: bool) -> (String, Vec<Headi
     (out, toc)
 }
 
+/// `window.MAPCRAFT_SEARCH`: one entry per page block, with the anchor its heading gets on the page.
+fn search_index(pages: &[Page]) -> String {
+    let mut out = String::from("window.MAPCRAFT_SEARCH=[\n");
+    for p in pages.iter().filter(|p| !p.link_only) {
+        let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM;
+        let mut ids = BTreeSet::new();
+        let mut blocks: Vec<(String, String, String)> = vec![(String::new(), String::new(), String::new())];
+        let mut heading: Option<(usize, String)> = None;
+        for ev in Parser::new_ext(&p.text, opts) {
+            match ev {
+                Event::Start(Tag::Heading { level, .. }) => heading = Some((level as usize, String::new())),
+                Event::End(TagEnd::Heading(_)) => {
+                    let Some((level, text)) = heading.take() else { continue };
+                    let id = unique(slug(&text), &mut ids);
+                    if (2..=3).contains(&level) {
+                        blocks.push((text, id, String::new()));
+                    }
+                }
+                // A keycap span adds nothing to a heading's anchor, as in `markdown`.
+                Event::Code(t) if heading.is_some() && keys(&t).is_some() => {}
+                Event::Text(t) | Event::Code(t) => match (&mut heading, blocks.last_mut()) {
+                    (Some((_, h)), _) => h.push_str(&t),
+                    (None, Some((_, _, body))) => body.push_str(&t),
+                    (None, None) => {}
+                },
+                Event::SoftBreak | Event::HardBreak | Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::TableCell | TagEnd::CodeBlock) => {
+                    if let Some((_, _, body)) = blocks.last_mut() {
+                        body.push(' ');
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (heading, id, body) in blocks {
+            let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            if heading.is_empty() && body.is_empty() {
+                continue;
+            }
+            let url = if id.is_empty() { p.out.clone() } else { format!("{}#{id}", p.out) };
+            let _ = writeln!(out, "[{},{},{},{},{}],", json(&p.title), json(p.section), json(&heading), json(&url), json(&body));
+        }
+    }
+    out.push_str("];\n");
+    out
+}
+
+/// A JSON string literal.
+fn json(text: &str) -> String {
+    let mut s = String::with_capacity(text.len() + 2);
+    s.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => s.push_str("\\\""),
+            '\\' => s.push_str("\\\\"),
+            '<' => s.push_str("\\u003c"),
+            c if u32::from(c) < 0x20 => {
+                let _ = write!(s, "\\u{:04x}", u32::from(c));
+            }
+            c => s.push(c),
+        }
+    }
+    s.push('"');
+    s
+}
+
 /// The figures of a paragraph that holds only images, as (spans the block, HTML).
 fn figures(events: &[Event], dir: &Path) -> Option<Vec<(bool, String)>> {
     let mut out = Vec::new();
@@ -287,11 +449,36 @@ fn figures(events: &[Event], dir: &Path) -> Option<Vec<(bool, String)>> {
 
 fn figure(url: &str, title: &str, alt: &str, dir: &Path) -> (bool, String) {
     let (path, wide) = url.strip_suffix("#wide").map_or((url, false), |p| (p, true));
-    let size = webp_size(&dir.join(path)).map_or_else(String::new, |(w, h)| format!(" width=\"{w}\" height=\"{h}\""));
+    let dims = webp_size(&dir.join(path));
+    let size = dims.map_or_else(String::new, |(w, h)| format!(" width=\"{w}\" height=\"{h}\""));
     let caption = if title.is_empty() { String::new() } else { format!("<figcaption>{}</figcaption>", esc(title)) };
+    let spec = fs::read_to_string(dir.join(path).with_extension("areas")).ok();
     let path = esc(path);
-    let html = format!("<figure class=\"shot\"><a href=\"{path}\"><img src=\"{path}\" alt=\"{}\"{size} loading=\"lazy\" decoding=\"async\"></a>{caption}</figure>\n", esc(alt));
-    (wide, html)
+    let img = format!("<img src=\"{path}\" alt=\"{}\"{size} loading=\"lazy\" decoding=\"async\">", esc(alt));
+    if let (Some(spec), Some(dims)) = (spec, dims) {
+        return (wide, format!("<figure class=\"shot has-areas\"><div class=\"areas-frame\">{img}{}</div>{caption}</figure>\n", areas(&spec, dims)));
+    }
+    (wide, format!("<figure class=\"shot\"><a href=\"{path}\">{img}</a>{caption}</figure>\n"))
+}
+
+/// Outlines and numbered pins for a picture's `.areas` file: one `x,y,width,height` line in the
+/// picture's pixels per item of the numbered list under it; `areas.js` ties each pin to its item.
+fn areas(spec: &str, (w, h): (u32, u32)) -> String {
+    let (w, h) = (f64::from(w.max(1)), f64::from(h.max(1)));
+    let mut out = String::new();
+    let lines = spec.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'));
+    for (n, line) in (1..).zip(lines) {
+        let v: Vec<f64> = line.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let [x, y, aw, ah] = v.as_slice() else { continue };
+        let (l, t, pw, ph) = (x / w * 100.0, y / h * 100.0, aw / w * 100.0, ah / h * 100.0);
+        let _ = write!(
+            out,
+            "<div class=\"area\" data-n=\"{n}\" style=\"left:{l:.2}%;top:{t:.2}%;width:{pw:.2}%;height:{ph:.2}%\"></div><button type=\"button\" class=\"pin\" data-n=\"{n}\" aria-label=\"Show area {n}\" style=\"left:{:.2}%;top:{:.2}%\">{n}</button>",
+            l + pw / 2.0,
+            t + ph / 2.0
+        );
+    }
+    out
 }
 
 /// Width and height of a WebP image, from its header.
@@ -315,7 +502,7 @@ fn link(url: &str, src: &str, from: &str, ctx: &Ctx) -> String {
     let (path, frag) = url.split_once('#').map_or((url, String::new()), |(p, f)| (p, format!("#{f}")));
     let dir = src.rsplit_once('/').map_or("", |(d, _)| d);
     let Some(target) = normalize(&format!("{dir}/{path}")) else { return url.to_string() };
-    match ctx.pages.iter().find(|p| p.src == target) {
+    match ctx.pages.iter().find(|p| p.src == target && !p.link_only) {
         Some(p) => format!("{}{}{frag}", up(from), p.out),
         None => format!("{}/blob/main/{target}{frag}", ctx.repo),
     }
@@ -391,7 +578,7 @@ fn is_key(k: &str) -> bool {
     NAMED.contains(&k) || function || (k.len() == 1 && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
 }
 
-fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
+fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
     let base = up(&p.out);
     let repo = ctx.repo;
     let mut nav = String::new();
@@ -412,27 +599,16 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
                 nav.push_str("<ul>\n");
                 group = Some(q.group.as_str());
             }
-            let title = if q.out.ends_with("/index.html") { "Overview" } else { q.title.as_str() };
-            if q.out != p.out {
-                let _ = writeln!(nav, "<li><a href=\"{base}{}\">{}</a></li>", q.out, esc(title));
-                continue;
-            }
-            let _ = write!(nav, "<li><a href=\"{base}{}\" aria-current=\"page\">{}</a>", q.out, esc(title));
-            if toc.len() > 1 {
-                nav.push_str("\n<ul class=\"side-toc\">\n");
-                for h in toc {
-                    let _ = writeln!(nav, "<li><a href=\"#{}\">{}</a></li>", h.id, esc(&h.text));
-                }
-                nav.push_str("</ul>\n");
-            }
-            nav.push_str("</li>\n");
+            let title = if q.out.ends_with("/index.html") && !q.link_only { "Overview" } else { q.title.as_str() };
+            let current = if q.out == p.out { " aria-current=\"page\"" } else { "" };
+            let _ = writeln!(nav, "<li><a href=\"{base}{}\"{current}>{}<span>{}</span></a></li>", q.out, icon(ctx.root, &q.src), esc(title));
         }
         if group.is_some() {
             nav.push_str("</ul>\n");
         }
         nav.push_str("</div>\n");
     }
-    let siblings: Vec<&Page> = ctx.pages.iter().filter(|q| q.section == p.section).collect();
+    let siblings: Vec<&Page> = ctx.pages.iter().filter(|q| q.section == p.section && !q.link_only).collect();
     let side = if siblings.len() > 1 {
         format!(
             "<nav class=\"side\" aria-label=\"{section}\">\n<details class=\"side-menu\" id=\"side-menu\">\n<summary>{section} pages</summary>\n{nav}</details>\n</nav>\n",
@@ -456,10 +632,6 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
         }
         pager.push_str("</nav>\n");
     }
-    let crumb = match (p.section, p.group.as_str()) {
-        (s, "") => format!("<p class=\"crumb {}\"><span>{s}</span></p>\n", s.to_lowercase()),
-        (s, g) => format!("<p class=\"crumb {}\"><span>{s}</span>{}</p>\n", s.to_lowercase(), esc(g)),
-    };
     let current = |s: &str| if p.section == s { " aria-current=\"true\"" } else { "" };
     format!(
         r##"<!doctype html>
@@ -483,8 +655,10 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
 <header class="top">
 	<div class="top-inner">
 		<a class="brand" href="{base}index.html"><img src="{base}assets/mapcraft.svg" width="28" height="28" alt="">MapCraft</a>
+		{SEARCH}
 		<nav aria-label="Site">
 			<a class="opt" href="{base}index.html#download">Download</a>
+			<a href="{base}tutorial/index.html"{tutorial}>Tutorial</a>
 			<a href="{base}guide/index.html"{guide}>Guide</a>
 			<a href="{base}technical/index.html"{technical}>Technical</a>
 			<a href="{repo}">GitHub</a>
@@ -494,7 +668,7 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
 
 <div class="{shell}">
 {side}<main class="doc" id="main">
-{crumb}{body}{pager}<p class="doc-source"><a href="{repo}/blob/main/{src}">Edit this page on GitHub</a></p>
+{body}{pager}<p class="doc-source"><a href="{repo}/blob/main/{src}">Edit this page on GitHub</a></p>
 </main>
 </div>
 
@@ -505,7 +679,21 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
 	</div>
 </footer>
 
+<script src="{base}search.js" data-root="{base}" defer></script>
+<script src="{base}areas.js" defer></script>
 <script>
+	// Marks the section being read in the On this page column.
+	const tocLinks = [...document.querySelectorAll(".toc a")];
+	const heads = tocLinks.map((a) => document.getElementById(a.hash.slice(1))).filter(Boolean);
+	if (heads.length) {{
+		const mark = () => {{
+			let at = 0;
+			heads.forEach((h, i) => {{ if (h.getBoundingClientRect().top < innerHeight * 0.3) at = i; }});
+			tocLinks.forEach((a, i) => (i === at ? a.setAttribute("aria-current", "location") : a.removeAttribute("aria-current")));
+		}};
+		addEventListener("scroll", mark, {{ passive: true }});
+		mark();
+	}}
 	const menu = document.getElementById("side-menu");
 	if (menu && matchMedia("(min-width: 1000px)").matches) menu.open = true;
 </script>
@@ -514,6 +702,7 @@ fn layout(p: &Page, ctx: &Ctx, body: &str, toc: &[Heading]) -> String {
 "##,
         title = esc(&p.title),
         src = p.src,
+        tutorial = current("Tutorial"),
         guide = current("Guide"),
         technical = current("Technical"),
     )
@@ -722,7 +911,7 @@ mod tests {
     #[test]
     fn helpers() {
         assert_eq!(normalize("docs/../wit/plugin.wit").as_deref(), Some("wit/plugin.wit"));
-        assert_eq!(normalize("/ROADMAP.md").as_deref(), Some("ROADMAP.md"));
+        assert_eq!(normalize("/README.md").as_deref(), Some("README.md"));
         assert_eq!(normalize("docs/../../x"), None);
         assert_eq!(up("guide/views.html"), "../");
         assert_eq!(up("index.html"), "");
@@ -736,7 +925,50 @@ mod tests {
         let t = splice("a\n<!-- shortcuts:start -->\nold\n<!-- shortcuts:end -->\nb", "new\n").unwrap_or_default();
         assert!(t.contains("new") && !t.contains("old") && t.ends_with("b"));
         let card = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/card-views.webp");
-        assert_eq!(webp_size(&card), Some((800, 500)));
+        assert_eq!(webp_size(&card), Some((1280, 800)));
+    }
+
+    #[test]
+    fn search_index_follows_page_anchors() {
+        let text = "# Tools\n\nPick one.\n\n## Select\n\nClick \"it\".\n\n### `Q`\n\nPress it.\n\n## Select\n\nAgain.\n";
+        let js = search_index(&[ctx_page("docs/guide/tools.md", "guide/tools.html", text)]);
+        assert!(js.starts_with("window.MAPCRAFT_SEARCH=["));
+        assert!(js.contains(r#"["Tools","Guide","","guide/tools.html","Pick one."]"#));
+        assert!(js.contains(r#"["Tools","Guide","Select","guide/tools.html#select","Click \"it\"."]"#));
+        assert!(js.contains(r#""guide/tools.html#section""#));
+        assert!(js.contains(r#""guide/tools.html#select-2""#));
+    }
+
+    #[test]
+    fn a_wide_picture_before_the_text_leads_its_block() {
+        let text = "# T\n\n## Areas\n\n![Map](img/a.webp#wide)\n\n1. One\n2. Two\n";
+        let p = ctx_page("docs/guide/t.md", "guide/t.html", text);
+        let pages = vec![];
+        let ctx = Ctx { root: Path::new("."), pages: &pages, repo: "r" };
+        let (html, _) = markdown(text, &p, &ctx, true);
+        let (lead, list, heading) = (html.find("block-lead").unwrap_or(0), html.find("<ol>").unwrap_or(0), html.find("<h2").unwrap_or(0));
+        assert!(html.contains("class=\"block l2 has-lead\""));
+        assert!(heading < lead && lead < list);
+    }
+
+    #[test]
+    fn areas_place_pins_at_centers() {
+        let html = areas("# comment\n0,0,100,50\n\n50,50,50,50\nbad\n", (100, 100));
+        assert!(html.contains("data-n=\"1\" style=\"left:0.00%;top:0.00%;width:100.00%;height:50.00%\""));
+        assert!(html.contains("aria-label=\"Show area 2\" style=\"left:75.00%;top:75.00%\">2</button>"));
+        assert!(!html.contains("data-n=\"3\""));
+    }
+
+    #[test]
+    fn grouped_links_to_other_sections_join_the_sidebar() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let pages = collect(&root).unwrap_or_default();
+        let guide: Vec<&Page> = pages.iter().filter(|p| p.section == "Guide").collect();
+        let tutorial = guide.iter().find(|p| p.link_only && p.out == "tutorial/index.html");
+        assert_eq!(tutorial.map(|p| p.group.as_str()), Some("Getting started"));
+        let install = guide.iter().find(|p| p.src == "docs/guide/installing.md");
+        assert_eq!(install.map(|p| p.group.as_str()), Some("Getting started"));
+        assert!(pages.iter().filter(|p| p.out == "tutorial/index.html" && !p.link_only).count() == 1);
     }
 
     #[test]
