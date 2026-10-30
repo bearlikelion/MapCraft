@@ -702,6 +702,7 @@ impl MapCraftApp {
                 self.run_command("tools.clear_material");
             }
         });
+        self.lit_maps_editor(ui);
         let filter = self.material_filter.to_lowercase();
         let names: Vec<crate::project::Material> = self
             .project
@@ -772,6 +773,75 @@ impl MapCraftApp {
                 self.run_command("tools.apply_material");
             }
         }
+    }
+
+    /// The picked material's Lit view maps and values, which the mapper can change for this SDK.
+    fn lit_maps_editor(&mut self, ui: &mut egui::Ui) {
+        let name = self.session.tex.material.clone();
+        let Some(id) = self.project.id().map(str::to_string) else { return };
+        let Some(base) = self.project.material(&name).cloned() else { return };
+        let beside_name = || Some(self.project.vfs.roots().first()?.join(name.rsplit_once('/').map_or("", |(f, _)| f)));
+        let Some(folder) = base.image.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf).or_else(beside_name) else { return };
+        let mut lit = self.project.lit.get(&name).cloned().unwrap_or_default();
+        let before = lit.clone();
+        let shown = lit.apply(base.pbr.clone()).unwrap_or_else(crate::project::plain_pbr);
+        let roots = self.project.vfs.roots().to_vec();
+        let extensions = self.project.sdk.as_ref().map(|s| s.manifest.textures.extensions.clone()).unwrap_or_default();
+        egui::CollapsingHeader::new("Lit maps").id_salt("lit-maps").show(ui, |ui| {
+            ui.label(RichText::new(format!("How the Lit view shades {name}")).small().color(TEXT_WEAK));
+            egui::Grid::new("lit-map-grid").num_columns(2).show(ui, |ui| {
+                let found = [shown.normal.clone(), shown.roughness.map(|m| m.path), shown.metallic.map(|m| m.path), shown.ao.map(|m| m.path)];
+                let slots = [&mut lit.normal, &mut lit.roughness, &mut lit.metallic, &mut lit.ao];
+                for ((label, slot), now) in ["Normal", "Roughness", "Metallic", "Occlusion"].into_iter().zip(slots).zip(found) {
+                    ui.label(label);
+                    let text = now.as_deref().map_or("None", |p| p.rsplit('/').next().unwrap_or(p));
+                    egui::ComboBox::from_id_salt(("lit-map", label)).selected_text(text).width(180.0).show_ui(ui, |ui| {
+                        if ui.selectable_label(slot.is_none(), "Found automatically").clicked() {
+                            *slot = None;
+                        }
+                        if ui.selectable_label(slot.as_deref() == Some(""), "None").clicked() {
+                            *slot = Some(String::new());
+                        }
+                        for (rel, file) in folder_images(&folder, &roots, &extensions) {
+                            if ui.selectable_label(now.as_deref() == Some(rel.as_str()), file).clicked() {
+                                *slot = Some(rel);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            let (mut rough, mut metal) = (shown.roughness_value, shown.metallic_value);
+            let tip = "Multiplies its map, or stands alone without one";
+            if ui.add(egui::Slider::new(&mut rough, 0.0..=1.0).text("Roughness")).on_hover_text(tip).changed() {
+                lit.roughness_value = Some(rough);
+            }
+            if ui.add(egui::Slider::new(&mut metal, 0.0..=1.0).text("Metallic")).on_hover_text(tip).changed() {
+                lit.metallic_value = Some(metal);
+            }
+            if ui.add_enabled(lit != crate::project::LitMaps::default(), egui::Button::new("Reset")).clicked() {
+                lit = crate::project::LitMaps::default();
+            }
+        });
+        if lit == before {
+            return;
+        }
+        let changed = (lit != crate::project::LitMaps::default()).then_some(lit);
+        match &changed {
+            Some(l) => self.project.lit.insert(name.clone(), l.clone()),
+            None => self.project.lit.remove(&name),
+        };
+        self.prefs.update(|p| {
+            let all = p.material_lit.entry(id).or_default();
+            match changed {
+                Some(l) => all.insert(name, l),
+                None => all.remove(&name),
+            };
+        });
+        if let Some(gpu) = &mut self.gpu {
+            gpu.renderer.forget_materials();
+        }
+        self.scene_dirty = true;
     }
 
     /// The current SDK's material folders as a tree of checkboxes, saved per SDK.
@@ -2576,6 +2646,27 @@ pub(crate) fn tile_grid<T>(ui: &mut egui::Ui, items: &[T], mut tile: impl FnMut(
             });
         }
     });
+}
+
+/// The pictures in `folder` as paths in the asset folders `roots`, with their file names, for picking a material's maps.
+fn folder_images(folder: &std::path::Path, roots: &[std::path::PathBuf], extensions: &[String]) -> Vec<(String, String)> {
+    let Some(root) = roots.iter().find(|r| folder.starts_with(r)) else { return Vec::new() };
+    let mut out: Vec<(String, String)> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let ext = path.extension()?.to_str()?;
+            if !extensions.iter().any(|x| x.eq_ignore_ascii_case(ext)) {
+                return None;
+            }
+            let rel = path.strip_prefix(root).ok()?.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            Some((rel, e.file_name().to_string_lossy().into_owned()))
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// Whether `folder` is one of the `hidden` folders or inside one.

@@ -439,6 +439,7 @@ impl MapCraftApp {
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        self.project.lit = sdk_id.as_ref().and_then(|id| self.prefs.get().material_lit.get(id).cloned()).unwrap_or_default();
         let skies = self.project.sdk.iter().flat_map(|s| &s.manifest.textures.sky).filter(|p| !p.is_empty());
         self.session.blend_roles = skies.map(|p| (format!("{p}*"), mapcraft_map::BlendRole::Unblendable)).collect();
         self.material_list = self.plugin_host.as_ref().and_then(|h| self.project.list_materials_later(h));

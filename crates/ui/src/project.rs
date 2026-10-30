@@ -27,6 +27,56 @@ pub struct Material {
     pub blend: mapcraft_map::BlendRole,
 }
 
+/// How the Lit view shades a material with no maps: fully rough and not metallic.
+pub fn plain_pbr() -> Pbr {
+    Pbr { normal: None, normal_dx: false, roughness: None, roughness_value: 1.0, metallic: None, metallic_value: 0.0, ao: None }
+}
+
+/// Lit view maps and values the mapper picked for a material over the ones its SDK gives it.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LitMaps {
+    /// Asset folder paths of the maps; an empty one turns that map off, and none keeps the one found.
+    pub normal: Option<String>,
+    pub roughness: Option<String>,
+    pub metallic: Option<String>,
+    pub ao: Option<String>,
+    pub roughness_value: Option<f32>,
+    pub metallic_value: Option<f32>,
+}
+
+impl LitMaps {
+    /// `pbr` with these choices made; a picked map is read as gray.
+    pub fn apply(&self, pbr: Option<Pbr>) -> Option<Pbr> {
+        if *self == Self::default() {
+            return pbr;
+        }
+        let mut p = pbr.unwrap_or_else(plain_pbr);
+        let pick = |path: &Option<String>| path.as_ref().map(|p| (!p.is_empty()).then(|| ChannelMap { path: p.clone(), channel: Channel::Gray }));
+        if let Some(n) = &self.normal {
+            p.normal_dx &= p.normal.as_ref() == Some(n);
+            p.normal = (!n.is_empty()).then(|| n.clone());
+        }
+        if let Some(m) = pick(&self.roughness) {
+            p.roughness = m;
+        }
+        if let Some(m) = pick(&self.metallic) {
+            p.metallic_value = if m.is_some() && p.metallic.is_none() { 1.0 } else { p.metallic_value };
+            p.metallic = m;
+        }
+        if let Some(m) = pick(&self.ao) {
+            p.ao = m;
+        }
+        if let Some(v) = self.roughness_value {
+            p.roughness_value = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = self.metallic_value {
+            p.metallic_value = v.clamp(0.0, 1.0);
+        }
+        Some(p)
+    }
+}
+
 impl Material {
     /// The folder the Materials panel shows it in: the plugin's, else the name up to its last `/`.
     pub fn folder(&self) -> Option<&str> {
@@ -98,6 +148,8 @@ pub struct Project {
     /// Plugins that list materials, which `list_materials_later` reads.
     material_plugins: Vec<PathBuf>,
     pub models: crate::models::Models,
+    /// The mapper's Lit maps and values, by material name.
+    pub lit: BTreeMap<String, LitMaps>,
 }
 
 /// Materials plugins listed on a worker thread, and what they logged.
@@ -291,11 +343,17 @@ impl Project {
     /// The material named `name`, or else an image of that name, since faces may name the images
     /// materials use, which are not listed.
     pub fn find_material(&self, name: &str) -> Option<Material> {
-        if let Some(m) = self.material(name) {
-            return Some(m.clone());
+        let mut m = match self.material(name) {
+            Some(m) => m.clone(),
+            None => {
+                let path = self.vfs.find_material(name, &self.sdk.as_ref()?.manifest.textures.extensions)?;
+                Material { name: name.to_string(), image: Some(path), ..Material::default() }
+            }
+        };
+        if let Some(lit) = self.lit.get(name) {
+            m.pbr = lit.apply(m.pbr.take());
         }
-        let path = self.vfs.find_material(name, &self.sdk.as_ref()?.manifest.textures.extensions)?;
-        Some(Material { name: name.to_string(), image: Some(path), ..Material::default() })
+        Some(m)
     }
 
     /// The picture a material is drawn with, decoded.
@@ -479,6 +537,19 @@ mod tests {
     }
 
     #[test]
+    fn lit_choices_replace_what_was_found() {
+        let found = Pbr { normal: Some("a_n.png".into()), normal_dx: true, ..plain_pbr() };
+        assert_eq!(LitMaps::default().apply(None), None, "no choices leave a plain material plain");
+        let off = LitMaps { normal: Some(String::new()), roughness: Some("a_r.png".into()), metallic_value: Some(2.0), ..LitMaps::default() };
+        let p = off.apply(Some(found.clone())).unwrap();
+        assert_eq!((p.normal, p.normal_dx), (None, false));
+        assert_eq!(p.roughness, Some(ChannelMap { path: "a_r.png".into(), channel: Channel::Gray }));
+        assert_eq!(p.metallic_value, 1.0, "values are clamped");
+        let same = LitMaps { normal: Some("a_n.png".into()), ..LitMaps::default() };
+        assert!(same.apply(Some(found)).unwrap().normal_dx, "picking the found map keeps its DirectX green");
+    }
+
+    #[test]
     fn packs_maps_and_flips_directx_green() {
         let pictures: BTreeMap<&str, RgbaImage> = BTreeMap::from([
             ("n", RgbaImage::from_pixel(4, 4, Rgba([10, 20, 250, 255]))),
@@ -501,7 +572,7 @@ mod tests {
         assert_eq!(orm.dimensions(), (MAP_SIDE, MAP_SIDE / 2), "maps share the largest one's size, capped");
         assert_eq!(orm.get_pixel(7, 7).0, [128, 50, 51, 255], "an unreadable map leaves its value alone");
 
-        let plain = Pbr { normal: None, normal_dx: false, roughness: None, roughness_value: 1.0, metallic: None, metallic_value: 0.0, ao: None };
+        let plain = plain_pbr();
         let (normal, orm) = pack(&plain, &load);
         assert_eq!((normal.get_pixel(0, 0).0, orm.get_pixel(0, 0).0, orm.dimensions()), ([128, 128, 255, 255], [255, 255, 0, 255], (1, 1)));
     }

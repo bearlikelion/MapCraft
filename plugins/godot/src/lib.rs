@@ -33,17 +33,32 @@ const MAPS: &[&str] = &[
     "arm",
     "bump",
     "mask",
+    "nor_gl",
+    "nor_dx",
+    "nor",
+    "norm",
+    "normal_gl",
+    "normal_dx",
+    "normal_opengl",
+    "normal_directx",
+    "normal_direct",
+    "metallicroughness",
+    "glossiness",
 ];
+/// Maps that can also be a texture of their own, listed when their folder has no color picture.
+const SOMETIMES_COLOR: &[&str] = &["opacity", "alpha", "mask"];
 
 /// Endings of a loose set's color picture, longest first so `base_color` is not read as `color`.
 const COLORS: &[&str] = &["base color", "base_color", "basecolor", "albedo", "diffuse", "color", "diff", "col"];
-const NORMAL_GL: &[&str] = &["normalgl", "normal", "nrm"];
-const NORMAL_DX: &[&str] = &["normaldx"];
+const NORMAL_GL: &[&str] = &["normalgl", "normal", "nrm", "nor_gl", "normal_gl", "normal_opengl", "nor", "norm"];
+const NORMAL_DX: &[&str] = &["normaldx", "nor_dx", "normal_dx", "normal_directx", "normal_direct"];
 const ROUGH: &[&str] = &["roughness", "rough"];
 const METAL: &[&str] = &["metalness", "metallic"];
 const AO: &[&str] = &["ambientocclusion", "ao"];
 /// Occlusion, roughness and metallic in red, green and blue.
 const PACKED: &[&str] = &["orm", "arm"];
+/// glTF's packing: roughness in green and metallic in blue.
+const METALLIC_ROUGHNESS: &[&str] = &["metallicroughness"];
 /// Material properties with the only value the MapCraft addon's shader wrapper keeps; Godot writes a property only when it differs from its default.
 const WRAPPED: &[(&str, &str)] = &[
     ("shading_mode", "1"),
@@ -76,17 +91,26 @@ fn folder(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(d, _)| d)
 }
 
+/// The lowercased file name without its extension or a trailing resolution such as Poly Haven's `_1k`.
 fn stem(path: &str) -> String {
     let file = path.rsplit('/').next().unwrap_or(path);
-    file.rsplit_once('.').map_or(file, |(s, _)| s).to_ascii_lowercase()
+    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s).to_ascii_lowercase();
+    match stem.rsplit_once(['_', '-', ' ']) {
+        Some((rest, res)) if res.strip_suffix('k').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) => rest.to_string(),
+        _ => stem,
+    }
 }
 
-/// The lowercased file stem without the first of `ends` it ends with after `_`, ` ` or `-`.
+/// The lowercased file stem without the first of `ends` it ends with after `_`, ` ` or `-`,
+/// numbered or not, as in `rock_height_2`.
 fn split_end(path: &str, ends: &[&str]) -> Option<String> {
     let stem = stem(path);
-    ends.iter().find_map(|e| {
-        let rest = stem.strip_suffix(e)?;
-        (rest.is_empty() || rest.ends_with(['_', ' ', '-'])).then(|| rest.trim_end_matches(['_', ' ', '-']).to_string())
+    let unnumbered = stem.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end_matches(['_', ' ', '-']);
+    [stem.as_str(), unnumbered].into_iter().find_map(|stem| {
+        ends.iter().find_map(|e| {
+            let rest = stem.strip_suffix(e)?;
+            (rest.is_empty() || rest.ends_with(['_', ' ', '-'])).then(|| rest.trim_end_matches(['_', ' ', '-']).to_string())
+        })
     })
 }
 
@@ -98,19 +122,22 @@ fn is_map(path: &str) -> bool {
 /// The Lit view's maps among one loose set's pictures, named as ambientCG names them.
 fn loose_pbr(maps: &[&String]) -> Option<Pbr> {
     let find = |ends: &[&str]| maps.iter().find(|p| split_end(p, ends).is_some()).map(|p| p.to_string());
-    let (gl, dx, packed) = (find(NORMAL_GL), find(NORMAL_DX), find(PACKED));
-    let map = |ends: &[&str], channel| {
-        find(ends).map(|path| ChannelMap { path, channel: Channel::Red }).or_else(|| Some(ChannelMap { path: packed.clone()?, channel }))
+    let (gl, dx, packed, gltf) = (find(NORMAL_GL), find(NORMAL_DX), find(PACKED), find(METALLIC_ROUGHNESS));
+    let map = |ends: &[&str], channel, in_gltf: bool| {
+        find(ends)
+            .map(|path| ChannelMap { path, channel: Channel::Red })
+            .or_else(|| Some(ChannelMap { path: packed.clone()?, channel }))
+            .or_else(|| Some(ChannelMap { path: gltf.clone().filter(|_| in_gltf)?, channel }))
     };
-    let metallic = map(METAL, Channel::Blue);
+    let metallic = map(METAL, Channel::Blue, true);
     let pbr = Pbr {
         normal_dx: gl.is_none() && dx.is_some(),
         normal: gl.or(dx),
-        roughness: map(ROUGH, Channel::Green),
+        roughness: map(ROUGH, Channel::Green, true),
         roughness_value: 1.0,
         metallic_value: if metallic.is_some() { 1.0 } else { 0.0 },
         metallic,
-        ao: map(AO, Channel::Red),
+        ao: map(AO, Channel::Red, false),
     };
     (pbr.normal.is_some() || pbr.roughness.is_some() || pbr.metallic.is_some() || pbr.ao.is_some()).then_some(pbr)
 }
@@ -305,7 +332,7 @@ impl Guest for Godot {
         }
         for img in loose {
             let map = is_map(img);
-            if map && covered.contains(folder(img)) {
+            if map && (covered.contains(folder(img)) || split_end(img, SOMETIMES_COLOR).is_none()) {
                 continue;
             }
             let set = if map { None } else { sets.get(&(folder(img), split_end(img, COLORS).unwrap_or_else(|| stem(img)))) };
@@ -418,5 +445,21 @@ mod tests {
         let channels = [p.ao, p.roughness, p.metallic].map(|m| m.map(|m| m.channel));
         assert_eq!(channels, [Some(Channel::Red), Some(Channel::Green), Some(Channel::Blue)]);
         assert_eq!(p.metallic_value, 1.0);
+    }
+
+    #[test]
+    fn reads_poly_haven_and_gltf_names() {
+        assert_eq!(split_end("Y/rusty_metal_03_diff_1k.jpg", COLORS).as_deref(), Some("rusty_metal_03"));
+        for map in ["Y/rusty_metal_03_nor_gl_1k.png", "Y/rusty_metal_03_rough_1k.png", "Y/rusty_metal_03_arm_4k.jpg", "R/rock_02_norm.png"] {
+            assert!(is_map(map), "{map}");
+        }
+        let files = ["F/fabrics_normal_direct_1k.png", "F/fabrics_metallicRoughness.png"].map(String::from);
+        let p = loose_pbr(&files.iter().collect::<Vec<_>>()).unwrap();
+        assert_eq!((p.normal.as_deref(), p.normal_dx), (Some("F/fabrics_normal_direct_1k.png"), true));
+        let channels = [p.ao.map(|m| m.channel), p.roughness.map(|m| m.channel), p.metallic.map(|m| m.channel)];
+        assert_eq!(channels, [None, Some(Channel::Green), Some(Channel::Blue)], "glTF packs no occlusion");
+        assert_eq!(stem("Bricks_4K"), "bricks");
+        assert_eq!(stem("rock_01.png"), "rock_01", "a plain number is part of the name");
+        assert!(is_map("C/_normal000.png") && is_map("R/rock_01_height_2.png") && !is_map("R/rock_01.png"));
     }
 }

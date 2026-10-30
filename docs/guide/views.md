@@ -123,6 +123,15 @@ Faces take light from the map's lights, spotlights and sun, with normal maps and
 - A `light_environment` with the Godot sky keys draws the same sky and sun the MapCraft Godot addon builds, so you can tune them in the inspector.
 - Nothing casts shadows, and fog is not shown.
 
+A material's normal, roughness, metallic and occlusion maps are found from their file names, such as `Bricks_NormalGL.png` or Poly Haven's `bricks_rough_1k.jpg` beside `bricks_diff_1k.jpg`, and they are not listed as materials of their own.
+To change them, pick the material and open **Lit maps** in the Materials panel:
+
+- each map's list offers the pictures in the material's folder, **Found automatically** or **None**;
+- **Roughness** and **Metallic** multiply their map, or stand alone when there is none;
+- **Reset** goes back to what was found.
+
+Your choices are kept for every map on that SDK.
+
 ![A surf stage in the Lit mode, with ice and lava ramps under a blue Godot sky](img/views-lit.webp)
 
 > [!NOTE]
