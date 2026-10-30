@@ -65,7 +65,7 @@ fn main() {
             }
             "--settings" => keep = it.next().map(PathBuf::from).inspect(|d| options.settings_dir = Some(d.clone())).is_some(),
             "--select-all" => steps.push(("--command".into(), vec!["edit.select_all".into()])),
-            "--command" | "--click" | "--key" | "--type" | "--wait" | "--hover" | "--scroll" => steps.push((a.clone(), take(1, &mut it))),
+            "--command" | "--click" | "--key" | "--type" | "--wait" | "--hover" | "--scroll" | "--drop" => steps.push((a.clone(), take(1, &mut it))),
             s if s.ends_with("click-at") => steps.push((a.clone(), take(1, &mut it))),
             s if s == "--look" || s.ends_with("drag") || s.ends_with("hold") => steps.push((a.clone(), take(2, &mut it))),
             path => options.open = Some(PathBuf::from(path)),
@@ -87,6 +87,7 @@ fn main() {
                 }
             }
             "--command" => h.state_mut().run_command_for_test(arg),
+            "--drop" => h.state_mut().drop_file_for_test(PathBuf::from(arg)),
             "--look" => {
                 let point = |s: &str| {
                     let v: Vec<f64> = s.split(',').map(|n| n.trim().parse().unwrap_or(0.0)).collect();

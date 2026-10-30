@@ -226,6 +226,9 @@ pub struct MapCraftApp {
     pub(crate) bake: crate::bake::BakeState,
     /// Plugin materials still being listed on a worker thread.
     pub(crate) material_list: Option<mpsc::Receiver<crate::project::Listed>>,
+    /// Whether the last import was checked for textures and models no folder holds.
+    pub(crate) assets_checked: bool,
+    pub(crate) missing_assets: Option<crate::assets::MissingAssets>,
     last_autosave: Instant,
     screenshot: Option<PathBuf>,
     sdk_var_overrides: Vec<(String, String)>,
@@ -356,6 +359,8 @@ impl MapCraftApp {
             compile: None,
             bake: Default::default(),
             material_list: None,
+            assets_checked: true,
+            missing_assets: None,
             last_autosave: Instant::now(),
             screenshot: options.screenshot,
             sdk_var_overrides: options.sdk_vars,
@@ -415,7 +420,9 @@ impl MapCraftApp {
         let mut sdk = sdk_id.as_deref().and_then(|id| self.sdk_by_id(id));
         if let Some(s) = &mut sdk {
             s.user_textures = self.prefs.get().sdk_textures.get(&s.manifest.id).into_iter().flatten().map(PathBuf::from).collect();
+            s.user_textures.extend(crate::assets::folders(&self.session.view));
         }
+        self.missing_assets = None;
         if let (Some(id), None) = (&sdk_id, &sdk) {
             self.status = format!("SDK `{id}` is not installed; entities and materials are unavailable");
         }
@@ -2111,6 +2118,7 @@ impl eframe::App for MapCraftApp {
         self.poll_bake(ctx);
         self.poll_materials(ctx);
         self.poll_models(ctx);
+        self.check_missing_assets();
         self.poll_control();
     }
 
@@ -2147,6 +2155,7 @@ impl eframe::App for MapCraftApp {
             self.draw_keys(ui);
         });
         self.dialogs(&ctx);
+        self.missing_assets_dialog(&ctx);
         self.extra_dialogs(&ctx);
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);

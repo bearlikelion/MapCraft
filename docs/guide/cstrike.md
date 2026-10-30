@@ -61,6 +61,17 @@ Files from Hammer, Hammer++ or a decompiler such as BSPSource all work.
 - A `func_instance` comes in as an entity that keeps its `file` and other keys, and goes back out the same way.
 - The Output panel sums up what came in and what was skipped.
 
+A decompiled map's own textures and models come from the files packed into its `.bsp`, which BSPSource writes into a folder beside the `.vmf`, such as `surf_x_d/` beside `surf_x_d.vmf`.
+Import finds that folder and searches it for this map from then on.
+
+When an imported map uses materials or models that no folder holds, a window lists them once they have loaded:
+
+- **Locate Folder…** picks a folder holding them in `materials` and `models` folders (picking the `materials` folder itself works too), and searches it for this map from then on.
+- **Skip** leaves them as they are: faces keep their material names, so the map still exports and compiles with them, and the window stops asking about them for this map.
+
+The map keeps its folders and skipped names when you save it.
+File names are matched in any case, as the game does on Windows.
+
 ![The File menu with Import open, showing Valve map (VMF) and Source BSP](img/cstrike-import.webp)
 
 ## Export and compile

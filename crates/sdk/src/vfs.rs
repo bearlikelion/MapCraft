@@ -10,6 +10,21 @@ pub struct Vfs {
     roots: Vec<PathBuf>,
 }
 
+/// `rel` under `root` with each part matched ignoring ASCII case.
+fn find_ignoring_case(root: &Path, rel: &Path) -> Option<PathBuf> {
+    let mut at = root.to_path_buf();
+    for part in rel.components() {
+        let Component::Normal(part) = part else { continue };
+        let exact = at.join(part);
+        at = if exact.exists() {
+            exact
+        } else {
+            std::fs::read_dir(&at).ok()?.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(part)))?
+        };
+    }
+    at.is_file().then_some(at)
+}
+
 /// A relative path that cannot climb out of its root.
 fn safe_relative(rel: &str) -> Option<PathBuf> {
     let p = Path::new(rel);
@@ -25,11 +40,16 @@ impl Vfs {
         &self.roots
     }
 
+    /// The file for `rel`, matching each part's case when it can and ignoring it otherwise, since
+    /// games made on Windows name files in any case.
     pub fn find(&self, rel: &str) -> Option<PathBuf> {
         let rel = safe_relative(rel)?;
-        self.roots
-            .iter()
-            .find_map(|r| if r.is_file() { (r.file_name() == Some(rel.as_os_str())).then(|| r.clone()) } else { Some(r.join(&rel)).filter(|p| p.is_file()) })
+        self.roots.iter().find_map(|r| {
+            if r.is_file() {
+                return r.file_name().is_some_and(|n| n.eq_ignore_ascii_case(rel.as_os_str())).then(|| r.clone());
+            }
+            Some(r.join(&rel)).filter(|p| p.is_file()).or_else(|| find_ignoring_case(r, &rel))
+        })
     }
 
     pub fn read(&self, rel: &str) -> Option<Vec<u8>> {
@@ -102,6 +122,17 @@ fn finish(mut out: Vec<(String, PathBuf)>) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_files_in_any_case() {
+        let a = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(a.path().join("materials/RealWorldTextures")).unwrap();
+        std::fs::write(a.path().join("materials/RealWorldTextures/Floor.vtf"), b"x").unwrap();
+        let vfs = Vfs::new(vec![a.path().to_path_buf()]);
+        assert_eq!(vfs.find("materials/realworldtextures/floor.vtf"), Some(a.path().join("materials/RealWorldTextures/Floor.vtf")));
+        assert_eq!(vfs.find("materials/realworldtextures/wall.vtf"), None);
+        assert_eq!(vfs.find("materials/realworldtextures"), None, "folders are not files");
+    }
 
     #[test]
     fn shadowing_and_escapes() {

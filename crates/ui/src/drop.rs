@@ -39,6 +39,11 @@ impl MapCraftApp {
         painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(20.0), crate::chrome::TEXT);
     }
 
+    /// Opens or imports `path` as if it were dropped on the window.
+    pub fn drop_file_for_test(&mut self, path: PathBuf) {
+        self.drop_file(path);
+    }
+
     fn drop_file(&mut self, path: PathBuf) {
         if is_map(&path) {
             self.open_dialog_path(path);

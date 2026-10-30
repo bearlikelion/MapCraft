@@ -149,6 +149,11 @@ impl Models {
         !self.pending.is_empty()
     }
 
+    /// Whether `path` was asked for and could not be loaded.
+    pub fn failed(&self, path: &str) -> bool {
+        matches!(self.loaded.get(path), Some(None))
+    }
+
     /// Queues `path` for loading unless it is loaded or queued already.
     pub fn request(&mut self, path: &str) {
         self.previewing.remove(path);

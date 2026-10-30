@@ -331,6 +331,8 @@ impl MapCraftApp {
                 self.status = format!("Imported {name}");
                 self.mark_changed();
                 self.frame_all();
+                self.add_companion_folder(path);
+                self.assets_checked = false;
             }
             Err(e) => self.status = e.to_string(),
         }
