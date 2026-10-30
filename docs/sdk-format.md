@@ -90,7 +90,7 @@ steps = [
 | `paths.<name>` | A folder or program the user picks once; available as `${name}`. Its `default` may name other paths, such as `"${cstrike}/../bin/cstrike.fgd"`, and stays unset until they are |
 | `paths.<name>.steam` | Finds the path in a Steam app's install folder when the user set nothing, such as `{ app = 240, find = ["cstrike"] }`; the first `find` entry that exists wins, and without `find` it is the install folder itself. Only builds shipped on Steam can ask Steam, so others leave it to the user or `default` |
 | `compile` | Compile profiles shown in the Run menu |
-| `workshop.app` | The game's Steam app id; builds shipped on Steam then offer File > Publish to Steam Workshop, which uploads the map as `<map name>.mcmap` with prefabs baked in |
+| `workshop.app` | The game's Steam app id; builds shipped on Steam then offer File > Publish to Steam Workshop, which uploads the map as `<map name>.mcmap` with prefabs baked in, beside a `<map name>.mcpack` (see [`mcpack-format.md`](mcpack-format.md)) holding the PNG and JPEG pictures and `.glb` models it takes from the user's own texture folders |
 | `workshop.tags` | Tags the Publish window offers |
 
 Relative paths are relative to the SDK folder.

@@ -114,6 +114,7 @@ These are the paths the SurfsUp SDK asks for, and what each one is for:
 
 The **Texture folders** list, below the SDK's own paths, adds more material folders, or single files, to any SDK.
 Use it when your textures live somewhere the SDK does not look.
+Models in these folders can be placed too, by their path inside the folder.
 
 - Type a folder or a file and click **Add**.
 - Or click **Browse…** to pick a folder, or **File…** to pick one file, such as a texture WAD for the Quake SDK.

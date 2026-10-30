@@ -264,11 +264,11 @@ impl Sdk {
         Vfs::new(roots.chain(self.user_textures.iter().cloned()).collect())
     }
 
-    /// Where model paths resolve: the `[models]` folders whose paths are set, else the texture folders.
+    /// Where model paths resolve: the `[models]` folders whose paths are set, else the texture folders, then the user's folders.
     pub fn model_vfs(&self, vars: &BTreeMap<String, String>) -> Vfs {
         let models = &self.manifest.models.roots;
         let roots = if models.is_empty() { &self.manifest.textures.roots } else { models };
-        Vfs::new(roots.iter().filter_map(|r| self.resolve(r, vars).ok()).collect())
+        Vfs::new(roots.iter().filter_map(|r| self.resolve(r, vars).ok()).chain(self.user_textures.iter().cloned()).collect())
     }
 
     /// What plugins may read: the texture folders, the user's folders and files, then the extra file folders that are set.

@@ -1,8 +1,10 @@
 //! File > Publish to Steam Workshop: uploads the open map, prefabs baked in, as `<map name>.mcmap`.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use egui::RichText;
+use mapcraft_format::pack;
 use mapcraft_steam::{Job, Published, State, Steam, Upload, Visibility};
 use serde_json::{Value, json};
 
@@ -301,8 +303,9 @@ impl MapCraftApp {
         self.session.mark_unsaved();
     }
 
-    /// Writes the item's folder: the map alone, with prefabs and mirrors baked in.
+    /// Writes the item's folder: the map, with prefabs and mirrors baked in, and its pack when it has one.
     fn workshop_content(&self) -> Result<PathBuf, String> {
+        let entries = self.workshop_pack()?;
         let name = self.workshop.dialog.as_ref().map(|d| d.name.clone()).ok_or("nothing to publish")?;
         let dir = self.data_dir.as_ref().ok_or("no data folder")?.join("workshop").join(&name);
         if dir.exists() {
@@ -311,7 +314,34 @@ impl MapCraftApp {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let file = dir.join(format!("{name}.{}", mapcraft_format::EXTENSION));
         mapcraft_format::save(&file, self.view_map(), self.session.sdk.as_deref(), &Value::Null).map_err(|e| e.to_string())?;
+        if !entries.is_empty() {
+            pack::save(&pack::path_for(&file), &entries).map_err(|e| e.to_string())?;
+        }
         Ok(dir)
+    }
+
+    /// The pictures and models the map takes from the player's own folders; the SDK's own ship with the game.
+    fn workshop_pack(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let Some(sdk) = &self.project.sdk else { return Ok(Vec::new()) };
+        let own = |p: &Path| sdk.user_textures.iter().any(|u| p.starts_with(u));
+        let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+        let map = self.view_map();
+        let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
+        let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().collect();
+        let mut entries = Vec::new();
+        for name in names {
+            let Some(path) = self.project.find_material(name).and_then(|m| m.image).filter(|p| own(p)) else { continue };
+            let bytes = read(&path)?;
+            let entry = pack::material_entry(name, &bytes).ok_or_else(|| format!("{name}: SurfsUp maps carry only PNG and JPEG pictures"))?;
+            entries.push((entry, bytes));
+        }
+        let models: BTreeSet<String> = map.nodes().filter_map(|(_, n)| self.project.model_path(n.kind.entity()?)).collect();
+        for model in models {
+            let Some(path) = self.project.models.vfs.find(&model).filter(|p| own(p)) else { continue };
+            let entry = pack::model_entry(&model).ok_or_else(|| format!("{model}: maps carry only .glb models"))?;
+            entries.push((entry, read(&path)?));
+        }
+        Ok(entries)
     }
 }
 
