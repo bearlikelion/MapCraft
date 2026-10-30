@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use mapcraft_fgd::{EntityClass, GameData};
-use mapcraft_map::{Cordon, Face, FaceId, Map, NodeId, NodeKind, Tag, TagId};
+use mapcraft_map::{Cordon, Face, FaceId, Map, Node, NodeId, NodeKind, Tag, TagId};
 
 use crate::{EngineError, Session};
 
@@ -22,6 +22,35 @@ pub fn fill_class_defaults(map: &mut Map, game: &GameData) {
             e.properties.extend(missing);
             edit.set_kind(id, kind).ok();
         }
+    }
+    let changes = edit.finish();
+    map.apply(changes);
+}
+
+/// Whether `classname` matches one of `triggers`, ignoring case; a pattern ending in `*` matches every class starting with the rest.
+pub fn is_trigger(triggers: &[String], classname: &str) -> bool {
+    triggers.iter().any(|t| match t.strip_suffix('*') {
+        Some(prefix) => classname.get(..prefix.len()).is_some_and(|h| h.eq_ignore_ascii_case(prefix)),
+        None => classname.eq_ignore_ascii_case(t),
+    })
+}
+
+/// Whether `node` belongs to an entity of a trigger class.
+pub(crate) fn in_trigger(map: &Map, triggers: &[String], node: &Node) -> bool {
+    node.parent.and_then(|p| map.get(p)?.kind.entity()).is_some_and(|e| is_trigger(triggers, &e.classname))
+}
+
+/// Gives `material` to the faces of trigger brushes that have none, since compilers need one on every face.
+pub fn fill_trigger_materials(map: &mut Map, triggers: &[String], material: &str) {
+    let mut edit = map.edit();
+    for (id, n) in map.nodes() {
+        let Some(b) = n.kind.brush().filter(|b| b.faces.iter().any(|f| f.material.is_empty())) else { continue };
+        if !in_trigger(map, triggers, n) {
+            continue;
+        }
+        let mut b = b.clone();
+        b.faces.iter_mut().filter(|f| f.material.is_empty()).for_each(|f| f.material = material.to_string());
+        edit.set_kind(id, NodeKind::Brush(b)).ok();
     }
     let changes = edit.finish();
     map.apply(changes);

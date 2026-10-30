@@ -78,12 +78,14 @@ steps = [
 | `units_per_meter` | Map units per meter, 39.37 by default |
 | `map_size` | The lowest and highest coordinate maps may use on every axis, such as `[-4096, 4096]` for Quake; unset, an FGD's `@mapsize` gives it, and without either maps are unbounded |
 | `fgd` | Entity definition files, merged in order; later classes replace earlier ones |
+| `triggers` | Trigger classes, `["trigger*"]` by default, where a name ending in `*` covers every class starting with the rest; brushes tied to one lose their materials and the 3D views draw them see-through in the class color |
 | `textures.roots` | Folders searched for materials, first match wins; texture folders the user adds in SDK Settings are searched after these |
 | `textures.extensions` | File types that count as materials |
 | `textures.default` | Material for new brushes |
 | `textures.scale` | Texture scale for new faces |
 | `textures.pixelated` | `true` magnifies textures without smoothing, as Quake and other early 3D games do; off by default |
 | `textures.sky` | Name prefixes of sky materials, such as `["sky"]` for Quake; a sky picture holds the far layer in its right half and the near layer, with clear pixels, in its left half, and faces with it show the sky projected from the view direction, as Quake draws it |
+| `textures.trigger` | Material exports give trigger faces that have none, such as `tools/toolstrigger` for Source; unset, they export as the plugin writes a face without a material |
 | `models.roots` | Folders glTF model paths are relative to; empty uses `textures.roots` |
 | `models.class` | Point entity class the Models tab places models with; unset, models can be previewed but not placed |
 | `models.key` | The key that holds a model's path, `model` by default |

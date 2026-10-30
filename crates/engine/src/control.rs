@@ -196,7 +196,7 @@ An arch spans `arc` degrees starting `start` degrees off +X with walls `thicknes
     },
     Tool {
         name: "tie_to_entity",
-        description: "Makes the selected world brushes one brush entity of `classname`, such as a trigger or func_detail.",
+        description: "Makes the selected world brushes one brush entity of `classname`, such as a trigger or func_detail; a trigger's brushes lose their materials, as triggers stay untextured.",
         schema: || object(json!({"classname": string()}), &["classname"]),
         run: |s, a| {
             s.tie_to_entity(str_arg(a, "classname")?)?;

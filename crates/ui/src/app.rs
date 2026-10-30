@@ -433,6 +433,7 @@ impl MapCraftApp {
         }
         if let Some(s) = &sdk {
             self.session.tex.scale = s.manifest.textures.scale;
+            self.session.triggers.clone_from(&s.manifest.triggers);
             if let Some(d) = &s.manifest.textures.default {
                 self.session.tex.material = d.clone();
             }
@@ -710,11 +711,14 @@ impl MapCraftApp {
     }
 
     /// The map as exports, compiles and plugin checks get it: like [`Self::view_map`], with boolean groups holding only their result
-    /// and the FGD defaults entities lack written in, as the inspector shows them.
+    /// and the FGD defaults entities lack written in, as the inspector shows them, and the SDK's trigger material on untextured trigger faces.
     pub(crate) fn game_map(&mut self) -> Map {
         let doc = self.session.path.clone();
         let mut map = mapcraft_engine::flatten_for_game(&self.session.map, &mut prefab_loader(&mut self.prefab_cache, doc)).0;
         mapcraft_engine::fill_class_defaults(&mut map, &self.project.game);
+        if let Some(m) = self.project.sdk.as_ref().and_then(|s| s.manifest.textures.trigger.as_deref()) {
+            mapcraft_engine::fill_trigger_materials(&mut map, &self.session.triggers, m);
+        }
         map
     }
 

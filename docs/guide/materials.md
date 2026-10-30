@@ -64,7 +64,7 @@ It works on the picked faces, or else on every face of the selected brushes, and
 You can also find it in the right click menu, and as **Clear material** (the eraser) beside **Apply to selection** in the Materials panel.
 
 > [!NOTE]
-> Untextured faces export as `tools/toolsnodraw` in a VMF.
+> Untextured faces export as `tools/toolsnodraw` in a VMF, except on triggers, which export as `tools/toolstrigger`.
 
 ## Picking a material
 

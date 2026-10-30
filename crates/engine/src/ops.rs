@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use mapcraft_geom::{Aabb, DMat3, DMat4, DQuat, DVec3, Solid, Winding};
 use mapcraft_map::{Brush, BrushError, Edit, Entity, Face, FaceId, Group, NodeId, NodeKind, ROOT, TexDefaults};
 
-use crate::{EngineError, Session};
+use crate::{EngineError, Session, is_trigger};
 
 /// Brush shapes the block tool can draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -106,6 +106,13 @@ fn fmt_vec(v: DVec3) -> String {
 
 fn is_point_entity(edit: &Edit, id: NodeId) -> bool {
     edit.node(id).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)) && n.children.is_empty())
+}
+
+fn clear_materials(edit: &mut Edit, id: NodeId) -> Result<(), EngineError> {
+    let Some(mut b) = edit.node(id).and_then(|n| n.kind.brush()).cloned() else { return Ok(()) };
+    b.faces.iter_mut().for_each(|f| f.material.clear());
+    edit.set_kind(id, NodeKind::Brush(b))?;
+    Ok(())
 }
 
 /// An origin and angles after `m`; turns about Z (the usual case) carry over to the yaw.
@@ -834,7 +841,7 @@ impl Session {
         Ok(())
     }
 
-    /// Moves the selected world brushes into a new brush entity.
+    /// Moves the selected world brushes into a new brush entity; a trigger's brushes lose their materials.
     pub fn tie_to_entity(&mut self, classname: &str) -> Result<NodeId, EngineError> {
         let brushes: Vec<NodeId> = self
             .selected_brushes()
@@ -844,8 +851,12 @@ impl Session {
         let parent = brushes.first().and_then(|id| self.map.get(*id)?.parent).ok_or(EngineError::NothingSelected)?;
         let mut e = self.map.edit();
         let ent = e.insert(parent, NodeKind::Entity(Entity::new(classname)))?;
+        let trigger = is_trigger(&self.triggers, classname);
         for id in brushes {
             e.reparent(id, ent, None)?;
+            if trigger {
+                clear_materials(&mut e, id)?;
+            }
         }
         let c = e.finish();
         self.apply("Tie to entity", c);
@@ -883,8 +894,8 @@ impl Session {
         Ok(())
     }
 
-    /// A `tools/trigger` brush entity of `classname` standing on the selected brushes, `height`
-    /// tall: a zone fitted to a platform.
+    /// A brush entity of `classname` standing on the selected brushes, `height` tall: a zone fitted
+    /// to a platform, untextured when the class is a trigger and `tools/trigger` otherwise.
     pub fn zone_from_selection(&mut self, classname: &str, height: f64) -> Result<NodeId, EngineError> {
         if classname == "func_detail" {
             return Err(EngineError::Refused("pick a trigger class such as zone_start in the Entities tab first"));
@@ -896,7 +907,8 @@ impl Session {
             .reduce(|a, b| a.union(&b))
             .ok_or(EngineError::NothingSelected)?;
         let zone = Aabb::new(DVec3::new(b.min.x, b.min.y, b.max.z), DVec3::new(b.max.x, b.max.y, b.max.z + height));
-        let tex = TexDefaults { material: "tools/trigger".into(), scale: self.tex.scale };
+        let material = if is_trigger(&self.triggers, classname) { "" } else { "tools/trigger" };
+        let tex = TexDefaults { material: material.into(), scale: self.tex.scale };
         let mut e = self.map.edit();
         let ent = e.insert(self.active_parent, NodeKind::Entity(Entity::new(classname)))?;
         e.insert(ent, NodeKind::Brush(Brush::cuboid(zone, &tex)))?;
@@ -932,8 +944,12 @@ impl Session {
         let mut selection: BTreeSet<NodeId> = brushes.iter().copied().collect();
         if let (Some(class), Some(parent)) = (classname, parents.first()) {
             let ent = e.insert(*parent, NodeKind::Entity(Entity::new(class)))?;
+            let trigger = is_trigger(&self.triggers, class);
             for id in &brushes {
                 e.reparent(*id, ent, None)?;
+                if trigger {
+                    clear_materials(&mut e, *id)?;
+                }
             }
             selection = BTreeSet::from([ent]);
         }
@@ -1111,7 +1127,7 @@ impl Session {
         let floors: Vec<&Brush> = self
             .map
             .nodes()
-            .filter(|(id, _)| visible.contains(id) && !moving.contains(id))
+            .filter(|(id, n)| visible.contains(id) && !moving.contains(id) && !crate::organize::in_trigger(&self.map, &self.triggers, n))
             .filter_map(|(_, n)| n.kind.brush())
             .filter(|b| !b.faces.iter().all(|f| mapcraft_map::is_tool_material(&f.material)))
             .collect();
@@ -1472,6 +1488,46 @@ mod tests {
         let b = s.map.get(node.children[0]).unwrap().kind.brush().unwrap();
         assert_eq!(b.bounds().unwrap(), Aabb::new(DVec3::ZERO, DVec3::new(512.0, 256.0, 256.0)));
         assert!(b.faces.iter().all(|f| f.material == "tools/trigger"));
+        s.triggers = vec!["zone_*".into()];
+        s.selection = BTreeSet::from([platform]);
+        let zone = s.zone_from_selection("zone_start", 256.0).unwrap();
+        let b = s.map.get(zone).and_then(|n| s.map.get(n.children[0])).unwrap().kind.brush().unwrap();
+        assert!(b.faces.iter().all(|f| f.material.is_empty()), "a trigger zone is untextured");
+    }
+
+    #[test]
+    fn tying_brushes_to_a_trigger_clears_their_materials() {
+        let mut s = session();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let untextured = |s: &Session| brush(s, a).faces.iter().all(|f| f.material.is_empty());
+        s.selection = BTreeSet::from([a]);
+        s.tie_to_entity("func_door").unwrap();
+        assert!(!untextured(&s), "a door keeps its materials");
+        s.undo();
+        s.selection = BTreeSet::from([a]);
+        s.tie_to_entity("Trigger_Multiple").unwrap();
+        assert!(untextured(&s));
+        s.undo();
+        assert!(!untextured(&s), "the materials come back with the same undo step");
+        s.redo();
+        let ent = s.create_point_entity("info_target", DVec3::new(32.0, 32.0, 256.0), vec![]).unwrap();
+        s.selection = BTreeSet::from([ent]);
+        assert!(s.drop_to_floor(&|_| None).is_err(), "a trigger is not a floor");
+    }
+
+    #[test]
+    fn exports_fill_untextured_trigger_faces() {
+        let mut s = session();
+        let door = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        s.selection = BTreeSet::from([door]);
+        s.clear_material().unwrap();
+        s.tie_to_entity("func_door").unwrap();
+        let trigger = s.create_brush(Aabb::new(DVec3::splat(128.0), DVec3::splat(192.0))).unwrap();
+        s.selection = BTreeSet::from([trigger]);
+        s.tie_to_entity("trigger_once").unwrap();
+        crate::fill_trigger_materials(&mut s.map, &["trigger*".into()], "tools/toolstrigger");
+        assert!(brush(&s, trigger).faces.iter().all(|f| f.material == "tools/toolstrigger"));
+        assert!(brush(&s, door).faces.iter().all(|f| f.material.is_empty()), "only triggers are filled");
     }
 
     #[test]

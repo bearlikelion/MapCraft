@@ -69,9 +69,10 @@ struct Object {
 }
 
 /// The visible brushes of `map` as a `.glb`: a node per brush with a primitive per material, under
-/// nodes for the layers, groups and entities that hold them. Tool materials, faces hidden between
-/// brushes and layers left out of exports stay out. `texture_size` gives the texels UVs are
-/// measured in and `picture` the texture embedded for a material.
+/// nodes for the layers, groups and entities that hold them. Tool materials, untextured brush
+/// entity faces, faces hidden between brushes and layers left out of exports stay out.
+/// `texture_size` gives the texels UVs are measured in and `picture` the texture embedded for a
+/// material.
 pub fn export_glb(
     map: &Map,
     texture_size: &dyn Fn(&str) -> Option<[u32; 2]>,
@@ -90,12 +91,17 @@ pub fn export_glb(
             continue;
         }
         let Ok(solid) = b.solid() else { continue };
+        let in_entity = ancestors.iter().any(|a| matches!(map.get(*a).map(|n| &n.kind), Some(NodeKind::Entity(_))));
         let displaced: BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
         let mut parts: BTreeMap<String, Part> = BTreeMap::new();
         for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
             let Some(w) = winding else { continue };
             // A displaced brush shows only its displaced faces, as Source compiles it.
-            if is_tool_material(&face.material) || covered.contains(&(id, face.id)) || (b.has_displacement() && !displaced.contains_key(&index)) {
+            if is_tool_material(&face.material)
+                || (face.material.is_empty() && in_entity)
+                || covered.contains(&(id, face.id))
+                || (b.has_displacement() && !displaced.contains_key(&index))
+            {
                 continue;
             }
             let size = texels(texture_size(&face.material));

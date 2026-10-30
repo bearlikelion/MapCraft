@@ -56,6 +56,9 @@ pub struct Manifest {
     /// Entity definition files, relative to the SDK folder; `${var}` paths are expanded.
     #[serde(default)]
     pub fgd: Vec<String>,
+    /// Trigger classes, whose brushes lose their materials and show the class color; `zone_*` covers every class starting with `zone_`.
+    #[serde(default = "default_triggers")]
+    pub triggers: Vec<String>,
     #[serde(default)]
     pub textures: Textures,
     #[serde(default)]
@@ -72,6 +75,10 @@ pub struct Manifest {
 
 fn default_units_per_meter() -> f64 {
     39.37
+}
+
+fn default_triggers() -> Vec<String> {
+    vec!["trigger*".into()]
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -98,11 +105,14 @@ pub struct Textures {
     /// Material name prefixes that are skies in Quake's two-layer layout.
     #[serde(default)]
     pub sky: Vec<String>,
+    /// Material exports give trigger faces that have none, such as Source's `tools/toolstrigger`.
+    #[serde(default)]
+    pub trigger: Option<String>,
 }
 
 impl Default for Textures {
     fn default() -> Self {
-        Self { roots: Vec::new(), extensions: default_extensions(), default: None, scale: default_scale(), pixelated: false, sky: Vec::new() }
+        Self { roots: Vec::new(), extensions: default_extensions(), default: None, scale: default_scale(), pixelated: false, sky: Vec::new(), trigger: None }
     }
 }
 

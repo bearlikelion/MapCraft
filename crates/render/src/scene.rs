@@ -130,7 +130,7 @@ pub struct SceneData {
     pub edges: Vec<LineVertex>,
     /// Drawn over everything.
     pub selected_edges: Vec<LineVertex>,
-    /// Faces with tool materials (triggers, clips), drawn see-through after everything else.
+    /// Faces with tool materials (triggers, clips) and untextured brush entity faces, drawn see-through after everything else.
     pub translucent: Vec<MeshVertex>,
     pub lights: Vec<Light>,
     /// Linear ambient color a light entity's `_ambient` asks for.
@@ -278,7 +278,8 @@ pub fn build_scene(
                     let size_of = |m: &str| texture_size(m).map_or(DVec2::splat(64.0), |s| DVec2::new(f64::from(s[0]), f64::from(s[1])));
                     let size = size_of(&face.material);
                     let face_selected = faces.contains(&(id, face.id));
-                    let tool = is_tool_material(&face.material);
+                    // An untextured brush entity face, such as a trigger's, shows the entity color.
+                    let tool = is_tool_material(&face.material) || (face.material.is_empty() && entity_color.is_some());
                     // Picked faces keep their true color so materials can be judged; the outline marks them.
                     let band = |s: Slope, n: DVec3| {
                         let t = s.tint(n);
@@ -697,6 +698,31 @@ mod tests {
         assert_eq!(scene.batches[&BatchKey::from("a")].len(), 30);
         assert_eq!(scene.batches.len(), 2, "tool faces stay see-through whatever they ask for");
         assert_eq!(scene.translucent.len(), 36);
+    }
+
+    #[test]
+    fn untextured_brush_entity_faces_show_the_entity_color() {
+        struct Green;
+        impl EntityStyle for Green {
+            fn color(&self, _: &str) -> Option<[u8; 3]> {
+                Some([0, 255, 0])
+            }
+
+            fn size(&self, _: &str) -> Option<(DVec3, DVec3)> {
+                None
+            }
+        }
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: String::new(), scale: 1.0 };
+        let trigger = e.insert(ROOT, NodeKind::Entity(Entity::new("trigger_multiple"))).unwrap();
+        e.insert(trigger, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &tex))).unwrap();
+        e.insert(ROOT, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::splat(128.0), DVec3::splat(192.0)), &tex))).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &Green, false, None);
+        assert_eq!(scene.translucent.len(), 36);
+        assert!(scene.translucent.iter().all(|v| v.tint == [0.0, 1.0, 0.0, TOOL_ALPHA]));
+        assert_eq!(scene.batches[&BatchKey::default()].len(), 36, "an untextured world brush stays solid");
     }
 
     #[test]

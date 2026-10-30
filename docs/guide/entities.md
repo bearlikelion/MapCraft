@@ -184,6 +184,8 @@ To turn some into a trigger, a door or another brush entity, tie them to an enti
 
 - The class is the brush class you last clicked in the Entities tab (`func_detail` until you click one).
 - Brushes already in an entity are left alone.
+- Brushes tied to a trigger, such as `trigger_multiple` or a SurfsUp zone, lose their materials and show see-through in the class color.
+  Exports give them the game's trigger material, such as `tools/toolstrigger`.
 - The new entity ends up selected.
 
 **Tools > Move to World** (`Ctrl+Shift+W`) does the reverse: the entity goes away and its brushes stay, selected.
@@ -222,7 +224,7 @@ Zones are the see-through boxes the game watches, such as start and finish timer
 2. Select the platform's brushes.
 3. Choose **Tools > Zone from Selection**.
 
-The zone covers the platform's footprint and stands 256 units tall above its highest point, with the `tools/trigger` material.
+The zone covers the platform's footprint and stands 256 units tall above its highest point, untextured like any trigger.
 It goes where new objects go and ends up selected.
 
 ![Zone from Selection: zone_start (1) clicked in the Entities tab, and the new zone (3) standing on the start platform in the 3D view](img/entities-zone-from-selection.webp)

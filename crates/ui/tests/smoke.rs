@@ -1637,7 +1637,8 @@ fn agents_build_with_the_maps_sdk() {
     assert!(r["zone"].get("error").is_none(), "{}", r["zone"]);
     assert!(r["validate"].is_array(), "{}", r["validate"]);
     let saved = mapcraft_format::load(&new_map).unwrap();
-    assert!(saved.map.nodes().any(|(_, n)| n.kind.entity().is_some_and(|e| e.classname == "zone_start")));
+    let zone = saved.map.nodes().find(|(_, n)| n.kind.entity().is_some_and(|e| e.classname == "zone_start")).map(|(_, n)| n.children[0]).unwrap();
+    assert!(saved.map.get(zone).unwrap().kind.brush().unwrap().faces.iter().all(|f| f.material.is_empty()), "SurfsUp zones are triggers");
     assert!(saved.map.nodes().any(|(_, n)| matches!(&n.kind, mapcraft_map::NodeKind::Group(g) if g.generator.is_some())));
 }
 

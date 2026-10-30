@@ -62,6 +62,8 @@ pub struct Session {
     /// Where new nodes go: the world, a layer or a group.
     pub active_parent: NodeId,
     pub default_solid_entity: String,
+    /// Trigger classes, as the SDK's `triggers` lists them.
+    pub triggers: Vec<String>,
     /// How the project's materials blend; a key ending in `*` covers every material starting with the rest.
     pub blend_roles: BTreeMap<String, BlendRole>,
     /// A paint stroke's coalesce key and, per face, the weights it started from and its coverage per vertex.
@@ -101,6 +103,7 @@ impl Session {
             grid: 16.0,
             active_parent: ROOT,
             default_solid_entity: "func_detail".into(),
+            triggers: vec!["trigger*".into()],
             blend_roles: BTreeMap::new(),
             paint_stroke: None,
             heightmap: None,
