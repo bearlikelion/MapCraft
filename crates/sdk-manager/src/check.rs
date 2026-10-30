@@ -160,8 +160,10 @@ pub fn check(dir: &Path, vars: &BTreeMap<String, String>, host: Option<&Host>) -
             let what = format!("compile {}", profile.name);
             out.push(match expand(run, &cvars) {
                 Err(e) => item(Warn, what, format!("{e}; set it in SDK Settings")),
-                Ok(_) if *wine && !cfg!(windows) && !on_path("wine") => item(Fail, what, "wine is not installed"),
+                Ok(_) if *wine && !cfg!(windows) && !on_path("wine") => item(Warn, what, "wine is not installed on this computer"),
                 Ok(program) if on_path(&program) => item(Pass, what, program),
+                // A bare command such as `steam` depends on this computer; a missing path is the SDK's or its settings'.
+                Ok(program) if !program.contains(['/', '\\']) => item(Warn, what, format!("{program} is not installed on this computer")),
                 Ok(program) => item(Fail, what, format!("{program} not found")),
             });
         }
@@ -237,6 +239,9 @@ prompt = "Game"
 [[compile]]
 name = "Build"
 steps = [{ run = "/no/such/compiler" }, { run = "${game}/tool" }]
+[[compile]]
+name = "Play"
+steps = [{ run = "no-such-launcher-anywhere" }]
 "#,
         )
         .unwrap();
@@ -253,6 +258,7 @@ steps = [{ run = "/no/such/compiler" }, { run = "${game}/tool" }]
             assert!(fails.contains(&what), "{what} should fail: {items:#?}");
         }
         assert_eq!(worst(&items), Level::Fail);
+        assert!(items.iter().any(|i| i.what == "compile Play" && i.level == Level::Warn), "a missing command is this computer's, not the SDK's: {items:#?}");
 
         std::fs::write(p.join("sdk.toml"), "id = \"Bad Id\"\nname = \"x\"").unwrap();
         let items = check(p, &BTreeMap::new(), None);
