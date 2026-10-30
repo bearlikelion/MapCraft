@@ -158,3 +158,10 @@ In the pack that means every byte: the header, the names, offsets and lengths, e
 - Godot's glTF importer for everything the checks let through, including checking that indices, materials, textures and node meshes exist, and building materials and textures.
 - Any `GLTFDocumentExtension` the game itself registers.
 - Godot's JSON parser; the addon checks the same parse of the same text that the glTF importer makes.
+
+### Beyond the pack
+
+- Prefabs: the addon used to load a prefab's path through `ResourceLoader` wherever it pointed, so a map could name a `.tscn` with a built-in script sitting beside it, or plant `<prefab>.mcmap.remap` or `.import` to turn a `.mcmap` path into one.
+  The addon now loads prefabs only from inside the project (`res://`) and only as `.mcmap` files; maps MapCraft sends to games have their prefabs expanded already.
+- The map itself: `load()` and `ResourceLoader` follow a `<map>.mcmap.remap` or `<map>.mcmap.import` planted beside the map to any resource, scripts included, before the addon is ever called.
+  Games should build maps downloaded from players with a `MapCraftMap` node, which reads the file itself, rather than with `load()`.

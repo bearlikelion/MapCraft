@@ -35,7 +35,7 @@ For maps in user folders or downloads, with no import step:
 - Brush entities become `Area3D` nodes centered on their brushes, with a collision shape per brush.
 - An [entity map](#entity-maps) can make an entity a different node, a scene, a model or part of the world instead.
 - Entity keys become metadata on the node, typed as numbers, vectors, booleans or text (see [Details](#details)).
-- Prefab instances load the prefab's `.mcmap` as a scene instance.
+- Prefab instances load the prefab's `.mcmap` as a scene instance, only from inside the project (`res://`).
 - Everything outside an active cordon is left out.
 - Maps are Z up in inches; Godot gets Y up in meters, at 39.37 units per meter by default.
 

@@ -1025,6 +1025,11 @@ void Builder::add_prefab(const Dictionary &p_prefab) {
 	if (!path.is_absolute_path()) {
 		path = options.source_path.get_base_dir().path_join(path).simplify_path();
 	}
+	// Outside res://, ResourceLoader follows a .remap or .import file planted beside the path to any scene, scripts and all.
+	if (!path.begins_with("res://") || path.get_extension().to_lower() != "mcmap") {
+		UtilityFunctions::push_warning("MapCraft: prefab ", path, " is not a map inside the project; left out");
+		return;
+	}
 	Ref<PackedScene> scene = ResourceLoader::get_singleton()->load(path);
 	Node3D *instance = scene.is_valid() ? Object::cast_to<Node3D>(scene->instantiate()) : nullptr;
 	if (instance == nullptr) {
