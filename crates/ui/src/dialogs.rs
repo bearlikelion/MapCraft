@@ -137,7 +137,9 @@ pub(crate) fn start_session(data: &Path) -> (Vec<PathBuf>, Option<std::fs::File>
         }
     }
     let marker = data.join(format!("{RUNNING}-{}", std::process::id()));
-    let running = match std::fs::create_dir_all(data).and_then(|()| std::fs::File::options().create(true).append(true).open(&marker)) {
+    // Windows only locks handles opened for reading or writing, so an append-only handle never holds the lock.
+    let running = match std::fs::create_dir_all(data).and_then(|()| std::fs::File::options().read(true).write(true).create(true).truncate(false).open(&marker))
+    {
         Ok(f) => {
             if let Err(e) = f.try_lock() {
                 log::warn!("{}: {e}", marker.display());
