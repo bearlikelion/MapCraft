@@ -13,6 +13,7 @@ Third-party assets also have an `.attribution` file next to them with the full d
 | `godot/test/Assets/Textures/checker.png` | Checker test texture | Mark Arneman | MIT |
 | `godot/test/Assets/Textures/stripes.png` | Stripes test texture | Mark Arneman | MIT |
 | `godot/test/Assets/Models/box.glb` | Box test model | Mark Arneman | MIT |
+| `godot/test/pack/course.mcpack` | Test pack holding the stripes texture and box model | Mark Arneman | MIT |
 | `site/assets/mapcraft.svg` | MapCraft app icon (Block M) | Mark Arneman | MIT |
 | `site/assets/hero-3d.webp`, `site/assets/hero-top.webp` | The boss_golden_reliquary room from mFPS in MapCraft's 3D and Top views | Mark Arneman | MIT |
 | `site/assets/made-*.webp` (21 pictures) | surf_weave, surf_colossus, quicksand_cove and mFPS dungeon rooms in the 3D and Top views, with thumbnails | Mark Arneman | MIT |

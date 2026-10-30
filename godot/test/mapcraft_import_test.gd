@@ -6,6 +6,11 @@ const PACKED_MAP: String = "res://maps/course/course.scn"
 const ENTITY_MAP: String = "res://addons/mapcraft/sdks/surfsup.tres"
 const SHADERS: String = "res://addons/mapcraft/shaders/"
 const UNITS_PER_METER: float = 39.37
+const PREFAB_DIR: String = "user://prefab_test/"
+const SCRIPTED_SCENE: String = "[gd_scene format=3]\n\n" \
+		+ "[sub_resource type=\"GDScript\" id=\"1\"]\n" \
+		+ "script/source = \"extends Node3D\nfunc _init():\n\tEngine.max_fps = 1234\n\"\n\n" \
+		+ "[node name=\"Scripted\" type=\"Node3D\"]\nscript = SubResource(\"1\")\n"
 
 var _failures: PackedStringArray = PackedStringArray()
 var _entities_built: int = 0
@@ -23,6 +28,7 @@ func _initialize() -> void:
 	_check_blend_fallbacks()
 	_check_runtime_build()
 	_check_runtime_load()
+	_check_untrusted_prefabs()
 	_check_pack(OS.get_cmdline_user_args())
 	for failure: String in _failures:
 		printerr("FAIL: ", failure)
@@ -321,6 +327,28 @@ func _check_runtime_load() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(copy))
 
 
+# A downloaded map's prefab could name a scene with a script, or a .remap planted to point at one.
+func _check_untrusted_prefabs() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(PREFAB_DIR))
+	_write_text(PREFAB_DIR + "scripted.tscn", SCRIPTED_SCENE)
+	_write_text(PREFAB_DIR + "inner.mcmap.remap", \
+			"[remap]\n\npath=\"%sscripted.tscn\"\n" % PREFAB_DIR)
+	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(MAP))
+	var children: Array = doc["map"]["root"]["children"]
+	var absolute: String = ProjectSettings.globalize_path(PREFAB_DIR + "scripted.tscn")
+	for path: String in ["scripted.tscn", "inner.mcmap", absolute]:
+		children.append({"id": 900000 + children.size(), "type": "prefab", "path": path})
+	_write_text(PREFAB_DIR + "map.mcmap", JSON.stringify(doc))
+	var map: MapCraftMap = MapCraftMap.new()
+	map.map_file = PREFAB_DIR + "map.mcmap"
+	_expect(map.build() == OK, "a map with untrusted prefabs still builds")
+	_expect(Engine.max_fps != 1234, "a prefab outside the project cannot run a script")
+	Engine.max_fps = 0
+	map.free()
+	for file: String in DirAccess.get_files_at(PREFAB_DIR):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PREFAB_DIR + file))
+
+
 func _check_pack(args: PackedStringArray) -> void:
 	if args.is_empty():
 		return
@@ -331,6 +359,12 @@ func _check_pack(args: PackedStringArray) -> void:
 	_expect(spawn is Marker3D, "the pack has the map")
 	if root != null:
 		root.free()
+
+
+func _write_text(path: String, text: String) -> void:
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(text)
+	file.close()
 
 
 func _surface_material(mesh: ArrayMesh, surface_name: String) -> Material:
