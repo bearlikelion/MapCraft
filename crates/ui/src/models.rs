@@ -1,6 +1,6 @@
 //! glTF models for point entities: loaded on a worker thread for the views, and the Models tab.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -368,11 +368,32 @@ impl MapCraftApp {
         }
         let cache = self.data_dir.as_ref().zip(self.project.id()).map(|(d, id)| d.join("model-previews").join(id));
         let renderer = self.gpu.as_ref().map(|g| &g.renderer);
+        let sdk = self.project.id().map(str::to_string);
+        let mut hidden = sdk.as_ref().and_then(|id| self.prefs.get().hidden_models.get(id).cloned()).unwrap_or_default();
         let (models, plugins) = (&mut self.project.models, &mut self.project.plugins);
         crate::panels::search_field(ui, &mut models.filter, "Search models");
         let filter = models.filter.to_lowercase();
-        let names: Vec<String> =
-            models.files(plugins, &mut self.output).iter().filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter)).cloned().collect();
+        let folder = |n: &str| n.rsplit_once('/').map_or("", |(f, _)| f).to_string();
+        let all = models.files(plugins, &mut self.output);
+        let mut folders: BTreeMap<String, usize> = BTreeMap::new();
+        for n in all {
+            *folders.entry(folder(n)).or_default() += 1;
+        }
+        let names: Vec<String> = all
+            .iter()
+            .filter(|n| !crate::panels::in_hidden_folder(&folder(n), &hidden))
+            .filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter))
+            .cloned()
+            .collect();
+        let label = if hidden.is_empty() { "Folders".to_string() } else { format!("Folders ({} hidden)", hidden.len()) };
+        let tree = egui::CollapsingHeader::new(label)
+            .id_salt("model-folders")
+            .show(ui, |ui| crate::panels::folder_tree(ui, "model-folder-tree", &folders, &mut hidden, &mut models.filter));
+        if let (Some(true), Some(id)) = (tree.body_returned, sdk) {
+            self.prefs.update(|p| {
+                p.hidden_models.insert(id, hidden);
+            });
+        }
         crate::panels::count_and_previews(ui, &format!("{} models", names.len()), &mut self.show_model_thumbs);
         if models.class.is_none() {
             ui.label(

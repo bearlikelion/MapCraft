@@ -28,9 +28,9 @@ pub struct Material {
 }
 
 impl Material {
-    /// The top-level folder the Materials panel shows it in: the plugin's, else the name's first part.
+    /// The folder the Materials panel shows it in: the plugin's, else the name up to its last `/`.
     pub fn folder(&self) -> Option<&str> {
-        self.folder.as_deref().or_else(|| self.name.split_once('/').map(|(f, _)| f))
+        self.folder.as_deref().or_else(|| self.name.rsplit_once('/').map(|(f, _)| f))
     }
 }
 

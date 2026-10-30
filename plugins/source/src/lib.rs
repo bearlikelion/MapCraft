@@ -158,9 +158,20 @@ impl Guest for Source {
     }
 
     fn list_models() -> Vec<String> {
-        let mut models: BTreeSet<String> = LIBRARY.with(|library| library.models().into_iter().map(str::to_string).collect());
-        models.extend(host::list_files(&["mdl".into()]).into_iter().map(|p| p.to_ascii_lowercase()).filter(|p| p.starts_with("models/")));
-        models.into_iter().collect()
+        let loose: BTreeSet<String> =
+            host::list_files(&["mdl".into(), "vvd".into()]).into_iter().map(|p| p.to_ascii_lowercase()).filter(|p| p.starts_with("models/")).collect();
+        let (models, animations) = LIBRARY.with(|library| {
+            let all: BTreeSet<String> = library.models().into_iter().map(str::to_string).chain(loose.iter().filter(|p| p.ends_with(".mdl")).cloned()).collect();
+            // Models made only of animations have no vertex file and nothing to show.
+            all.into_iter().partition::<Vec<String>, _>(|m| {
+                let vvd = format!("{}.vvd", m.trim_end_matches(".mdl"));
+                library.has_packed(&vvd) || loose.contains(&vvd)
+            })
+        });
+        if !animations.is_empty() {
+            host::log(&format!("Source models: {} listed, {} made only of animations left out", models.len(), animations.len()));
+        }
+        models
     }
 
     fn compile_issues(map: MapData, log: Vec<String>) -> Vec<Issue> {

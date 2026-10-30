@@ -166,6 +166,12 @@ impl<'a> Library<'a> {
         self.vpks.iter().flat_map(|v| v.entries.keys()).map(String::as_str).filter(|p| p.starts_with("models/") && p.ends_with(".mdl")).collect()
     }
 
+    /// Whether one of the game's packages holds the file, without reading it.
+    pub fn has_packed(&self, path: &str) -> bool {
+        let path = normalize(path);
+        self.vpks.iter().any(|v| v.entries.contains_key(&path))
+    }
+
     /// A game file's bytes from the map's pakfile, the game's packages or its folders.
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         self.find(&normalize(path), usize::MAX).map(|(data, _)| data.into_owned())

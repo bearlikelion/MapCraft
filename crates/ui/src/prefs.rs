@@ -15,8 +15,10 @@ pub struct Prefs {
     pub sdk_paths: BTreeMap<String, BTreeMap<String, String>>,
     /// Per SDK id, the user's own texture folders, searched after the SDK's.
     pub sdk_textures: BTreeMap<String, Vec<String>>,
-    /// Per SDK id, the top-level material folders the Materials panel leaves out.
+    /// Per SDK id, the material folders the Materials panel leaves out, with all in them.
     pub hidden_textures: BTreeMap<String, BTreeSet<String>>,
+    /// Per SDK id, the model folders the Models tab leaves out, with all in them.
+    pub hidden_models: BTreeMap<String, BTreeSet<String>>,
     /// SDKs whose compile tools the user allowed to run.
     pub approved_tools: BTreeSet<String>,
     pub view: ViewPrefs,
@@ -37,6 +39,7 @@ impl Default for Prefs {
             sdk_paths: BTreeMap::new(),
             sdk_textures: BTreeMap::new(),
             hidden_textures: BTreeMap::new(),
+            hidden_models: BTreeMap::new(),
             approved_tools: BTreeSet::new(),
             view: ViewPrefs::default(),
             keymap: crate::shortcuts::Preset::default(),

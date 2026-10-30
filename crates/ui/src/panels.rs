@@ -707,7 +707,7 @@ impl MapCraftApp {
             .project
             .materials
             .iter()
-            .filter(|m| !m.folder().is_some_and(|f| hidden.contains(f)))
+            .filter(|m| !m.folder().is_some_and(|f| in_hidden_folder(f, &hidden)))
             .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter) || m.folder.as_ref().is_some_and(|f| f.to_lowercase().contains(&filter)))
             .cloned()
             .collect();
@@ -774,37 +774,15 @@ impl MapCraftApp {
         }
     }
 
-    /// A checkbox per top-level material folder of the current SDK, saved per SDK.
+    /// The current SDK's material folders as a tree of checkboxes, saved per SDK.
     pub(crate) fn texture_folder_toggles(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.project.id().map(str::to_string) else { return };
-        let folders: BTreeSet<&str> = self.project.materials.iter().filter_map(crate::project::Material::folder).collect();
-        if folders.is_empty() {
-            ui.label(RichText::new("This SDK's materials are not in folders.").color(crate::chrome::TEXT_WEAK));
-            return;
+        let mut folders: BTreeMap<String, usize> = BTreeMap::new();
+        for f in self.project.materials.iter().filter_map(crate::project::Material::folder) {
+            *folders.entry(f.to_string()).or_default() += 1;
         }
         let mut hidden = self.prefs.get().hidden_textures.get(&id).cloned().unwrap_or_default();
-        let before = hidden.clone();
-        ui.horizontal(|ui| {
-            if ui.add(icons::button(Some("eye"), "Show all").small()).clicked() {
-                hidden.clear();
-            }
-            if ui.add(icons::button(Some("eye_closed"), "Hide all").small()).clicked() {
-                hidden = folders.iter().map(|f| f.to_string()).collect();
-            }
-        });
-        egui::ScrollArea::vertical().id_salt("texture-folder-toggles").max_height(240.0).show(ui, |ui| {
-            for f in &folders {
-                let mut shown = !hidden.contains(*f);
-                if ui.checkbox(&mut shown, *f).changed() {
-                    if shown {
-                        hidden.remove(*f);
-                    } else {
-                        hidden.insert(f.to_string());
-                    }
-                }
-            }
-        });
-        if hidden != before {
+        if folder_tree(ui, "texture-folders", &folders, &mut hidden, &mut self.material_filter) {
             self.prefs.update(|p| {
                 p.hidden_textures.insert(id, hidden);
             });
@@ -2598,6 +2576,79 @@ pub(crate) fn tile_grid<T>(ui: &mut egui::Ui, items: &[T], mut tile: impl FnMut(
             });
         }
     });
+}
+
+/// Whether `folder` is one of the `hidden` folders or inside one.
+pub(crate) fn in_hidden_folder(folder: &str, hidden: &BTreeSet<String>) -> bool {
+    hidden.iter().any(|h| folder.strip_prefix(h.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')))
+}
+
+/// The folders of a browser's items, by how many items each holds directly, as a tree whose
+/// checkboxes hide a folder and all under it; clicking a name searches for that folder. True when
+/// `hidden` changed.
+pub(crate) fn folder_tree(ui: &mut egui::Ui, salt: &str, folders: &BTreeMap<String, usize>, hidden: &mut BTreeSet<String>, search: &mut String) -> bool {
+    let mut totals: BTreeMap<&str, usize> = BTreeMap::new();
+    for (folder, &n) in folders.iter().filter(|(f, _)| !f.is_empty()) {
+        let mut path = folder.as_str();
+        loop {
+            *totals.entry(path).or_default() += n;
+            let Some((parent, _)) = path.rsplit_once('/') else { break };
+            path = parent;
+        }
+    }
+    if totals.is_empty() {
+        ui.label(RichText::new("Nothing here is in folders.").color(TEXT_WEAK));
+        return false;
+    }
+    let before = hidden.clone();
+    ui.horizontal(|ui| {
+        if ui.add(icons::button(Some("eye"), "Show all").small()).clicked() {
+            hidden.clear();
+        }
+        if ui.add(icons::button(Some("eye_closed"), "Hide all").small()).clicked() {
+            *hidden = totals.keys().filter(|f| !f.contains('/')).map(|f| f.to_string()).collect();
+        }
+    });
+    let parent = |f: &str| f.rsplit_once('/').map_or("", |(p, _)| p).to_string();
+    let mut children: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for f in totals.keys() {
+        children.entry(parent(f)).or_default().push(f);
+    }
+    let one_root = children.get("").is_some_and(|r| r.len() == 1);
+    egui::ScrollArea::vertical().id_salt(salt).max_height(280.0).show(ui, |ui| {
+        let mut stack: Vec<(&str, usize)> = children.get("").into_iter().flatten().rev().map(|f| (*f, 0)).collect();
+        while let Some((folder, depth)) = stack.pop() {
+            let id = ui.make_persistent_id((salt, folder));
+            let kids = children.get(folder);
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, one_root && depth == 0);
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 14.0);
+                if kids.is_some() {
+                    state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+                } else {
+                    ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
+                }
+                let mut shown = !hidden.contains(folder);
+                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this folder and all in it").changed() {
+                    if shown {
+                        hidden.remove(folder);
+                    } else {
+                        hidden.insert(folder.to_string());
+                    }
+                }
+                let name = folder.rsplit('/').next().unwrap_or(folder);
+                let total = totals.get(folder).copied().unwrap_or(0);
+                if ui.selectable_label(false, format!("{name} ({total})")).on_hover_text(format!("Show only {folder}")).clicked() {
+                    *search = format!("{folder}/");
+                }
+            });
+            if state.is_open() {
+                stack.extend(kids.into_iter().flatten().rev().map(|f| (*f, depth + 1)));
+            }
+            state.store(ui.ctx());
+        }
+    });
+    *hidden != before
 }
 
 pub(crate) fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str) -> egui::Response {
