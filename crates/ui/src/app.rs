@@ -384,7 +384,8 @@ impl MapCraftApp {
         match options.open {
             Some(path) => app.open_now(&path),
             None => {
-                let last = app.prefs.get().last_sdk.clone();
+                let bundled = app.sdks.iter().find(|i| i.origin == mapcraft_sdk_manager::Origin::Bundled).and_then(|i| i.sdk.as_ref().ok());
+                let last = app.prefs.get().last_sdk.clone().or_else(|| bundled.map(|s| s.manifest.id.clone()));
                 app.new_now(last);
             }
         }
