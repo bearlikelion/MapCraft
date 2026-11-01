@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod pack;
+pub mod shader_graph;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

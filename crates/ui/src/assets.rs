@@ -138,30 +138,6 @@ impl MapCraftApp {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn view_lists_merge_and_keep_other_state() {
-        let mut view = serde_json::json!({ "cameras": [1], "asset_folders": ["/b"] });
-        add(&mut view, FOLDERS, ["/a".to_string(), "/b".to_string()]);
-        assert_eq!(folders(&view), [PathBuf::from("/a"), PathBuf::from("/b")]);
-        assert_eq!(view["cameras"], serde_json::json!([1]));
-        let mut empty = Value::Null;
-        add(&mut empty, SKIPPED, ["tools/x".to_string()]);
-        assert_eq!(list(&empty, SKIPPED), ["tools/x"]);
-    }
-
-    #[test]
-    fn finds_a_decompilers_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("surf_x_d/Materials")).unwrap();
-        assert!(holds_assets(&dir.path().join("surf_x_d")));
-        assert!(!holds_assets(dir.path()));
-    }
-}
-
 impl MapCraftApp {
     /// The pictures and models the map takes from the player's own folders; the SDK's own ship with the game.
     pub(crate) fn custom_asset_entries(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
@@ -208,5 +184,29 @@ impl MapCraftApp {
             Ok(()) => self.status = format!("Exported {} custom assets to {}", entries.len(), path.display()),
             Err(e) => self.status = e.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_lists_merge_and_keep_other_state() {
+        let mut view = serde_json::json!({ "cameras": [1], "asset_folders": ["/b"] });
+        add(&mut view, FOLDERS, ["/a".to_string(), "/b".to_string()]);
+        assert_eq!(folders(&view), [PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(view["cameras"], serde_json::json!([1]));
+        let mut empty = Value::Null;
+        add(&mut empty, SKIPPED, ["tools/x".to_string()]);
+        assert_eq!(list(&empty, SKIPPED), ["tools/x"]);
+    }
+
+    #[test]
+    fn finds_a_decompilers_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("surf_x_d/Materials")).unwrap();
+        assert!(holds_assets(&dir.path().join("surf_x_d")));
+        assert!(!holds_assets(dir.path()));
     }
 }

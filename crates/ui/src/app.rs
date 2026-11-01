@@ -270,7 +270,12 @@ impl MapCraftApp {
         }
         .map_err(|e| log::error!("plugins disabled: {e}"))
         .ok();
-        let gpu = cc.wgpu_render_state.as_ref().map(|state| Gpu { renderer: Renderer::new(&state.device, &state.queue), state: state.clone() });
+        let gpu_error = cc.wgpu_render_state.as_ref().and_then(|state| viewport_capabilities(state.adapter.get_downlevel_capabilities().flags).err());
+        let gpu = cc
+            .wgpu_render_state
+            .as_ref()
+            .filter(|_| gpu_error.is_none())
+            .map(|state| Gpu { renderer: Renderer::new(&state.device, &state.queue), state: state.clone() });
         let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING, uv: None };
         let mut app = Self {
             shader_editor: Default::default(),
@@ -287,7 +292,7 @@ impl MapCraftApp {
             drag: Drag::None,
             render_mode: RenderMode::Textured,
             scene_dirty: true,
-            status: String::new(),
+            status: gpu_error.unwrap_or_default(),
             output: Vec::new(),
             issues: Vec::new(),
             left_tab: LeftTab::Scene,
@@ -2233,9 +2238,22 @@ fn turn_axis(cam: &Camera, id: &str) -> Option<DVec3> {
     Some(if dir == "cw" { -axis } else { axis })
 }
 
+fn viewport_capabilities(flags: eframe::wgpu::DownlevelFlags) -> Result<(), String> {
+    if !flags.contains(eframe::wgpu::DownlevelFlags::VIEW_FORMATS) {
+        return Err("3D view disabled: this graphics backend lacks texture view formats. Select a Vulkan-capable graphics driver.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_view_formats_disables_viewports_before_texture_creation() {
+        assert!(viewport_capabilities(eframe::wgpu::DownlevelFlags::empty()).is_err());
+        assert!(viewport_capabilities(eframe::wgpu::DownlevelFlags::VIEW_FORMATS).is_ok());
+    }
 
     #[test]
     fn turns_follow_the_view() {
