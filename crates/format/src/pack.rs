@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map as Object, Value};
 
 pub const EXTENSION: &str = "mcpack";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 const MAGIC: &[u8; 4] = b"MCPK";
 const HEADER_LEN: u64 = 12;
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -56,6 +56,7 @@ enum Kind {
     Png,
     Jpeg,
     Glb,
+    Material,
 }
 
 /// The pack that goes beside a map: `<map>.mcpack`.
@@ -103,7 +104,8 @@ pub fn write(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, PackError> {
     }
     let mut out = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&VERSION.to_le_bytes());
+    let version = if sorted.iter().any(|(name, _)| name.ends_with(".json") || name.starts_with("textures/")) { VERSION } else { 1 };
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
     let mut offset = toc_end;
     for (name, data) in &sorted {
@@ -144,6 +146,16 @@ fn validate(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
     for (name, data) in &entries {
         check(name, data, &mut pixels).map_err(|r| PackError::Entry(name.clone(), r))?;
     }
+    for (name, data) in &entries {
+        if name.ends_with(".json") {
+            let material = crate::pack_material::Material::read(data).map_err(|r| PackError::Entry(name.clone(), r))?;
+            for texture in material.textures.values() {
+                if !entries.iter().any(|(entry, _)| entry.eq_ignore_ascii_case(texture)) {
+                    return Err(PackError::Entry(name.clone(), format!("missing texture {texture}")));
+                }
+            }
+        }
+    }
     Ok(entries)
 }
 
@@ -176,7 +188,7 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
     }
     let mut c = Cursor { bytes, at: 4 };
     let version = u32::from_le_bytes(c.array()?);
-    if version != VERSION {
+    if !(1..=VERSION).contains(&version) {
         return Err(invalid(format!("version {version}, this MapCraft reads version {VERSION}")));
     }
     let count = u32::from_le_bytes(c.array()?);
@@ -188,6 +200,9 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
         let len = usize::from(u16::from_le_bytes(c.array()?));
         let name = std::str::from_utf8(c.take(len)?).map_err(|_| invalid(format!("entry {i} has a name that is not text")))?;
         kind_of(name).map_err(|r| invalid(format!("entry {i}: {r}")))?;
+        if version == 1 && (name.ends_with(".json") || name.starts_with("textures/")) {
+            return Err(invalid("version 1 cannot contain material descriptors or textures/ entries"));
+        }
         toc.push((name, u64::from_le_bytes(c.array()?), u64::from_le_bytes(c.array()?)));
     }
     let mut at = c.at as u64;
@@ -219,6 +234,10 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
     Ok(out)
 }
 
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+    kind_of(name).map(|_| ())
+}
+
 /// What a name holds, or why it is not allowed.
 fn kind_of(name: &str) -> Result<Kind, String> {
     if name.is_empty() || name.len() > MAX_NAME_LEN {
@@ -236,9 +255,12 @@ fn kind_of(name: &str) -> Result<Kind, String> {
         (stem, Kind::Jpeg, "materials/")
     } else if let Some(stem) = name.strip_suffix(".glb") {
         (stem, Kind::Glb, "models/")
+    } else if let Some(stem) = name.strip_suffix(".json") {
+        (stem, Kind::Material, "materials/")
     } else {
-        return Err("only .png, .jpg and .glb entries are allowed".into());
+        return Err("only .png, .jpg, .glb and material .json entries are allowed".into());
     };
+    let folder = if matches!(kind, Kind::Png | Kind::Jpeg) && stem.starts_with("textures/") { "textures/" } else { folder };
     match stem.strip_prefix(folder) {
         Some(rest) if !rest.is_empty() && !rest.ends_with('/') => Ok(kind),
         _ => Err(format!("this kind of entry belongs under {folder}")),
@@ -247,11 +269,12 @@ fn kind_of(name: &str) -> Result<Kind, String> {
 
 /// Names are unique ignoring ASCII case and the extension, so `a.png` and `A.jpg` collide.
 fn stem_key(name: &str) -> String {
-    name.get(..name.len().saturating_sub(4)).unwrap_or(name).to_ascii_lowercase()
+    name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_ascii_lowercase()
 }
 
 fn check(name: &str, data: &[u8], pixels: &mut u64) -> Result<(), String> {
     match kind_of(name)? {
+        Kind::Material => crate::pack_material::Material::read(data).map(|_| ()),
         Kind::Glb => glb(data, pixels),
         kind => image(data, kind, pixels),
     }
@@ -781,8 +804,8 @@ mod tests {
     fn bad_headers_are_refused() {
         assert!(reason(read(b"PK\x03\x04 zip file")).contains("not a MapCraft pack"));
         let mut newer = write(&good()).unwrap();
-        newer[4] = 2;
-        assert!(reason(read(&newer)).contains("version 2"));
+        newer[4] = 3;
+        assert!(reason(read(&newer)).contains("version 3"));
         assert!(reason(read(&raw(&[], u32::MAX, &[]))).contains("at most 1024"));
         assert!(reason(read(&raw(&[], MAX_ENTRIES + 1, &[]))).contains("at most 1024"));
     }
@@ -843,10 +866,30 @@ mod tests {
     }
 
     #[test]
+    fn pbr_packs_use_v2_and_validate_dependencies() {
+        use crate::pack_material::{Material, TextureSlot};
+        let mut material = Material::default();
+        material.textures.insert(TextureSlot::Albedo, "textures/stone.png".into());
+        let descriptor = entry("materials/stone.json", serde_json::to_vec(&material).unwrap());
+        assert!(write(std::slice::from_ref(&descriptor)).is_err());
+        let bytes = write(&[descriptor, entry("textures/stone.png", png(8, 4))]).unwrap();
+        assert_eq!(bytes.get(4..8), Some(2_u32.to_le_bytes().as_slice()));
+        assert_eq!(read(&bytes).unwrap().len(), 2);
+        let mut old = bytes.clone();
+        old[4] = 1;
+        assert!(read(&old).is_err());
+        for len in 0..bytes.len() {
+            assert!(read(&bytes[..len]).is_err());
+        }
+        let legacy = write(&good()).unwrap();
+        assert_eq!(legacy.get(4..8), Some(1_u32.to_le_bytes().as_slice()));
+    }
+
+    #[test]
     fn only_pictures_and_glb_models_are_allowed() {
         for ext in ["tres", "res", "scn", "tscn", "pck", "gd", "cs", "gdshader", "svg", "so", "dll", "dylib", "webp", "gltf", "bin", "jpeg"] {
-            assert!(write_err(&format!("materials/a.{ext}"), b"x".to_vec()).contains("only .png, .jpg and .glb"), "{ext}");
-            assert!(write_err(&format!("models/a.{ext}"), b"x".to_vec()).contains("only .png, .jpg and .glb"), "{ext}");
+            assert!(write_err(&format!("materials/a.{ext}"), b"x".to_vec()).contains("only .png, .jpg, .glb"), "{ext}");
+            assert!(write_err(&format!("models/a.{ext}"), b"x".to_vec()).contains("only .png, .jpg, .glb"), "{ext}");
         }
     }
 

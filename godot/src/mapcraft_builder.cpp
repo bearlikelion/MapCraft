@@ -532,6 +532,69 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 }
 
 Ref<Material> Builder::pack_material(const String &p_name, const PackedByteArray &p_bytes, const String &p_problem) {
+  if (p_problem.is_empty() && !p_bytes.is_empty() && p_bytes[0] != 0x89 &&
+      p_bytes[0] != 0xFF) {
+    const Dictionary descriptor =
+        JSON::parse_string(p_bytes.get_string_from_utf8());
+    Ref<StandardMaterial3D> generated;
+    generated.instantiate();
+    const Array albedo = descriptor["albedo"];
+    const Array emission = descriptor["emission"];
+    generated->set_albedo(Color(albedo[0], albedo[1], albedo[2], albedo[3]));
+    generated->set_roughness(descriptor["roughness"]);
+    generated->set_metallic(descriptor["metallic"]);
+    generated->set_emission(Color(emission[0], emission[1], emission[2]));
+    generated->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+    if (double(albedo[3]) < 1.0) {
+      generated->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+    }
+    const Dictionary textures = descriptor["textures"];
+    const Array slots = textures.keys();
+    for (int i = 0; i < slots.size(); i++) {
+      const String slot = slots[i];
+      const String name = textures[slot];
+      PackedByteArray bytes;
+      String problem;
+      if (!pack.find(name.get_basename(), bytes, problem) ||
+          !problem.is_empty()) {
+        UtilityFunctions::push_warning("MapCraft: ", pack_path, ": ", name, " ",
+                                       problem);
+        return Ref<Material>();
+      }
+      Ref<Image> image;
+      image.instantiate();
+      const Error result = name.ends_with(".png")
+                               ? image->load_png_from_buffer(bytes)
+                               : image->load_jpg_from_buffer(bytes);
+      if (result != OK || image->is_empty()) {
+        UtilityFunctions::push_warning("MapCraft: ", pack_path, ": ", name,
+                                       " cannot be decoded");
+        return Ref<Material>();
+      }
+      image->generate_mipmaps();
+      BaseMaterial3D::TextureParam target = BaseMaterial3D::TEXTURE_ALBEDO;
+      if (slot == "normal") {
+        target = BaseMaterial3D::TEXTURE_NORMAL;
+        generated->set_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING, true);
+      }
+      if (slot == "roughness") {
+        target = BaseMaterial3D::TEXTURE_ROUGHNESS;
+        generated->set_roughness_texture_channel(
+            BaseMaterial3D::TEXTURE_CHANNEL_RED);
+      }
+      if (slot == "metallic") {
+        target = BaseMaterial3D::TEXTURE_METALLIC;
+        generated->set_metallic_texture_channel(
+            BaseMaterial3D::TEXTURE_CHANNEL_RED);
+      }
+      if (slot == "emission") {
+        target = BaseMaterial3D::TEXTURE_EMISSION;
+      }
+      generated->set_texture(target, ImageTexture::create_from_image(image));
+    }
+    return generated;
+  }
+
 	Ref<Image> image;
 	image.instantiate();
 	Error err = FAILED;

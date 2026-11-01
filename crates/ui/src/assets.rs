@@ -10,6 +10,16 @@ use serde_json::Value;
 
 use crate::app::MapCraftApp;
 
+fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{} exceeds {limit} bytes", path.display()));
+    }
+    Ok(bytes)
+}
+
 /// Folders searched after the SDK's for this map, kept in its editor state.
 const FOLDERS: &str = "asset_folders";
 /// Missing materials and models the mapper chose not to look for again.
@@ -143,12 +153,32 @@ impl MapCraftApp {
     pub(crate) fn custom_asset_entries(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
         let Some(sdk) = &self.project.sdk else { return Ok(Vec::new()) };
         let own = |p: &Path| sdk.user_textures.iter().any(|u| p.starts_with(u));
-        let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+        let mut remaining = pack::MAX_PACK_SIZE;
+        let mut read = |p: &Path| {
+            let bytes = read_limited(p, remaining.min(pack::MAX_ENTRY_SIZE))?;
+            remaining = remaining.saturating_sub(bytes.len() as u64);
+            Ok::<_, String>(bytes)
+        };
         let map = self.view_map();
         let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
         let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().collect();
+        let mut roots = sdk.user_textures.clone();
+        roots.extend(folders(&self.session.view));
+        let custom = mapcraft_sdk::Vfs::new(roots);
         let mut entries = Vec::new();
         for name in names {
+            if let Some(descriptor) = custom.find(&format!("materials/{name}.json")).or_else(|| custom.find(&format!("{name}.json"))) {
+                let bytes = read_limited(&descriptor, mapcraft_format::pack_material::MAX_DESCRIPTOR_SIZE as u64)?;
+                let material = mapcraft_format::pack_material::Material::read(&bytes)?;
+                for texture in material.textures.values() {
+                    let path = custom.find(texture).ok_or_else(|| format!("{name}: missing texture {texture}"))?;
+                    if !entries.iter().any(|(entry, _)| entry == texture) {
+                        entries.push((texture.clone(), read(&path)?));
+                    }
+                }
+                entries.push((format!("materials/{name}.json"), bytes));
+                continue;
+            }
             let Some(path) = self.project.find_material(name).and_then(|m| m.image).filter(|p| own(p)) else { continue };
             let bytes = read(&path)?;
             let entry = pack::material_entry(name, &bytes).ok_or_else(|| format!("{name}: SurfsUp maps carry only PNG and JPEG pictures"))?;

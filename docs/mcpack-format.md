@@ -11,7 +11,7 @@ Every integer is little-endian.
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | Magic, the bytes `MCPK` |
-| 4 | 4 | Version, `1` |
+| 4 | 4 | Version, `1` or `2` |
 | 8 | 4 | Entry count |
 | 12 | | Table of contents, one record per entry |
 
@@ -41,13 +41,47 @@ Readers refuse versions other than the ones they know.
 - A `model` value is trimmed, its backslashes become slashes and a leading `res://` or `/` is dropped; when it then ends in `.glb` in any case, `models/<path>` is looked up ignoring ASCII case.
   `Props\Crate.GLB` finds `models/Props/Crate.glb`.
   A model in the pack wins over the game's file at that path, for this map only.
+- Version 2 additionally supports `materials/<material>.json` PBR descriptors and `textures/<path>.png` or `.jpg` dependencies.
 - Nothing else may be in a pack: no Godot resources (`.tres`, `.res`, `.scn`, `.tscn`, `.pck`), scripts, shaders, SVG, WebP, glTF text files or native libraries.
+
+## PBR descriptors (version 2)
+
+The writer selects version 2 when a material descriptor or `textures/` entry is present; image/model-only exports remain version 1.
+Both readers accept versions 1 and 2; version 1 refuses version 2 entry kinds.
+A descriptor replaces the legacy picture for its material name, so those two entries cannot coexist.
+A descriptor is UTF-8 JSON, at most 16 KiB, with these required fields and no others:
+
+```json
+{
+  "version": 1,
+  "albedo": [1.0, 1.0, 1.0, 1.0],
+  "roughness": 1.0,
+  "metallic": 0.0,
+  "emission": [0.0, 0.0, 0.0],
+  "textures": {"albedo": "textures/stone.png", "normal": "textures/stone_normal.png"}
+}
+```
+
+Albedo components, roughness and metallic are finite values from 0 to 1; emission components are finite values from 0 to 64.
+Texture slots are `albedo`, `normal`, `roughness`, `metallic` and `emission`; all are optional.
+References must name PNG/JPEG entries under `textures/` and match an entry, ignoring ASCII case but including its extension.
+Normal maps use OpenGL conventions; roughness and metallic maps use the red channel.
+Albedo alpha below 1 enables alpha transparency.
+Textures retain the existing image limits and shared pixel budget.
+Descriptors never load through `ResourceLoader`.
+Invalid descriptors or their texture dependencies produce a missing material and a diagnostic.
+
+The editor's **Shader Editor > PBR Material** tab writes descriptors.
+Put descriptors in `materials/` and referenced images in `textures/` beneath a configured custom asset folder.
+The pack exporter collects descriptors for face material names, including blend layers, and includes their referenced images once.
+Descriptor discovery and export are available; the editor does not yet preview these descriptors or bind shader graphs to them.
 
 ## Names
 
 - A name is 1 to 255 bytes of `A` to `Z`, `a` to `z`, `0` to `9`, `_`, `-` and `.`, with `/` between path segments.
 - No segment is empty, `.` or `..`, so a name has no leading or trailing slash and no `//`.
 - A name starts with `materials/` and ends in `.png` or `.jpg`, or starts with `models/` and ends in `.glb`, with at least one character in between; extensions are lower case.
+  Version 2 also permits the descriptor and texture names listed above.
 - Names are unique ignoring ASCII case and the extension, so `materials/Rock.png` and `materials/rock.jpg` cannot share a pack.
 - Backslashes, colons, NUL and everything outside ASCII are refused, so a name can never be a drive letter, an absolute path or a way out of the pack.
 - Names are only ever lookup keys: nothing is written to disk under them.

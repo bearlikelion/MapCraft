@@ -28,6 +28,7 @@ func _initialize() -> void:
 	_check_writer_pack()
 	_check_containers()
 	_check_names()
+	_check_pbr_materials()
 	_check_pictures()
 	_check_pixel_budget()
 	_check_models()
@@ -38,6 +39,41 @@ func _initialize() -> void:
 		printerr("FAIL: ", failure)
 	print("mapcraft pack test: %d failures" % _failures.size())
 	quit(1 if _failures.size() > 0 else 0)
+
+
+func _check_pbr_materials() -> void:
+	var descriptor: Dictionary = {
+		"version": 1, "albedo": [0.2, 0.4, 0.6, 1.0], "roughness": 0.3,
+		"metallic": 0.7, "emission": [0.1, 0.0, 0.0],
+		"textures": {"albedo": "textures/stone.png", "normal": "textures/normal.png"},
+	}
+	var entries: Array = [
+		["materials/ramps-orange1.json", JSON.stringify(descriptor).to_utf8_buffer()],
+		["textures/stone.png", _picture], ["textures/normal.png", _picture],
+	]
+	var bytes: PackedByteArray = _pack(entries)
+	bytes.encode_u32(4, 2)
+	var map: MapCraftMap = _build(bytes)
+	var world: MeshInstance3D = map.get_node_or_null("WorldMesh") as MeshInstance3D
+	var material: StandardMaterial3D = _surface_material(world, "ramps-orange1") as StandardMaterial3D
+	_expect(material != null, "v2 PBR descriptor builds a material")
+	if material != null:
+		_expect(is_equal_approx(material.roughness, 0.3), "PBR roughness preserved")
+		_expect(is_equal_approx(material.metallic, 0.7), "PBR metallic preserved")
+		_expect(material.normal_enabled, "PBR normal mapping enabled")
+		_expect(material.albedo_texture is ImageTexture, "PBR texture decoded from pack")
+	_expect(not _messages.has("mcpack"), "valid v2 pack logs nothing")
+	map.free()
+	bytes.encode_u32(4, 1)
+	map = _build(bytes)
+	_expect(_messages.has("version 1"), "v1 refuses v2 entries")
+	map.free()
+	entries.pop_back()
+	bytes = _pack(entries)
+	bytes.encode_u32(4, 2)
+	map = _build(bytes)
+	_expect(_messages.has("missing texture"), "missing PBR dependency is diagnosed")
+	map.free()
 
 
 # The pack MapCraft's Rust writer made, so the addon must take it whole.
@@ -91,7 +127,7 @@ func _check_containers() -> void:
 	_expect_refused("a pack with trailing data", longer, "data after its last entry")
 	_expect_refused("a zip file", "PK\u0003\u0004 not a pack".to_utf8_buffer(), \
 			"not a MapCraft pack")
-	_expect_refused("a newer pack", _patched32(good, 4, 2), "version 2")
+	_expect_refused("a newer pack", _patched32(good, 4, 3), "version 3")
 	_expect_refused("a huge entry count", _patched32(good, 8, 0xFFFFFFFF), "4294967295 entries")
 	_expect_refused("overlapping entries", _patched64(good, second_offset, \
 			good.decode_u64(first_offset)), "does not start where")

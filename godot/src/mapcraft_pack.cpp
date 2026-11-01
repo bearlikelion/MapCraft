@@ -37,7 +37,7 @@ const int64_t MAX_ACCESSOR_ELEMENTS = int64_t(1) << 22;
 const int64_t MAX_MESH_COMPONENTS = int64_t(1) << 24;
 const char *GLTF_EXTENSIONS[] = { "KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_transform" };
 
-const uint32_t VERSION = 1;
+const uint32_t VERSION = 2;
 const int64_t HEADER_LEN = 12;
 const uint8_t PNG_SIGNATURE[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 const uint8_t PNG_IHDR[8] = { 0, 0, 0, 13, 'I', 'H', 'D', 'R' };
@@ -51,6 +51,7 @@ enum class Kind {
 	PNG,
 	JPEG,
 	GLB,
+	MATERIAL,
 };
 
 uint32_t le16(const uint8_t *p) {
@@ -102,16 +103,106 @@ Kind kind_of(const uint8_t *p_name, int64_t p_len, String &r_error) {
 	if (name.ends_with(".png") || name.ends_with(".jpg")) {
 		kind = name.ends_with(".png") ? Kind::PNG : Kind::JPEG;
 		folder = "materials/";
+	} else if (name.ends_with(".json")) {
+		kind = Kind::MATERIAL;
+		folder = "materials/";
 	} else if (!name.ends_with(".glb")) {
 		r_error = "only .png, .jpg and .glb entries are allowed";
 		return Kind::NONE;
 	}
-	const String stem = name.left(name.length() - 4);
+	const String stem = name.get_basename();
+	if ((kind == Kind::PNG || kind == Kind::JPEG) && name.begins_with("textures/")) { folder = "textures/"; }
 	if (!stem.begins_with(folder) || stem.length() == folder.length() || stem.ends_with("/")) {
 		r_error = "this kind of entry belongs under " + folder;
 		return Kind::NONE;
 	}
 	return kind;
+}
+
+String check_material(const PackedByteArray &bytes) {
+  if (bytes.size() > 16384) {
+    return "material descriptor exceeds 16 KiB";
+  }
+  Ref<JSON> json;
+  json.instantiate();
+  if (json->parse(bytes.get_string_from_utf8()) != OK ||
+      json->get_data().get_type() != Variant::DICTIONARY) {
+    return "invalid material descriptor";
+  }
+  const Dictionary d = json->get_data();
+  if (d.size() != 6 || !d.has("version") || !d.has("albedo") ||
+      !d.has("roughness") || !d.has("metallic") || !d.has("emission") ||
+      !d.has("textures")) {
+    return "invalid material fields";
+  }
+  const Variant version = d["version"];
+  if ((version.get_type() != Variant::FLOAT &&
+       version.get_type() != Variant::INT) ||
+      double(version) != 1.0) {
+    return "unsupported material version";
+  }
+  for (const char *field : {"albedo", "emission"}) {
+    const Variant v = d[field];
+    if (v.get_type() != Variant::ARRAY) {
+      return "material color must be an array";
+    }
+    const Array color = v;
+    if (color.size() != (String(field) == "albedo" ? 4 : 3)) {
+      return "invalid material color length";
+    }
+    for (int i = 0; i < color.size(); i++) {
+      const Variant component = color[i];
+      if (component.get_type() != Variant::FLOAT &&
+          component.get_type() != Variant::INT) {
+        return "invalid material color component";
+      }
+      const double number = component;
+      if (!Math::is_finite(number) || number < 0 ||
+          number > (String(field) == "albedo" ? 1.0 : 64.0)) {
+        return "material color outside limits";
+      }
+    }
+  }
+  for (const char *field : {"roughness", "metallic"}) {
+    const Variant v = d[field];
+    if (v.get_type() != Variant::FLOAT && v.get_type() != Variant::INT) {
+      return "invalid material scalar";
+    }
+    const double number = v;
+    if (!Math::is_finite(number) || number < 0 || number > 1) {
+      return "material scalar outside limits";
+    }
+  }
+  const Variant raw = d["textures"];
+  if (raw.get_type() != Variant::DICTIONARY) {
+    return "material textures must be an object";
+  }
+  const Dictionary textures = raw;
+  const Array keys = textures.keys();
+  for (int i = 0; i < keys.size(); i++) {
+    const String key = keys[i];
+    if (key != "albedo" && key != "normal" && key != "roughness" &&
+        key != "metallic" && key != "emission") {
+      return "unsupported texture slot";
+    }
+    const Variant value = textures[key];
+    if (value.get_type() != Variant::STRING) {
+      return "texture name must be text";
+    }
+    const String name = value;
+    if (!name.begins_with("textures/")) {
+      return "material texture must be under textures/";
+    }
+    const CharString utf8 = name.utf8();
+    String problem;
+    const Kind kind =
+        kind_of(reinterpret_cast<const uint8_t *>(utf8.get_data()),
+                utf8.length(), problem);
+    if (kind != Kind::PNG && kind != Kind::JPEG) {
+      return "invalid material texture name";
+    }
+  }
+  return String();
 }
 
 // Walks a JPEG's markers to its frame size, counting scans, since each progressive scan makes the decoder pass over the whole picture.
@@ -636,8 +727,8 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 		r_error = "has a cut-short table of contents";
 		return ERR_FILE_CORRUPT;
 	}
-	if (le32(p + 4) != VERSION) {
-		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads version 1";
+	if (le32(p + 4) < 1 || le32(p + 4) > VERSION) {
+		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads versions 1 and 2";
 		return ERR_FILE_UNRECOGNIZED;
 	}
 	const uint32_t count = le32(p + 8);
@@ -666,6 +757,10 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 		}
 		Raw raw;
 		raw.name = String::utf8(reinterpret_cast<const char *>(p + at), len);
+        if (le32(p + 4) == 1 && (raw.name.ends_with(".json") || raw.name.begins_with("textures/"))) {
+            r_error = "version 1 cannot contain material descriptors or textures/ entries";
+            return ERR_FILE_CORRUPT;
+        }
 		raw.offset = le64(p + at + len);
 		raw.length = le64(p + at + len + 8);
 		toc.push_back(raw);
@@ -673,7 +768,7 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 	}
 	HashMap<String, Entry> found;
 	for (const Raw &raw : toc) {
-		const String key = raw.name.left(raw.name.length() - 4).to_lower();
+		const String key = raw.name.get_basename().to_lower();
 		if (found.has(key)) {
 			r_error = raw.name + String(" is in the pack twice (names ignore case and extension)");
 			return ERR_FILE_CORRUPT;
@@ -708,7 +803,23 @@ bool MapCraftPack::find(const String &p_stem, PackedByteArray &r_bytes, String &
 		return false;
 	}
 	r_bytes = data.slice(entry->offset, entry->offset + entry->length);
-	if (entry->name.ends_with(".glb")) {
+  if (entry->name.ends_with(".json")) {
+    r_error = check_material(r_bytes);
+    if (r_error.is_empty()) {
+      const Dictionary descriptor =
+          JSON::parse_string(r_bytes.get_string_from_utf8());
+      const Dictionary textures = descriptor["textures"];
+      const Array names = textures.values();
+      for (int i = 0; i < names.size(); i++) {
+        const String name = names[i];
+        const Entry *texture = entries.getptr(name.get_basename().to_lower());
+        if (texture == nullptr || texture->name.to_lower() != name.to_lower()) {
+          r_error = "missing texture " + name;
+          break;
+        }
+      }
+    }
+  } else if (entry->name.ends_with(".glb")) {
 		r_error = check_glb(r_bytes, pixels);
 	} else {
 		r_error = check_image(r_bytes.ptr(), r_bytes.size(), entry->name.ends_with(".png") ? Kind::PNG : Kind::JPEG, pixels);

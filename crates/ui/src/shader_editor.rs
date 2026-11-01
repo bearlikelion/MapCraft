@@ -11,6 +11,8 @@ pub(crate) struct ShaderEditor {
     status: String,
     graph: mapcraft_format::shader_graph::Graph,
     graph_mode: bool,
+    material_mode: bool,
+    material: mapcraft_format::pack_material::Material,
     saved_graph: String,
 }
 
@@ -22,9 +24,22 @@ impl ShaderEditor {
         let mut open = true;
         egui::Window::new("Shader Editor").open(&mut open).default_size([720.0, 540.0]).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.graph_mode, false, "Source");
-                ui.selectable_value(&mut self.graph_mode, true, "Graph");
+                if ui.selectable_label(!self.material_mode && !self.graph_mode, "Source").clicked() {
+                    self.graph_mode = false;
+                    self.material_mode = false;
+                }
+                if ui.selectable_label(!self.material_mode && self.graph_mode, "Graph").clicked() {
+                    self.graph_mode = true;
+                    self.material_mode = false;
+                }
+                if ui.selectable_label(self.material_mode, "PBR Material").clicked() {
+                    self.material_mode = true;
+                }
             });
+            if self.material_mode {
+                self.material_ui(ui);
+                return;
+            }
             if self.graph_mode {
                 self.graph_ui(ui);
                 return;
@@ -214,5 +229,59 @@ impl ShaderEditor {
                 }
             }
         });
+    }
+
+    fn material_ui(&mut self, ui: &mut egui::Ui) {
+        use mapcraft_format::pack_material::TextureSlot;
+        ui.label("Save under materials/<name>.json in a custom asset folder. Texture names are relative to that folder.");
+        ui.horizontal(|ui| {
+            ui.label("Albedo");
+            ui.color_edit_button_rgba_unmultiplied(&mut self.material.albedo);
+        });
+        ui.add(egui::Slider::new(&mut self.material.roughness, 0.0..=1.0).text("Roughness"));
+        ui.add(egui::Slider::new(&mut self.material.metallic, 0.0..=1.0).text("Metallic"));
+        ui.horizontal(|ui| {
+            ui.label("Emission RGB");
+            for value in &mut self.material.emission {
+                ui.add(egui::DragValue::new(value).range(0.0..=64.0).speed(0.01));
+            }
+        });
+        for (label, slot) in [
+            ("Albedo texture", TextureSlot::Albedo),
+            ("Normal texture", TextureSlot::Normal),
+            ("Roughness texture", TextureSlot::Roughness),
+            ("Metallic texture", TextureSlot::Metallic),
+            ("Emission texture", TextureSlot::Emission),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let mut path = self.material.textures.get(&slot).cloned().unwrap_or_default();
+                if ui.text_edit_singleline(&mut path).changed() {
+                    if path.is_empty() {
+                        self.material.textures.remove(&slot);
+                    } else {
+                        self.material.textures.insert(slot, path);
+                    }
+                }
+            });
+        }
+        if let Err(error) = self.material.validate() {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        if ui.button("Save material descriptor…").clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("PBR material descriptor", &["json"]).set_file_name("material.json").save_file()
+        {
+            let result = self
+                .material
+                .validate()
+                .and_then(|()| serde_json::to_vec_pretty(&self.material).map_err(|e| e.to_string()))
+                .and_then(|bytes| craft_atomic::atomic_write(&path, &bytes).map_err(|e| e.to_string()));
+            self.status = match result {
+                Ok(()) => format!("Saved {}", path.display()),
+                Err(e) => e,
+            };
+        }
+        ui.label(&self.status);
+        ui.label("Descriptor export is available. PBR viewport preview and shader bindings are not connected yet.");
     }
 }
