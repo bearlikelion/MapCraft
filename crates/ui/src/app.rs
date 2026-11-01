@@ -936,7 +936,7 @@ impl MapCraftApp {
             let prefs = self.prefs.get();
             for (shortcut, id) in crate::shortcuts::bindings(prefs.keymap, &prefs.shortcuts) {
                 let save = matches!(id, "file.save" | "file.save_as");
-                let undo = self.shader_editor.is_graph() && !ctx.egui_wants_keyboard_input() && matches!(id, "edit.undo" | "edit.redo");
+                let undo = !ctx.egui_wants_keyboard_input() && matches!(id, "edit.undo" | "edit.redo");
                 if (save || undo) && ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
                     self.shader_editor.action(id);
                 }
@@ -2003,11 +2003,13 @@ impl MapCraftApp {
 
     fn central(&mut self, ui: &mut egui::Ui) {
         self.hovered_pane = None;
-        if self.shader_editor.workspace_tabs(ui) {
+        ui.painter().rect_filled(ui.max_rect(), 0.0, crate::chrome::PANEL);
+        let active = egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| self.shader_editor.workspace_tabs(ui)).inner;
+        if active {
             for pane in &mut self.panes {
                 pane.rect = Rect::NOTHING;
             }
-            self.shader_editor.content(ui);
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| self.shader_editor.content(ui));
             return;
         }
         let full = ui.available_rect_before_wrap();
@@ -2262,6 +2264,12 @@ impl eframe::App for MapCraftApp {
         self.missing_assets_dialog(&ctx);
         self.extra_dialogs(&ctx);
         self.workshop_window(&ctx);
+        if let Some(gpu) = &mut self.gpu
+            && self.shader_editor.update_preview(&mut gpu.renderer, &self.session.tex.material)
+        {
+            gpu.renderer.time = ctx.input(|i| i.time) as f32;
+            ctx.request_repaint();
+        }
         if std::mem::take(&mut self.shader_editor.reload_assets) {
             self.run_action("file.reload_assets");
         }

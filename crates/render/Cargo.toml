@@ -17,7 +17,8 @@ image = { workspace = true }
 log = { workspace = true }
 pollster = { workspace = true }
 serde_json = { workspace = true }
-wgpu = { workspace = true }
+wgpu = { workspace = true, features = ["naga-ir"] }
+naga = { workspace = true, features = ["glsl-in"] }
 
 [dev-dependencies]
 # pipeline_constants only exists with an output feature.

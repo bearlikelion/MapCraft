@@ -5,6 +5,7 @@
 mod camera;
 mod environment;
 mod gltf_map;
+mod godot_shader;
 mod model;
 mod scene;
 
@@ -17,6 +18,8 @@ use wgpu::util::DeviceExt;
 pub use camera::{Camera, View};
 pub use environment::EnvironmentEffects;
 pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
+pub use godot_shader::ShaderKind;
+use godot_shader::TextureSource;
 pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
 pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,
@@ -70,9 +73,16 @@ struct Globals {
     sky_shape: [f32; 4],
     /// The lowest lightmap brightness Quake lights add up to.
     minlight: [f32; 4],
-    /// x is how strongly displaced vertices wash toward cyan by their blend weight.
+    /// x is how strongly displaced vertices wash toward cyan by their blend weight; y is shader preview seconds.
     paint: [f32; 4],
     lights: [Light; MAX_LIGHTS],
+}
+
+/// A previewed Godot shader and the textures its group 1 binds.
+struct Preview {
+    pipeline: wgpu::RenderPipeline,
+    layout: Option<wgpu::BindGroupLayout>,
+    textures: Vec<TextureSource>,
 }
 
 struct Material {
@@ -135,6 +145,9 @@ pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub display: wgpu::TextureView,
+    /// A copy of the frame before shader preview faces draw, for their screen texture.
+    screen: wgpu::Texture,
+    screen_view: wgpu::TextureView,
     globals: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
 }
@@ -185,6 +198,16 @@ pub struct Renderer {
     /// Off, 3D views draw no sky behind the map and draw sky faces like other faces.
     pub show_sky: bool,
     weight_overlay: f32,
+    shader: wgpu::ShaderModule,
+    globals_only: wgpu::PipelineLayout,
+    /// A previewed Godot sky shader, drawn in place of the sky.
+    preview_sky: Option<Preview>,
+    /// A previewed Godot spatial shader and the material whose faces it draws.
+    preview_surface: Option<(String, Preview)>,
+    black: wgpu::TextureView,
+    clear: wgpu::TextureView,
+    /// Seconds for the previewed shaders' TIME.
+    pub time: f32,
 }
 
 fn vertex_layout<'a>(stride: usize, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -403,7 +426,129 @@ impl Renderer {
             sky: None,
             show_sky: true,
             weight_overlay: 0.0,
+            shader,
+            globals_only: line_layout,
+            preview_sky: None,
+            preview_surface: None,
+            black: texture(device, queue, 1, 1, &[0, 0, 0, 255], wgpu::TextureFormat::Rgba8Unorm),
+            clear: texture(device, queue, 1, 1, &[0, 0, 0, 0], wgpu::TextureFormat::Rgba8Unorm),
+            time: 0.0,
         }
+    }
+
+    /// Previews Godot shader source in the 3D views: a sky shader replaces the sky, a spatial one draws
+    /// the faces of `material`; `None` clears the preview.
+    pub fn set_shader_preview(&mut self, source: Option<&str>, material: &str) -> Result<Option<ShaderKind>, String> {
+        (self.preview_sky, self.preview_surface) = (None, None);
+        let Some(source) = source else { return Ok(None) };
+        let (kind, textures, module) = godot_shader::compile(source)?;
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..textures.len() as u32)
+            .flat_map(|i| {
+                [
+                    wgpu::BindGroupLayoutEntry {
+                        binding: i * 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: i * 2 + 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ]
+            })
+            .collect();
+        let layout = (!textures.is_empty())
+            .then(|| self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("shader preview textures"), entries: &entries }));
+        let pipeline_layout = layout.as_ref().map(|l| {
+            self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("shader preview"),
+                bind_group_layouts: &[Some(&self.globals_layout), Some(l)],
+                immediate_size: 0,
+            })
+        });
+        let fragment = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shader preview"),
+            source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+        });
+        let mesh_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4, 5 => Float32x2, 6 => Float32];
+        let mesh_buffers = [Some(vertex_layout(std::mem::size_of::<MeshVertex>(), &mesh_attrs))];
+        let (vs, buffers, depth): (_, &[_], _) = match kind {
+            ShaderKind::Sky => ("vs_sky", &[], (false, false)),
+            ShaderKind::Spatial => ("vs_mesh", &mesh_buffers, (true, true)),
+        };
+        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shader preview"),
+            layout: Some(pipeline_layout.as_ref().unwrap_or(&self.globals_only)),
+            vertex: wgpu::VertexState { module: &self.shader, entry_point: Some(vs), compilation_options: Default::default(), buffers },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(depth.0),
+                depth_compare: Some(if depth.1 { wgpu::CompareFunction::GreaterEqual } else { wgpu::CompareFunction::Always }),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: SAMPLES, ..Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &fragment,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let internal = pollster::block_on(internal.pop());
+        if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
+            return Err(format!("The graphics device rejected the shader: {e}"));
+        }
+        match kind {
+            ShaderKind::Sky => self.preview_sky = Some(Preview { pipeline, layout, textures }),
+            ShaderKind::Spatial => self.preview_surface = Some((material.to_string(), Preview { pipeline, layout, textures })),
+        }
+        Ok(Some(kind))
+    }
+
+    /// Sets a preview's pipeline and textures on `pass`; `screen` is the frame drawn so far, black before there is one.
+    fn bind_preview(&self, pass: &mut wgpu::RenderPass, preview: &Preview, screen: Option<&wgpu::TextureView>) {
+        pass.set_pipeline(&preview.pipeline);
+        let Some(layout) = &preview.layout else { return };
+        let views: Vec<&wgpu::TextureView> = preview
+            .textures
+            .iter()
+            .map(|t| match t {
+                TextureSource::White => &self.white_albedo,
+                TextureSource::Black => &self.black,
+                TextureSource::Transparent => &self.clear,
+                TextureSource::Normal => &self.flat,
+                TextureSource::Screen => screen.unwrap_or(&self.black),
+            })
+            .collect();
+        let entries: Vec<wgpu::BindGroupEntry> = views
+            .iter()
+            .enumerate()
+            .flat_map(|(i, view)| {
+                [
+                    wgpu::BindGroupEntry { binding: i as u32 * 2, resource: wgpu::BindingResource::TextureView(view) },
+                    wgpu::BindGroupEntry { binding: i as u32 * 2 + 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ]
+            })
+            .collect();
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("shader preview textures"), layout, entries: &entries });
+        pass.set_bind_group(1, &group, &[]);
     }
 
     fn fits(&self, w: u32, h: u32, rgba: &[u8]) -> bool {
@@ -619,6 +764,8 @@ impl Renderer {
         let texture = tex("viewport", COLOR_FORMAT, 1, usage, &[DISPLAY_FORMAT]);
         let view = texture.create_view(&Default::default());
         let display = texture.create_view(&wgpu::TextureViewDescriptor { format: Some(DISPLAY_FORMAT), ..Default::default() });
+        let screen = tex("viewport screen", COLOR_FORMAT, 1, wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, &[]);
+        let screen_view = screen.create_view(&Default::default());
         let globals = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -630,7 +777,7 @@ impl Renderer {
             layout: &self.globals_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
         });
-        Target { size, msaa, depth, texture, view, display, globals, globals_bind }
+        Target { size, msaa, depth, texture, view, display, screen, screen_view, globals, globals_bind }
     }
 
     /// Copies a rendered target back as tightly packed RGBA rows, waiting for the GPU.
@@ -683,6 +830,7 @@ impl Renderer {
         let baked = lit && !camera.is_2d() && !self.bake.is_empty() && !self.bake_stale;
         let sky = self.sky.filter(|_| lit && !camera.is_2d());
         let mut globals = Globals::unlit(camera, size, self.weight_overlay);
+        (globals.paint[1], globals.paint[2], globals.paint[3]) = (self.time, size.x as f32, size.y as f32);
         if lit && self.lights.is_empty() {
             for (l, (dir, [r, g, b])) in globals.lights.iter_mut().zip(RIG_SUNS) {
                 *l = Light {
@@ -752,8 +900,14 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("viewport") });
         {
             let bg = if camera.is_2d() { wgpu::Color::BLACK } else { wgpu::Color { r: 0.02, g: 0.025, b: 0.035, a: 1.0 } };
-            let mut pass = begin_pass(&mut encoder, target, bg);
-            if sky.is_some() && self.show_sky {
+            // Preview faces draw in a second pass, so their screen texture can hold everything drawn before them.
+            let surface = self.preview_surface.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe);
+            let mut pass = begin_pass(&mut encoder, target, Some(bg), surface.is_some());
+            let preview_sky = self.preview_sky.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe && self.show_sky);
+            if let Some(p) = preview_sky {
+                self.bind_preview(&mut pass, p, None);
+                pass.draw(0..3, 0..1);
+            } else if sky.is_some() && self.show_sky {
                 pass.set_pipeline(&self.sky_pipeline);
                 pass.draw(0..3, 0..1);
             }
@@ -765,6 +919,9 @@ impl Renderer {
             if !camera.is_2d() && mode != RenderMode::Wireframe {
                 for batch in self.batches.iter().filter(|b| !(baked && b.brush)) {
                     let material = batch.key.material.as_str();
+                    if surface.is_some_and(|(m, _)| m == material) {
+                        continue;
+                    }
                     let sky = self.skies.contains(material);
                     let sky_face = mode != RenderMode::Flat && sky && self.show_sky;
                     // Entity boxes stay unlit, or a light's own box would be dark.
@@ -795,6 +952,16 @@ impl Renderer {
                 }
                 pass.set_vertex_buffer(0, batch.buffer.slice(..));
                 pass.draw(0..batch.count, 0..1);
+            }
+            if let Some((material, preview)) = surface {
+                drop(pass);
+                encoder.copy_texture_to_texture(target.texture.as_image_copy(), target.screen.as_image_copy(), target.texture.size());
+                pass = begin_pass(&mut encoder, target, None, false);
+                self.bind_preview(&mut pass, preview, Some(&target.screen_view));
+                for batch in self.batches.iter().filter(|b| !(baked && b.brush) && &b.key.material == material) {
+                    pass.set_vertex_buffer(0, batch.buffer.slice(..));
+                    pass.draw(0..batch.count, 0..1);
+                }
             }
             // Triggers and other tool faces do not show in the game a bake stands for.
             if let Some((b, n)) = self.translucent.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe && !baked) {
@@ -853,7 +1020,7 @@ impl Renderer {
             .collect();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("preview") });
         {
-            let mut pass = begin_pass(&mut encoder, &target, wgpu::Color::TRANSPARENT);
+            let mut pass = begin_pass(&mut encoder, &target, Some(wgpu::Color::TRANSPARENT), false);
             pass.set_bind_group(3, &self.white, &[]);
             for (key, buffer, count) in &buffers {
                 let Some(pipeline) = self.mesh_pipeline(false, RenderMode::Textured, key) else { continue };
@@ -897,18 +1064,20 @@ impl Globals {
 }
 
 /// A pass drawing into `target` cleared to `bg`, with the target's globals bound.
-fn begin_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &'a Target, bg: wgpu::Color) -> wgpu::RenderPass<'a> {
+/// `clear` of `None` keeps what an earlier pass `keep`-ed.
+fn begin_pass<'a>(encoder: &'a mut wgpu::CommandEncoder, target: &'a Target, clear: Option<wgpu::Color>, keep: bool) -> wgpu::RenderPass<'a> {
+    let store = if keep { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("viewport"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: &target.msaa,
             depth_slice: None,
             resolve_target: Some(&target.view),
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(bg), store: wgpu::StoreOp::Discard },
+            ops: wgpu::Operations { load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear), store },
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
             view: &target.depth,
-            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+            depth_ops: Some(wgpu::Operations { load: if clear.is_some() { wgpu::LoadOp::Clear(0.0) } else { wgpu::LoadOp::Load }, store }),
             stencil_ops: None,
         }),
         timestamp_writes: None,
@@ -1093,6 +1262,29 @@ fn grid_lines(out: &mut Vec<LineVertex>, camera: &Camera, size: DVec2, grid: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn godot_shader_previews_draw_on_available_adapter() {
+        let Ok(adapter) = pollster::block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut renderer = Renderer::new(&device, &queue);
+        let sky = "shader_type sky;\nuniform vec3 c : source_color = vec3(1.0, 0.0, 0.0);\nvoid sky() { COLOR = c; }\n";
+        assert_eq!(renderer.set_shader_preview(Some(sky), ""), Ok(Some(ShaderKind::Sky)));
+        let target = renderer.target([8, 8]);
+        renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Textured, None, &[]);
+        let pixels = renderer.read_rgba(&target).unwrap();
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+        let surface = "shader_type spatial;\nuniform sampler2D screen_texture : hint_screen_texture;\nuniform sampler2D n : hint_normal;\nvoid fragment() { ALBEDO = texture(screen_texture, SCREEN_UV).rgb + texture(n, UV).rgb * abs(sin(TIME)); }\n";
+        assert_eq!(renderer.set_shader_preview(Some(surface), "stone"), Ok(Some(ShaderKind::Spatial)));
+        renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Lit, None, &[]);
+        assert!(renderer.set_shader_preview(Some("shader_type spatial;\nvoid fragment() { ALBEDO = 1; }"), "stone").is_err());
+        assert!(renderer.preview_surface.is_none());
+        assert!(pollster::block_on(validation.pop()).is_none());
+    }
 
     #[test]
     fn pbr_surface_bindings_validate_on_available_adapter() {

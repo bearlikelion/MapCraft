@@ -687,10 +687,6 @@ impl MapCraftApp {
 
     fn material_browser(&mut self, ui: &mut egui::Ui) {
         self.shader_material_button(ui);
-        egui::CollapsingHeader::new("Material").id_salt("material-browser").default_open(true).show(ui, |ui| self.material_browser_contents(ui));
-    }
-
-    fn material_browser_contents(&mut self, ui: &mut egui::Ui) {
         if self.project.sdk.is_none() {
             ui.label("No SDK: pick one with File > New Map to browse materials.");
             return;

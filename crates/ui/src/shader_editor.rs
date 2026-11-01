@@ -33,8 +33,14 @@ pub(crate) struct ShaderEditor {
     graph_future: Vec<mapcraft_format::shader_graph::Graph>,
     graph_pending: Option<mapcraft_format::shader_graph::Graph>,
     graph_skip_history: bool,
+    /// A Script undo (false) or redo (true) waiting for the frame that can reach the text history.
+    text_step: Option<bool>,
     pub(crate) reload_assets: bool,
     saved_material: Option<mapcraft_format::pack_material::Material>,
+    /// The source and material last sent to the viewport preview.
+    previewed: Option<(String, String)>,
+    /// What the viewport preview made of the source: the shader type drawn, or why it could not be.
+    preview: Option<Result<mapcraft_render::ShaderKind, String>>,
 }
 
 impl ShaderEditor {
@@ -83,6 +89,29 @@ impl ShaderEditor {
         !self.has_unsaved()
     }
 
+    /// Recompiles the viewport preview when the source or `material` changed; true while one is drawn.
+    pub(crate) fn update_preview(&mut self, renderer: &mut mapcraft_render::Renderer, material: &str) -> bool {
+        let source = (self.open && !self.source.trim().is_empty()).then_some(self.source.as_str());
+        let key = source.map(|s| (s.to_string(), material.to_string()));
+        if self.previewed != key {
+            self.preview = renderer.set_shader_preview(source, material).transpose();
+            self.previewed = key;
+        }
+        matches!(self.preview, Some(Ok(_)))
+    }
+
+    fn preview_label(&self, ui: &mut egui::Ui) {
+        match &self.preview {
+            Some(Ok(mapcraft_render::ShaderKind::Sky)) => ui.colored_label(crate::chrome::TEXT_WEAK, "Previewing as the sky in the 3D view"),
+            Some(Ok(mapcraft_render::ShaderKind::Spatial)) => ui.colored_label(
+                crate::chrome::TEXT_WEAK,
+                format!("Previewing on faces using {} in the 3D view", self.previewed.as_ref().map_or("", |(_, m)| m.as_str())),
+            ),
+            None => ui.colored_label(crate::chrome::TEXT_WEAK, "Write a spatial or sky shader to preview it in the 3D view"),
+            Some(Err(e)) => ui.colored_label(egui::Color32::LIGHT_RED, e),
+        };
+    }
+
     pub(crate) fn is_graph(&self) -> bool {
         self.is_active() && self.graph_mode && !self.material_mode
     }
@@ -107,7 +136,8 @@ impl ShaderEditor {
                     self.canvas = Default::default();
                 }
             }
-            "edit.undo" | "edit.redo" => self.status = "Focus the Script editor to use text undo and redo.".into(),
+            "edit.undo" | "edit.redo" if !self.graph_mode && !self.material_mode => self.text_step = Some(id == "edit.redo"),
+            "edit.undo" | "edit.redo" => self.status = "Material edits have no undo yet.".into(),
             _ => return false,
         }
         true
@@ -204,16 +234,13 @@ impl ShaderEditor {
                 }
             }
         });
-        ui.separator();
         self.is_active()
     }
 
     pub(crate) fn content(&mut self, ui: &mut egui::Ui) {
         if self.material_mode {
             self.shader_material_menu(ui);
-            egui::ScrollArea::vertical().id_salt("material-editor").show(ui, |ui| {
-                egui::CollapsingHeader::new("Material").id_salt("pbr-material").default_open(true).show(ui, |ui| self.material_ui(ui));
-            });
+            egui::ScrollArea::vertical().id_salt("material-editor").show(ui, |ui| self.material_ui(ui));
             return;
         }
         if self.graph_mode {
@@ -221,7 +248,20 @@ impl ShaderEditor {
             return;
         }
         let dirty = self.source != self.saved;
-        ui.horizontal_wrapped(|ui| {
+        let source_id = egui::Id::new("shader-source");
+        if let Some(redo) = self.text_step.take() {
+            self.step_text(ui.ctx(), source_id, redo);
+        }
+        let state = egui::TextEdit::load_state(ui.ctx(), source_id);
+        let current = (state.as_ref().and_then(|s| s.cursor.char_range()).unwrap_or_default(), self.source.clone());
+        let (can_undo, can_redo) = state.map_or((false, false), |s| (s.undoer().has_undo(&current), s.undoer().has_redo(&current)));
+        ui.horizontal(|ui| {
+            if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
+                self.text_step = Some(false);
+            }
+            if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
+                self.text_step = Some(true);
+            }
             if ui.add_enabled(!dirty, egui::Button::new("Open .gdshader…")).clicked()
                 && let Some(path) = rfd::FileDialog::new().add_filter("Godot shader", &["gdshader"]).pick_file()
             {
@@ -241,20 +281,25 @@ impl ShaderEditor {
             if ui.button("Save As…").clicked() {
                 self.save_active(true);
             }
-            if dirty {
-                ui.label("Unsaved changes");
+            let name = self.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".into(), |n| n.to_string_lossy().into_owned());
+            let label = ui.colored_label(crate::chrome::TEXT_WEAK, if dirty { format!("{name} *") } else { name });
+            if let Some(path) = &self.path {
+                label.on_hover_text(path.display().to_string());
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.colored_label(crate::chrome::TEXT_WEAK, format!("Ln {}, Col {}", self.cursor_position[0].max(1), self.cursor_position[1].max(1)));
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            self.preview_label(ui);
+            if !self.status.is_empty() {
+                ui.separator();
+                ui.colored_label(crate::chrome::TEXT_WEAK, &self.status);
             }
         });
-        if let Some(path) = &self.path {
-            ui.label(path.display().to_string());
-        }
-        if self.source.len() > 256 * 1024 {
-            ui.colored_label(egui::Color32::LIGHT_RED, "Source exceeds 256 KiB; shorten it before saving.");
-        }
-        ui.label("Source editing only. Shader compilation and viewport preview are not connected yet.");
-        ui.label(&self.status);
-        ui.label(format!("Ln {}, Col {}", self.cursor_position[0].max(1), self.cursor_position[1].max(1)));
+        ui.separator();
         let lines = (1..=self.source.split('\n').count()).map(|line| line.to_string()).collect::<Vec<_>>().join("\n");
+        ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, crate::chrome::BG);
         egui::ScrollArea::both().id_salt("shader-script").show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.label(egui::RichText::new(lines).monospace().color(crate::chrome::TEXT_WEAK));
@@ -264,7 +309,7 @@ impl ShaderEditor {
                     ui.fonts_mut(|fonts| fonts.layout_job(job))
                 };
                 let output = egui::TextEdit::multiline(&mut self.source)
-                    .id_salt("shader-source")
+                    .id(source_id)
                     .code_editor()
                     .hint_text("Write Godot shader source…")
                     .char_limit(256 * 1024)
@@ -287,6 +332,19 @@ impl ShaderEditor {
                 }
             });
         });
+    }
+
+    /// Steps the Script text through the editor's own undo history, so buttons and menus match Ctrl+Z and Ctrl+Y.
+    fn step_text(&mut self, ctx: &egui::Context, id: egui::Id, redo: bool) {
+        let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return };
+        let mut undoer = state.undoer();
+        let current = (state.cursor.char_range().unwrap_or_default(), self.source.clone());
+        let step = if redo { undoer.redo(&current) } else { undoer.undo(&current) }.cloned();
+        let Some((range, text)) = step else { return };
+        self.source = text;
+        state.cursor.set_char_range(Some(range));
+        state.set_undoer(undoer);
+        state.store(ctx, id);
     }
 
     fn shader_material_menu(&mut self, ui: &mut egui::Ui) {
@@ -539,6 +597,31 @@ mod tests {
         harness.run_steps(2);
         assert_eq!(harness.state().graph, valid);
         assert!(harness.state().status.contains("incompatible"));
+    }
+
+    #[test]
+    fn script_undo_and_redo_buttons_step_the_text_history() {
+        let mut editor = ShaderEditor::default();
+        editor.open_script();
+        let mut harness = Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(
+            |ui, state: &mut ShaderEditor| {
+                if state.workspace_tabs(ui) {
+                    state.content(ui);
+                }
+            },
+            editor,
+        );
+        harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+        harness.run_steps(2);
+        harness.get_by_role(egui::accesskit::Role::MultilineTextInput).type_text("shader_type sky;");
+        harness.run_steps(2);
+        assert_eq!(harness.state().source, "shader_type sky;");
+        harness.get_by_label("Undo").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().source, "");
+        assert!(harness.state_mut().action("edit.redo"));
+        harness.run_steps(3);
+        assert_eq!(harness.state().source, "shader_type sky;");
     }
 
     #[test]
