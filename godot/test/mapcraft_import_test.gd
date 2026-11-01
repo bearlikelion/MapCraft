@@ -312,6 +312,8 @@ func _check_runtime_build() -> void:
 	if trimesh:
 		var faces: PackedVector3Array = (holder.shape as ConcavePolygonShape3D).get_faces()
 		_expect(faces.size() == 86 * 3, "faces hidden between touching brushes are left out")
+		_expect(not (holder.shape as ConcavePolygonShape3D).backface_collision, \
+				"brush faces collide from outside only")
 	solid.free()
 
 

@@ -847,7 +847,8 @@ void Builder::add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vec
 			Ref<ConcavePolygonShape3D> shape;
 			shape.instantiate();
 			shape->set_faces(points);
-			shape->set_backface_collision_enabled(true);
+			// One-sided like Source brushes; inside faces catch a hull crossing a ridge.
+			shape->set_backface_collision_enabled(false);
 			cs->set_shape(shape);
 		} else {
 			Ref<ConvexPolygonShape3D> shape;
