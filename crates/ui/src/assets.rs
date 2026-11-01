@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use egui::RichText;
+use mapcraft_format::pack;
 use serde_json::Value;
 
 use crate::app::MapCraftApp;
@@ -158,5 +159,54 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("surf_x_d/Materials")).unwrap();
         assert!(holds_assets(&dir.path().join("surf_x_d")));
         assert!(!holds_assets(dir.path()));
+    }
+}
+
+impl MapCraftApp {
+    /// The pictures and models the map takes from the player's own folders; the SDK's own ship with the game.
+    pub(crate) fn custom_asset_entries(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let Some(sdk) = &self.project.sdk else { return Ok(Vec::new()) };
+        let own = |p: &Path| sdk.user_textures.iter().any(|u| p.starts_with(u));
+        let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
+        let map = self.view_map();
+        let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
+        let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().collect();
+        let mut entries = Vec::new();
+        for name in names {
+            let Some(path) = self.project.find_material(name).and_then(|m| m.image).filter(|p| own(p)) else { continue };
+            let bytes = read(&path)?;
+            let entry = pack::material_entry(name, &bytes).ok_or_else(|| format!("{name}: SurfsUp maps carry only PNG and JPEG pictures"))?;
+            entries.push((entry, bytes));
+        }
+        let models: BTreeSet<String> = map.nodes().filter_map(|(_, n)| self.project.model_path(n.kind.entity()?)).collect();
+        for model in models {
+            let Some(path) = self.project.models.vfs.find(&model).filter(|p| own(p)) else { continue };
+            let entry = pack::model_entry(&model).ok_or_else(|| format!("{model}: maps carry only .glb models"))?;
+            entries.push((entry, read(&path)?));
+        }
+        Ok(entries)
+    }
+
+    pub(crate) fn export_asset_pack(&mut self) {
+        let entries = match self.custom_asset_entries() {
+            Ok(entries) => entries,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let name = self.session.path.as_ref().map(|p| p.with_extension("mcpack"));
+        let mut dialog = rfd::FileDialog::new().add_filter("MapCraft asset pack", &["mcpack"]);
+        if let Some(path) = name {
+            dialog = dialog.set_file_name(path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
+            if let Some(parent) = path.parent() {
+                dialog = dialog.set_directory(parent);
+            }
+        }
+        let Some(path) = dialog.save_file() else { return };
+        match pack::save(&path, &entries) {
+            Ok(()) => self.status = format!("Exported {} custom assets to {}", entries.len(), path.display()),
+            Err(e) => self.status = e.to_string(),
+        }
     }
 }

@@ -104,6 +104,7 @@ pub(crate) struct Pointfile {
 }
 
 pub struct MapCraftApp {
+    pub(crate) shader_editor: crate::shader_editor::ShaderEditor,
     pub(crate) session: Session,
     pub(crate) prefs: SettingsStore<Prefs>,
     pub(crate) sdks: Vec<mapcraft_sdk_manager::Installed>,
@@ -272,6 +273,7 @@ impl MapCraftApp {
         let gpu = cc.wgpu_render_state.as_ref().map(|state| Gpu { renderer: Renderer::new(&state.device, &state.queue), state: state.clone() });
         let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING, uv: None };
         let mut app = Self {
+            shader_editor: Default::default(),
             session: Session::default(),
             prefs,
             sdks: Vec::new(),
@@ -1049,6 +1051,8 @@ impl MapCraftApp {
             "file.reload_assets" => self.reload_assets(),
             "file.import_gltf" => self.import_gltf_dialog(),
             "file.export_gltf" => self.export_gltf_dialog(),
+            "file.export_asset_pack" => self.export_asset_pack(),
+            "tools.shader_editor" => self.shader_editor.open = true,
             "edit.search" => self.dialogs.search = Some(crate::dialogs::CommandSearch::default()),
             "tools.transform" => self.dialogs.transform.open = true,
             "tools.roll_cw" | "tools.roll_ccw" | "tools.pitch_cw" | "tools.pitch_ccw" | "tools.yaw_cw" | "tools.yaw_ccw" => {
@@ -2172,6 +2176,7 @@ impl eframe::App for MapCraftApp {
         self.missing_assets_dialog(&ctx);
         self.extra_dialogs(&ctx);
         self.workshop_window(&ctx);
+        self.shader_editor.show(&ctx);
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
         self.bevel_window(&ctx);

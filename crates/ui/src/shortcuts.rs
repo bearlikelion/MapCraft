@@ -89,6 +89,8 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.revert", "Revert", ""),
     ("file.import_gltf", "Import glTF", ""),
     ("file.export_gltf", "Export glTF", ""),
+    ("tools.shader_editor", "Shader Editor", ""),
+    ("file.export_asset_pack", "Export Custom Asset Pack", ""),
     ("file.reload_assets", "Reload Assets", "F5"),
     ("edit.search", "Search Commands", "F3"),
     ("edit.preferences", "Preferences", "Ctrl+Comma"),

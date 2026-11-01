@@ -1,6 +1,5 @@
 //! File > Publish to Steam Workshop: uploads the open map, prefabs baked in, as `<map name>.mcmap`.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use egui::RichText;
@@ -41,6 +40,7 @@ struct Dialog {
     tags: Vec<(String, bool)>,
     capture: Capture,
     job: Option<Job>,
+    staging: Option<tempfile::TempDir>,
     result: Option<Result<Published, String>>,
     progress: Option<(&'static str, u64, u64)>,
 }
@@ -65,9 +65,7 @@ enum Act {
 
 impl MapCraftApp {
     pub(crate) fn workshop_menu(&mut self, ui: &mut egui::Ui) {
-        if self.project.sdk.as_ref().is_some_and(|s| s.manifest.workshop.is_some()) {
-            self.action_button(ui, "file.publish_workshop", "Publish to Steam Workshop…", true);
-        }
+        let _ = ui;
     }
 
     pub(crate) fn open_workshop(&mut self) {
@@ -103,7 +101,7 @@ impl MapCraftApp {
             })
             .collect();
         let capture = if item.is_none() { Capture::Requested } else { Capture::No };
-        self.workshop.dialog = Some(Dialog { app: w.app, name, upload, tags, capture, job: None, result: None, progress: None });
+        self.workshop.dialog = Some(Dialog { app: w.app, name, upload, tags, capture, job: None, staging: None, result: None, progress: None });
     }
 
     pub(crate) fn workshop_window(&mut self, ctx: &egui::Context) {
@@ -143,7 +141,27 @@ impl MapCraftApp {
             Capture::No => {}
         }
         if let Some(job) = &mut d.job {
-            match steam.poll(job) {
+            let state = steam.poll(job);
+            if let Some(id) = job.item_id() {
+                d.upload.item = Some(id);
+                let saved = json!({
+                    "item": id,
+                    "title": d.upload.title,
+                    "description": d.upload.description,
+                    "visibility": d.upload.visibility.label(),
+                    "tags": d.upload.tags,
+                });
+                if !self.session.view.is_object() {
+                    self.session.view = Value::Object(serde_json::Map::new());
+                }
+                if self.session.view.get(KEY) != Some(&saved) {
+                    if let Some(o) = self.session.view.as_object_mut() {
+                        o.insert(KEY.into(), saved);
+                    }
+                    self.session.mark_unsaved();
+                }
+            }
+            match state {
                 State::Working { stage, done, total } => {
                     d.progress = Some((stage, done, total));
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -279,7 +297,8 @@ impl MapCraftApp {
         d.result = None;
         d.upload.tags = d.tags.iter().filter(|(_, on)| *on).map(|(t, _)| t.clone()).collect();
         let started = content.and_then(|dir| {
-            d.upload.content = dir;
+            d.upload.content = dir.path().to_path_buf();
+            d.staging = Some(dir);
             let Ok(steam) = &self.workshop.steam else { return Err("Steam is not running".to_string()) };
             steam.publish(d.app, d.upload.clone())
         });
@@ -304,44 +323,17 @@ impl MapCraftApp {
     }
 
     /// Writes the item's folder: the map, with prefabs and mirrors baked in, and its pack when it has one.
-    fn workshop_content(&self) -> Result<PathBuf, String> {
-        let entries = self.workshop_pack()?;
+    fn workshop_content(&self) -> Result<tempfile::TempDir, String> {
+        let entries = self.custom_asset_entries()?;
         let name = self.workshop.dialog.as_ref().map(|d| d.name.clone()).ok_or("nothing to publish")?;
-        let dir = self.data_dir.as_ref().ok_or("no data folder")?.join("workshop").join(&name);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let staging = tempfile::Builder::new().prefix("mapcraft-workshop-").tempdir().map_err(|e| e.to_string())?;
+        let dir = staging.path();
         let file = dir.join(format!("{name}.{}", mapcraft_format::EXTENSION));
         mapcraft_format::save(&file, self.view_map(), self.session.sdk.as_deref(), &Value::Null).map_err(|e| e.to_string())?;
         if !entries.is_empty() {
             pack::save(&pack::path_for(&file), &entries).map_err(|e| e.to_string())?;
         }
-        Ok(dir)
-    }
-
-    /// The pictures and models the map takes from the player's own folders; the SDK's own ship with the game.
-    fn workshop_pack(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
-        let Some(sdk) = &self.project.sdk else { return Ok(Vec::new()) };
-        let own = |p: &Path| sdk.user_textures.iter().any(|u| p.starts_with(u));
-        let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
-        let map = self.view_map();
-        let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
-        let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().collect();
-        let mut entries = Vec::new();
-        for name in names {
-            let Some(path) = self.project.find_material(name).and_then(|m| m.image).filter(|p| own(p)) else { continue };
-            let bytes = read(&path)?;
-            let entry = pack::material_entry(name, &bytes).ok_or_else(|| format!("{name}: SurfsUp maps carry only PNG and JPEG pictures"))?;
-            entries.push((entry, bytes));
-        }
-        let models: BTreeSet<String> = map.nodes().filter_map(|(_, n)| self.project.model_path(n.kind.entity()?)).collect();
-        for model in models {
-            let Some(path) = self.project.models.vfs.find(&model).filter(|p| own(p)) else { continue };
-            let entry = pack::model_entry(&model).ok_or_else(|| format!("{model}: maps carry only .glb models"))?;
-            entries.push((entry, read(&path)?));
-        }
-        Ok(entries)
+        Ok(staging)
     }
 }
 

@@ -114,6 +114,13 @@ impl Steam {
     }
 }
 
+impl Job {
+    /// The item identity, available as soon as Steam creates it, even if submission fails.
+    pub fn item_id(&self) -> Option<u64> {
+        self.upload.item
+    }
+}
+
 /// What to publish: a folder of files and the details Steam shows.
 #[derive(Clone, Debug, Default)]
 pub struct Upload {

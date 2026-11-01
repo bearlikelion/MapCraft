@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+craft-atomic = { workspace = true }
+tempfile = { workspace = true }
 mapcraft-engine = { workspace = true }
 mapcraft-fgd = { workspace = true }
 mapcraft-format = { workspace = true }
@@ -37,7 +39,6 @@ steam = ["dep:mapcraft-steam"]
 mapcraft-geom = { workspace = true }
 mapcraft-map = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe", "wgpu", "snapshot"] }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true
