@@ -129,7 +129,9 @@ mod tests {
         std::fs::create_dir_all(a.path().join("materials/RealWorldTextures")).unwrap();
         std::fs::write(a.path().join("materials/RealWorldTextures/Floor.vtf"), b"x").unwrap();
         let vfs = Vfs::new(vec![a.path().to_path_buf()]);
-        assert_eq!(vfs.find("materials/realworldtextures/floor.vtf"), Some(a.path().join("materials/RealWorldTextures/Floor.vtf")));
+        let found = vfs.find("materials/realworldtextures/floor.vtf").unwrap();
+        // macOS and Windows file systems ignore case, so there the path keeps the spelling asked for.
+        assert!(found.to_string_lossy().eq_ignore_ascii_case(&a.path().join("materials/RealWorldTextures/Floor.vtf").to_string_lossy()), "{found:?}");
         assert_eq!(vfs.find("materials/realworldtextures/wall.vtf"), None);
         assert_eq!(vfs.find("materials/realworldtextures"), None, "folders are not files");
     }
