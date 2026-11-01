@@ -1154,13 +1154,43 @@ void Builder::add_prefab(const Dictionary &p_prefab) {
 
 void Builder::add_environment(const Dictionary &p_properties) {
 	has_environment = true;
-	Color horizon = color_key(p_properties, "sky_horizon_color", Color(0.72, 0.8, 0.88));
+	const auto bounded = [&](const String &key, double fallback, double minimum, double maximum) {
+		if (!p_properties.has(key)) { return fallback; }
+		const String raw = String(p_properties[key]).strip_edges();
+		const double value = raw.is_valid_float() ? raw.to_float() : NAN;
+		if (!Math::is_finite(value) || value < minimum || value > maximum) {
+			UtilityFunctions::push_warning("MapCraft: light_environment ", key, " must be finite and between ", minimum, " and ", maximum, "; using ", fallback);
+			return fallback;
+		}
+		return value;
+	};
+	const auto enabled = [&](const String &key, bool fallback) {
+		if (!p_properties.has(key)) { return fallback; }
+		const String value = String(p_properties[key]).strip_edges().to_lower();
+		if (value == "-1" || value == "auto") { return fallback; }
+		if (value.is_valid_float()) { const double number = value.to_float(); return Math::is_finite(number) ? number != 0.0 : fallback; }
+		return value != "0" && value != "false" && value != "off" && !value.is_empty();
+	};
+	const auto environment_color = [&](const String &key, const Color &fallback) {
+		if (!p_properties.has(key)) { return fallback; }
+		Vector3 rgb;
+		if (!parse_vec3(p_properties[key], rgb) || !rgb.is_finite() || rgb.x < 0 || rgb.y < 0 || rgb.z < 0 || rgb.x > 255 || rgb.y > 255 || rgb.z > 255) {
+			UtilityFunctions::push_warning("MapCraft: light_environment ", key, " must have finite color components from 0 to 255; using defaults");
+			return fallback;
+		}
+		return Color(rgb.x / 255.0, rgb.y / 255.0, rgb.z / 255.0);
+	};
+	Color horizon = environment_color("sky_horizon_color", Color(0.72, 0.8, 0.88));
 	Ref<ProceduralSkyMaterial> sky_material;
 	sky_material.instantiate();
-	sky_material->set_sky_top_color(color_key(p_properties, "sky_top_color", Color(0.3, 0.48, 0.75)));
+	sky_material->set_sky_top_color(environment_color("sky_top_color", Color(0.3, 0.48, 0.75)));
 	sky_material->set_sky_horizon_color(horizon);
 	sky_material->set_ground_horizon_color(horizon);
-	sky_material->set_ground_bottom_color(color_key(p_properties, "ground_color", Color(0.2, 0.21, 0.23)));
+	sky_material->set_ground_bottom_color(environment_color("ground_color", Color(0.2, 0.21, 0.23)));
+	sky_material->set_sky_curve(bounded("sky_curve", 0.15, 0.001, 1.0));
+	sky_material->set_ground_curve(bounded("ground_curve", 0.02, 0.001, 1.0));
+	sky_material->set_sky_energy_multiplier(bounded("sky_energy_multiplier", 1.0, 0.0, 64.0));
+	sky_material->set_ground_energy_multiplier(bounded("ground_energy_multiplier", 1.0, 0.0, 64.0));
 	Ref<Sky> sky;
 	sky.instantiate();
 	sky->set_material(sky_material);
@@ -1170,15 +1200,30 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	environment->set_background(Environment::BG_SKY);
 	environment->set_sky(sky);
 	environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
-	environment->set_ambient_light_energy(number_key(p_properties, "ambient_energy", 1.0));
+	environment->set_ambient_light_energy(bounded("ambient_energy", 1.0, 0.0, 64.0));
 	environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
-	environment->set_tonemapper(Environment::TONE_MAPPER_FILMIC);
-	double fog = number_key(p_properties, "fog_density", 0.0);
-	if (fog > 0.0) {
-		environment->set_fog_enabled(true);
-		environment->set_fog_density(fog);
-		environment->set_fog_light_color(color_key(p_properties, "fog_color", horizon));
-	}
+
+	String tone = String(p_properties.get("tonemap_mode", "2")).strip_edges().to_lower();
+	Environment::ToneMapper mapper = Environment::TONE_MAPPER_FILMIC;
+	if (tone == "0" || tone == "linear") { mapper = Environment::TONE_MAPPER_LINEAR; }
+	else if (tone == "1" || tone == "reinhardt") { mapper = Environment::TONE_MAPPER_REINHARDT; }
+	else if (tone == "3" || tone == "aces") { mapper = Environment::TONE_MAPPER_ACES; }
+	else if (tone == "4" || tone == "agx") { mapper = Environment::TONE_MAPPER_AGX; }
+	else if (tone != "2" && tone != "filmic") { UtilityFunctions::push_warning("MapCraft: unsupported tonemap_mode ", tone, "; using filmic"); }
+	environment->set_tonemapper(mapper);
+	environment->set_tonemap_exposure(bounded("tonemap_exposure", 1.0, 0.0, 64.0));
+	environment->set_tonemap_white(bounded("tonemap_white", 1.0, 0.001, 64.0));
+	environment->set_adjustment_enabled(enabled("adjustment_enabled", false));
+	environment->set_adjustment_brightness(bounded("adjustment_brightness", 1.0, 0.0, 8.0));
+	environment->set_adjustment_contrast(bounded("adjustment_contrast", 1.0, 0.0, 8.0));
+	environment->set_adjustment_saturation(bounded("adjustment_saturation", 1.0, 0.0, 8.0));
+	const double fog = bounded("fog_density", 0.0, 0.0, 1.0);
+	environment->set_fog_enabled(enabled("fog_enabled", fog > 0.0));
+	environment->set_fog_density(fog);
+	environment->set_fog_light_color(environment_color("fog_color", horizon));
+	environment->set_fog_light_energy(bounded("fog_light_energy", 1.0, 0.0, 64.0));
+	environment->set_fog_sun_scatter(bounded("fog_sun_scatter", 0.0, 0.0, 1.0));
+	environment->set_fog_sky_affect(bounded("fog_sky_affect", 1.0, 0.0, 1.0));
 	WorldEnvironment *world = memnew(WorldEnvironment);
 	world->set_name("WorldEnvironment");
 	world->set_environment(environment);
@@ -1187,11 +1232,15 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	DirectionalLight3D *sun = memnew(DirectionalLight3D);
 	sun->set_name("Sun");
 	Vector3 angles(50.0, 135.0, 0.0);
-	parse_vec3(p_properties.get("angles", ""), angles);
+	Vector3 parsed_angles;
+	if (p_properties.has("angles")) {
+		if (parse_vec3(p_properties["angles"], parsed_angles) && parsed_angles.is_finite() && Math::abs(parsed_angles.x) <= 360000 && Math::abs(parsed_angles.y) <= 360000) { angles = parsed_angles; }
+		else { UtilityFunctions::push_warning("MapCraft: light_environment invalid sun angles; using 50 135 0"); }
+	}
 	// The sun shines down its -Z, which points along the entity's facing like a marker's.
 	sun->set_transform(Transform3D(godot_basis(map_angles(angles)) * Basis(Vector3(0, 1, 0), -Math_PI / 2.0), Vector3()));
-	sun->set_color(color_key(p_properties, "sun_color", Color(1.0, 0.96, 0.9)));
-	sun->set_param(Light3D::PARAM_ENERGY, number_key(p_properties, "sun_energy", 1.0));
+	sun->set_color(environment_color("sun_color", Color(1.0, 0.96, 0.9)));
+	sun->set_param(Light3D::PARAM_ENERGY, bounded("sun_energy", 1.0, 0.0, 64.0));
 	sun->set_shadow(number_key(p_properties, "shadows", 1.0) != 0.0);
 	sun->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 1000.0);
 	add(root, sun, false);

@@ -90,6 +90,8 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.import_gltf", "Import glTF", ""),
     ("file.export_gltf", "Export glTF", ""),
     ("tools.shader_editor", "Shader Editor", ""),
+    ("tools.shader_graph", "Shader Material: Graph", ""),
+    ("tools.shader_script", "Shader Material: Script", ""),
     ("file.export_asset_pack", "Export Custom Asset Pack", ""),
     ("file.reload_assets", "Reload Assets", "F5"),
     ("edit.search", "Search Commands", "F3"),

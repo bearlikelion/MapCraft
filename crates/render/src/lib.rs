@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod camera;
+mod environment;
 mod gltf_map;
 mod model;
 mod scene;
@@ -14,6 +15,7 @@ use mapcraft_map::AntiTile;
 use wgpu::util::DeviceExt;
 
 pub use camera::{Camera, View};
+pub use environment::EnvironmentEffects;
 pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
 pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
 pub use scene::{
@@ -61,6 +63,11 @@ struct Globals {
     sky_top: [f32; 4],
     sky_horizon: [f32; 4],
     sky_ground: [f32; 4],
+    fog_color: [f32; 4],
+    fog: [f32; 4],
+    tonemap: [f32; 4],
+    adjustments: [f32; 4],
+    sky_shape: [f32; 4],
     /// The lowest lightmap brightness Quake lights add up to.
     minlight: [f32; 4],
     /// x is how strongly displaced vertices wash toward cyan by their blend weight.
@@ -527,6 +534,9 @@ impl Renderer {
     }
 
     pub fn set_scene(&mut self, scene: &SceneData) {
+        for warning in &scene.environment_warnings {
+            log::warn!("{warning}");
+        }
         let buffer = |label: &str, data: &[u8]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: data, usage: wgpu::BufferUsages::VERTEX })
         };
@@ -704,6 +714,18 @@ impl Renderer {
                 globals.sky_top = [s.top[0], s.top[1], s.top[2], 1.0];
                 globals.sky_horizon = [s.horizon[0], s.horizon[1], s.horizon[2], 0.0];
                 globals.sky_ground = [s.ground[0], s.ground[1], s.ground[2], 0.0];
+                let effects = s.effects;
+                globals.fog_color = [effects.fog_color[0], effects.fog_color[1], effects.fog_color[2], effects.fog_energy];
+                globals.fog = [effects.fog_density, effects.fog_sun_scatter, effects.fog_sky_affect, 0.0];
+                globals.tonemap = [effects.tonemap as f32, effects.exposure, effects.white, 0.0];
+                globals.adjustments = [effects.brightness, effects.contrast, effects.saturation, 0.0];
+                globals.sky_shape = [effects.sky_curve, effects.ground_curve, effects.sky_energy, effects.ground_energy];
+                for value in globals.ambient.iter_mut().take(3) {
+                    *value *= effects.sky_energy;
+                }
+                for value in globals.ground.iter_mut().take(3) {
+                    *value *= effects.ground_energy;
+                }
             }
         }
         self.queue.write_buffer(&target.globals, 0, bytemuck::bytes_of(&globals));
@@ -862,6 +884,11 @@ impl Globals {
             sky_top: [0.0; 4],
             sky_horizon: [0.0; 4],
             sky_ground: [0.0; 4],
+            fog_color: [0.0; 4],
+            fog: [0.0; 4],
+            tonemap: [2.0, 1.0, 1.0, 0.0],
+            adjustments: [1.0, 1.0, 1.0, 0.0],
+            sky_shape: [0.15, 0.02, 1.0, 1.0],
             minlight: [0.0; 4],
             paint: [paint, 0.0, 0.0, 0.0],
             lights: [Light::default(); MAX_LIGHTS],

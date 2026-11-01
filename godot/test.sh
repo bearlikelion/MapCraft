@@ -18,3 +18,5 @@ pack="$tmp/course.pck"
 "$godot" --headless --path "$here/test" -s res://addons/mapcraft/tools/pack_map.gd -- res://course.mcmap res://maps/course/course.scn "$pack"
 "$godot" --headless --path "$here/test" -s mapcraft_import_test.gd -- "$pack"
 "$godot" --headless --path "$here/test" -s mapcraft_pack_test.gd
+
+"$godot" --headless --path "$here/test" -s mapcraft_environment_test.gd

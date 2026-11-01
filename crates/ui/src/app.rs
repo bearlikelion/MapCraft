@@ -105,6 +105,9 @@ pub(crate) struct Pointfile {
 
 pub struct MapCraftApp {
     pub(crate) shader_editor: crate::shader_editor::ShaderEditor,
+    environment_warnings: Vec<String>,
+    shader_quit_dialog: bool,
+    shader_quit_approved: bool,
     pub(crate) session: Session,
     pub(crate) prefs: SettingsStore<Prefs>,
     pub(crate) sdks: Vec<mapcraft_sdk_manager::Installed>,
@@ -279,6 +282,9 @@ impl MapCraftApp {
         let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING, uv: None };
         let mut app = Self {
             shader_editor: Default::default(),
+            environment_warnings: Vec::new(),
+            shader_quit_dialog: false,
+            shader_quit_approved: false,
             session: Session::default(),
             prefs,
             sdks: Vec::new(),
@@ -757,6 +763,10 @@ impl MapCraftApp {
         let slope = view.slope_colors.then_some(mapcraft_render::Slope { walkable: view.slope_walkable, surfable: view.slope_surfable });
         let selection = &self.session.selection;
         let scene = build_scene(map, selection, &picked, &|m| renderer.material_size(m), &self.project, view.colorize, slope);
+        if self.environment_warnings != scene.environment_warnings {
+            self.output.extend(scene.environment_warnings.iter().map(|warning| format!("Environment: {warning}")));
+            self.environment_warnings.clone_from(&scene.environment_warnings);
+        }
         gpu.renderer.set_scene(&scene);
         gpu.renderer.set_bake_stale(self.bake.stale(map));
         self.scene_dirty = false;
@@ -922,6 +932,17 @@ impl MapCraftApp {
             self.bevel_modal_input(ctx);
             return;
         }
+        if self.shader_editor.is_active() {
+            let prefs = self.prefs.get();
+            for (shortcut, id) in crate::shortcuts::bindings(prefs.keymap, &prefs.shortcuts) {
+                let save = matches!(id, "file.save" | "file.save_as");
+                let undo = self.shader_editor.is_graph() && !ctx.egui_wants_keyboard_input() && matches!(id, "edit.undo" | "edit.redo");
+                if (save || undo) && ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
+                    self.shader_editor.action(id);
+                }
+            }
+            return;
+        }
         if ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -994,6 +1015,9 @@ impl MapCraftApp {
 
     /// Runs a bindable action: the shell's own, or an engine command.
     pub(crate) fn run_action(&mut self, id: &str) {
+        if self.shader_editor.action(id) {
+            return;
+        }
         if crate::shortcuts::vertex_only(id) {
             self.vertex_action(id);
             return;
@@ -1057,7 +1081,8 @@ impl MapCraftApp {
             "file.import_gltf" => self.import_gltf_dialog(),
             "file.export_gltf" => self.export_gltf_dialog(),
             "file.export_asset_pack" => self.export_asset_pack(),
-            "tools.shader_editor" => self.shader_editor.open = true,
+            "tools.shader_editor" | "tools.shader_graph" => self.shader_editor.open_graph(),
+            "tools.shader_script" => self.shader_editor.open_script(),
             "edit.search" => self.dialogs.search = Some(crate::dialogs::CommandSearch::default()),
             "tools.transform" => self.dialogs.transform.open = true,
             "tools.roll_cw" | "tools.roll_ccw" | "tools.pitch_cw" | "tools.pitch_ccw" | "tools.yaw_cw" | "tools.yaw_ccw" => {
@@ -1571,6 +1596,46 @@ impl MapCraftApp {
         if self.show_sdk_dialog {
             self.sdk_dialog(ctx);
         }
+        if self.shader_quit_dialog {
+            let mut choice = None;
+            egui::Modal::new(egui::Id::new("save-shaders-on-quit")).show(ctx, |ui| {
+                ui.heading("Save shader changes before quitting?");
+                ui.label("Script, graph or material documents have unsaved changes.");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Save documents").clicked() {
+                        choice = Some(1);
+                    }
+                    if ui.button("Discard shader changes").clicked() {
+                        choice = Some(2);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(3);
+                    }
+                });
+            });
+            match choice {
+                Some(1) => {
+                    if self.shader_editor.save_all() {
+                        self.shader_quit_dialog = false;
+                        self.shader_quit_approved = true;
+                        self.request(Pending::Quit);
+                    } else {
+                        self.shader_quit_dialog = false;
+                        self.status = "Shader changes were not saved; quitting canceled".into();
+                    }
+                }
+                Some(2) => {
+                    self.shader_quit_dialog = false;
+                    self.shader_quit_approved = true;
+                    self.request(Pending::Quit);
+                }
+                Some(_) => {
+                    self.shader_quit_dialog = false;
+                    self.shader_quit_approved = false;
+                }
+                None => {}
+            }
+        }
         if let Some(action) = self.pending.take() {
             let name = self.session.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_string(), |n| n.to_string_lossy().into_owned());
             let mut choice = None;
@@ -1591,7 +1656,9 @@ impl MapCraftApp {
             match choice {
                 Some(1) if self.save(false) => self.run_pending(action),
                 Some(2) => self.run_pending(action),
-                Some(_) => {}
+                Some(_) => {
+                    self.shader_quit_approved = false;
+                }
                 None => self.pending = Some(action),
             }
         }
@@ -1935,6 +2002,14 @@ impl MapCraftApp {
     }
 
     fn central(&mut self, ui: &mut egui::Ui) {
+        self.hovered_pane = None;
+        if self.shader_editor.workspace_tabs(ui) {
+            for pane in &mut self.panes {
+                pane.rect = Rect::NOTHING;
+            }
+            self.shader_editor.content(ui);
+            return;
+        }
         let full = ui.available_rect_before_wrap();
         self.hovered_pane = None;
         ui.painter().rect_filled(full, 0.0, crate::chrome::BG);
@@ -2128,9 +2203,13 @@ pub(crate) fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Optio
 
 impl eframe::App for MapCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && self.session.is_dirty() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && (self.session.is_dirty() || self.shader_editor.has_unsaved()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(Pending::Quit);
+            if self.shader_editor.has_unsaved() && !self.shader_quit_approved {
+                self.shader_quit_dialog = true;
+            } else {
+                self.pending = Some(Pending::Quit);
+            }
         }
         if self.quit_confirmed || std::mem::take(&mut self.quit_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2171,7 +2250,9 @@ impl eframe::App for MapCraftApp {
             egui::Panel::bottom("output").resizable(true).default_size(160.0).show(ui, |ui| self.bottom_panel(ui));
         }
         egui::Panel::left("left").resizable(true).default_size(260.0).show(ui, |ui| self.left_panel(ui));
-        egui::Panel::left("tools").resizable(false).exact_size(44.0).show(ui, |ui| self.tool_palette(ui));
+        if !self.shader_editor.is_active() {
+            egui::Panel::left("tools").resizable(false).exact_size(44.0).show(ui, |ui| self.tool_palette(ui));
+        }
         egui::Panel::right("inspector").resizable(true).default_size(300.0).min_size(240.0).show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| {
             self.central(ui);
@@ -2181,7 +2262,6 @@ impl eframe::App for MapCraftApp {
         self.missing_assets_dialog(&ctx);
         self.extra_dialogs(&ctx);
         self.workshop_window(&ctx);
-        self.shader_editor.show(&ctx);
         if std::mem::take(&mut self.shader_editor.reload_assets) {
             self.run_action("file.reload_assets");
         }

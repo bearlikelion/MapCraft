@@ -138,6 +138,7 @@ pub struct SceneData {
     /// Quake's minimum lightmap brightness from worldspawn.
     pub minlight: [f32; 3],
     pub sky: Option<Sky>,
+    pub environment_warnings: Vec<String>,
 }
 
 /// Godot's procedural sky for the Lit mode, in linear color, as the MapCraft addon builds it from a `light_environment`.
@@ -148,6 +149,7 @@ pub struct Sky {
     pub ground: [f32; 3],
     /// Scales the light the sky casts on surfaces.
     pub ambient: f32,
+    pub effects: crate::EnvironmentEffects,
 }
 
 const TOOL_ALPHA: f32 = 0.3;
@@ -365,9 +367,10 @@ pub fn build_scene(
                         facing_arrow(out, &entity_transform(e), min, max, edge);
                     }
                 }
-                if let Some((sun, sky)) = read_environment(e) {
+                if let Some((sun, sky, warnings)) = read_environment(e) {
                     scene.lights.push(sun);
                     scene.sky = Some(sky);
+                    scene.environment_warnings.extend(warnings);
                 } else {
                     scene.lights.extend(read_light(e, origin));
                 }
@@ -412,30 +415,42 @@ fn aim(yaw: f64, pitch: f64) -> DVec3 {
 }
 
 /// A `light_environment` without Source's `_light`, read with the Godot addon's keys and defaults.
-fn read_environment(e: &Entity) -> Option<(Light, Sky)> {
+fn read_environment(e: &Entity) -> Option<(Light, Sky, Vec<String>)> {
     if e.classname != "light_environment" || e.get("_light").is_some() {
         return None;
     }
-    let number = |k: &str, default: f64| e.get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(default);
-    let color = |k: &str, default: [f64; 3]| {
-        let v = numbers(e.get(k).unwrap_or_default());
-        let c = if let &[r, g, b, ..] = v.as_slice() { [r, g, b].map(|c| c / 255.0) } else { default };
-        c.map(|c| c.clamp(0.0, 1.0).powf(2.2) as f32)
+    let mut warnings = Vec::new();
+    let color = |key: &str, default: [f64; 3], warnings: &mut Vec<String>| {
+        let Some(raw) = e.get(key) else { return default.map(|v| v.powf(2.2) as f32) };
+        let parts: Vec<_> = raw.split_whitespace().take(4).map(str::parse::<f64>).collect();
+        if let [Ok(r), Ok(g), Ok(b)] = parts.as_slice()
+            && [r, g, b].into_iter().all(|v| v.is_finite() && (0.0..=255.0).contains(v))
+        {
+            return [*r, *g, *b].map(|v| (v / 255.0).powf(2.2) as f32);
+        }
+        warnings.push(format!("light_environment: {key} must have three finite color components from 0 to 255; using defaults"));
+        default.map(|v| v.powf(2.2) as f32)
     };
-    let (pitch, yaw) = match numbers(e.get("angles").unwrap_or_default()).as_slice() {
-        &[p, y, ..] => (p, y),
-        _ => (50.0, 135.0),
+    let angles: Vec<_> = e.get("angles").unwrap_or("50 135 0").split_whitespace().take(4).map(str::parse::<f64>).collect();
+    let (pitch, yaw) = match angles.as_slice() {
+        [Ok(p), Ok(y), ..] if p.is_finite() && y.is_finite() && p.abs() <= 360_000.0 && y.abs() <= 360_000.0 => (*p, *y),
+        _ => {
+            warnings.push("light_environment: invalid sun angles; using 50 135 0".into());
+            (50.0, 135.0)
+        }
     };
-    let sun = DVec3::from_array(color("sun_color", [1.0, 0.96, 0.9]).map(f64::from)) * number("sun_energy", 1.0);
-    // Positive pitch tips the sunlight below the horizon, as it does a marker's facing.
+    let sun_color = color("sun_color", [1.0, 0.96, 0.9], &mut warnings);
+    let sun_energy = crate::environment::bounded(e, "sun_energy", 1.0, 0.0, 64.0, &mut warnings);
+    let sun = DVec3::from_array(sun_color.map(f64::from)) * f64::from(sun_energy);
     let light = Light { pos: (-aim(yaw, -pitch)).extend(0.0).as_vec4().to_array(), color: sun.extend(3.0).as_vec4().to_array(), ..Light::default() };
-    let sky = Sky {
-        top: color("sky_top_color", [0.3, 0.48, 0.75]),
-        horizon: color("sky_horizon_color", [0.72, 0.8, 0.88]),
-        ground: color("ground_color", [0.2, 0.21, 0.23]),
-        ambient: number("ambient_energy", 1.0) as f32,
-    };
-    Some((light, sky))
+    let top = color("sky_top_color", [0.3, 0.48, 0.75], &mut warnings);
+    let horizon = color("sky_horizon_color", [0.72, 0.8, 0.88], &mut warnings);
+    let ground = color("ground_color", [0.2, 0.21, 0.23], &mut warnings);
+    let ambient = crate::environment::bounded(e, "ambient_energy", 1.0, 0.0, 64.0, &mut warnings);
+    let (effects, effect_warnings) = crate::EnvironmentEffects::read(e, horizon);
+    warnings.extend(effect_warnings);
+    let sky = Sky { top, horizon, ground, ambient, effects };
+    Some((light, sky, warnings))
 }
 
 /// Reads a light from Source or Quake style key values.
@@ -812,6 +827,20 @@ mod tests {
         assert!(close(sun.pos[1], -0.70710677) && close(sun.pos[2], 0.70710677), "points back up along the sunlight");
         assert!(close(sun.color[0], 0.5 * 150.0 / 255.0) && close(sun.color[2], 150.0 / 255.0) && sun.color[3] == 3.0);
         assert_eq!(sun.cone[2..], [0.5, 1.0]);
+    }
+
+    #[test]
+    fn invalid_environment_never_sends_nonfinite_values_to_gpu() {
+        let mut e = Entity { classname: "light_environment".into(), ..Entity::default() };
+        e.set("sun_energy", "1e300");
+        e.set("angles", "NaN inf 0");
+        e.set("sky_top_color", "NaN 0 0");
+        e.set("ambient_energy", "inf");
+        let (sun, sky, warnings) = read_environment(&e).unwrap();
+        assert!(sun.pos.iter().chain(sun.color.iter()).all(|v| v.is_finite()));
+        assert!(sky.top.iter().all(|v| v.is_finite()));
+        assert!(sky.ambient.is_finite());
+        assert_eq!(warnings.len(), 4);
     }
 
     #[test]

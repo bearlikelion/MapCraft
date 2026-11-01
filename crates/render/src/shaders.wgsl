@@ -15,6 +15,11 @@ struct Globals {
     sky_top: vec4<f32>,
     sky_horizon: vec4<f32>,
     sky_ground: vec4<f32>,
+    fog_color: vec4<f32>,
+    fog: vec4<f32>,
+    tonemap: vec4<f32>,
+    adjustments: vec4<f32>,
+    sky_shape: vec4<f32>,
     minlight: vec4<f32>,
     paint: vec4<f32>,
     lights: array<Light, 64>,
@@ -349,7 +354,7 @@ fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
         emitted = mix(emitted, layer(emission_b, samp_b, i.blend_uv).color.rgb * material_b.emission.rgb, a.share);
     }
     let color = max(sum, vec3<f32>(0.0)) + lightmapped + ambient + emitted;
-    return vec4<f32>(paint_overlay(select(color, filmic(color), globals.sky_top.w > 0.0), i), c.a);
+    return vec4<f32>(paint_overlay(environment_color(color, i.world), i), c.a);
 }
 
 // Godot's filmic tonemapper at white 1, which the MapCraft addon gives its environments.
@@ -357,6 +362,43 @@ fn filmic(c: vec3<f32>) -> vec3<f32> {
     let x = max(c, vec3<f32>(0.0));
     let t = (x * (0.88 * x + 0.06) + 0.002) / (x * (0.88 * x + 0.6) + 0.06) - 0.01 / 0.3;
     return t / 0.578355;
+}
+
+fn tone_adjust(c: vec3<f32>) -> vec3<f32> {
+    let x = max(c * globals.tonemap.y, vec3<f32>(0.0));
+    let white = max(globals.tonemap.z, 0.001);
+    var result = x;
+    switch u32(globals.tonemap.x) {
+        case 1u: { result = x * (1.0 + x / (white * white)) / (1.0 + x); }
+        case 2u: { result = filmic(x) / max(filmic(vec3<f32>(white)), vec3<f32>(0.0001)); }
+        case 3u: {
+            result = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+        }
+        default: {}
+    }
+    // Adjustments operate after tonemapping in display space.
+    var display = to_srgb(max(result, vec3<f32>(0.0))) * globals.adjustments.x;
+    display = mix(vec3<f32>(0.5), display, globals.adjustments.y);
+    display = mix(vec3<f32>(luma(display)), display, globals.adjustments.z);
+    return to_linear(max(display, vec3<f32>(0.0)));
+}
+
+fn fog_light(direction: vec3<f32>) -> vec3<f32> {
+    var color = globals.fog_color.rgb * globals.fog_color.w;
+    if globals.ambient.w > 0.0 && globals.lights[0].pos.w == 0.0 {
+        color += globals.lights[0].color.rgb * pow(max(dot(direction, globals.lights[0].pos.xyz), 0.0), 8.0) * globals.fog.y;
+    }
+    return color;
+}
+
+fn environment_color(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    if globals.sky_top.w < 0.5 { return c; }
+    let delta = world - globals.eye.xyz;
+    let distance = length(delta);
+    let direction = delta / max(distance, 0.0001);
+    // Map space uses inches; Godot's fog density is per meter.
+    let amount = 1.0 - exp(-distance / 39.37 * globals.fog.x);
+    return tone_adjust(mix(c, fog_light(direction), clamp(amount, 0.0, 1.0)));
 }
 
 @group(2) @binding(0) var lightmap_tex: texture_2d<f32>;
@@ -411,7 +453,7 @@ fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
         discard;
     }
     let emitted = textureSample(emission_map, samp, i.uv).rgb * material.emission.rgb;
-    return vec4<f32>(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, 1.0);
+    return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
 }
 
 @fragment
@@ -451,7 +493,8 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     let p = globals.inv_view_proj * vec4<f32>(i.ndc, 0.5, 1.0);
     let d = normalize(p.xyz / p.w - globals.eye.xyz);
     let v = acos(clamp(d.z, -1.0, 1.0));
-    var sky = mix(globals.sky_horizon.rgb, globals.sky_top.rgb, clamp(1.0 - pow(1.0 - (1.0 - v / (PI * 0.5)), 1.0 / 0.15), 0.0, 1.0));
+    var sky = mix(globals.sky_horizon.rgb, globals.sky_top.rgb, clamp(1.0 - pow(1.0 - (1.0 - v / (PI * 0.5)), 1.0 / globals.sky_shape.x), 0.0, 1.0));
+    sky *= globals.sky_shape.z;
     let sun = globals.lights[0];
     if globals.ambient.w > 0.0 && sun.pos.w == 0.0 {
         let s = acos(clamp(dot(sun.pos.xyz, d), -1.0, 1.0)) / radians(30.0);
@@ -459,8 +502,10 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
             sky = mix(sun.color.rgb, sky, clamp(1.0 - pow(1.0 - s, 1.0 / 0.15), 0.0, 1.0));
         }
     }
-    let ground = mix(globals.sky_horizon.rgb, globals.sky_ground.rgb, clamp(1.0 - pow(1.0 - (v - PI * 0.5) / (PI * 0.5), 1.0 / 0.02), 0.0, 1.0));
-    return vec4<f32>(filmic(select(ground, sky, d.z >= 0.0)), 1.0);
+    let ground = mix(globals.sky_horizon.rgb, globals.sky_ground.rgb, clamp(1.0 - pow(1.0 - (v - PI * 0.5) / (PI * 0.5), 1.0 / globals.sky_shape.y), 0.0, 1.0)) * globals.sky_shape.w;
+    var background = select(ground, sky, d.z >= 0.0);
+    if globals.fog.x > 0.0 { background = mix(background, fog_light(d), globals.fog.z); }
+    return vec4<f32>(tone_adjust(background), 1.0);
 }
 
 struct LineIn {

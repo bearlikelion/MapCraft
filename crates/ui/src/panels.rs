@@ -674,7 +674,23 @@ impl MapCraftApp {
         }
     }
 
+    fn shader_material_button(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Shader Material", |ui| {
+            for (label, command) in [("Shader Graph", "tools.shader_graph"), ("Script", "tools.shader_script")] {
+                if ui.button(label).clicked() {
+                    self.run_action(command);
+                    ui.close();
+                }
+            }
+        });
+    }
+
     fn material_browser(&mut self, ui: &mut egui::Ui) {
+        self.shader_material_button(ui);
+        egui::CollapsingHeader::new("Material").id_salt("material-browser").default_open(true).show(ui, |ui| self.material_browser_contents(ui));
+    }
+
+    fn material_browser_contents(&mut self, ui: &mut egui::Ui) {
         if self.project.sdk.is_none() {
             ui.label("No SDK: pick one with File > New Map to browse materials.");
             return;
@@ -1578,6 +1594,7 @@ impl MapCraftApp {
             ui.scope(|ui| align = inspect::icons(ui, &[("globe", "Align to world", "Align to world"), ("face", "Align to face", "Align to face")])).response
         });
         let anti_tile = anti_tile_row(ui, "brushes-anti-tile", faces.iter().copied(), faces.iter().any(|f| self.project.pixel_face(f)));
+        self.shader_material_button(ui);
 
         if retyped && let Some(class) = pick {
             if let Err(e) = self.session.set_brush_class(class) {
@@ -2035,6 +2052,7 @@ impl MapCraftApp {
                 (browse, bucket) = (r.clicked(), b);
                 r
             });
+            self.shader_material_button(ui);
             if browse {
                 self.run_action("panel.materials");
             }
