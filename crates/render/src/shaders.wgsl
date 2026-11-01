@@ -21,14 +21,20 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+struct MaterialParameters { tint: vec4<f32>, emission: vec4<f32>, };
+
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var normal_map: texture_2d<f32>;
 @group(1) @binding(3) var orm_map: texture_2d<f32>;
+@group(1) @binding(4) var emission_map: texture_2d<f32>;
+@group(1) @binding(5) var<uniform> material: MaterialParameters;
 @group(3) @binding(0) var tex_b: texture_2d<f32>;
 @group(3) @binding(1) var samp_b: sampler;
 @group(3) @binding(2) var normal_b: texture_2d<f32>;
 @group(3) @binding(3) var orm_b: texture_2d<f32>;
+@group(3) @binding(4) var emission_b: texture_2d<f32>;
+@group(3) @binding(5) var<uniform> material_b: MaterialParameters;
 
 const PI: f32 = 3.14159265;
 
@@ -215,13 +221,13 @@ struct Albedo {
 fn albedo(i: MeshOut) -> Albedo {
     var out: Albedo;
     let a = layer(tex, samp, i.uv);
-    var c = a.color;
+    var c = a.color * material.tint;
     out.hex_a = a.hex;
     if LAYERS == 2u {
         let b = layer(tex_b, samp_b, i.blend_uv);
         out.share = layer_share(i.blend, luma(c.rgb), luma(b.color.rgb));
         out.hex_b = b.hex;
-        c = mix(c, b.color, out.share);
+        c = mix(c, b.color * material_b.tint, out.share);
     }
     if ANTI_TILE > 0u {
         c = vec4<f32>(c.rgb * macro_variation(i.world), c.a);
@@ -338,7 +344,11 @@ fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
     let ambient = (diffuse * hemisphere(n) + env_brdf(f0, rough, nv) * hemisphere(r)) * orm.r;
     // A lightmap byte tops out at twice the texture's brightness.
     let lightmapped = diffuse * pow(clamp(max(lightmap, globals.minlight.rgb), vec3<f32>(0.0), vec3<f32>(2.0)), vec3<f32>(2.2));
-    let color = max(sum, vec3<f32>(0.0)) + lightmapped + ambient;
+    var emitted = layer(emission_map, samp, i.uv).color.rgb * material.emission.rgb;
+    if LAYERS == 2u {
+        emitted = mix(emitted, layer(emission_b, samp_b, i.blend_uv).color.rgb * material_b.emission.rgb, a.share);
+    }
+    let color = max(sum, vec3<f32>(0.0)) + lightmapped + ambient + emitted;
     return vec4<f32>(paint_overlay(select(color, filmic(color), globals.sky_top.w > 0.0), i), c.a);
 }
 
@@ -395,17 +405,18 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
 // Quake engines multiply in sRGB at twice the lightmap, clamp, and cut fence textures where alpha is low.
 @fragment
 fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv);
+    let c = textureSample(tex, samp, i.uv) * material.tint;
     let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb * 2.0;
     if c.a < 0.5 {
         discard;
     }
-    return vec4<f32>(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))), 1.0);
+    let emitted = textureSample(emission_map, samp, i.uv).rgb * material.emission.rgb;
+    return vec4<f32>(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, 1.0);
 }
 
 @fragment
 fn fs_baked_unlit(i: BakedOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(textureSample(tex, samp, i.uv).rgb, 1.0);
+    return vec4<f32>(textureSample(tex, samp, i.uv).rgb * material.tint.rgb, 1.0);
 }
 
 // Quake's sky on a face: the view direction flattened toward a dome picks the spot, and the near

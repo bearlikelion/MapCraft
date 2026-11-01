@@ -18,11 +18,17 @@ pub struct Thumbs {
 /// Where a preview comes from: an image file, or a picture a plugin already decoded.
 enum Source {
     File(PathBuf),
+    Surface(PathBuf, [f32; 4]),
     Pixels(std::sync::Arc<mapcraft_plugin_host::Picture>),
 }
 
 fn decode(source: &Source, size: u32) -> Option<ColorImage> {
     let img = match source {
+        Source::Surface(path, tint) => {
+            let mut image = crate::project::bounded_picture(path).ok()?;
+            crate::project::tint_picture(&mut image, *tint);
+            image::DynamicImage::ImageRgba8(image)
+        }
         Source::File(path) => std::panic::catch_unwind(|| image::open(path)).ok()?.ok()?,
         Source::Pixels(p) => image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(p.width, p.height, p.rgba.clone())?),
     };
@@ -59,7 +65,11 @@ impl Thumbs {
     /// The preview for a material, queued for loading the first time it is asked for.
     pub fn get(&mut self, ctx: &egui::Context, m: &crate::project::Material) -> Option<&TextureHandle> {
         if !self.textures.contains_key(&m.name) && !self.pending.contains(&m.name) {
-            let source = m.pixels.clone().map(Source::Pixels).or_else(|| m.image.clone().map(Source::File));
+            let source = m.pixels.clone().map(Source::Pixels).or_else(|| {
+                m.image
+                    .clone()
+                    .map(|path| m.descriptor.as_ref().map_or_else(|| Source::File(path.clone()), |descriptor| Source::Surface(path.clone(), descriptor.albedo)))
+            });
             let queued = source.is_some_and(|s| self.requests.send((m.name.clone(), s)).is_ok());
             match (queued, m.color) {
                 (true, _) => {

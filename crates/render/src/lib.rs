@@ -221,6 +221,13 @@ impl Renderer {
                 },
                 image(2),
                 image(3),
+                image(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
             ],
         });
         let sampler = material_sampler(device, false);
@@ -344,7 +351,7 @@ impl Renderer {
 
         let flat = texture(device, queue, 1, 1, &[128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
         let rough = texture(device, queue, 1, 1, &[255, 255, 0, 255], wgpu::TextureFormat::Rgba8Unorm);
-        let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough);
+        let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough, None);
         let white_albedo = texture(device, queue, 1, 1, &[255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb);
         let checker: Vec<u8> = (0..64u32).flat_map(|i| if (i % 8 < 4) ^ (i / 8 < 4) { [255, 0, 255, 255] } else { [0, 0, 0, 255] }).collect();
         let missing_albedo = texture(device, queue, 8, 8, &checker, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -412,7 +419,7 @@ impl Renderer {
             return false;
         }
         let albedo = texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
-        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &albedo, &self.flat, &self.rough);
+        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &albedo, &self.flat, &self.rough, None);
         self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo, pixelated });
         true
     }
@@ -434,7 +441,7 @@ impl Renderer {
         };
         let far = texture(&self.device, &self.queue, half, h, &layer(half), wgpu::TextureFormat::Rgba8UnormSrgb);
         let near = texture(&self.device, &self.queue, half, h, &layer(0), wgpu::TextureFormat::Rgba8UnormSrgb);
-        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &far, &near, &self.rough);
+        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &far, &near, &self.rough, None);
         self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo: far, pixelated });
         self.skies.insert(name.to_string());
         true
@@ -442,13 +449,39 @@ impl Renderer {
 
     /// Gives an uploaded material Lit's maps: a normal map with green up, and occlusion, roughness and metallic in RGB.
     pub fn set_material_maps(&mut self, name: &str, normal: (u32, u32, &[u8]), orm: (u32, u32, &[u8])) -> bool {
-        if !self.fits(normal.0, normal.1, normal.2) || !self.fits(orm.0, orm.1, orm.2) {
+        self.set_material_surface(name, normal, orm, (1, 1, &[255; 4]), [1.0; 4], [0.0; 3])
+    }
+
+    /// Gives a material its PBR maps, linear tint, and emission.
+    pub fn set_material_surface(
+        &mut self,
+        name: &str,
+        normal: (u32, u32, &[u8]),
+        orm: (u32, u32, &[u8]),
+        emission: (u32, u32, &[u8]),
+        albedo: [f32; 4],
+        emission_color: [f32; 3],
+    ) -> bool {
+        if !self.fits(normal.0, normal.1, normal.2)
+            || !self.fits(orm.0, orm.1, orm.2)
+            || !self.fits(emission.0, emission.1, emission.2)
+            || !albedo.iter().chain(emission_color.iter()).all(|v| v.is_finite())
+        {
             return false;
         }
         let Some(m) = self.materials.get_mut(name) else { return false };
         let linear = |(w, h, rgba)| texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8Unorm);
+        let emitted = texture(&self.device, &self.queue, emission.0, emission.1, emission.2, wgpu::TextureFormat::Rgba8UnormSrgb);
         let sampler = if m.pixelated || self.pixelated { &self.nearest } else { &self.sampler };
-        m.bind_group = material_bind_group(&self.device, &self.texture_layout, sampler, &m.albedo, &linear(normal), &linear(orm));
+        m.bind_group = material_bind_group(
+            &self.device,
+            &self.texture_layout,
+            sampler,
+            &m.albedo,
+            &linear(normal),
+            &linear(orm),
+            Some((&emitted, albedo, emission_color)),
+        );
         true
     }
 
@@ -465,8 +498,9 @@ impl Renderer {
             return;
         }
         self.pixelated = on;
-        let bind =
-            |albedo: &wgpu::TextureView| material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), albedo, &self.flat, &self.rough);
+        let bind = |albedo: &wgpu::TextureView| {
+            material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), albedo, &self.flat, &self.rough, None)
+        };
         (self.white, self.missing) = (bind(&self.white_albedo), bind(&self.missing_albedo));
         self.materials.clear();
         self.skies.clear();
@@ -781,7 +815,10 @@ impl Renderer {
             .filter(|(_, p)| self.fits(p.width, p.height, &p.rgba))
             .map(|(i, p)| {
                 let albedo = texture(&self.device, &self.queue, p.width, p.height, &p.rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
-                (model.texture_name(i), material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), &albedo, &self.flat, &self.rough))
+                (
+                    model.texture_name(i),
+                    material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), &albedo, &self.flat, &self.rough, None),
+                )
             })
             .collect();
         let buffers: Vec<(&BatchKey, wgpu::Buffer, u32)> = (batches.iter().filter(|(_, v)| !v.is_empty()))
@@ -951,7 +988,15 @@ fn material_bind_group(
     albedo: &wgpu::TextureView,
     normal: &wgpu::TextureView,
     orm: &wgpu::TextureView,
+    surface: Option<(&wgpu::TextureView, [f32; 4], [f32; 3])>,
 ) -> wgpu::BindGroup {
+    let (emission, tint, color) = surface.unwrap_or((albedo, [1.0; 4], [0.0; 3]));
+    let values = [tint, [color[0], color[1], color[2], 0.0]];
+    let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("material parameters"),
+        contents: bytemuck::cast_slice(&values),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
         layout,
@@ -960,6 +1005,8 @@ fn material_bind_group(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(normal) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(orm) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(emission) },
+            wgpu::BindGroupEntry { binding: 5, resource: parameters.as_entire_binding() },
         ],
     })
 }
@@ -1019,6 +1066,28 @@ fn grid_lines(out: &mut Vec<LineVertex>, camera: &Camera, size: DVec2, grid: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pbr_surface_bindings_validate_on_available_adapter() {
+        let Ok(adapter) = pollster::block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut renderer = Renderer::new(&device, &queue);
+        assert!(renderer.upload_material("pbr", 1, 1, &[255; 4]));
+        assert!(renderer.set_material_surface(
+            "pbr",
+            (1, 1, &[128, 128, 255, 255]),
+            (1, 1, &[255, 128, 192, 255]),
+            (1, 1, &[255; 4]),
+            [0.5, 0.3, 0.1, 1.0],
+            [2.0, 0.0, 0.0]
+        ));
+        assert!(!renderer.set_material_surface("pbr", (0, 1, &[]), (1, 1, &[255; 4]), (1, 1, &[255; 4]), [1.0; 4], [0.0; 3]));
+        assert!(pollster::block_on(validation.pop()).is_none());
+    }
 
     #[test]
     fn a_bake_multiplies_the_material_in_srgb_by_twice_its_lightmap() {

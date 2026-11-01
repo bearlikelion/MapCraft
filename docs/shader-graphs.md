@@ -18,3 +18,13 @@ All constants must be finite, and graphs contain at most 128 nodes.
 Unsupported document versions, missing inputs and incompatible output connections return diagnostics.
 
 Shader compilation, viewport rendering, texture nodes, graphical wire manipulation and map material assignment are not implemented yet.
+
+## PBR material authoring
+
+The **PBR Material** tab opens and saves version 1 PBR descriptors for `.mcpack` version 2.
+Opening another descriptor is disabled while the current material has unsaved changes.
+Save a descriptor under `materials/<name>.json` in a configured custom asset folder, with referenced images under its `textures/` folder.
+Saving reloads project assets, updates the browser, and uploads the material to the viewport when the map uses it.
+Select Lit mode for normal mapping, roughness, metallic and emission.
+Plugin material listings do not replace a custom descriptor of the same name.
+Invalid descriptors or missing dependencies produce a magenta material and an entry in the asset diagnostics.

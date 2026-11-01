@@ -2182,6 +2182,9 @@ impl eframe::App for MapCraftApp {
         self.extra_dialogs(&ctx);
         self.workshop_window(&ctx);
         self.shader_editor.show(&ctx);
+        if std::mem::take(&mut self.shader_editor.reload_assets) {
+            self.run_action("file.reload_assets");
+        }
         self.sdk_manager_window(&ctx);
         self.plugin_window(&ctx);
         self.bevel_window(&ctx);

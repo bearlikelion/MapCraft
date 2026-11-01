@@ -74,7 +74,10 @@ Invalid descriptors or their texture dependencies produce a missing material and
 The editor's **Shader Editor > PBR Material** tab writes descriptors.
 Put descriptors in `materials/` and referenced images in `textures/` beneath a configured custom asset folder.
 The pack exporter collects descriptors for face material names, including blend layers, and includes their referenced images once.
-Descriptor discovery and export are available; the editor does not yet preview these descriptors or bind shader graphs to them.
+Custom descriptors appear in the material browser and map viewport; Lit mode uses their normal, roughness, metallic and emission maps.
+Albedo tint is also applied to textured views and thumbnails.
+Saving a descriptor from the editor reloads project assets.
+Shader graphs are not yet bound to descriptors.
 
 ## Names
 

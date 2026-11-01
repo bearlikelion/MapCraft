@@ -280,6 +280,15 @@ fn check(name: &str, data: &[u8], pixels: &mut u64) -> Result<(), String> {
     }
 }
 
+/// Checks a standalone picture against the pack's decoder limits.
+pub fn validate_picture(data: &[u8]) -> Result<(), String> {
+    if data.len() as u64 > MAX_ENTRY_SIZE {
+        return Err("picture exceeds 64 MiB".into());
+    }
+    let kind = image_header(data)?.0;
+    image(data, kind, &mut 0)
+}
+
 /// Checks a picture's header against the caps and charges its pixels to the pack.
 fn image(data: &[u8], expected: Kind, pixels: &mut u64) -> Result<(), String> {
     let (kind, width, height) = image_header(data)?;

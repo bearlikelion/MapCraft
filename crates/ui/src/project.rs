@@ -21,6 +21,8 @@ pub struct Material {
     /// The texture's own size when the picture is a smaller preview.
     pub size: Option<[u32; 2]>,
     pub pbr: Option<Pbr>,
+    pub descriptor: Option<mapcraft_format::pack_material::Material>,
+    pub emission: Option<PathBuf>,
     /// How many times the game repeats the texture across its own size, as Godot's `uv1_scale`.
     pub uv_scale: Option<[f32; 2]>,
     pub pixelated: bool,
@@ -150,6 +152,7 @@ pub struct Project {
     pub models: crate::models::Models,
     /// The mapper's Lit maps and values, by material name.
     pub lit: BTreeMap<String, LitMaps>,
+    descriptors: BTreeMap<String, Material>,
 }
 
 /// Materials plugins listed on a worker thread, and what they logged.
@@ -180,10 +183,74 @@ impl Project {
         p.materials =
             p.vfs.list(&sdk.manifest.textures.extensions).into_iter().map(|(name, path)| Material { name, image: Some(path), ..Material::default() }).collect();
         p.models = crate::models::Models::new(sdk.model_vfs(&p.vars), &sdk.manifest, &p.game);
+        p.load_descriptors();
         if let Some(host) = host {
             p.load_plugins(host, user_plugins);
         }
         p
+    }
+
+    fn merge_descriptors(&mut self) {
+        self.materials.retain(|m| !self.descriptors.contains_key(&m.name));
+        self.materials.extend(self.descriptors.values().cloned());
+        self.materials.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
+    fn load_descriptors(&mut self) {
+        use mapcraft_format::pack_material::{Material as Descriptor, TextureSlot};
+        let roots = self.sdk.as_ref().map(|s| s.user_textures.clone()).unwrap_or_default();
+        let custom = Vfs::new(roots);
+        for (entry, path) in custom.list(&["json".into()]) {
+            let Some(name) = entry.strip_prefix("materials/") else { continue };
+            let loaded: Result<Material, String> = (|| {
+                let bytes = bounded_bytes(&path, mapcraft_format::pack_material::MAX_DESCRIPTOR_SIZE as u64)?;
+                let descriptor = Descriptor::read(&bytes)?;
+                let mut images = BTreeMap::new();
+                let mut pixels = 0_u64;
+                let mut seen = std::collections::BTreeSet::new();
+                for (slot, texture) in &descriptor.textures {
+                    let file = custom.find(texture).ok_or_else(|| format!("missing texture {texture}"))?;
+                    let image = bounded_picture(&file)?;
+                    if seen.insert(texture.to_ascii_lowercase()) {
+                        pixels = pixels.saturating_add(u64::from(image.width()) * u64::from(image.height()));
+                    }
+                    if pixels > mapcraft_format::pack::MAX_TOTAL_PIXELS {
+                        return Err("material exceeds decoded pixel budget".into());
+                    }
+                    images.insert(*slot, file);
+                }
+                let channel = |slot| images.get(&slot).map(|p| ChannelMap { path: p.to_string_lossy().into_owned(), channel: Channel::Red });
+                let pbr = Pbr {
+                    normal: images.get(&TextureSlot::Normal).map(|p| p.to_string_lossy().into_owned()),
+                    normal_dx: false,
+                    roughness: channel(TextureSlot::Roughness),
+                    roughness_value: descriptor.roughness,
+                    metallic: channel(TextureSlot::Metallic),
+                    metallic_value: descriptor.metallic,
+                    ao: None,
+                };
+                Ok(Material {
+                    name: name.into(),
+                    image: images.get(&TextureSlot::Albedo).cloned(),
+                    color: Some(descriptor.albedo[..3].try_into().map_or([255; 3], |rgb: [f32; 3]| rgb.map(linear_byte))),
+                    size: (!images.contains_key(&TextureSlot::Albedo)).then_some([SWATCH; 2]),
+                    emission: images.get(&TextureSlot::Emission).cloned(),
+                    descriptor: Some(descriptor),
+                    pbr: Some(pbr),
+                    ..Material::default()
+                })
+            })();
+            match loaded {
+                Ok(material) => {
+                    self.descriptors.insert(name.into(), material);
+                }
+                Err(e) => {
+                    self.problems.push(format!("{}: {e}", path.display()));
+                    self.descriptors.insert(name.into(), Material { name: name.into(), color: Some([255, 0, 255]), ..Material::default() });
+                }
+            }
+        }
+        self.merge_descriptors();
     }
 
     /// Loads the SDK's plugins from its `plugins` folder, then the user's.
@@ -248,6 +315,8 @@ impl Project {
                                 uv_scale: m.uv_scale,
                                 pixelated: m.pixelated,
                                 blend: m.blend,
+                                descriptor: None,
+                                emission: None,
                             })
                             .filter(|m| m.image.is_some() || m.color.is_some() || m.pixels.is_some()),
                     ),
@@ -266,6 +335,7 @@ impl Project {
         if !listed.materials.is_empty() {
             self.materials = listed.materials;
         }
+        self.merge_descriptors();
         listed.problems
     }
 
@@ -343,7 +413,7 @@ impl Project {
     /// The material named `name`, or else an image of that name, since faces may name the images
     /// materials use, which are not listed.
     pub fn find_material(&self, name: &str) -> Option<Material> {
-        let mut m = match self.material(name) {
+        let mut m = match self.descriptors.get(name).or_else(|| self.material(name)) {
             Some(m) => m.clone(),
             None => {
                 let path = self.vfs.find_material(name, &self.sdk.as_ref()?.manifest.textures.extensions)?;
@@ -362,11 +432,18 @@ impl Project {
         if let Some(p) = &m.pixels {
             return Some(mapcraft_render::Picture { width: p.width, height: p.height, rgba: p.rgba.clone() });
         }
-        let image = match (&m.image, m.color) {
+        let mut image = match (&m.image, m.color) {
+            (Some(path), _) if m.descriptor.is_some() => bounded_picture(path).ok()?,
             (Some(path), _) => image::open(path).ok()?.to_rgba8(),
             (None, Some(c)) => RgbaImage::from_raw(SWATCH, SWATCH, swatch(c))?,
             (None, None) => return None,
         };
+        if let Some(descriptor) = &m.descriptor {
+            if m.image.is_none() {
+                image = RgbaImage::from_pixel(1, 1, Rgba([255; 4]));
+            }
+            tint_picture(&mut image, descriptor.albedo);
+        }
         Some(mapcraft_render::Picture { width: image.width(), height: image.height(), rgba: image.into_raw() })
     }
 
@@ -387,7 +464,29 @@ impl Project {
                 }
                 if let Some(pbr) = &m.pbr {
                     let (normal, orm) = pack(pbr, &|path| self.picture(path));
-                    renderer.set_material_maps(name, (normal.width(), normal.height(), normal.as_raw()), (orm.width(), orm.height(), orm.as_raw()));
+                    if let Some(descriptor) = &m.descriptor {
+                        let emission = match &m.emission {
+                            Some(path) => match bounded_picture(path) {
+                                Ok(image) => image,
+                                Err(e) => {
+                                    self.problems.push(e);
+                                    failed += 1;
+                                    continue;
+                                }
+                            },
+                            None => RgbaImage::from_pixel(1, 1, Rgba([255; 4])),
+                        };
+                        renderer.set_material_surface(
+                            name,
+                            (normal.width(), normal.height(), normal.as_raw()),
+                            (orm.width(), orm.height(), orm.as_raw()),
+                            (emission.width(), emission.height(), emission.as_raw()),
+                            descriptor.albedo,
+                            descriptor.emission,
+                        );
+                    } else {
+                        renderer.set_material_maps(name, (normal.width(), normal.height(), normal.as_raw()), (orm.width(), orm.height(), orm.as_raw()));
+                    }
                 }
             } else {
                 failed += 1;
@@ -419,8 +518,8 @@ impl Project {
     }
 
     fn picture(&self, path: &str) -> Option<RgbaImage> {
-        let file = self.vfs.find(path)?;
-        image::open(&file).map_err(|e| log::warn!("{}: {e}", file.display())).ok().map(|i| i.to_rgba8())
+        let file = if Path::new(path).is_absolute() { PathBuf::from(path) } else { self.vfs.find(path)? };
+        bounded_picture(&file).map_err(|e| log::warn!("{e}")).ok()
     }
 }
 
@@ -482,6 +581,41 @@ fn pack(pbr: &Pbr, load: &dyn Fn(&str) -> Option<RgbaImage>) -> (RgbaImage, Rgba
     (normal, orm)
 }
 
+fn linear_byte(value: f32) -> u8 {
+    let srgb = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
+    (srgb * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+pub(super) fn tint_picture(image: &mut RgbaImage, tint: [f32; 4]) {
+    for pixel in image.pixels_mut() {
+        for (id, (channel, factor)) in pixel.0.iter_mut().zip(tint).enumerate() {
+            let value = f32::from(*channel) / 255.0;
+            if id == 3 {
+                *channel = (f32::from(*channel) * factor).round().clamp(0.0, 255.0) as u8;
+            } else {
+                let linear = if value <= 0.04045 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) };
+                *channel = linear_byte(linear * factor);
+            }
+        }
+    }
+}
+
+fn bounded_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{} exceeds {limit} bytes", path.display()));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn bounded_picture(path: &Path) -> Result<RgbaImage, String> {
+    let bytes = bounded_bytes(path, mapcraft_format::pack::MAX_ENTRY_SIZE)?;
+    mapcraft_format::pack::validate_picture(&bytes)?;
+    image::load_from_memory(&bytes).map(|image| image.to_rgba8()).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Uploads one material's picture, file or color swatch; a material with none of them counts as done.
 fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool {
     let mut put = |w: u32, h: u32, rgba: &[u8]| {
@@ -491,9 +625,14 @@ fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool 
         return put(p.width, p.height, &p.rgba);
     }
     let Some(path) = &m.image else {
+        if m.descriptor.is_some() {
+            return renderer.upload_material(name, 1, 1, &[255; 4]);
+        }
         return m.color.is_none_or(|c| renderer.upload_material(name, SWATCH, SWATCH, &swatch(c)));
     };
-    match image::open(path) {
+    let decoded =
+        if m.descriptor.is_some() { bounded_picture(path).map(image::DynamicImage::ImageRgba8) } else { image::open(path).map_err(|e| e.to_string()) };
+    match decoded {
         Ok(img) => {
             let rgba = img.to_rgba8();
             put(rgba.width(), rgba.height(), rgba.as_raw())
@@ -523,6 +662,36 @@ impl EntityStyle for Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_descriptors_load_maps_and_survive_plugin_listing() {
+        use mapcraft_format::pack_material::{Material as Descriptor, TextureSlot};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sdk.toml"), "id = \"test\"\nname = \"Test\"\nversion = \"1\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("materials")).unwrap();
+        std::fs::create_dir_all(dir.path().join("textures")).unwrap();
+        RgbaImage::from_pixel(4, 4, Rgba([128, 128, 255, 255])).save(dir.path().join("textures/normal.png")).unwrap();
+        let mut descriptor = Descriptor { albedo: [0.2, 0.4, 0.6, 1.0], metallic: 0.8, ..Descriptor::default() };
+        descriptor.textures.insert(TextureSlot::Normal, "textures/normal.png".into());
+        std::fs::write(dir.path().join("materials/stone.json"), serde_json::to_vec(&descriptor).unwrap()).unwrap();
+        let mut sdk = Sdk::load(dir.path()).unwrap();
+        sdk.user_textures.push(dir.path().into());
+        let mut project = Project::load(Some(sdk), BTreeMap::new(), None, None);
+        let material = project.find_material("stone").unwrap();
+        assert_eq!(material.descriptor.as_ref(), Some(&descriptor));
+        assert_eq!(material.size, Some([64, 64]));
+        assert_eq!(project.material_picture("stone").unwrap().rgba, vec![124, 170, 203, 255]);
+        let pbr = material.pbr.unwrap();
+        assert_eq!(pbr.metallic_value, 0.8);
+        assert_eq!(project.picture(pbr.normal.as_deref().unwrap()).unwrap().dimensions(), (4, 4));
+        project.take_listed(Listed { materials: vec![Material { name: "stone".into(), color: Some([0; 3]), ..Material::default() }], ..Listed::default() });
+        assert_eq!(project.material("stone").unwrap().descriptor.as_ref(), Some(&descriptor));
+        std::fs::remove_file(dir.path().join("textures/normal.png")).unwrap();
+        project.descriptors.clear();
+        project.load_descriptors();
+        assert!(project.problems.iter().any(|p| p.contains("missing texture")));
+        assert_eq!(project.find_material("stone").unwrap().color, Some([255, 0, 255]));
+    }
 
     #[test]
     fn shrunk_imports_keep_their_real_size() {

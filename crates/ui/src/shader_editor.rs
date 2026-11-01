@@ -14,6 +14,8 @@ pub(crate) struct ShaderEditor {
     material_mode: bool,
     material: mapcraft_format::pack_material::Material,
     saved_graph: String,
+    pub(crate) reload_assets: bool,
+    saved_material: Option<mapcraft_format::pack_material::Material>,
 }
 
 impl ShaderEditor {
@@ -234,6 +236,28 @@ impl ShaderEditor {
     fn material_ui(&mut self, ui: &mut egui::Ui) {
         use mapcraft_format::pack_material::TextureSlot;
         ui.label("Save under materials/<name>.json in a custom asset folder. Texture names are relative to that folder.");
+        let dirty = self.material != self.saved_material.clone().unwrap_or_default();
+        if ui.add_enabled(!dirty, egui::Button::new("Open material descriptor…")).clicked()
+            && let Some(path) = rfd::FileDialog::new().add_filter("PBR material descriptor", &["json"]).pick_file()
+        {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            let loaded = std::fs::File::open(&path)
+                .and_then(|file| file.take((mapcraft_format::pack_material::MAX_DESCRIPTOR_SIZE + 1) as u64).read_to_end(&mut bytes))
+                .map_err(|e| e.to_string())
+                .and_then(|_| mapcraft_format::pack_material::Material::read(&bytes));
+            match loaded {
+                Ok(material) => {
+                    self.saved_material = Some(material.clone());
+                    self.material = material;
+                    self.status = format!("Opened {}", path.display());
+                }
+                Err(e) => self.status = e,
+            }
+        }
+        if dirty {
+            ui.label("Unsaved material changes");
+        }
         ui.horizontal(|ui| {
             ui.label("Albedo");
             ui.color_edit_button_rgba_unmultiplied(&mut self.material.albedo);
@@ -277,11 +301,15 @@ impl ShaderEditor {
                 .and_then(|()| serde_json::to_vec_pretty(&self.material).map_err(|e| e.to_string()))
                 .and_then(|bytes| craft_atomic::atomic_write(&path, &bytes).map_err(|e| e.to_string()));
             self.status = match result {
-                Ok(()) => format!("Saved {}", path.display()),
+                Ok(()) => {
+                    self.saved_material = Some(self.material.clone());
+                    self.reload_assets = true;
+                    format!("Saved {}", path.display())
+                }
                 Err(e) => e,
             };
         }
         ui.label(&self.status);
-        ui.label("Descriptor export is available. PBR viewport preview and shader bindings are not connected yet.");
+        ui.label("Saved materials reload in the map viewport. Use Lit mode for PBR lighting. Shader bindings are not connected yet.");
     }
 }
