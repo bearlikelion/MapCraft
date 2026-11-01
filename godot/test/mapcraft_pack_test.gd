@@ -2,7 +2,7 @@ class_name MapCraftPackTest
 extends SceneTree
 
 const MAP: String = "res://course.mcmap"
-const WRITER_PACK: String = "res://pack/course.mcpack"
+const WRITER_PACK: String = "res://pack/course.mcpck"
 const BOX: String = "res://Assets/Models/box.glb"
 const ENTITY_MAP: String = "res://addons/mapcraft/sdks/surfsup.tres"
 const DIR: String = "user://pack_test/"
@@ -32,6 +32,7 @@ func _initialize() -> void:
 	_check_pictures()
 	_check_pixel_budget()
 	_check_models()
+	_check_map_packs()
 	OS.remove_logger(_messages)
 	for file: String in DirAccess.get_files_at(DIR):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(DIR + file))
@@ -62,7 +63,7 @@ func _check_pbr_materials() -> void:
 		_expect(is_equal_approx(material.metallic, 0.7), "PBR metallic preserved")
 		_expect(material.normal_enabled, "PBR normal mapping enabled")
 		_expect(material.albedo_texture is ImageTexture, "PBR texture decoded from pack")
-	_expect(not _messages.has("mcpack"), "valid v2 pack logs nothing")
+	_expect(not _messages.has("mcpck"), "valid v2 pack logs nothing")
 	map.free()
 	bytes.encode_u32(4, 1)
 	map = _build(bytes)
@@ -90,11 +91,11 @@ func _check_writer_pack() -> void:
 	_expect(mesh != null, "a packed model is built from the pack")
 	_expect(mesh != null and mesh.mesh.resource_path.is_empty(), \
 			"a packed model is not registered under any path")
-	_expect(not _messages.has("mcpack"), "a good pack logs nothing")
+	_expect(not _messages.has("mcpck"), "a good pack logs nothing")
 	map.free()
 
 	_save(DIR + "loaded.mcmap", FileAccess.get_file_as_bytes(DIR + "course.mcmap"))
-	_save(DIR + "loaded.mcpack", pack)
+	_save(DIR + "loaded.mcpck", pack)
 	var scene: PackedScene = load(DIR + "loaded.mcmap") as PackedScene
 	var root: Node = scene.instantiate() if scene != null else null
 	var world: MeshInstance3D = root.get_node_or_null("WorldMesh") as MeshInstance3D \
@@ -106,6 +107,15 @@ func _check_writer_pack() -> void:
 	_expect(root != null and _crate_mesh(root) != null, "load() of a map builds packed models")
 	if root != null:
 		root.free()
+
+	_save(DIR + "legacy.mcmap", FileAccess.get_file_as_bytes(DIR + "course.mcmap"))
+	_save(DIR + "legacy.mcpack", pack)
+	var legacy: PackedScene = load(DIR + "legacy.mcmap") as PackedScene
+	var legacy_root: Node = legacy.instantiate() if legacy != null else null
+	_expect(legacy_root != null and _crate_mesh(legacy_root) != null, \
+			"a map without a .mcpck uses an old .mcpack beside it")
+	if legacy_root != null:
+		legacy_root.free()
 
 
 func _check_containers() -> void:
@@ -127,7 +137,7 @@ func _check_containers() -> void:
 	_expect_refused("a pack with trailing data", longer, "data after its last entry")
 	_expect_refused("a zip file", "PK\u0003\u0004 not a pack".to_utf8_buffer(), \
 			"not a MapCraft pack")
-	_expect_refused("a newer pack", _patched32(good, 4, 3), "version 3")
+	_expect_refused("a newer pack", _patched32(good, 4, 4), "version 4")
 	_expect_refused("a huge entry count", _patched32(good, 8, 0xFFFFFFFF), "4294967295 entries")
 	_expect_refused("overlapping entries", _patched64(good, second_offset, \
 			good.decode_u64(first_offset)), "does not start where")
@@ -288,6 +298,52 @@ func _check_models() -> void:
 
 
 # Sets one value in the textured box's JSON, at a path of keys and indices.
+func _check_map_packs() -> void:
+	var box: Array = _box(_png(4, 4))
+	var entries: Array = [
+		[GOOD_MATERIAL, _picture],
+		["map.mcmap", FileAccess.get_file_as_bytes(DIR + "course.mcmap")],
+		[BAD_MODEL, _glb(box[0], box[1])],
+	]
+	_save(DIR + "own.mcpck", _patched32(_pack(entries), 4, 3))
+	var scene: PackedScene = load(DIR + "own.mcpck") as PackedScene
+	var root: Node = scene.instantiate() if scene != null else null
+	var world: Node = root.get_node_or_null("WorldMesh") if root != null else null
+	var material: StandardMaterial3D = _surface_material(world, "ramps-orange1") \
+			as StandardMaterial3D
+	_expect(material != null and material.albedo_texture is ImageTexture, \
+			"load() of a .mcpck builds its map with its own pictures")
+	_expect(root != null and _crate_mesh(root) != null, "load() of a .mcpck builds its models")
+	if root != null:
+		root.free()
+
+	var map: MapCraftMap = MapCraftMap.new()
+	map.map_file = DIR + "own.mcpck"
+	map.entity_map = load(ENTITY_MAP) as MapCraftEntityMap
+	map.build()
+	_expect(_packed_texture(map, "ramps-orange1") != null, \
+			"a MapCraftMap node builds a .mcpck's map")
+	map.free()
+
+	_messages.clear()
+	_save(DIR + "older.mcpck", _patched32(_pack(entries), 4, 2))
+	map = MapCraftMap.new()
+	map.map_file = DIR + "older.mcpck"
+	map.build()
+	_expect(map.get_child_count() == 0 and _messages.has("cannot contain a map"), \
+			"a version 2 pack cannot carry a map")
+	map.free()
+
+	_messages.clear()
+	_save(DIR + "mapless.mcpck", _pack([[GOOD_MATERIAL, _picture]]))
+	map = MapCraftMap.new()
+	map.map_file = DIR + "mapless.mcpck"
+	map.build()
+	_expect(map.get_child_count() == 0 and _messages.has("holds no map"), \
+			"a pack without a map builds nothing")
+	map.free()
+
+
 func _expect_bad_model(label: String, path: Array, value: Variant, reason: String) -> void:
 	var box: Array = _box(_png(4, 4))
 	var target: Variant = box[0]
@@ -321,7 +377,7 @@ func _expect_dropped(label: String, entry: String, data: PackedByteArray, reason
 
 
 func _build(pack: PackedByteArray) -> MapCraftMap:
-	_save(DIR + "course.mcpack", pack)
+	_save(DIR + "course.mcpck", pack)
 	_messages.clear()
 	var map: MapCraftMap = MapCraftMap.new()
 	map.map_file = DIR + "course.mcmap"

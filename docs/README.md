@@ -19,6 +19,6 @@ If you only want to make maps, start with the [user guide](guide/README.md).
 ## Files and internals
 
 - [The .mcmap format](mcmap-format.md): the map file, for anyone writing an importer or a game tool.
-- [The .mcpack format](mcpack-format.md): the pictures and models a map ships beside itself, with its limits and threat model.
+- [The .mcpck format](mcpck-format.md): the pictures and models a map ships beside itself, with its limits and threat model.
 - [Godot addon](../godot/README.md): the GDExtension's import plugin, runtime loader and entity maps.
 - [Architecture](architecture.md): how the code fits together, from crate layers and brushes to the document model, undo and coordinates.

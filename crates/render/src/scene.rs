@@ -113,6 +113,8 @@ pub struct BatchKey {
     /// The second layer of blended displacements; empty for one layer.
     pub blend: String,
     pub anti_tile: AntiTile,
+    /// The brush whose embedded Godot shader draws these faces.
+    pub shader: Option<NodeId>,
 }
 
 impl From<&str> for BatchKey {
@@ -139,6 +141,8 @@ pub struct SceneData {
     pub minlight: [f32; 3],
     pub sky: Option<Sky>,
     pub environment_warnings: Vec<String>,
+    /// Embedded Godot shader source of the world and of brushes, hidden or not.
+    pub shaders: BTreeMap<NodeId, (String, mapcraft_map::ShaderParams)>,
 }
 
 /// Godot's procedural sky for the Lit mode, in linear color, as the MapCraft addon builds it from a `light_environment`.
@@ -241,7 +245,12 @@ pub fn build_scene(
     colorize: bool,
     slope: Option<Slope>,
 ) -> SceneData {
-    let mut scene = SceneData::default();
+    let shaders = map
+        .nodes()
+        .filter(|(_, n)| matches!(n.kind, NodeKind::World(_) | NodeKind::Brush(_)))
+        .filter_map(|(id, n)| Some((id, (n.shader.clone()?, n.shader_params.clone()))))
+        .collect();
+    let mut scene = SceneData { shaders, ..SceneData::default() };
     let visible = map.visible_nodes();
     let mut stack = vec![(mapcraft_map::ROOT, false, None::<[f32; 4]>)];
     while let Some((id, parent_selected, entity_color)) = stack.pop() {
@@ -281,7 +290,8 @@ pub fn build_scene(
                     let size = size_of(&face.material);
                     let face_selected = faces.contains(&(id, face.id));
                     // An untextured brush entity face, such as a trigger's, shows the entity color.
-                    let tool = is_tool_material(&face.material) || (face.material.is_empty() && entity_color.is_some());
+                    let shader = node.shader.as_ref().map(|_| id);
+                    let tool = shader.is_none() && (is_tool_material(&face.material) || (face.material.is_empty() && entity_color.is_some()));
                     // Picked faces keep their true color so materials can be judged; the outline marks them.
                     let band = |s: Slope, n: DVec3| {
                         let t = s.tint(n);
@@ -298,7 +308,12 @@ pub fn build_scene(
                         }
                     };
                     let layer = face.blend_layer().filter(|_| displaced.contains_key(&index));
-                    let key = BatchKey { blend: layer.unwrap_or_default().to_string(), anti_tile: face.anti_tile(), ..BatchKey::from(face.material.as_str()) };
+                    let key = BatchKey {
+                        blend: layer.unwrap_or_default().to_string(),
+                        anti_tile: face.anti_tile(),
+                        shader,
+                        ..BatchKey::from(face.material.as_str())
+                    };
                     let verts = if tool { &mut scene.translucent } else { scene.batches.entry(key).or_default() };
                     let edges = if selected || face_selected { &mut scene.selected_edges } else { &mut scene.edges };
                     let edge = if face_selected { PICKED_FACE_EDGE } else { edge };
@@ -603,6 +618,30 @@ mod tests {
     use mapcraft_map::{Brush, Entity, ROOT, TexDefaults};
 
     use super::*;
+
+    #[test]
+    fn shaded_brushes_get_their_own_batches() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let tex = TexDefaults { material: "tools/trigger".into(), scale: 1.0 };
+        let cube = |x: f64| NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::splat(x), DVec3::splat(x + 64.0)), &tex));
+        let pond = e.insert(ROOT, cube(0.0)).unwrap();
+        e.insert(ROOT, cube(128.0)).unwrap();
+        e.set_shader(pond, Some("shader_type spatial;".into())).unwrap();
+        e.set_shader(ROOT, Some("shader_type sky;".into())).unwrap();
+        e.update(pond, |hidden, _, _, _| *hidden = true).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
+        assert_eq!(scene.shaders.keys().copied().collect::<Vec<_>>(), vec![ROOT, pond], "hidden nodes still report their shaders");
+        assert!(scene.batches.is_empty() && !scene.translucent.is_empty(), "a hidden shaded brush draws nothing");
+        let mut e = map.edit();
+        e.update(pond, |hidden, _, _, _| *hidden = false).unwrap();
+        map.apply(e.finish());
+        let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| None, &NoStyle, false, None);
+        let key = BatchKey { shader: Some(pond), ..BatchKey::from("tools/trigger") };
+        assert_eq!(scene.batches[&key].len(), 36, "a shaded tool brush draws solid with its shader");
+        assert_eq!(scene.batches.len(), 1);
+    }
 
     #[test]
     fn builds_batches_and_edges() {

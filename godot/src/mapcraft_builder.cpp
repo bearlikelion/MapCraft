@@ -43,6 +43,10 @@ const double DEFAULT_TEXTURE_SIZE = 64.0;
 const int MAX_DEPTH = 256;
 const int MAX_PREFAB_DEPTH = 16;
 const int MAX_PREFABS = 256;
+// mapcraft_map::MAX_SHADER_BYTES.
+const int64_t MAX_SHADER_SIZE = int64_t(256) << 10;
+const int MAX_SHADER_PARAMS = 256;
+const int64_t MAX_NAME_LENGTH = 1024;
 // The editor's MACRO_AMOUNT in mapcraft_geom::noise.
 const double MACRO_AMOUNT = 0.15;
 const char *SHADER_DIR = "res://addons/mapcraft/shaders/";
@@ -429,6 +433,9 @@ class Builder {
 	bool has_environment = false;
 	MapCraftPack pack;
 	String pack_path;
+	Ref<ShaderMaterial> sky_shader;
+	// Brush shaders by source, so brushes with the same code share a material and a surface.
+	HashMap<String, Ref<ShaderMaterial>> brush_shaders;
 	HashMap<String, Node3D *> models;
 	std::shared_ptr<int> prefab_budget;
 
@@ -455,6 +462,8 @@ class Builder {
 	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
 	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
 	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_key, const Ref<Material> &p_material);
+	Ref<ShaderMaterial> embedded_shader(const Dictionary &p_node, Shader::Mode p_mode);
+	void set_shader_params(const Ref<ShaderMaterial> &p_material, const Variant &p_params);
 	void walk(const Dictionary &p_node, int p_depth);
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
@@ -694,6 +703,109 @@ Ref<Material> Builder::variant(const String &p_a, const String &p_b, AntiTile p_
 	return wrapped;
 }
 
+Ref<ShaderMaterial> Builder::embedded_shader(const Dictionary &p_node, Shader::Mode p_mode) {
+	const Variant code = p_node.get("shader", Variant());
+	if (code.get_type() != Variant::STRING) {
+		return Ref<ShaderMaterial>();
+	}
+	const String source = code;
+	if (source.utf8().length() > MAX_SHADER_SIZE) {
+		UtilityFunctions::push_warning("MapCraft: an embedded shader is larger than 256 KiB and was skipped");
+		return Ref<ShaderMaterial>();
+	}
+	const Variant params = p_node.get("shader_params", Variant());
+	const String key = source + String("\n") + (params.get_type() == Variant::DICTIONARY ? JSON::stringify(params) : String());
+	if (p_mode == Shader::MODE_SPATIAL && brush_shaders.has(key)) {
+		return brush_shaders[key];
+	}
+	Ref<Shader> shader;
+	shader.instantiate();
+	shader->set_code(source);
+	if (shader->get_mode() != p_mode) {
+		UtilityFunctions::push_warning("MapCraft: an embedded shader is not a ", p_mode == Shader::MODE_SKY ? "sky" : "spatial", " shader and was skipped");
+		return Ref<ShaderMaterial>();
+	}
+	Ref<ShaderMaterial> material;
+	material.instantiate();
+	material->set_shader(shader);
+	set_shader_params(material, params);
+	if (p_mode == Shader::MODE_SPATIAL) {
+		brush_shaders[key] = material;
+	}
+	return material;
+}
+
+void Builder::set_shader_params(const Ref<ShaderMaterial> &p_material, const Variant &p_params) {
+	if (p_params.get_type() != Variant::DICTIONARY) {
+		return;
+	}
+	const Dictionary params = p_params;
+	if (params.size() > MAX_SHADER_PARAMS) {
+		UtilityFunctions::push_warning("MapCraft: an embedded shader has more than ", MAX_SHADER_PARAMS, " parameters; they were skipped");
+		return;
+	}
+	HashMap<String, Dictionary> uniforms;
+	const Array list = p_material->get_shader()->get_shader_uniform_list();
+	for (int i = 0; i < list.size(); i++) {
+		const Dictionary uniform = list[i];
+		uniforms[String(uniform.get("name", ""))] = uniform;
+	}
+	const Array names = params.keys();
+	for (int i = 0; i < names.size(); i++) {
+		const String name = names[i];
+		const Variant value = params[names[i]];
+		const Dictionary *uniform = uniforms.getptr(name);
+		const auto skip = [&](const String &p_why) {
+			UtilityFunctions::push_warning("MapCraft: shader parameter ", name.left(64), " ", p_why, "; skipped");
+		};
+		if (uniform == nullptr) {
+			skip("is not a uniform of the shader");
+			continue;
+		}
+		const int type = int(uniform->get("type", Variant::NIL));
+		const bool number = value.get_type() == Variant::FLOAT || value.get_type() == Variant::INT;
+		Array numbers;
+		bool vector = value.get_type() == Variant::ARRAY && Array(value).size() <= 4;
+		if (vector) {
+			numbers = value;
+			for (int j = 0; j < numbers.size(); j++) {
+				const Variant::Type t = numbers[j].get_type();
+				vector = vector && (t == Variant::FLOAT || t == Variant::INT) && Math::is_finite(double(numbers[j]));
+			}
+		}
+		const auto component = [&](int p_index) { return float(double(numbers[p_index])); };
+		Variant converted;
+		if (type == Variant::FLOAT && number && Math::is_finite(double(value))) {
+			converted = double(value);
+		} else if (type == Variant::INT && number && Math::is_finite(double(value)) && Math::abs(double(value)) < 2147483648.0) {
+			converted = int64_t(double(value));
+		} else if (type == Variant::BOOL && value.get_type() == Variant::BOOL) {
+			converted = value;
+		} else if (type == Variant::VECTOR2 && vector && numbers.size() == 2) {
+			converted = Vector2(component(0), component(1));
+		} else if (type == Variant::VECTOR3 && vector && numbers.size() == 3) {
+			converted = Vector3(component(0), component(1), component(2));
+		} else if (type == Variant::VECTOR4 && vector && numbers.size() == 4) {
+			converted = Vector4(component(0), component(1), component(2), component(3));
+		} else if (type == Variant::COLOR && vector && numbers.size() >= 3) {
+			converted = Color(component(0), component(1), component(2), numbers.size() == 4 ? component(3) : 1.0f);
+		} else if (type == Variant::OBJECT && value.get_type() == Variant::STRING && String(value).length() <= MAX_NAME_LENGTH && inside_folder(value)) {
+			Vector2 size;
+			const Ref<BaseMaterial3D> source = material(value, size);
+			const Ref<Texture2D> texture = source.is_valid() ? source->get_texture(BaseMaterial3D::TEXTURE_ALBEDO) : Ref<Texture2D>();
+			if (texture.is_null()) {
+				skip("names a material with no picture");
+				continue;
+			}
+			converted = texture;
+		} else {
+			skip("does not match the uniform's type");
+			continue;
+		}
+		p_material->set_shader_parameter(name, converted);
+	}
+}
+
 Ref<SurfaceTool> Builder::surface_for(Surfaces &p_surfaces, const String &p_key, const Ref<Material> &p_material) {
 	surface_materials[p_key] = p_material;
 	if (!p_surfaces.has(p_key)) {
@@ -801,6 +913,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 
 	PackedVector3Array hull;
 	PackedVector3Array triangles;
+	const Ref<ShaderMaterial> shaded = p_surfaces != nullptr ? embedded_shader(p_brush, Shader::MODE_SPATIAL) : Ref<ShaderMaterial>();
 	for (int i = 0; i < faces.size(); i++) {
 		Dictionary face = faces[i];
 		Array polygon = face.get("polygon", Array());
@@ -838,7 +951,10 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 
 		const AntiTile mode = anti_tile_of(face);
 		Vector2 size;
-		Ref<SurfaceTool> st = surface_for(*p_surfaces, surface_key(name, String(), mode), variant(name, String(), mode, size));
+		Ref<Material> face_material = variant(name, String(), mode, size);
+		Ref<SurfaceTool> st = shaded.is_valid()
+				? surface_for(*p_surfaces, "shader:" + itos(shaded->get_instance_id()), shaded)
+				: surface_for(*p_surfaces, surface_key(name, String(), mode), face_material);
 		Dictionary u = face.get("u", Dictionary());
 		Dictionary v = face.get("v", Dictionary());
 		Vector3 u_axis = read_vec3(u.get("axis", Array()));
@@ -1193,7 +1309,11 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	sky_material->set_ground_energy_multiplier(bounded("ground_energy_multiplier", 1.0, 0.0, 64.0));
 	Ref<Sky> sky;
 	sky.instantiate();
-	sky->set_material(sky_material);
+	if (sky_shader.is_valid()) {
+		sky->set_material(sky_shader);
+	} else {
+		sky->set_material(sky_material);
+	}
 
 	Ref<Environment> environment;
 	environment.instantiate();
@@ -1252,7 +1372,12 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		return ERR_FILE_UNRECOGNIZED;
 	}
 	if (!options.source_path.is_empty()) {
-		pack_path = options.source_path.get_basename() + ".mcpack";
+		pack_path = options.source_path.get_basename() + ".mcpck";
+		if (options.source_path.get_extension().to_lower() == "mcpck") {
+			pack_path = options.source_path;
+		} else if (!FileAccess::file_exists(pack_path) && FileAccess::file_exists(options.source_path.get_basename() + ".mcpack")) {
+			pack_path = options.source_path.get_basename() + ".mcpack";
+		}
 		String error;
 		if (FileAccess::file_exists(pack_path) && pack.open(pack_path, error) != OK) {
 			UtilityFunctions::push_error("MapCraft: ", pack_path, " ", error, ", so the map uses stock materials and models");
@@ -1268,9 +1393,29 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 			cordons.push_back(AABB(lo, read_vec3(b.get("max", Array())) - lo));
 		}
 	}
-	walk(map.get("root", Dictionary()), 0);
+	const Dictionary world_node = map.get("root", Dictionary());
+	if (options.prefabs_above.is_empty()) {
+		sky_shader = embedded_shader(world_node, Shader::MODE_SKY);
+	}
+	walk(world_node, 0);
 	if (!has_environment && options.prefabs_above.is_empty() && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
 		add_environment(Dictionary());
+	}
+	if (!has_environment && sky_shader.is_valid()) {
+		Ref<Sky> sky;
+		sky.instantiate();
+		sky->set_material(sky_shader);
+		Ref<Environment> environment;
+		environment.instantiate();
+		environment->set_background(Environment::BG_SKY);
+		environment->set_sky(sky);
+		environment->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
+		environment->set_reflection_source(Environment::REFLECTION_SOURCE_SKY);
+		WorldEnvironment *world = memnew(WorldEnvironment);
+		world->set_name("WorldEnvironment");
+		world->set_environment(environment);
+		add(root, world, false);
+		has_environment = true;
 	}
 
 	if (!world_surfaces.is_empty()) {
@@ -1324,15 +1469,42 @@ Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraf
 	return err;
 }
 
-Error mapcraft_build_file(const String &p_path, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error) {
+Error mapcraft_read_map(const String &p_path, Dictionary &r_doc, String &r_error) {
 	if (!FileAccess::file_exists(p_path)) {
 		r_error = String("cannot open ") + p_path;
 		return ERR_FILE_NOT_FOUND;
 	}
-	Variant parsed = JSON::parse_string(FileAccess::get_file_as_string(p_path));
+	String text;
+	if (p_path.get_extension().to_lower() == "mcpck") {
+		MapCraftPack pack;
+		String error;
+		if (pack.open(p_path, error) != OK) {
+			r_error = p_path + String(" ") + error;
+			return ERR_FILE_CORRUPT;
+		}
+		PackedByteArray bytes;
+		if (!pack.map(bytes)) {
+			r_error = p_path + String(" holds no map");
+			return ERR_FILE_UNRECOGNIZED;
+		}
+		text = bytes.get_string_from_utf8();
+	} else {
+		text = FileAccess::get_file_as_string(p_path);
+	}
+	Variant parsed = JSON::parse_string(text);
 	if (parsed.get_type() != Variant::DICTIONARY) {
 		r_error = p_path + String(" is not valid JSON");
 		return ERR_PARSE_ERROR;
+	}
+	r_doc = parsed;
+	return OK;
+}
+
+Error mapcraft_build_file(const String &p_path, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error) {
+	Dictionary parsed;
+	Error read = mapcraft_read_map(p_path, parsed, r_error);
+	if (read != OK) {
+		return read;
 	}
 	MapCraftBuildOptions options = p_options;
 	if (options.source_path.is_empty()) {

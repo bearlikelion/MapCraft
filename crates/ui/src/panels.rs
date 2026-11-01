@@ -192,6 +192,7 @@ impl MapCraftApp {
                 (LeftTab::Materials, "Materials", "panel.materials"),
                 (LeftTab::Entities, "Entities", "panel.entities"),
                 (LeftTab::Models, "Models", "panel.models"),
+                (LeftTab::Shaders, "Shaders", "panel.shaders"),
             ] {
                 let chord = self.chord(id);
                 let tip = if chord.is_empty() { label.to_string() } else { format!("{label}  ({chord})") };
@@ -207,6 +208,11 @@ impl MapCraftApp {
             LeftTab::Materials => self.material_browser(ui),
             LeftTab::Entities => self.entity_browser(ui),
             LeftTab::Models => self.model_browser(ui),
+            LeftTab::Shaders => {
+                let errors = self.shader_errors();
+                let out = self.shader_editor.shader_list(ui, &mut self.session, &errors);
+                self.shader_outcome(out);
+            }
         }
     }
 
@@ -674,6 +680,39 @@ impl MapCraftApp {
         }
     }
 
+    fn shader_section(&mut self, ui: &mut egui::Ui, ids: &[NodeId]) {
+        if self.section(ui, &Section { key: "shader", title: "Shader", ..Default::default() }) {
+            self.shader_actions(ui, ids);
+        }
+    }
+
+    /// Add, edit and remove the embedded Godot shaders of `ids`, as the selection's shader commands reach them.
+    fn shader_actions(&mut self, ui: &mut egui::Ui, ids: &[NodeId]) {
+        let shaded: Vec<NodeId> = ids.iter().copied().filter(|id| self.session.map.get(*id).is_some_and(|n| n.shader.is_some())).collect();
+        let sky = ids == [ROOT];
+        let items = [
+            Action {
+                icon: "plus",
+                label: if sky { "Add sky shader" } else { "Add shader" },
+                tip: "Embed a Godot shader in the map, drawn live in the 3D views",
+                enabled: shaded.len() < ids.len(),
+            },
+            Action { icon: "pencil", label: "Edit shader", tip: "Open it in the Script tab", enabled: shaded.len() == 1 },
+            Action { icon: "trash_can", label: "Remove shader", tip: "", enabled: !shaded.is_empty() },
+        ];
+        match inspect::actions(ui, &items) {
+            Some(0) => self.run_action("shader.add"),
+            Some(1) => {
+                if let Some(id) = shaded.first() {
+                    self.shader_editor.edit(*id);
+                    self.left_tab = LeftTab::Shaders;
+                }
+            }
+            Some(2) => self.run_action("shader.remove"),
+            _ => {}
+        }
+    }
+
     fn shader_material_button(&mut self, ui: &mut egui::Ui) {
         ui.menu_button("Shader Material", |ui| {
             for (label, command) in [("Shader Graph", "tools.shader_graph"), ("Script", "tools.shader_script")] {
@@ -724,7 +763,9 @@ impl MapCraftApp {
             .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter) || m.folder.as_ref().is_some_and(|f| f.to_lowercase().contains(&filter)))
             .cloned()
             .collect();
-        count_and_previews(ui, &format!("{} materials", names.len()), &mut self.show_thumbs);
+        if count_and_previews(ui, &format!("{} materials", names.len()), &mut self.show_thumbs, "Add Material") {
+            self.run_action("file.add_material");
+        }
         let mut chosen = None;
         let mut select = None;
         let menu = |r: &egui::Response, name: &str, select: &mut Option<(String, &'static str)>| {
@@ -1113,9 +1154,18 @@ impl MapCraftApp {
         match view {
             InspectorView::Shape => self.shape_body(ui),
             InspectorView::Faces => self.faces_body(ui),
-            InspectorView::World => self.entities_body(ui, &[ROOT]),
+            InspectorView::World => {
+                self.entities_body(ui, &[ROOT]);
+                self.shader_section(ui, &[ROOT]);
+                self.shader_params_section(ui, ROOT);
+            }
             InspectorView::Entities(ids) => self.entities_body(ui, ids),
-            InspectorView::Brushes(_) => self.brushes_section(ui, false),
+            InspectorView::Brushes(ids) => {
+                self.brushes_section(ui, false);
+                if let [id] = ids.as_slice() {
+                    self.shader_params_section(ui, *id);
+                }
+            }
             InspectorView::Layer(id, _) => self.layer_body(ui, *id),
             InspectorView::Group(id, _) => self.group_body(ui, *id),
             InspectorView::Prefab(id, _) => self.prefab_body(ui, *id),
@@ -1590,7 +1640,7 @@ impl MapCraftApp {
             ui.scope(|ui| align = inspect::icons(ui, &[("globe", "Align to world", "Align to world"), ("face", "Align to face", "Align to face")])).response
         });
         let anti_tile = anti_tile_row(ui, "brushes-anti-tile", faces.iter().copied(), faces.iter().any(|f| self.project.pixel_face(f)));
-        self.shader_material_button(ui);
+        self.shader_actions(ui, &ids);
 
         if retyped && let Some(class) = pick {
             if let Err(e) = self.session.set_brush_class(class) {
@@ -2629,8 +2679,10 @@ fn visibility_toggle(ui: &mut egui::Ui, shown: bool) -> egui::Response {
 }
 
 /// A search box with Godot's magnifying glass inside its right end.
-/// A browser's count, with the Previews button on the right switching between pictures and a list of names.
-pub(crate) fn count_and_previews(ui: &mut egui::Ui, count: &str, previews: &mut bool) {
+/// A browser's count, with the Previews button on the right switching between pictures and a list of names,
+/// and an add button labelled `add`; true when that was clicked.
+pub(crate) fn count_and_previews(ui: &mut egui::Ui, count: &str, previews: &mut bool, add: &str) -> bool {
+    let mut added = false;
     ui.horizontal(|ui| {
         ui.label(count);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2639,8 +2691,10 @@ pub(crate) fn count_and_previews(ui: &mut egui::Ui, count: &str, previews: &mut 
             if icon_button(ui, name, "Previews", 22.0, false).on_hover_text(tip).clicked() {
                 *previews = !*previews;
             }
+            added = icon_button(ui, "plus", add, 22.0, false).on_hover_text(format!("{add}: copy files into the folder beside the map")).clicked();
         });
     });
+    added
 }
 
 /// Picture tiles in rows as wide as the panel; only the rows on screen are drawn.

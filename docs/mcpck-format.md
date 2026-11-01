@@ -1,7 +1,8 @@
-# The `.mcpack` format
+# The `.mcpck` format
 
-A `.mcpack` file carries the pictures and models a map uses that the game does not ship.
-It sits beside the map as `<map name>.mcpack`, and the Godot addon reads it whenever it loads `<map name>.mcmap` from a file.
+A `.mcpck` file carries the pictures and models a map uses that the game does not ship.
+It sits beside the map as `<map name>.mcpck`, and the Godot addon reads it whenever it loads `<map name>.mcmap` from a file.
+A version 3 pack can also carry the map itself, so one file is the whole level.
 Packs travel through the Steam Workshop, so they come from strangers: the format is small, uncompressed, and checked before anything in it is used.
 
 ## Layout
@@ -11,7 +12,7 @@ Every integer is little-endian.
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | Magic, the bytes `MCPK` |
-| 4 | 4 | Version, `1` or `2` |
+| 4 | 4 | Version, `1`, `2` or `3` |
 | 8 | 4 | Entry count |
 | 12 | | Table of contents, one record per entry |
 
@@ -42,12 +43,21 @@ Readers refuse versions other than the ones they know.
   `Props\Crate.GLB` finds `models/Props/Crate.glb`.
   A model in the pack wins over the game's file at that path, for this map only.
 - Version 2 additionally supports `materials/<material>.json` PBR descriptors and `textures/<path>.png` or `.jpg` dependencies.
+- Version 3 additionally supports `map.mcmap`, the exact bytes of a `.mcmap`, at the top level and at most once.
 - Nothing else may be in a pack: no Godot resources (`.tres`, `.res`, `.scn`, `.tscn`, `.pck`), scripts, shaders, SVG, WebP, glTF text files or native libraries.
+
+## Self-contained maps (version 3)
+
+The writer selects version 3 only when `map.mcmap` is present, and versions 1 and 2 refuse that entry.
+The map entry has the same 64 MiB cap as any entry, and MapCraft refuses one that is not JSON with `"format": "mapcraft.map"`.
+The Godot addon builds a pack's map when it is given the `.mcpck` itself: `load("<name>.mcpck")` or a `MapCraftMap` node whose `map_file` is the pack.
+It parses the map like a `.mcmap` read from a file, never through `ResourceLoader`, and that map takes pictures and models from the same pack instead of looking for a pack beside it.
+A pack without a map, opened this way, builds nothing and logs that it holds no map.
 
 ## PBR descriptors (version 2)
 
 The writer selects version 2 when a material descriptor or `textures/` entry is present; image/model-only exports remain version 1.
-Both readers accept versions 1 and 2; version 1 refuses version 2 entry kinds.
+Both readers accept versions 1 to 3; version 1 refuses version 2 entry kinds.
 A descriptor replaces the legacy picture for its material name, so those two entries cannot coexist.
 A descriptor is UTF-8 JSON, at most 16 KiB, with these required fields and no others:
 
@@ -73,6 +83,8 @@ Invalid descriptors or their texture dependencies produce a missing material and
 
 The editor's **Shader Editor > PBR Material** tab writes descriptors.
 Put descriptors in `materials/` and referenced images in `textures/` beneath a configured custom asset folder.
+File > Add Material…, the Materials browser's + button or dropping pictures on the window makes a new descriptor from picked PBR maps, each assigned to a slot by its name's last word (`albedo`, `normal`, `rough`, `metal`, `glow` and the like).
+It and File > Add Model… copy into the folder beside the saved map (`<map name>/`): `materials/<name>.json`, `textures/<name>_<slot>.png` and `models/<path>.glb`, refusing a name already taken.
 The pack exporter collects descriptors for face material names, including blend layers, and includes their referenced images once.
 Custom descriptors appear in the material browser and map viewport; Lit mode uses their normal, roughness, metallic and emission maps.
 Albedo tint is also applied to textured views and thumbnails.
@@ -147,7 +159,8 @@ Its JSON:
 
 ## Reading a pack
 
-- The Godot addon looks for `<map>.mcpack` whenever it builds a map from a file: `load()`, a `MapCraftMap` node, or an import.
+- The Godot addon looks for `<map>.mcpck` whenever it builds a map from a file: `load()`, a `MapCraftMap` node, or an import.
+  When there is none it reads `<map>.mcpack`, the name older MapCraft versions wrote; MapCraft itself always writes `.mcpck`.
 - The pack's size is checked, then the whole file is read into memory once.
   Nothing is extracted to disk, nothing gets a `res://` or `user://` path, and nothing enters the resource cache, so a pack cannot shadow the game's files or reach another map.
 - A problem with the header, the table of contents, an offset or length, or a name refuses the whole pack with an error in the log, and the map loads with the game's own materials and models.
@@ -171,7 +184,7 @@ The writer runs every reader check on the bytes it made, including the content c
 
 ### What an attacker controls
 
-A Workshop item is a folder its author fills: the `.mcmap`, the `.mcpack` and any other file they like.
+A Workshop item is a folder its author fills: the `.mcmap`, the `.mcpck` and any other file they like.
 In the pack that means every byte: the header, the names, offsets and lengths, every picture header and pixel, and every byte of a model's JSON and binary data.
 
 ### What each check stops
@@ -213,4 +226,4 @@ So every string in a map that becomes a `ResourceLoader` path is part of the att
 Materials and models the map names by path still load through `ResourceLoader` from inside `res://`, which is only safe while everything in `res://` is the game's own.
 A game that mounts a player's `.pck` into `res://` with `ProjectSettings.load_resource_pack` lets that pack add `.tscn`, `.tres`, `.res`, `.remap` and `.import` files there, and a map naming one of them runs its scripts; blocking `.gd` files in the pack does not help, since scripts can be built into scenes and resources.
 SurfsUp's Workshop `.pck` support does this, so it stays a risk no check in the addon can remove.
-Games should stop mounting packs from untrusted sources, build Workshop maps from bytes with a `MapCraftMap` node, and ship custom pictures and models in a `.mcpack`, which never registers anything in `res://`.
+Games should stop mounting packs from untrusted sources, build Workshop maps from bytes with a `MapCraftMap` node, and ship custom pictures and models in a `.mcpck`, which never registers anything in `res://`.

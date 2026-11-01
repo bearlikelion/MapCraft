@@ -16,7 +16,21 @@ fi
 case "$platform" in
 	linux) ;;
 	windows) args+=(-DCMAKE_TOOLCHAIN_FILE="$here/mingw-w64-x86_64.cmake") ;;
-	macos) args+=(-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64") ;;
+	macos)
+		args+=(-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64")
+		if [[ "$(uname)" != Darwin ]]; then
+			# osxcross's target folder, which holds toolchain.cmake and bin/.
+			osxcross="${OSXCROSS:-$here/../../osxcross/target}"
+			if [[ ! -f "$osxcross/toolchain.cmake" ]]; then
+				echo "macOS builds off a Mac need osxcross; set OSXCROSS to its target folder" >&2
+				exit 2
+			fi
+			eval "$("$osxcross/bin/osxcross-conf")"
+			export OSXCROSS_HOST="x86_64-apple-$OSXCROSS_TARGET"
+			export PATH="$osxcross/bin:$PATH"
+			args+=(-DCMAKE_TOOLCHAIN_FILE="$osxcross/toolchain.cmake")
+		fi
+		;;
 	*) echo "unknown platform $platform" >&2; exit 2 ;;
 esac
 

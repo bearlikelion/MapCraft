@@ -664,6 +664,7 @@ impl Session {
                     other => other,
                 };
                 let id = e.insert(dst_parent, kind)?;
+                e.set_shader(id, node.shader)?;
                 if std::mem::take(&mut first) {
                     copies.insert(id);
                 }

@@ -6,7 +6,7 @@
 
 namespace godot {
 
-// A map's .mcpack (docs/mcpack-format.md), held in memory: nothing in it is written to disk or registered as a resource.
+// A map's .mcpck (docs/mcpck-format.md), held in memory: nothing in it is written to disk or registered as a resource.
 class MapCraftPack {
 	struct Entry {
 		String name;
@@ -24,6 +24,8 @@ public:
 	Error parse(const PackedByteArray &p_data, String &r_error);
 	// False when no entry has this name less its extension, ignoring case; r_error says why a present entry cannot be used.
 	bool find(const String &p_stem, PackedByteArray &r_bytes, String &r_error);
+	// The map a self-contained pack carries, unchecked: the builder parses it like any .mcmap.
+	bool map(PackedByteArray &r_bytes) const;
 };
 
 } // namespace godot

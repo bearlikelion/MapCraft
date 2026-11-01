@@ -3,7 +3,7 @@
 /// The Godot shader types the preview draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaderKind {
-    /// Drawn on the faces of one material.
+    /// Drawn on the faces of one brush.
     Spatial,
     /// Drawn behind the map in place of the sky.
     Sky,
@@ -66,8 +66,8 @@ const SKY_MAIN: &str = "	TIME = mc.paint.y; FRAGCOORD = gl_FragCoord; ALPHA = 1.
 /// Texture uniforms a preview can bind.
 pub const MAX_TEXTURES: usize = 8;
 
-/// What a texture uniform samples; the preview has no textures assigned, so each gets Godot's default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a texture uniform samples: a material its parameter names, else Godot's default for its hint.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextureSource {
     White,
     Black,
@@ -75,6 +75,157 @@ pub enum TextureSource {
     Normal,
     /// The frame drawn so far, for `hint_screen_texture`.
     Screen,
+    /// The albedo of the material with this name.
+    Material(String),
+}
+
+/// A uniform as the shader declares it, for an inspector to edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Uniform {
+    pub name: String,
+    /// The GLSL type, such as `float`, `vec3` or `sampler2D`.
+    pub ty: String,
+    /// The default's components, splatted to the type's width; empty when there is none or it is not a plain constant.
+    pub default: Vec<f64>,
+    /// `hint_range` as min, max and step; the step is 0 when the shader gives none.
+    pub range: Option<[f64; 3]>,
+    pub color: bool,
+    /// What a `sampler2D` shows with no material: Godot's default for its hint.
+    pub texture: Option<TextureSource>,
+    /// The `group_uniforms` it sits under, as `group` or `group.subgroup`; empty for none.
+    pub group: String,
+}
+
+impl Uniform {
+    /// The scalar type and component count of a bool, number or vector uniform.
+    pub fn shape(&self) -> Option<(&'static str, usize)> {
+        let ty = self.ty.as_str();
+        let width = |s: &str| s.parse::<usize>().ok().filter(|w| (2..=4).contains(w));
+        match ty {
+            "bool" => Some(("bool", 1)),
+            "int" => Some(("int", 1)),
+            "uint" => Some(("uint", 1)),
+            "float" => Some(("float", 1)),
+            _ => {
+                if let Some(w) = ty.strip_prefix("vec").and_then(width) {
+                    Some(("float", w))
+                } else if let Some(w) = ty.strip_prefix("ivec").and_then(width) {
+                    Some(("int", w))
+                } else {
+                    ty.strip_prefix("uvec").and_then(width).map(|w| ("uint", w))
+                }
+            }
+        }
+    }
+
+    /// `value` as a GLSL constant of this uniform's type; `None` when it is the wrong type or not finite.
+    pub fn literal(&self, value: &serde_json::Value) -> Option<String> {
+        use serde_json::Value;
+        let (scalar, width) = self.shape()?;
+        let numbers: Vec<f64> = match (value, width) {
+            (Value::Bool(b), 1) if scalar == "bool" => return Some(b.to_string()),
+            (Value::Number(n), 1) if scalar != "bool" => vec![n.as_f64()?],
+            (Value::Array(a), w) if w > 1 && a.len() == w => a.iter().map(Value::as_f64).collect::<Option<_>>()?,
+            _ => return None,
+        };
+        let one = |n: f64| match scalar {
+            "int" => Some(format!("{}", n.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i64)),
+            "uint" => Some(format!("{}u", n.round().clamp(0.0, f64::from(u32::MAX)) as u64)),
+            _ => Some(n as f32).filter(|f| f.is_finite()).map(|f| format!("{f:?}")),
+        };
+        let parts: Vec<String> = numbers.into_iter().filter(|n| n.is_finite()).map(one).collect::<Option<_>>()?;
+        match parts.as_slice() {
+            [one] if width == 1 => Some(one.clone()),
+            _ if parts.len() == width => Some(format!("{}({})", self.ty, parts.join(", "))),
+            _ => None,
+        }
+    }
+}
+
+/// Reads a `uniform` statement under `group`, without its leading `global` or `instance`.
+fn parse_uniform(statement: &str, line: usize, group: &str) -> Result<Uniform, String> {
+    let text = statement.trim().trim_end_matches(';');
+    let text = text.trim_start_matches("global").trim_start_matches("instance").trim_start().trim_start_matches("uniform");
+    let (declaration, default) = text.split_once('=').map_or((text, None), |(d, v)| (d, Some(v.trim())));
+    let (declaration, hints) = declaration.split_once(':').unwrap_or((declaration, ""));
+    let parts: Vec<&str> = declaration.split_whitespace().collect();
+    let (Some(name), Some(ty)) = (parts.last(), parts.len().checked_sub(2).and_then(|i| parts.get(i))) else {
+        return Err(format!("Line {line}: could not read this uniform"));
+    };
+    let range = hints.split_once("hint_range").and_then(|(_, rest)| {
+        let inner = rest.trim_start().strip_prefix('(')?.split_once(')')?.0;
+        let n: Vec<f64> = inner.split(',').map(|v| v.trim().trim_end_matches('f').parse::<f64>().ok().filter(|f| f.is_finite())).collect::<Option<_>>()?;
+        match n.as_slice() {
+            [min, max] => Some([*min, *max, 0.0]),
+            [min, max, step] => Some([*min, *max, *step]),
+            _ => None,
+        }
+    });
+    let texture = (*ty == "sampler2D").then(|| {
+        if hints.contains("hint_screen_texture") {
+            TextureSource::Screen
+        } else if hints.contains("hint_normal") {
+            TextureSource::Normal
+        } else if hints.contains("hint_default_black") || hints.contains("hint_depth_texture") {
+            TextureSource::Black
+        } else if hints.contains("hint_default_transparent") {
+            TextureSource::Transparent
+        } else {
+            TextureSource::White
+        }
+    });
+    let mut uniform = Uniform {
+        name: (*name).to_string(),
+        ty: (*ty).to_string(),
+        default: Vec::new(),
+        range,
+        color: hints.contains("source_color"),
+        texture,
+        group: group.to_string(),
+    };
+    if let (Some(value), Some((_, width))) = (default, uniform.shape()) {
+        let inner = value.split_once('(').and_then(|(_, r)| r.rsplit_once(')')).map_or(value, |(i, _)| i);
+        let parsed: Option<Vec<f64>> = inner
+            .split(',')
+            .map(|v| match v.trim() {
+                "true" => Some(1.0),
+                "false" => Some(0.0),
+                v => v.trim_end_matches(['f', 'u']).parse::<f64>().ok().filter(|f| f.is_finite()),
+            })
+            .collect();
+        uniform.default = match parsed {
+            Some(v) if v.len() == width => v,
+            Some(v) if v.len() == 1 => vec![v.first().copied().unwrap_or_default(); width],
+            _ => Vec::new(),
+        };
+    }
+    Ok(uniform)
+}
+
+/// The shader's uniforms in source order; unreadable ones are left out.
+pub fn uniforms(source: &str) -> Vec<Uniform> {
+    if source.len() > MAX_SOURCE {
+        return Vec::new();
+    }
+    let stripped = strip_comments(source);
+    let mut group = String::new();
+    let mut out = Vec::new();
+    for statement in statements(&stripped) {
+        let words: Vec<&str> = statement.split_whitespace().map(|w| w.trim_end_matches(';')).filter(|w| !w.is_empty()).collect();
+        match words.as_slice() {
+            ["group_uniforms", rest @ ..] => group = rest.first().copied().unwrap_or_default().to_string(),
+            ["subgroup_uniforms", rest @ ..] => {
+                let top = group.split('.').next().unwrap_or_default().to_string();
+                group = match rest.first() {
+                    Some(sub) if !top.is_empty() => format!("{top}.{sub}"),
+                    _ => top,
+                };
+            }
+            ["uniform" | "global" | "instance", ..] => out.extend(parse_uniform(statement, 0, &group).ok()),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A Godot shader as GLSL 4.50 fragment source, with the number of lines put before the user's first.
@@ -148,7 +299,7 @@ fn has_function(body: &str, name: &str) -> bool {
 }
 
 /// Translates Godot shader source; the error names the line of anything the preview cannot draw.
-pub fn translate(source: &str) -> Result<Translated, String> {
+pub fn translate(source: &str, params: &mapcraft_map::ShaderParams) -> Result<Translated, String> {
     if source.len() > MAX_SOURCE {
         return Err("Shader source exceeds 256 KiB".into());
     }
@@ -179,30 +330,15 @@ pub fn translate(source: &str) -> Result<Translated, String> {
             }
             Some("group_uniforms" | "subgroup_uniforms") => body.push_str(&newlines),
             Some("uniform" | "global" | "instance") => {
-                let text = statement.trim().trim_end_matches(';');
-                let text = text.trim_start_matches("global").trim_start_matches("instance").trim_start().trim_start_matches("uniform");
-                let (declaration, default) = text.split_once('=').map_or((text, None), |(d, v)| (d, Some(v.trim())));
-                let (declaration, hints) = declaration.split_once(':').unwrap_or((declaration, ""));
-                let parts: Vec<&str> = declaration.split_whitespace().collect();
-                let (Some(name), Some(ty)) = (parts.last(), parts.len().checked_sub(2).and_then(|i| parts.get(i))) else {
-                    return Err(format!("Line {line}: could not read this uniform"));
-                };
-                if *ty == "sampler2D" {
+                let u = parse_uniform(statement, line, "")?;
+                let (name, ty) = (u.name.as_str(), u.ty.as_str());
+                if let Some(fallback) = u.texture.clone() {
                     if textures.len() >= MAX_TEXTURES {
                         return Err(format!("Line {line}: the preview binds at most {MAX_TEXTURES} textures"));
                     }
                     let binding = textures.len() * 2;
-                    textures.push(if hints.contains("hint_screen_texture") {
-                        TextureSource::Screen
-                    } else if hints.contains("hint_normal") {
-                        TextureSource::Normal
-                    } else if hints.contains("hint_default_black") || hints.contains("hint_depth_texture") {
-                        TextureSource::Black
-                    } else if hints.contains("hint_default_transparent") {
-                        TextureSource::Transparent
-                    } else {
-                        TextureSource::White
-                    });
+                    let material = params.get(name).and_then(|v| v.as_str()).filter(|m| !m.is_empty() && fallback != TextureSource::Screen);
+                    textures.push(material.map_or(fallback, |m| TextureSource::Material(m.to_string())));
                     texture_decls.push_str(&format!(
                         "layout(set = 1, binding = {binding}) uniform texture2D mc_tex_{name}; layout(set = 1, binding = {}) uniform sampler mc_smp_{name};\n#define {name} sampler2D(mc_tex_{name}, mc_smp_{name})\n",
                         binding + 1
@@ -213,10 +349,11 @@ pub fn translate(source: &str) -> Result<Translated, String> {
                 if ty.starts_with("sampler") || ty.starts_with("isampler") || ty.starts_with("usampler") {
                     return Err(format!("Line {line}: the preview supports sampler2D textures, not {ty} {name}"));
                 }
-                if hints.contains("source_color") && matches!(*ty, "vec3" | "vec4") {
-                    colors.push((*name).to_string());
+                if u.color && matches!(ty, "vec3" | "vec4") {
+                    colors.push(name.to_string());
                 }
-                match default {
+                let text = statement.split_once('=').map(|(_, v)| v.trim().trim_end_matches(';').trim());
+                match params.get(name).and_then(|v| u.literal(v)).as_deref().or(text) {
                     Some(value) => body.push_str(&format!("{ty} {name} = {value};")),
                     None => body.push_str(&format!("{ty} {name};")),
                 }
@@ -263,8 +400,8 @@ pub fn translate(source: &str) -> Result<Translated, String> {
 }
 
 /// Parses and validates the translated source, with errors on the user's own lines.
-pub fn compile(source: &str) -> Result<(ShaderKind, Vec<TextureSource>, naga::Module), String> {
-    let t = translate(source)?;
+pub fn compile(source: &str, params: &mapcraft_map::ShaderParams) -> Result<(ShaderKind, Vec<TextureSource>, naga::Module), String> {
+    let t = translate(source, params)?;
     let at = |line: usize| match line.checked_sub(t.offset) {
         Some(l) if l > 0 && l <= source.lines().count() => format!("Line {l}: "),
         _ => String::new(),
@@ -284,6 +421,64 @@ pub fn compile(source: &str) -> Result<(ShaderKind, Vec<TextureSource>, naga::Mo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compile(source: &str) -> Result<(ShaderKind, Vec<TextureSource>, naga::Module), String> {
+        super::compile(source, &Default::default())
+    }
+
+    fn translate(source: &str) -> Result<Translated, String> {
+        super::translate(source, &Default::default())
+    }
+
+    const POND: &str = "shader_type spatial;\nuniform sampler2D screen_texture : hint_screen_texture, filter_linear;\ngroup_uniforms water;\nuniform vec4 water_color : source_color = vec4(0.1, 0.3, 0.2, 0.75);\nuniform float metallic : hint_range(0.0, 1.0) = 0.2;\ngroup_uniforms ripples;\nuniform sampler2D ripple_noise;\nuniform float ripple_strength : hint_range(0.0, 0.1) = 0.01;\nuniform vec2 ripple_speed = vec2(0.02, 0.01);\nsubgroup_uniforms fine;\nuniform int steps : hint_range(8, 32, 8) = 16;\ngroup_uniforms;\nuniform bool on = true;\nvoid fragment() {\n\tfloat n = texture(ripple_noise, UV + TIME * ripple_speed).r;\n\tALBEDO = water_color.rgb * metallic + texture(screen_texture, SCREEN_UV + n * ripple_strength).rgb * float(steps) * float(on);\n}\n";
+
+    #[test]
+    fn uniforms_list_types_defaults_hints_and_groups_in_order() {
+        let u = uniforms(POND);
+        let names: Vec<&str> = u.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, ["screen_texture", "water_color", "metallic", "ripple_noise", "ripple_strength", "ripple_speed", "steps", "on"]);
+        let groups: Vec<&str> = u.iter().map(|u| u.group.as_str()).collect();
+        assert_eq!(groups, ["", "water", "water", "ripples", "ripples", "ripples", "ripples.fine", ""]);
+        assert_eq!(u[0].texture, Some(TextureSource::Screen));
+        assert!(u[1].color && u[1].default == [0.1, 0.3, 0.2, 0.75]);
+        assert_eq!(u[2].range, Some([0.0, 1.0, 0.0]));
+        assert_eq!(u[3].texture, Some(TextureSource::White));
+        assert_eq!(u[5].default, [0.02, 0.01]);
+        assert_eq!((u[6].range, u[6].default.clone()), (Some([8.0, 32.0, 8.0]), vec![16.0]));
+        assert_eq!(u[7].default, [1.0]);
+    }
+
+    #[test]
+    fn params_replace_defaults_and_bad_ones_are_ignored() {
+        use serde_json::json;
+        let params: mapcraft_map::ShaderParams = [
+            ("water_color", json!([1, 0, 0, 1])),
+            ("metallic", json!(0.5)),
+            ("steps", json!(24.4)),
+            ("on", json!(false)),
+            ("ripple_speed", json!("wrong type")),
+            ("ripple_strength", json!(1e300)),
+            ("ripple_noise", json!("water/noise")),
+            ("screen_texture", json!("ignored")),
+            ("missing", json!(1)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let t = super::translate(POND, &params).unwrap();
+        for line in [
+            "vec4 water_color = vec4(1.0, 0.0, 0.0, 1.0);",
+            "float metallic = 0.5;",
+            "int steps = 24;",
+            "bool on = false;",
+            "vec2 ripple_speed = vec2(0.02, 0.01);",
+            "float ripple_strength = 0.01;",
+        ] {
+            assert!(t.glsl.contains(line), "{line}");
+        }
+        assert_eq!(t.textures, [TextureSource::Screen, TextureSource::Material("water/noise".into())]);
+        assert!(super::compile(POND, &params).is_ok());
+    }
 
     #[test]
     fn a_sky_shader_with_hinted_multiline_uniforms_compiles() {

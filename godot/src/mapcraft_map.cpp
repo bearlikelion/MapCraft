@@ -25,7 +25,7 @@ void MapCraftMap::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("build"), &MapCraftMap::build);
 	ClassDB::bind_method(D_METHOD("clear"), &MapCraftMap::clear);
 
-	ADD_PROPERTY(PropertyInfo(Variant::STRING, "map_file", PROPERTY_HINT_FILE, "*.mcmap"), "set_map_file", "get_map_file");
+	ADD_PROPERTY(PropertyInfo(Variant::STRING, "map_file", PROPERTY_HINT_FILE, "*.mcmap,*.mcpck"), "set_map_file", "get_map_file");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "entity_map", PROPERTY_HINT_RESOURCE_TYPE, "MapCraftEntityMap"), "set_entity_map", "get_entity_map");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "units_per_meter", PROPERTY_HINT_RANGE, "1,1000,0.01"), "set_units_per_meter", "get_units_per_meter");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "material_root", PROPERTY_HINT_DIR), "set_material_root", "get_material_root");

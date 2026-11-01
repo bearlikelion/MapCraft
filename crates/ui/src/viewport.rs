@@ -484,9 +484,12 @@ impl MapCraftApp {
         }
     }
 
-    /// Keeps the bigger part of the selected brushes, since a fresh cut usually trims a corner off.
+    /// Keeps the bigger part of the selected brushes, since a fresh cut usually trims a corner off, until the user picks a side.
     fn choose_clip_side(&mut self) {
         use mapcraft_engine::ClipKeep as K;
+        if self.clip_keep_chosen {
+            return;
+        }
         let Some(plane) = self.clip_plane() else { return };
         let volume = |b: Option<mapcraft_map::Brush>| b.and_then(|b| b.solid().ok()).map_or(0.0, |s| s.volume());
         let (mut front, mut back) = (0.0, 0.0);

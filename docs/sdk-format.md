@@ -90,7 +90,7 @@ steps = [
 | `paths.<name>` | A folder or program the user picks once; available as `${name}`. Its `default` may name other paths, such as `"${cstrike}/../bin/cstrike.fgd"`, and stays unset until they are |
 | `paths.<name>.steam` | Finds the path in a Steam app's install folder when the user set nothing, such as `{ app = 240, find = ["cstrike"] }`; the first `find` entry that exists wins, and without `find` it is the install folder itself. Only builds shipped on Steam can ask Steam, so others leave it to the user or `default` |
 | `compile` | Compile profiles shown in the Run menu |
-| `workshop.app` | The game's Steam app id; builds shipped on Steam then offer File > Publish to Steam Workshop, which uploads the map as `<map name>.mcmap` with prefabs baked in, beside a `<map name>.mcpack` (see [`mcpack-format.md`](mcpack-format.md)) holding the PNG and JPEG pictures and `.glb` models it takes from the user's own texture folders |
+| `workshop.app` | The game's Steam app id; builds shipped on Steam then offer File > Publish to Steam Workshop, which uploads the map as `<map name>.mcmap` with prefabs baked in, beside a `<map name>.mcpck` (see [`mcpck-format.md`](mcpck-format.md)) holding the PNG and JPEG pictures and `.glb` models it takes from the user's own texture folders |
 | `workshop.tags` | Tags the Publish window offers |
 
 Relative paths are relative to the SDK folder.
@@ -111,15 +111,17 @@ Besides the `paths` the user set, these are always available:
 | `${<path>_dir}` | The folder holding one of the `paths`, such as `${game_dir}` for the folder of the `game` executable |
 | `${bake_dir}` | The editor's bake folder, where bake profiles write; list it in `files.roots` so the plugin that reads the bake can |
 
-An unknown variable stops the compile with an error instead of expanding to nothing.
+An unknown variable, or a path the user has not set yet, stops the compile with an error naming it instead of expanding to nothing.
 
 ## Compile steps
 
 - `{ run = "...", args = [...], cwd = "...", env = { NAME = "..." }, wine = true }` runs a program. `env` sets environment variables for it, such as `LD_LIBRARY_PATH` for tools that load a game's libraries, and its values expand like `args`. With `wine = true`, a Windows tool runs through Wine on Linux and macOS.
 - `{ copy = "...", to = "..." }` copies a file, creating the destination folder.
 - `{ export = "id", to = "..." }` writes the map with the exporter `id` of one of the SDK's plugins, such as a Quake `.map` before `qbsp` runs. Prefabs and mirror copies are resolved first, and layers left out of exports and anything outside an active cordon are dropped.
+- `{ pack = "${map}", to = ".../${map_name}.mcpck" }` writes the map and the pictures and models it takes from the user's own folders as one self-contained [`.mcpck`](mcpck-format.md) at `to`; a map with no such assets is copied to `to` with a `.mcmap` extension instead.
+  Either way the file of the other kind at that path is deleted, so the game never loads a stale copy.
 
-Export steps run before all other steps, because plugins run in the editor; the other steps then run in order and the profile stops at the first failure.
+Export and pack steps run before all other steps, because plugins and the map's assets live in the editor; the other steps then run in order and the profile stops at the first failure.
 A profile with `os = "linux"`, `"windows"` or `"macos"` is listed only on that system, so an SDK can run a game's native tools on each.
 MapCraft asks before running an SDK's programs the first time.
 

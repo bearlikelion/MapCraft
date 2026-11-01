@@ -18,7 +18,8 @@ This page is the reference for importers such as the Godot extension, a Unity im
 
 - `format` is always `mapcraft.map`.
 - `schema_version` is an integer; readers refuse versions newer than they know.
-  MapCraft writes 3 when the map has a boolean group (see Boolean groups), so older builds refuse it instead of opening an empty group.
+  MapCraft writes 4 when some node carries an embedded `shader` (see Embedded shaders), so older builds refuse it instead of dropping the shaders on save.
+  Otherwise it writes 3 when the map has a boolean group (see Boolean groups), so older builds refuse it instead of opening an empty group.
   Otherwise it writes 2 when some displacement carries blend data (`blend` weights or a second layer, see Displacements), so older builds refuse a painted map instead of dropping its paint on save; every other map is written as 1.
 - `sdk` is the id of the SDK the map was made with and may be missing.
 - `view` holds editor state (cameras, layout) and is not part of the map.
@@ -29,7 +30,7 @@ This page is the reference for importers such as the Godot extension, a Unity im
 ## Nodes
 
 `map.root` is a tree of nodes.
-Every node has an `id` (unique integer), a `type`, and optionally `children`, `tags`, `hidden`, `locked`, `extra`, `derived` and `sources`.
+Every node has an `id` (unique integer), a `type`, and optionally `children`, `tags`, `hidden`, `locked`, `extra`, `shader`, `shader_params`, `derived` and `sources`.
 
 | `type` | Fields | Children |
 |---|---|---|
@@ -46,6 +47,32 @@ Every node has an `id` (unique integer), a `type`, and optionally `children`, `t
 A `generator` (`{plugin, command, params, origin, angles, stretch}`) marks a group whose children were produced by a plugin; importers treat them as ordinary children.
 `stretch`, when present, is a 3x3 matrix as nine numbers, column by column, applied to the plugin's output before `origin` and `angles` place it: a resize, tilt or mirror that the parameters do not describe.
 A prefab's `path` is relative to the map that contains it; `angles` are pitch, yaw and roll in degrees.
+
+## Embedded shaders
+
+A node's `shader` is the full source text of a Godot shader (`.gdshader`) stored in the map.
+On the `world` node it is a `shader_type sky;` shader that replaces the sky; on a `brush` it is a `shader_type spatial;` shader that draws all of that brush's faces instead of their materials.
+MapCraft ignores `shader` on other node types.
+Source is at most 256 KiB; MapCraft refuses longer edits, and a longer or broken shader in a file still loads and shows its error in the editor.
+A `shader` that is not a string is dropped on load rather than failing the map.
+
+`shader_params` maps uniform names to values that replace the shader's own defaults, as a Godot `ShaderMaterial`'s parameters do:
+
+```json
+"shader_params": { "water_color": [0.05, 0.25, 0.6, 0.55], "ripple_strength": 0.08, "ripple_noise": "materials/ripple_noise", "on": true }
+```
+
+- `float`, `int` and `uint` uniforms take a number; `bool` takes `true` or `false`.
+- Vectors (`vec2` to `vec4`, `ivec`, `uvec`), colors included, take an array of numbers, one per component; `source_color` values are sRGB, as in Godot.
+- A `sampler2D` takes a string naming a material exactly as faces name theirs, resolved through the SDK and the map's asset folders and packed into `.mcpck` like face materials; the shader samples its albedo picture.
+- A missing entry means the shader's default.
+  An entry for a uniform the shader does not declare, or whose value does not fit the uniform's type, is kept as data and ignored when drawing.
+- At most 256 entries; names are at most 256 bytes, strings at most 1024 bytes and arrays 1 to 16 finite numbers.
+  Entries outside these bounds, nulls and objects are dropped on load.
+- Removing a node's shader removes its parameters.
+Importers may compile the source with the engine's own shader compiler, for example as a Godot `ShaderMaterial` or `Sky`, and fall back to the face materials when they cannot.
+The Godot addon does: the world's shader becomes the sky material of the map's environment, making a `WorldEnvironment` when the map has none, and a brush's shader draws every face of that brush, shared by brushes whose source and `shader_params` match.
+It skips a shader longer than 256 KiB or of the wrong `shader_type` with a warning, keeping the default sky or the face materials, and skips a `shader_params` entry the shader does not declare or whose value does not fit the uniform's type.
 
 ## Mirror groups
 

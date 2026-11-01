@@ -30,6 +30,29 @@ pub use map::{Changes, Edit, EditError, Map, ROOT};
 pub use mirror::{Axis, Mirror};
 pub use node::{Cordon, Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};
 
+/// The longest embedded shader source an edit accepts, in bytes.
+pub const MAX_SHADER_BYTES: usize = 256 * 1024;
+
+/// Uniform values by name: numbers, bools, arrays of numbers for vectors, and material names for textures.
+pub type ShaderParams = BTreeMap<String, serde_json::Value>;
+
+pub const MAX_SHADER_PARAMS: usize = 256;
+
+/// Whether `name` and `value` fit the bounds a shader parameter must keep; anything else is dropped on load and refused on edit.
+pub fn valid_shader_param(name: &str, value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    let finite = |v: &Value| v.as_f64().is_some_and(f64::is_finite);
+    !name.is_empty()
+        && name.len() <= 256
+        && match value {
+            Value::Bool(_) => true,
+            Value::Number(_) => finite(value),
+            Value::String(s) => s.len() <= 1024,
+            Value::Array(a) => !a.is_empty() && a.len() <= 16 && a.iter().all(finite),
+            Value::Null | Value::Object(_) => false,
+        }
+}
+
 /// Data a plugin needs to round-trip but the core does not model.
 pub type Extra = BTreeMap<String, serde_json::Value>;
 

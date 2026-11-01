@@ -191,7 +191,9 @@ impl Project {
     }
 
     fn merge_descriptors(&mut self) {
-        self.materials.retain(|m| !self.descriptors.contains_key(&m.name));
+        let textures: std::collections::BTreeSet<&PathBuf> =
+            self.descriptors.values().flat_map(|m| [m.image.as_ref(), m.emission.as_ref()]).flatten().collect();
+        self.materials.retain(|m| !self.descriptors.contains_key(&m.name) && !m.image.as_ref().is_some_and(|i| textures.contains(i)));
         self.materials.extend(self.descriptors.values().cloned());
         self.materials.sort_by(|a, b| a.name.cmp(&b.name));
     }
@@ -686,6 +688,13 @@ mod tests {
         assert_eq!(project.picture(pbr.normal.as_deref().unwrap()).unwrap().dimensions(), (4, 4));
         project.take_listed(Listed { materials: vec![Material { name: "stone".into(), color: Some([0; 3]), ..Material::default() }], ..Listed::default() });
         assert_eq!(project.material("stone").unwrap().descriptor.as_ref(), Some(&descriptor));
+        let picture = dir.path().join("textures/normal.png");
+        project.descriptors.get_mut("stone").unwrap().image = Some(picture.clone());
+        project.take_listed(Listed {
+            materials: vec![Material { name: "textures/normal".into(), image: Some(picture), ..Material::default() }],
+            ..Listed::default()
+        });
+        assert!(project.material("textures/normal").is_none(), "a descriptor's picture is not a material of its own");
         std::fs::remove_file(dir.path().join("textures/normal.png")).unwrap();
         project.descriptors.clear();
         project.load_descriptors();

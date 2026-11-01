@@ -16,6 +16,19 @@ pub struct Node {
     pub locked: bool,
     #[serde(default, skip_serializing_if = "Extra::is_empty")]
     pub extra: Extra,
+    /// Embedded Godot shader source: a sky shader on the world, a spatial shader on a brush.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shader: Option<String>,
+    /// Values for the shader's uniforms by name; see [`crate::valid_shader_param`].
+    #[serde(default, skip_serializing_if = "crate::ShaderParams::is_empty")]
+    pub shader_params: crate::ShaderParams,
+}
+
+impl Node {
+    /// Materials the node's shader parameters name for its textures.
+    pub fn shader_materials(&self) -> impl Iterator<Item = &str> {
+        self.shader_params.values().filter_map(|v| v.as_str()).filter(|_| self.shader.is_some())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

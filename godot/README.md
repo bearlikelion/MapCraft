@@ -46,13 +46,17 @@ It finds `<name>.tres`, `.res` or `.material` first, then an image (`png`, `jpg`
 
 Anti-tiled faces and blended displacements draw through the addon's shaders in `addons/mapcraft/shaders`, so the game needs that folder too.
 Only a plain `StandardMaterial3D` can take these shaders; any other material draws as it is, with a warning.
+A map's embedded shaders ([the format](../docs/mcmap-format.md#embedded-shaders)) become a `ShaderMaterial`: the world's sky shader is the environment's sky, and a brush's spatial shader draws all of that brush's faces.
+Their `shader_params` set the uniforms, and a `sampler2D` parameter names a material and gets its albedo picture, from the map's pack first and then the game.
 The guide covers [anti-tiling](../docs/guide/godot.md#anti-tiling), [blended terrain](../docs/guide/godot.md#blended-terrain) and [which materials qualify](../docs/guide/godot.md#shader-wrappers).
 
 ## Map packs
 
-A map built from a file picks up `<map>.mcpack` beside it: its pictures become the map's materials and its `.glb` models stand in for `model` paths, for that map only.
+A map built from a file picks up `<map>.mcpck` beside it: its pictures become the map's materials and its `.glb` models stand in for `model` paths, for that map only.
 The pack is read into memory and checked first; nothing in it is extracted, given a path or cached, a pack with a broken container is ignored with an error in the log, and an entry that fails its checks draws as missing.
-[The format](../docs/mcpack-format.md) lists what a pack may hold, every limit and the threat model.
+A map without one uses `<map>.mcpack`, the name older MapCraft versions wrote.
+A version 3 pack can hold the map too: `load("<name>.mcpck")` or a `MapCraftMap` node whose `map_file` is the pack builds that map with the pack's own pictures and models.
+[The format](../docs/mcpck-format.md) lists what a pack may hold, every limit and the threat model.
 
 For maps downloaded from players, build them with a `MapCraftMap` node rather than `load()`: Godot's `load()` follows a `.remap` or `.import` file planted beside the path to any resource, scripts included.
 Model paths, material names and SDK names with `..`, `.` or empty segments, a backslash, a colon or a control character are refused before any path is built from them.
@@ -110,7 +114,8 @@ For games that load packs, `tools/pack_map.gd` packs an imported map into a `.pc
 
 You need CMake 3.25, Ninja, Python 3 and a C++17 compiler.
 Windows builds cross-compile with MinGW.
-The macOS build (one library for both Apple Silicon and Intel) has to run on a Mac.
+The macOS build makes one library for both Apple Silicon and Intel.
+Off a Mac it cross-compiles with [osxcross](https://github.com/tpoechtrager/osxcross): set `OSXCROSS` to its `target` folder, or keep osxcross beside the MapCraft checkout, where `build.sh` looks by default.
 
 ```sh
 ./build.sh linux                     # or windows, macos; add template_release for release builds

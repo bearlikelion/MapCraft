@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
-    #[error("unknown variable ${{{0}}}")]
+    #[error("${{{0}}} is unknown or not set; set it in the SDK's settings")]
     UnknownVar(String),
     #[error("unclosed ${{ in `{0}`")]
     Unclosed(String),
@@ -60,6 +60,12 @@ pub enum Step {
     /// Writes the map with a plugin's exporter; the editor does this before the other steps run.
     Export {
         export: String,
+        to: String,
+    },
+    /// Writes the map with its custom pictures and models as one `.mcpck`, or copies it as a `.mcmap` when it has none;
+    /// the editor does this before the other steps run.
+    Pack {
+        pack: String,
         to: String,
     },
 }
@@ -149,6 +155,7 @@ pub fn run_profile(
         }
         match step {
             Step::Export { export, to } => on_output(&format!("> export {export} {}", expand(to, vars)?)),
+            Step::Pack { pack, to } => on_output(&format!("> pack {} {}", expand(pack, vars)?, expand(to, vars)?)),
             Step::Copy { copy, to } => {
                 let (from, to) = (expand(copy, vars)?, expand(to, vars)?);
                 on_output(&format!("> copy {from} {to}"));
@@ -228,6 +235,8 @@ steps = [{ export = "vmf", to = "${dir}/x.vmf" }]
         let mut lines = Vec::new();
         run_profile(&profile, &vars, &mut |l| lines.push(l.to_string()), &AtomicBool::new(false)).unwrap();
         assert_eq!(lines, vec!["> export vmf /tmp/x.vmf".to_string()], "the editor writes exports; the runner only reports them");
+        let profile: CompileProfile = toml::from_str("name = \"play\"\nsteps = [{ pack = \"${dir}/a.mcmap\", to = \"${dir}/Maps/a.mcpck\" }]").unwrap();
+        assert_eq!(profile.steps, vec![Step::Pack { pack: "${dir}/a.mcmap".into(), to: "${dir}/Maps/a.mcpck".into() }]);
     }
 
     #[test]

@@ -58,7 +58,7 @@ const PAGE_ICONS: &[(&str, &str)] = &[
     ("docs/sdk-format.md", "file_cog"),
     ("docs/sdk-registry.md", "globe"),
     ("docs/mcmap-format.md", "files"),
-    ("docs/mcpack-format.md", "box"),
+    ("docs/mcpck-format.md", "box"),
     ("docs/lighting.md", "sun"),
     ("docs/surf-mapping.md", "angle"),
     ("docs/trenchbroom-import.md", "file_arrow_down"),

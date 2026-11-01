@@ -14,7 +14,7 @@ namespace godot {
 
 namespace {
 
-// The limits; crates/format/src/pack.rs repeats them and docs/mcpack-format.md lists them.
+// The limits; crates/format/src/pack.rs repeats them and docs/mcpck-format.md lists them.
 const int64_t MAX_PACK_SIZE = int64_t(256) << 20;
 const uint32_t MAX_ENTRIES = 1024;
 const int64_t MAX_NAME_LEN = 255;
@@ -37,7 +37,8 @@ const int64_t MAX_ACCESSOR_ELEMENTS = int64_t(1) << 22;
 const int64_t MAX_MESH_COMPONENTS = int64_t(1) << 24;
 const char *GLTF_EXTENSIONS[] = { "KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_transform" };
 
-const uint32_t VERSION = 2;
+const uint32_t VERSION = 3;
+const char *MAP_ENTRY = "map.mcmap";
 const int64_t HEADER_LEN = 12;
 const uint8_t PNG_SIGNATURE[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 const uint8_t PNG_IHDR[8] = { 0, 0, 0, 13, 'I', 'H', 'D', 'R' };
@@ -52,6 +53,7 @@ enum class Kind {
 	JPEG,
 	GLB,
 	MATERIAL,
+	MAP,
 };
 
 uint32_t le16(const uint8_t *p) {
@@ -98,6 +100,9 @@ Kind kind_of(const uint8_t *p_name, int64_t p_len, String &r_error) {
 		}
 	}
 	const String name = String::utf8(reinterpret_cast<const char *>(p_name), p_len);
+	if (name == MAP_ENTRY) {
+		return Kind::MAP;
+	}
 	Kind kind = Kind::GLB;
 	String folder = "models/";
 	if (name.ends_with(".png") || name.ends_with(".jpg")) {
@@ -728,7 +733,7 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 		return ERR_FILE_CORRUPT;
 	}
 	if (le32(p + 4) < 1 || le32(p + 4) > VERSION) {
-		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads versions 1 and 2";
+		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads versions 1 to 3";
 		return ERR_FILE_UNRECOGNIZED;
 	}
 	const uint32_t count = le32(p + 8);
@@ -761,6 +766,10 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
             r_error = "version 1 cannot contain material descriptors or textures/ entries";
             return ERR_FILE_CORRUPT;
         }
+		if (le32(p + 4) < 3 && raw.name == MAP_ENTRY) {
+			r_error = "versions 1 and 2 cannot contain a map";
+			return ERR_FILE_CORRUPT;
+		}
 		raw.offset = le64(p + at + len);
 		raw.length = le64(p + at + len + 8);
 		toc.push_back(raw);
@@ -797,9 +806,18 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 	return OK;
 }
 
+bool MapCraftPack::map(PackedByteArray &r_bytes) const {
+	const Entry *entry = entries.getptr("map");
+	if (entry == nullptr || entry->name != MAP_ENTRY) {
+		return false;
+	}
+	r_bytes = data.slice(entry->offset, entry->offset + entry->length);
+	return true;
+}
+
 bool MapCraftPack::find(const String &p_stem, PackedByteArray &r_bytes, String &r_error) {
 	const Entry *entry = entries.getptr(p_stem.to_lower());
-	if (entry == nullptr) {
+	if (entry == nullptr || entry->name == MAP_ENTRY) {
 		return false;
 	}
 	r_bytes = data.slice(entry->offset, entry->offset + entry->length);

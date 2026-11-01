@@ -187,6 +187,22 @@ const COMMANDS: &[CommandSpec] = &[
             Ok(())
         },
     },
+    CommandSpec {
+        id: "shader.add",
+        label: "Add Shader",
+        menu: "Tools/Shader/Add Shader",
+        shortcut: None,
+        enabled: Session::can_add_shader,
+        run: Session::add_shader,
+    },
+    CommandSpec {
+        id: "shader.remove",
+        label: "Remove Shader",
+        menu: "Tools/Shader/Remove Shader",
+        shortcut: None,
+        enabled: Session::can_remove_shader,
+        run: Session::remove_shader,
+    },
     CommandSpec { id: "tools.carve", label: "Carve", menu: "Tools/Carve", shortcut: Some("Ctrl+Shift+C"), enabled: has_selection, run: Session::carve },
     CommandSpec {
         id: "tools.boolean_subtract",

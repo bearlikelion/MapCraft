@@ -399,7 +399,7 @@ impl MapCraftApp {
                 p.hidden_models.insert(id, hidden);
             });
         }
-        crate::panels::count_and_previews(ui, &format!("{} models", names.len()), &mut self.show_model_thumbs);
+        let add = crate::panels::count_and_previews(ui, &format!("{} models", names.len()), &mut self.show_model_thumbs, "Add Model");
         if models.class.is_none() {
             ui.label(
                 RichText::new("This SDK has no prop class, so models can be previewed but not placed. Set `class` under `[models]` in its sdk.toml.").weak(),
@@ -453,6 +453,10 @@ impl MapCraftApp {
         models.make_previews(ui.ctx(), renderer, cache.as_deref(), &missing);
         if !missing.is_empty() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        if add {
+            self.run_action("file.add_model");
+            return;
         }
         let Some(name) = pick else { return };
         models.request(&name);

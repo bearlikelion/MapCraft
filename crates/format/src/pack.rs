@@ -1,4 +1,4 @@
-//! `.mcpack`: the pictures and models a map ships beside itself, described in `docs/mcpack-format.md`.
+//! `.mcpck`: the pictures and models a map ships beside itself, described in `docs/mcpck-format.md`.
 //!
 //! Packs come from strangers, so every number is checked before it is used and nothing is decoded here.
 //! [`write`] runs the same checks as [`read`] on what it wrote, so MapCraft never writes a pack the Godot addon refuses.
@@ -8,13 +8,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map as Object, Value};
 
-pub const EXTENSION: &str = "mcpack";
-pub const VERSION: u32 = 2;
+pub const EXTENSION: &str = "mcpck";
+pub const VERSION: u32 = 3;
+/// The map a self-contained pack carries, which needs version 3.
+pub const MAP_ENTRY: &str = "map.mcmap";
 const MAGIC: &[u8; 4] = b"MCPK";
 const HEADER_LEN: u64 = 12;
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
-// The limits; godot/src/mapcraft_pack.cpp repeats them and docs/mcpack-format.md lists them.
+// The limits; godot/src/mapcraft_pack.cpp repeats them and docs/mcpck-format.md lists them.
 pub const MAX_PACK_SIZE: u64 = 256 << 20;
 pub const MAX_ENTRIES: u32 = 1024;
 pub const MAX_NAME_LEN: usize = 255;
@@ -57,9 +59,10 @@ enum Kind {
     Jpeg,
     Glb,
     Material,
+    Map,
 }
 
-/// The pack that goes beside a map: `<map>.mcpack`.
+/// The pack that goes beside a map: `<map>.mcpck`.
 pub fn path_for(map: &Path) -> PathBuf {
     map.with_extension(EXTENSION)
 }
@@ -104,7 +107,13 @@ pub fn write(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, PackError> {
     }
     let mut out = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
     out.extend_from_slice(MAGIC);
-    let version = if sorted.iter().any(|(name, _)| name.ends_with(".json") || name.starts_with("textures/")) { VERSION } else { 1 };
+    let version = if sorted.iter().any(|(name, _)| name == MAP_ENTRY) {
+        VERSION
+    } else if sorted.iter().any(|(name, _)| name.ends_with(".json") || name.starts_with("textures/")) {
+        2
+    } else {
+        1
+    };
     out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
     let mut offset = toc_end;
@@ -203,6 +212,9 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
         if version == 1 && (name.ends_with(".json") || name.starts_with("textures/")) {
             return Err(invalid("version 1 cannot contain material descriptors or textures/ entries"));
         }
+        if version < 3 && name == MAP_ENTRY {
+            return Err(invalid("versions 1 and 2 cannot contain a map"));
+        }
         toc.push((name, u64::from_le_bytes(c.array()?), u64::from_le_bytes(c.array()?)));
     }
     let mut at = c.at as u64;
@@ -249,6 +261,9 @@ fn kind_of(name: &str) -> Result<Kind, String> {
     if name.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
         return Err("names cannot have empty, . or .. path segments".into());
     }
+    if name == MAP_ENTRY {
+        return Ok(Kind::Map);
+    }
     let (stem, kind, folder) = if let Some(stem) = name.strip_suffix(".png") {
         (stem, Kind::Png, "materials/")
     } else if let Some(stem) = name.strip_suffix(".jpg") {
@@ -258,7 +273,7 @@ fn kind_of(name: &str) -> Result<Kind, String> {
     } else if let Some(stem) = name.strip_suffix(".json") {
         (stem, Kind::Material, "materials/")
     } else {
-        return Err("only .png, .jpg, .glb and material .json entries are allowed".into());
+        return Err(format!("only .png, .jpg, .glb, material .json and {MAP_ENTRY} entries are allowed"));
     };
     let folder = if matches!(kind, Kind::Png | Kind::Jpeg) && stem.starts_with("textures/") { "textures/" } else { folder };
     match stem.strip_prefix(folder) {
@@ -276,6 +291,10 @@ fn check(name: &str, data: &[u8], pixels: &mut u64) -> Result<(), String> {
     match kind_of(name)? {
         Kind::Material => crate::pack_material::Material::read(data).map(|_| ()),
         Kind::Glb => glb(data, pixels),
+        Kind::Map => match serde_json::from_slice::<Value>(data).map_err(|e| format!("is not a MapCraft map: {e}"))?.get("format").and_then(Value::as_str) {
+            Some("mapcraft.map") => Ok(()),
+            _ => Err("is not a MapCraft map".into()),
+        },
         kind => image(data, kind, pixels),
     }
 }
@@ -763,7 +782,7 @@ mod tests {
     fn saves_and_loads_beside_the_map() {
         let dir = tempfile::tempdir().unwrap();
         let path = path_for(&dir.path().join("surf_test.mcmap"));
-        assert_eq!(path.file_name().unwrap(), "surf_test.mcpack");
+        assert_eq!(path.file_name().unwrap(), "surf_test.mcpck");
         save(&path, &good()).unwrap();
         assert_eq!(load(&path).unwrap().len(), 3);
     }
@@ -791,7 +810,7 @@ mod tests {
         let stripes = include_bytes!("../../../godot/test/Assets/Textures/stripes.png").to_vec();
         let crate_model = include_bytes!("../../../godot/test/Assets/Models/box.glb").to_vec();
         let bytes = write(&[entry("materials/ramps-orange1.png", stripes), entry("models/props/crate.glb", crate_model)]).unwrap();
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../godot/test/pack/course.mcpack");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../godot/test/pack/course.mcpck");
         if std::env::var_os("MAPCRAFT_BLESS").is_some() {
             std::fs::write(&path, &bytes).unwrap();
         }
@@ -813,8 +832,8 @@ mod tests {
     fn bad_headers_are_refused() {
         assert!(reason(read(b"PK\x03\x04 zip file")).contains("not a MapCraft pack"));
         let mut newer = write(&good()).unwrap();
-        newer[4] = 3;
-        assert!(reason(read(&newer)).contains("version 3"));
+        newer[4] = 4;
+        assert!(reason(read(&newer)).contains("version 4"));
         assert!(reason(read(&raw(&[], u32::MAX, &[]))).contains("at most 1024"));
         assert!(reason(read(&raw(&[], MAX_ENTRIES + 1, &[]))).contains("at most 1024"));
     }
@@ -892,6 +911,30 @@ mod tests {
         }
         let legacy = write(&good()).unwrap();
         assert_eq!(legacy.get(4..8), Some(1_u32.to_le_bytes().as_slice()));
+    }
+
+    #[test]
+    fn a_pack_can_carry_its_map() {
+        let map = br#"{"format":"mapcraft.map","schema_version":1}"#.to_vec();
+        let mut entries = good();
+        entries.push(entry(MAP_ENTRY, map.clone()));
+        let bytes = write(&entries).unwrap();
+        assert_eq!(bytes.get(4..8), Some(3_u32.to_le_bytes().as_slice()));
+        assert!(read(&bytes).unwrap().contains(&(MAP_ENTRY.to_string(), map.clone())));
+        let mut old = bytes.clone();
+        old[4] = 2;
+        assert!(reason(read(&old)).contains("cannot contain a map"));
+        assert!(reason(write(&[entry(MAP_ENTRY, map.clone()), entry("map.MCMAP", map.clone())])).contains("only .png"));
+        assert!(reason(write(&[entry(MAP_ENTRY, map.clone()), entry(MAP_ENTRY, map.clone())])).contains("twice"));
+        for name in ["maps/map.mcmap", "other.mcmap", "models/map.mcmap"] {
+            assert!(write_err(name, map.clone()).contains("only .png"), "{name}");
+        }
+        assert!(write_err(MAP_ENTRY, b"{\"format\":\"other\"}".to_vec()).contains("not a MapCraft map"));
+        assert!(write_err(MAP_ENTRY, b"[[[[".to_vec()).contains("not a MapCraft map"));
+        let deep = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
+        assert!(write_err(MAP_ENTRY, deep.into_bytes()).contains("not a MapCraft map"));
+        let huge = vec![b' '; usize::try_from(MAX_ENTRY_SIZE).unwrap() + 1];
+        assert!(write_err(MAP_ENTRY, huge).contains("larger than"));
     }
 
     #[test]

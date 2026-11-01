@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const FORMAT: &str = "mapcraft.map";
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const EXTENSION: &str = "mcmap";
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +63,10 @@ struct FileNode {
     locked: bool,
     #[serde(default, skip_serializing_if = "Extra::is_empty")]
     extra: Extra,
+    #[serde(default, deserialize_with = "lenient_shader")]
+    shader: Option<String>,
+    #[serde(default, deserialize_with = "lenient_params")]
+    shader_params: mapcraft_map::ShaderParams,
     /// A mirror group's copy, written for importers and rebuilt by MapCraft instead of read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     derived: bool,
@@ -71,6 +75,20 @@ struct FileNode {
     /// A boolean group's own brushes, kept out of `children` so importers get only its result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<FileNode>,
+}
+
+/// A shader that is not text loads as none rather than failing the map; bad source is the renderer's to report.
+fn lenient_shader<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) => Some(s),
+        _ => None,
+    })
+}
+
+/// Shader parameters keep the first entries that fit their bounds; anything else is dropped rather than failing the map.
+fn lenient_params<'de, D: serde::Deserializer<'de>>(d: D) -> Result<mapcraft_map::ShaderParams, D::Error> {
+    let Value::Object(entries) = Value::deserialize(d)? else { return Ok(Default::default()) };
+    Ok(entries.into_iter().filter(|(k, v)| mapcraft_map::valid_shader_param(k, v)).take(mapcraft_map::MAX_SHADER_PARAMS).collect())
 }
 
 #[derive(Deserialize)]
@@ -129,7 +147,16 @@ fn node_value(map: &Map, own: &Map, id: NodeId, derived: &mut Derived) -> Result
             }
         }
     }
-    let mut v = serde_json::to_value(FileNodeRef { id: file_id, kind: &kind, tags: &node.tags, hidden: node.hidden, locked: node.locked, extra: &node.extra })?;
+    let mut v = serde_json::to_value(FileNodeRef {
+        id: file_id,
+        kind: &kind,
+        tags: &node.tags,
+        hidden: node.hidden,
+        locked: node.locked,
+        extra: &node.extra,
+        shader: node.shader.as_deref(),
+        shader_params: &node.shader_params,
+    })?;
     if let (true, Some(obj)) = (is_derived, v.as_object_mut()) {
         obj.insert("derived".into(), Value::Bool(true));
     }
@@ -175,6 +202,10 @@ struct FileNodeRef<'a> {
     locked: bool,
     #[serde(skip_serializing_if = "Extra::is_empty")]
     extra: &'a Extra,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shader: Option<&'a str>,
+    #[serde(skip_serializing_if = "mapcraft_map::ShaderParams::is_empty")]
+    shader_params: &'a mapcraft_map::ShaderParams,
 }
 
 pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, FormatError> {
@@ -204,9 +235,10 @@ pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, F
         .filter_map(|(_, n)| n.kind.brush())
         .flat_map(|b| &b.faces)
         .any(|f| f.blend_layer().is_some() || f.disp.as_ref().is_some_and(|d| !d.blend.is_empty()));
+    let shaded = map.nodes().any(|(_, n)| n.shader.is_some());
     let mut doc = json!({
         "format": FORMAT,
-        "schema_version": if boolean { 3 } else if blended { 2 } else { 1 },
+        "schema_version": if shaded { 4 } else if boolean { 3 } else if blended { 2 } else { 1 },
         "generator": concat!("MapCraft ", env!("CARGO_PKG_VERSION")),
     });
     if let Some(obj) = doc.as_object_mut() {
@@ -313,7 +345,17 @@ pub fn from_str(text: &str) -> Result<MapFile, FormatError> {
         let id = f.id;
         let kept: Vec<FileNode> = f.sources.into_iter().chain(f.children.into_iter().filter(|c| !c.derived)).collect();
         let children: Vec<NodeId> = kept.iter().map(|c| c.id).collect();
-        let node = Node { parent, children, kind: f.kind, tags: f.tags, hidden: f.hidden, locked: f.locked, extra: f.extra };
+        let node = Node {
+            parent,
+            children,
+            kind: f.kind,
+            tags: f.tags,
+            hidden: f.hidden,
+            locked: f.locked,
+            extra: f.extra,
+            shader: f.shader,
+            shader_params: f.shader_params,
+        };
         if nodes.insert(id, node).is_some() {
             return Err(FormatError::DuplicateId(id.0));
         }
@@ -554,6 +596,46 @@ mod tests {
         let back = from_str(&text).unwrap();
         assert_eq!(back, file, "the copy is dropped on read");
         assert_eq!(back.to_string().unwrap(), text);
+    }
+
+    #[test]
+    fn embedded_shaders_round_trip_and_load_leniently() {
+        let mut file = sample();
+        let brush = file.map.nodes().find_map(|(id, n)| n.kind.brush().map(|_| id)).unwrap();
+        let mut e = file.map.edit();
+        e.set_shader(ROOT, Some("shader_type sky;\nvoid sky() { COLOR = vec3(1.0); }\n".into())).unwrap();
+        e.set_shader(brush, Some("not a shader at all".into())).unwrap();
+        e.set_shader_param(ROOT, "density", Some(json!(0.5))).unwrap();
+        e.set_shader_param(ROOT, "steps", Some(json!(16))).unwrap();
+        e.set_shader_param(ROOT, "on", Some(json!(true))).unwrap();
+        e.set_shader_param(ROOT, "tint", Some(json!([1, 0.5, 0.25]))).unwrap();
+        e.set_shader_param(ROOT, "clouds", Some(json!("sky/clouds"))).unwrap();
+        file.map.apply(e.finish());
+        let text = file.to_string().unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["schema_version"], 4);
+        let back = from_str(&text).unwrap();
+        assert_eq!(back, file, "broken source loads as data");
+        assert_eq!(back.to_string().unwrap(), text);
+
+        let mut odd = v.clone();
+        odd["map"]["root"]["shader"] = json!({ "nested": [1, 2] });
+        let loaded = from_str(&odd.to_string()).unwrap();
+        assert_eq!(loaded.map.get(ROOT).unwrap().shader, None, "a shader that is not text is dropped, not fatal");
+        assert_eq!(v["map"]["root"]["shader_params"]["clouds"], "sky/clouds");
+        let mut params: serde_json::Map<String, Value> = (0..600).map(|i| (format!("p{i:03}"), json!(i))).collect();
+        params.insert("bad".into(), json!({ "deep": [] }));
+        params.insert("null".into(), Value::Null);
+        params.insert("long".into(), json!("x".repeat(5000)));
+        params.insert("huge".into(), json!(vec![1; 100]));
+        odd["map"]["root"]["shader_params"] = Value::Object(params);
+        let p = from_str(&odd.to_string()).unwrap().map.get(ROOT).unwrap().shader_params.clone();
+        assert!(p.len() == mapcraft_map::MAX_SHADER_PARAMS && p.values().all(Value::is_number), "params load bounded");
+        odd["map"]["root"]["shader_params"] = json!([1, 2]);
+        assert!(from_str(&odd.to_string()).unwrap().map.get(ROOT).unwrap().shader_params.is_empty());
+        odd["map"]["root"]["shader"] = json!("x".repeat(mapcraft_map::MAX_SHADER_BYTES * 2));
+        assert!(from_str(&odd.to_string()).unwrap().map.get(ROOT).unwrap().shader.is_some(), "oversized source loads for the renderer to refuse");
+        assert_eq!(serde_json::from_str::<Value>(&sample().to_string().unwrap()).unwrap()["schema_version"], 1, "maps without shaders keep their schema");
     }
 
     #[test]

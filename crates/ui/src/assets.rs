@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::app::MapCraftApp;
 
-fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path).and_then(|file| file.take(limit.saturating_add(1)).read_to_end(&mut bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -75,7 +75,7 @@ impl MapCraftApp {
     }
 
     /// Searches `dir` for this map's textures and models from now on, and reloads them.
-    fn add_asset_folder(&mut self, dir: PathBuf) {
+    pub(crate) fn add_asset_folder(&mut self, dir: PathBuf) {
         add(&mut self.session.view, FOLDERS, [dir.to_string_lossy().into_owned()]);
         self.session.mark_unsaved();
         self.load_project(self.session.sdk.clone());
@@ -161,7 +161,8 @@ impl MapCraftApp {
         };
         let map = self.view_map();
         let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
-        let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().collect();
+        let shaded = map.nodes().flat_map(|(_, n)| n.shader_materials());
+        let names: BTreeSet<&str> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()]).flatten().chain(shaded).collect();
         let mut roots = sdk.user_textures.clone();
         roots.extend(folders(&self.session.view));
         let custom = mapcraft_sdk::Vfs::new(roots);
@@ -193,6 +194,13 @@ impl MapCraftApp {
         Ok(entries)
     }
 
+    /// Writes `to` as one `.mcpck` holding `map` and its custom assets, or copies `map` there as a `.mcmap` when it has
+    /// none, deleting the file of the other kind so a game cannot load a stale copy; returns what it wrote.
+    pub(crate) fn pack_map(&self, map: &Path, to: &Path) -> Result<PathBuf, String> {
+        let entries = self.custom_asset_entries()?;
+        pack_or_copy(map, to, entries)
+    }
+
     pub(crate) fn export_asset_pack(&mut self) {
         let entries = match self.custom_asset_entries() {
             Ok(entries) => entries,
@@ -201,8 +209,8 @@ impl MapCraftApp {
                 return;
             }
         };
-        let name = self.session.path.as_ref().map(|p| p.with_extension("mcpack"));
-        let mut dialog = rfd::FileDialog::new().add_filter("MapCraft asset pack", &["mcpack"]);
+        let name = self.session.path.as_ref().map(|p| p.with_extension("mcpck"));
+        let mut dialog = rfd::FileDialog::new().add_filter("MapCraft asset pack", &["mcpck"]);
         if let Some(path) = name {
             dialog = dialog.set_file_name(path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
             if let Some(parent) = path.parent() {
@@ -215,6 +223,26 @@ impl MapCraftApp {
             Err(e) => self.status = e.to_string(),
         }
     }
+}
+
+fn pack_or_copy(map: &Path, to: &Path, mut entries: Vec<(String, Vec<u8>)>) -> Result<PathBuf, String> {
+    let packed = to.with_extension(pack::EXTENSION);
+    let plain = to.with_extension(mapcraft_format::EXTENSION);
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let (written, stale) = if entries.is_empty() {
+        std::fs::copy(map, &plain).map_err(|e| format!("copy {} to {}: {e}", map.display(), plain.display()))?;
+        (plain, packed)
+    } else {
+        entries.push((pack::MAP_ENTRY.into(), read_limited(map, pack::MAX_ENTRY_SIZE)?));
+        pack::save(&packed, &entries).map_err(|e| format!("{}: {e}", packed.display()))?;
+        (packed, plain)
+    };
+    if stale.exists() {
+        std::fs::remove_file(&stale).map_err(|e| format!("cannot remove the old {}: {e}", stale.display()))?;
+    }
+    Ok(written)
 }
 
 #[cfg(test)]
@@ -230,6 +258,27 @@ mod tests {
         let mut empty = Value::Null;
         add(&mut empty, SKIPPED, ["tools/x".to_string()]);
         assert_eq!(list(&empty, SKIPPED), ["tools/x"]);
+    }
+
+    #[test]
+    fn play_packs_a_map_with_assets_and_copies_one_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let map = dir.path().join("surf_a.mcmap");
+        let text = br#"{"format":"mapcraft.map","schema_version":1}"#;
+        std::fs::write(&map, text).unwrap();
+        let to = dir.path().join("Maps/surf_a.mcpck");
+        let mut picture = Vec::new();
+        image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut picture), image::ImageFormat::Png).unwrap();
+
+        assert_eq!(pack_or_copy(&map, &to, Vec::new()).unwrap(), dir.path().join("Maps/surf_a.mcmap"));
+        let written = pack_or_copy(&map, &to, vec![("materials/a.png".into(), picture)]).unwrap();
+        assert_eq!(written, to);
+        assert!(!dir.path().join("Maps/surf_a.mcmap").exists(), "the stale plain map goes");
+        let entries = pack::load(&to).unwrap();
+        assert!(entries.contains(&(pack::MAP_ENTRY.to_string(), text.to_vec())));
+
+        pack_or_copy(&map, &to, Vec::new()).unwrap();
+        assert!(!to.exists(), "the stale pack goes");
     }
 
     #[test]

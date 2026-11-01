@@ -80,6 +80,8 @@ impl Map {
             hidden: false,
             locked: false,
             extra: Extra::new(),
+            shader: None,
+            shader_params: crate::ShaderParams::new(),
         };
         Self { nodes: BTreeMap::from([(ROOT, world)]), tags: Vec::new(), cordons: Vec::new(), extra: Extra::new(), next_node: ROOT.0 + 1, next_face: 1 }
     }
@@ -308,7 +310,17 @@ impl Edit<'_> {
         self.assign_face_ids(&mut kind);
         let id = NodeId(self.changes.next_node);
         self.changes.next_node = self.changes.next_node.saturating_add(1);
-        let node = Node { parent: Some(parent), children: Vec::new(), kind, tags: Vec::new(), hidden: false, locked: false, extra: Extra::new() };
+        let node = Node {
+            parent: Some(parent),
+            children: Vec::new(),
+            kind,
+            tags: Vec::new(),
+            hidden: false,
+            locked: false,
+            extra: Extra::new(),
+            shader: None,
+            shader_params: crate::ShaderParams::new(),
+        };
         self.changes.nodes.insert(id, Some(node));
         let p = self.node_mut(parent)?;
         let index = index.min(p.children.len());
@@ -355,6 +367,38 @@ impl Edit<'_> {
         let n = self.node_mut(id)?;
         f(&mut n.hidden, &mut n.locked, &mut n.tags, &mut n.extra);
         Ok(())
+    }
+
+    /// Embeds Godot shader source in a node, or removes it and its parameters with `None`.
+    pub fn set_shader(&mut self, id: NodeId, source: Option<String>) -> Result<(), EditError> {
+        if source.as_ref().is_some_and(|s| s.len() > crate::MAX_SHADER_BYTES) {
+            return Err(EditError::Invalid("shader source exceeds 256 KiB".into()));
+        }
+        let n = self.node_mut(id)?;
+        if source.is_none() {
+            n.shader_params.clear();
+        }
+        n.shader = source;
+        Ok(())
+    }
+
+    /// Sets one of a node's shader parameters, or returns it to the shader's default with `None`.
+    pub fn set_shader_param(&mut self, id: NodeId, name: &str, value: Option<serde_json::Value>) -> Result<(), EditError> {
+        let n = self.node_mut(id)?;
+        match value {
+            Some(v) if !crate::valid_shader_param(name, &v) => Err(EditError::Invalid(format!("bad value for shader parameter {name}"))),
+            Some(_) if !n.shader_params.contains_key(name) && n.shader_params.len() >= crate::MAX_SHADER_PARAMS => {
+                Err(EditError::Invalid(format!("a shader keeps at most {} parameters", crate::MAX_SHADER_PARAMS)))
+            }
+            Some(v) => {
+                n.shader_params.insert(name.to_string(), v);
+                Ok(())
+            }
+            None => {
+                n.shader_params.remove(name);
+                Ok(())
+            }
+        }
     }
 
     pub fn reparent(&mut self, id: NodeId, new_parent: NodeId, index: Option<usize>) -> Result<(), EditError> {
@@ -469,6 +513,28 @@ mod tests {
         assert!(!v.contains(&a) && v.contains(&b));
         map.apply(undo);
         assert!(map.cordons.is_empty() && map.tags.len() == 1);
+    }
+
+    #[test]
+    fn shaders_set_undo_and_stay_bounded() {
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let b = e.insert(ROOT, brush()).unwrap();
+        e.set_shader(b, Some("shader_type spatial;".into())).unwrap();
+        assert!(e.set_shader(b, Some("x".repeat(crate::MAX_SHADER_BYTES + 1))).is_err());
+        assert!(e.set_shader(NodeId(999), None).is_err());
+        map.apply(e.finish());
+        let mut e = map.edit();
+        e.set_shader_param(b, "tint", Some(serde_json::json!([1, 0.5, 0]))).unwrap();
+        assert!(e.set_shader_param(b, "tint", Some(serde_json::json!([f64::NAN]))).is_err());
+        assert!(e.set_shader_param(b, "tint", Some(serde_json::json!({ "x": 1 }))).is_err());
+        assert!(e.set_shader_param(b, "", Some(serde_json::json!(1))).is_err());
+        e.set_shader(b, None).unwrap();
+        let undo = map.apply(e.finish());
+        assert_eq!(map.get(b).unwrap().shader, None);
+        assert!(map.get(b).unwrap().shader_params.is_empty(), "removing a shader removes its parameters");
+        map.apply(undo);
+        assert_eq!(map.get(b).unwrap().shader.as_deref(), Some("shader_type spatial;"));
     }
 
     #[test]

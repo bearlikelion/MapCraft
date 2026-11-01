@@ -121,16 +121,20 @@ impl MapCraftApp {
         for (press, alpha) in self.keys.rows(now) {
             let format = |size: f32, color: Color32| TextFormat::simple(FontId::proportional(size), color.gamma_multiply(alpha));
             let mut job = LayoutJob::default();
-            job.append(&press.chord, 0.0, format(15.0, TEXT));
-            job.append(press.label, 10.0, format(13.0, TEXT_WEAK));
+            job.append(&press.chord, 0.0, format(80.0, TEXT));
             if press.count > 1 {
-                job.append(&format!("x{}", press.count), 8.0, format(13.0, ACCENT));
+                job.append(&format!("x{}", press.count), 10.0, format(36.0, ACCENT));
             }
-            let galley = painter.layout_job(job);
-            let rect = align.anchor_size(pos2(x, y), galley.size() + vec2(20.0, 10.0));
-            painter.rect(rect, 6.0, HEADER.gamma_multiply(alpha), Stroke::new(1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
-            painter.galley(rect.min + vec2(10.0, 5.0), galley, TEXT);
-            y += if top { rect.height() + 4.0 } else { -rect.height() - 4.0 };
+            let chord = painter.layout_job(job);
+            let mut job = LayoutJob::default();
+            job.append(press.label, 0.0, format(22.0, TEXT_WEAK));
+            let label = painter.layout_job(job);
+            let inner = vec2(chord.size().x.max(label.size().x), chord.size().y + label.size().y);
+            let rect = align.anchor_size(pos2(x, y), inner + vec2(32.0, 16.0));
+            painter.rect(rect, 10.0, HEADER.gamma_multiply(alpha), Stroke::new(1.0, LINE.gamma_multiply(alpha)), egui::StrokeKind::Inside);
+            painter.galley(pos2(rect.center().x - chord.size().x / 2.0, rect.top() + 8.0), chord, TEXT);
+            painter.galley(pos2(rect.center().x - label.size().x / 2.0, rect.bottom() - 8.0 - label.size().y), label, TEXT);
+            y += if top { rect.height() + 6.0 } else { -rect.height() - 6.0 };
         }
     }
 }

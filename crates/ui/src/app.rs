@@ -53,6 +53,7 @@ pub(crate) enum LeftTab {
     Materials,
     Entities,
     Models,
+    Shaders,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,8 @@ pub struct MapCraftApp {
     pub(crate) last_box: Aabb,
     pub(crate) clip_points: Vec<DVec3>,
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
+    /// The user picked a side to keep, so later cuts keep it instead of the bigger part.
+    pub(crate) clip_keep_chosen: bool,
     pub(crate) clip_view_axis: Option<DVec3>,
     /// The view the first clip point was placed in.
     pub(crate) clip_view: Option<usize>,
@@ -234,6 +237,7 @@ pub struct MapCraftApp {
     /// Whether the last import was checked for textures and models no folder holds.
     pub(crate) assets_checked: bool,
     pub(crate) missing_assets: Option<crate::assets::MissingAssets>,
+    pub(crate) new_assets: crate::new_asset::NewAssets,
     last_autosave: Instant,
     screenshot: Option<PathBuf>,
     sdk_var_overrides: Vec<(String, String)>,
@@ -315,6 +319,7 @@ impl MapCraftApp {
             last_box: Aabb::new(DVec3::ZERO, DVec3::splat(64.0)),
             clip_points: Vec::new(),
             clip_keep: mapcraft_engine::ClipKeep::Both,
+            clip_keep_chosen: false,
             clip_view_axis: None,
             clip_view: None,
             cursor_world: None,
@@ -376,6 +381,7 @@ impl MapCraftApp {
             material_list: None,
             assets_checked: true,
             missing_assets: None,
+            new_assets: Default::default(),
             last_autosave: Instant::now(),
             screenshot: options.screenshot,
             sdk_var_overrides: options.sdk_vars,
@@ -749,13 +755,29 @@ impl MapCraftApp {
         self.display.as_ref().and_then(|(_, o)| o.get(&id).copied()).unwrap_or(id)
     }
 
+    /// Why each node's embedded shader does not draw, as the renderer last compiled them.
+    pub(crate) fn shader_errors(&self) -> BTreeMap<NodeId, String> {
+        let Some(gpu) = &self.gpu else { return BTreeMap::new() };
+        self.session.map.nodes().filter(|(_, n)| n.shader.is_some()).filter_map(|(id, _)| Some((id, gpu.renderer.shader_error(id)?))).collect()
+    }
+
+    pub(crate) fn shader_outcome(&mut self, out: crate::shader_editor::Outcome) {
+        if out.changed {
+            self.mark_changed();
+        }
+        if let Some(id) = out.run {
+            self.run_action(id);
+        }
+    }
+
     pub(crate) fn rebuild_scene(&mut self) {
         self.update_display();
         let picked = self.shown_faces();
         let Some(gpu) = &mut self.gpu else { return };
         let map = self.display.as_ref().map_or(&self.session.map, |(m, _)| m);
         let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
-        let names: BTreeSet<String> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()].into_iter().flatten().map(String::from)).collect();
+        let mut names: BTreeSet<String> = faces.flat_map(|f| [Some(f.material.as_str()), f.blend_layer()].into_iter().flatten().map(String::from)).collect();
+        names.extend(map.nodes().flat_map(|(_, n)| n.shader_materials()).map(String::from));
         self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
         self.project.prepare_models(map, &mut gpu.renderer, &mut self.output);
         let renderer = &gpu.renderer;
@@ -938,7 +960,7 @@ impl MapCraftApp {
                 let save = matches!(id, "file.save" | "file.save_as");
                 let undo = !ctx.egui_wants_keyboard_input() && matches!(id, "edit.undo" | "edit.redo");
                 if (save || undo) && ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
-                    self.shader_editor.action(id);
+                    self.run_action(id);
                 }
             }
             return;
@@ -1081,8 +1103,13 @@ impl MapCraftApp {
             "file.import_gltf" => self.import_gltf_dialog(),
             "file.export_gltf" => self.export_gltf_dialog(),
             "file.export_asset_pack" => self.export_asset_pack(),
+            "file.add_material" => self.add_assets(crate::new_asset::AssetKind::Material),
+            "file.add_model" => self.add_assets(crate::new_asset::AssetKind::Model),
             "tools.shader_editor" | "tools.shader_graph" => self.shader_editor.open_graph(),
-            "tools.shader_script" => self.shader_editor.open_script(),
+            "tools.shader_script" => {
+                self.shader_editor.open_script();
+                self.left_tab = LeftTab::Shaders;
+            }
             "edit.search" => self.dialogs.search = Some(crate::dialogs::CommandSearch::default()),
             "tools.transform" => self.dialogs.transform.open = true,
             "tools.roll_cw" | "tools.roll_ccw" | "tools.pitch_cw" | "tools.pitch_ccw" | "tools.yaw_cw" | "tools.yaw_ccw" => {
@@ -1226,6 +1253,7 @@ impl MapCraftApp {
             "panel.materials" => self.left_tab = LeftTab::Materials,
             "panel.entities" => self.left_tab = LeftTab::Entities,
             "panel.models" => self.left_tab = LeftTab::Models,
+            "panel.shaders" => self.left_tab = LeftTab::Shaders,
             "panel.output" => self.show_bottom = !self.show_bottom,
             "inspector.smart_edit" => self.smart_edit = !self.smart_edit,
             "shape.next" => {
@@ -1239,6 +1267,7 @@ impl MapCraftApp {
                     K::Front => K::Back,
                     K::Back => K::Both,
                 };
+                self.clip_keep_chosen = true;
             }
             "clip.remove_point" => self.pop_clip_point(),
             "run.again" => {
@@ -1422,6 +1451,8 @@ impl MapCraftApp {
                 ui.separator();
                 self.import_menu(ui);
                 self.export_menu(ui);
+                self.action_button(ui, "file.add_material", "Add Material…", true);
+                self.action_button(ui, "file.add_model", "Add Model…", true);
                 self.workshop_menu(ui);
                 ui.separator();
                 self.action_button(ui, "file.switch_sdk", "Switch SDK…", true);
@@ -1474,6 +1505,7 @@ impl MapCraftApp {
                                 ("panel.materials", "Materials"),
                                 ("panel.entities", "Entities"),
                                 ("panel.models", "Models"),
+                                ("panel.shaders", "Shaders"),
                                 ("panel.output", "Output"),
                             ] {
                                 self.action_button(ui, id, label, true);
@@ -1886,6 +1918,20 @@ impl MapCraftApp {
                 return;
             }
         }
+        for step in &profile.steps {
+            let mapcraft_sdk::Step::Pack { pack, to } = step else { continue };
+            let expanded = mapcraft_sdk::expand(pack, &vars).and_then(|p| Ok((p, mapcraft_sdk::expand(to, &vars)?))).map_err(|e| e.to_string());
+            match expanded.and_then(|(map, to)| self.pack_map(Path::new(&map), Path::new(&to))) {
+                Ok(written) => self.output.push(format!("Wrote {}", written.display())),
+                Err(e) => {
+                    self.output.push(format!("== failed: {e} =="));
+                    self.status = e;
+                    self.show_bottom = true;
+                    self.bottom_tab = BottomTab::Output;
+                    return;
+                }
+            }
+        }
         let export = profile.steps.iter().find_map(|s| if let mapcraft_sdk::Step::Export { export, .. } = s { Some(export.clone()) } else { None });
         let name = path.file_stem().map_or("untitled".into(), |s| s.to_string_lossy().into_owned());
         let export = export.map(|id| (id, self.game_map(), name));
@@ -2009,7 +2055,10 @@ impl MapCraftApp {
             for pane in &mut self.panes {
                 pane.rect = Rect::NOTHING;
             }
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| self.shader_editor.content(ui));
+            let errors = self.shader_errors();
+            let out =
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| self.shader_editor.content(ui, &mut self.session, &errors)).inner;
+            self.shader_outcome(out);
             return;
         }
         let full = ui.available_rect_before_wrap();
@@ -2262,10 +2311,11 @@ impl eframe::App for MapCraftApp {
         });
         self.dialogs(&ctx);
         self.missing_assets_dialog(&ctx);
+        self.new_asset_dialog(&ctx);
         self.extra_dialogs(&ctx);
         self.workshop_window(&ctx);
         if let Some(gpu) = &mut self.gpu
-            && self.shader_editor.update_preview(&mut gpu.renderer, &self.session.tex.material)
+            && gpu.renderer.animating()
         {
             gpu.renderer.time = ctx.input(|i| i.time) as f32;
             ctx.request_repaint();

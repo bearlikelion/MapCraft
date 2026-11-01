@@ -142,7 +142,7 @@ impl MapCraftApp {
         ui.menu_button((crate::icons::slot(Some("file_arrow_up")), "Export"), |ui| {
             self.action_button(ui, "file.export_gltf", "glTF (.glb)…", true);
             self.action_button(ui, "tools.shader_editor", "Shader Editor…", true);
-            self.action_button(ui, "file.export_asset_pack", "Custom assets (.mcpack)…", true);
+            self.action_button(ui, "file.export_asset_pack", "Custom assets (.mcpck)…", true);
             for exporter in exporters {
                 if ui.add(crate::icons::button(None, format!("{}…", exporter.label))).clicked() {
                     self.export_dialog(&exporter);

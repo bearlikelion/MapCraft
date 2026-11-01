@@ -513,7 +513,9 @@ impl MapCraftApp {
             use mapcraft_engine::ClipKeep as K;
             ui.label(RichText::new(self.chord("clip.next_side")).color(TEXT_WEAK).small()).on_hover_text("Next side to keep");
             let keeps = [(K::Both, "Both", "Keep both halves"), (K::Front, "Front", "Keep the front half"), (K::Back, "Back", "Keep the back half")];
+            let before = self.clip_keep;
             Self::segmented(ui, &mut self.clip_keep, &keeps);
+            self.clip_keep_chosen |= self.clip_keep != before;
         }
     }
 

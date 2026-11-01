@@ -12,14 +12,13 @@ mod scene;
 use std::collections::HashMap;
 
 use mapcraft_geom::{DMat4, DVec2, DVec3, DVec4};
-use mapcraft_map::AntiTile;
+use mapcraft_map::{AntiTile, NodeId, ROOT};
 use wgpu::util::DeviceExt;
 
 pub use camera::{Camera, View};
 pub use environment::EnvironmentEffects;
 pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
-pub use godot_shader::ShaderKind;
-use godot_shader::TextureSource;
+pub use godot_shader::{ShaderKind, TextureSource, Uniform, uniforms};
 pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
 pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,
@@ -73,13 +72,17 @@ struct Globals {
     sky_shape: [f32; 4],
     /// The lowest lightmap brightness Quake lights add up to.
     minlight: [f32; 4],
-    /// x is how strongly displaced vertices wash toward cyan by their blend weight; y is shader preview seconds.
+    /// x is how strongly displaced vertices wash toward cyan by their blend weight; y is Godot shader seconds; zw is the target size.
     paint: [f32; 4],
     lights: [Light; MAX_LIGHTS],
 }
 
-/// A previewed Godot shader and the textures its group 1 binds.
-struct Preview {
+/// The most distinct shader sources a scene compiles; nodes past it report an error.
+pub const MAX_SHADERS: usize = 64;
+
+/// A compiled Godot shader and the textures its group 1 binds.
+struct GodotShader {
+    kind: ShaderKind,
     pipeline: wgpu::RenderPipeline,
     layout: Option<wgpu::BindGroupLayout>,
     textures: Vec<TextureSource>,
@@ -145,7 +148,7 @@ pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub display: wgpu::TextureView,
-    /// A copy of the frame before shader preview faces draw, for their screen texture.
+    /// A copy of the frame before Godot shaded faces draw, for their screen texture.
     screen: wgpu::Texture,
     screen_view: wgpu::TextureView,
     globals: wgpu::Buffer,
@@ -200,13 +203,13 @@ pub struct Renderer {
     weight_overlay: f32,
     shader: wgpu::ShaderModule,
     globals_only: wgpu::PipelineLayout,
-    /// A previewed Godot sky shader, drawn in place of the sky.
-    preview_sky: Option<Preview>,
-    /// A previewed Godot spatial shader and the material whose faces it draws.
-    preview_surface: Option<(String, Preview)>,
+    /// Compiled Godot shaders by source.
+    godot: HashMap<String, Result<GodotShader, String>>,
+    /// Each shaded node's key into `godot`: its parameters and source.
+    shaded: std::collections::BTreeMap<NodeId, String>,
     black: wgpu::TextureView,
     clear: wgpu::TextureView,
-    /// Seconds for the previewed shaders' TIME.
+    /// Seconds for Godot shaders' TIME.
     pub time: f32,
 }
 
@@ -428,20 +431,58 @@ impl Renderer {
             weight_overlay: 0.0,
             shader,
             globals_only: line_layout,
-            preview_sky: None,
-            preview_surface: None,
+            godot: HashMap::new(),
+            shaded: Default::default(),
             black: texture(device, queue, 1, 1, &[0, 0, 0, 255], wgpu::TextureFormat::Rgba8Unorm),
             clear: texture(device, queue, 1, 1, &[0, 0, 0, 0], wgpu::TextureFormat::Rgba8Unorm),
             time: 0.0,
         }
     }
 
-    /// Previews Godot shader source in the 3D views: a sky shader replaces the sky, a spatial one draws
-    /// the faces of `material`; `None` clears the preview.
-    pub fn set_shader_preview(&mut self, source: Option<&str>, material: &str) -> Result<Option<ShaderKind>, String> {
-        (self.preview_sky, self.preview_surface) = (None, None);
-        let Some(source) = source else { return Ok(None) };
-        let (kind, textures, module) = godot_shader::compile(source)?;
+    /// Compiles each shaded node's source, reusing what earlier scenes compiled.
+    fn set_shaders(&mut self, shaders: &std::collections::BTreeMap<NodeId, (String, mapcraft_map::ShaderParams)>) {
+        let mut old = std::mem::take(&mut self.godot);
+        self.shaded.clear();
+        for (id, (source, params)) in shaders {
+            // Parameter values are compiled in as constants, so each source and parameter set is its own pipeline.
+            let key = format!("{}\n{source}", serde_json::to_string(params).unwrap_or_default());
+            self.shaded.insert(*id, key.clone());
+            if self.godot.contains_key(&key) {
+                continue;
+            }
+            let full = format!("Only {MAX_SHADERS} different shaders draw at once");
+            let compiled = match old.remove(&key).filter(|c| c.as_ref().err() != Some(&full)) {
+                Some(c) => c,
+                None if self.godot.len() >= MAX_SHADERS => Err(full),
+                None => self.compile_godot(source, params),
+            };
+            self.godot.insert(key, compiled);
+        }
+    }
+
+    /// The node's shader when it compiled to the kind its node draws: a sky on the world, spatial elsewhere.
+    fn godot_for(&self, id: NodeId) -> Result<&GodotShader, String> {
+        let source = self.shaded.get(&id).ok_or_else(String::new)?;
+        let shader = self.godot.get(source).ok_or_else(String::new)?.as_ref().map_err(Clone::clone)?;
+        match (id == ROOT, shader.kind) {
+            (true, ShaderKind::Sky) | (false, ShaderKind::Spatial) => Ok(shader),
+            (true, ShaderKind::Spatial) => Err("The world takes a sky shader (shader_type sky;)".into()),
+            (false, ShaderKind::Sky) => Err("A brush takes a spatial shader (shader_type spatial;)".into()),
+        }
+    }
+
+    /// Why a node's embedded shader does not draw; `None` when it draws or there is none.
+    pub fn shader_error(&self, id: NodeId) -> Option<String> {
+        self.shaded.contains_key(&id).then(|| self.godot_for(id).err()).flatten()
+    }
+
+    /// Whether any Godot shader draws, so the views keep TIME moving.
+    pub fn animating(&self) -> bool {
+        self.shaded.keys().any(|id| self.godot_for(*id).is_ok())
+    }
+
+    fn compile_godot(&self, source: &str, params: &mapcraft_map::ShaderParams) -> Result<GodotShader, String> {
+        let (kind, textures, module) = godot_shader::compile(source, params)?;
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..textures.len() as u32)
@@ -467,16 +508,16 @@ impl Renderer {
             })
             .collect();
         let layout = (!textures.is_empty())
-            .then(|| self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("shader preview textures"), entries: &entries }));
+            .then(|| self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("godot shader textures"), entries: &entries }));
         let pipeline_layout = layout.as_ref().map(|l| {
             self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("shader preview"),
+                label: Some("godot shader"),
                 bind_group_layouts: &[Some(&self.globals_layout), Some(l)],
                 immediate_size: 0,
             })
         });
         let fragment = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shader preview"),
+            label: Some("godot shader"),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
         });
         let mesh_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32x4, 5 => Float32x2, 6 => Float32];
@@ -486,7 +527,7 @@ impl Renderer {
             ShaderKind::Spatial => ("vs_mesh", &mesh_buffers, (true, true)),
         };
         let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shader preview"),
+            label: Some("godot shader"),
             layout: Some(pipeline_layout.as_ref().unwrap_or(&self.globals_only)),
             vertex: wgpu::VertexState { module: &self.shader, entry_point: Some(vs), compilation_options: Default::default(), buffers },
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
@@ -515,15 +556,11 @@ impl Renderer {
         if let Some(e) = internal.or(pollster::block_on(validation.pop())) {
             return Err(format!("The graphics device rejected the shader: {e}"));
         }
-        match kind {
-            ShaderKind::Sky => self.preview_sky = Some(Preview { pipeline, layout, textures }),
-            ShaderKind::Spatial => self.preview_surface = Some((material.to_string(), Preview { pipeline, layout, textures })),
-        }
-        Ok(Some(kind))
+        Ok(GodotShader { kind, pipeline, layout, textures })
     }
 
-    /// Sets a preview's pipeline and textures on `pass`; `screen` is the frame drawn so far, black before there is one.
-    fn bind_preview(&self, pass: &mut wgpu::RenderPass, preview: &Preview, screen: Option<&wgpu::TextureView>) {
+    /// Sets a Godot shader's pipeline and textures on `pass`; `screen` is the frame drawn so far, black before there is one.
+    fn bind_godot(&self, pass: &mut wgpu::RenderPass, preview: &GodotShader, screen: Option<&wgpu::TextureView>) {
         pass.set_pipeline(&preview.pipeline);
         let Some(layout) = &preview.layout else { return };
         let views: Vec<&wgpu::TextureView> = preview
@@ -535,6 +572,7 @@ impl Renderer {
                 TextureSource::Transparent => &self.clear,
                 TextureSource::Normal => &self.flat,
                 TextureSource::Screen => screen.unwrap_or(&self.black),
+                TextureSource::Material(m) => self.materials.get(m).map_or(&self.missing_albedo, |m| &m.albedo),
             })
             .collect();
         let entries: Vec<wgpu::BindGroupEntry> = views
@@ -547,7 +585,7 @@ impl Renderer {
                 ]
             })
             .collect();
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("shader preview textures"), layout, entries: &entries });
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("godot shader textures"), layout, entries: &entries });
         pass.set_bind_group(1, &group, &[]);
     }
 
@@ -699,6 +737,7 @@ impl Renderer {
         self.ambient = scene.ambient;
         self.minlight = scene.minlight;
         self.sky = scene.sky;
+        self.set_shaders(&scene.shaders);
     }
 
     /// Draws the live brushes in Lit while the bake shows an older map, keeping the bake for later.
@@ -900,12 +939,14 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("viewport") });
         {
             let bg = if camera.is_2d() { wgpu::Color::BLACK } else { wgpu::Color { r: 0.02, g: 0.025, b: 0.035, a: 1.0 } };
-            // Preview faces draw in a second pass, so their screen texture can hold everything drawn before them.
-            let surface = self.preview_surface.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe);
-            let mut pass = begin_pass(&mut encoder, target, Some(bg), surface.is_some());
-            let preview_sky = self.preview_sky.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe && self.show_sky);
-            if let Some(p) = preview_sky {
-                self.bind_preview(&mut pass, p, None);
+            let solid = !camera.is_2d() && mode != RenderMode::Wireframe;
+            // Shaded faces draw in a second pass, so their screen texture can hold everything drawn before them.
+            let shaded: Vec<(&Batch, &GodotShader)> =
+                self.batches.iter().filter(|b| solid && !(baked && b.brush)).filter_map(|b| Some((b, self.godot_for(b.key.shader?).ok()?))).collect();
+            let mut pass = begin_pass(&mut encoder, target, Some(bg), !shaded.is_empty());
+            let godot_sky = self.godot_for(ROOT).ok().filter(|_| solid && self.show_sky);
+            if let Some(p) = godot_sky {
+                self.bind_godot(&mut pass, p, None);
                 pass.draw(0..3, 0..1);
             } else if sky.is_some() && self.show_sky {
                 pass.set_pipeline(&self.sky_pipeline);
@@ -919,7 +960,7 @@ impl Renderer {
             if !camera.is_2d() && mode != RenderMode::Wireframe {
                 for batch in self.batches.iter().filter(|b| !(baked && b.brush)) {
                     let material = batch.key.material.as_str();
-                    if surface.is_some_and(|(m, _)| m == material) {
+                    if shaded.iter().any(|(b, _)| std::ptr::eq(*b, batch)) {
                         continue;
                     }
                     let sky = self.skies.contains(material);
@@ -953,12 +994,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, batch.buffer.slice(..));
                 pass.draw(0..batch.count, 0..1);
             }
-            if let Some((material, preview)) = surface {
+            if !shaded.is_empty() {
                 drop(pass);
                 encoder.copy_texture_to_texture(target.texture.as_image_copy(), target.screen.as_image_copy(), target.texture.size());
                 pass = begin_pass(&mut encoder, target, None, false);
-                self.bind_preview(&mut pass, preview, Some(&target.screen_view));
-                for batch in self.batches.iter().filter(|b| !(baked && b.brush) && &b.key.material == material) {
+                for (batch, shader) in &shaded {
+                    self.bind_godot(&mut pass, shader, Some(&target.screen_view));
                     pass.set_vertex_buffer(0, batch.buffer.slice(..));
                     pass.draw(0..batch.count, 0..1);
                 }
@@ -1264,7 +1305,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn godot_shader_previews_draw_on_available_adapter() {
+    fn embedded_godot_shaders_draw_per_node_on_available_adapter() {
+        use mapcraft_map::{Brush, Map, NodeKind, TexDefaults};
         let Ok(adapter) = pollster::block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
             eprintln!("skipped: no GPU adapter");
             return;
@@ -1273,16 +1315,51 @@ mod tests {
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut renderer = Renderer::new(&device, &queue);
         let sky = "shader_type sky;\nuniform vec3 c : source_color = vec3(1.0, 0.0, 0.0);\nvoid sky() { COLOR = c; }\n";
-        assert_eq!(renderer.set_shader_preview(Some(sky), ""), Ok(Some(ShaderKind::Sky)));
-        let target = renderer.target([8, 8]);
-        renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Textured, None, &[]);
-        let pixels = renderer.read_rgba(&target).unwrap();
-        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
         let surface = "shader_type spatial;\nuniform sampler2D screen_texture : hint_screen_texture;\nuniform sampler2D n : hint_normal;\nvoid fragment() { ALBEDO = texture(screen_texture, SCREEN_UV).rgb + texture(n, UV).rgb * abs(sin(TIME)); }\n";
-        assert_eq!(renderer.set_shader_preview(Some(surface), "stone"), Ok(Some(ShaderKind::Spatial)));
+        let mut map = Map::new();
+        let mut e = map.edit();
+        let far = |x: f64| NodeKind::Brush(Brush::cuboid(mapcraft_geom::Aabb::new(DVec3::splat(x), DVec3::splat(x + 64.0)), &TexDefaults::default()));
+        let [good, broken, wrong] = [1e5, 2e5, 3e5].map(|x| e.insert(ROOT, far(x)).unwrap());
+        e.set_shader(ROOT, Some(sky.into())).unwrap();
+        e.set_shader(good, Some(surface.into())).unwrap();
+        e.set_shader(broken, Some("shader_type spatial;\nvoid fragment() { ALBEDO = 1; }".into())).unwrap();
+        e.set_shader(wrong, Some(sky.into())).unwrap();
+        map.apply(e.finish());
+        let scene = |map: &Map| build_scene(map, &Default::default(), &Default::default(), &|_| None, &NoStyle, false, None);
+        renderer.set_scene(&scene(&map));
+        let target = renderer.target([8, 8]);
         renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Lit, None, &[]);
-        assert!(renderer.set_shader_preview(Some("shader_type spatial;\nvoid fragment() { ALBEDO = 1; }"), "stone").is_err());
-        assert!(renderer.preview_surface.is_none());
+        let pixels = renderer.read_rgba(&target).unwrap();
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255], "the world's sky shader replaces the sky");
+        assert_eq!((renderer.shader_error(ROOT), renderer.shader_error(good)), (None, None));
+        assert!(renderer.shader_error(broken).is_some());
+        assert!(renderer.shader_error(wrong).is_some_and(|e| e.contains("spatial")));
+        assert_eq!(renderer.godot.len(), 3, "one compile per distinct source");
+        assert!(renderer.animating());
+        let mut e = map.edit();
+        e.set_shader_param(ROOT, "c", Some(serde_json::json!([0, 0, 1]))).unwrap();
+        e.set_shader(good, Some(surface.replace("uniform sampler2D n : hint_normal;", "uniform sampler2D n;"))).unwrap();
+        e.set_shader_param(good, "n", Some(serde_json::json!("stone"))).unwrap();
+        let undo = map.apply(e.finish());
+        assert!(renderer.upload_material("stone", 1, 1, &[9, 9, 9, 255]));
+        renderer.set_scene(&scene(&map));
+        renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Lit, None, &[]);
+        assert_eq!(&renderer.read_rgba(&target).unwrap()[..4], &[0, 0, 255, 255], "a parameter replaces the uniform's default");
+        assert_eq!(renderer.shader_error(good), None, "a texture parameter binds the material");
+        map.apply(undo);
+
+        let mut e = map.edit();
+        for i in 0..MAX_SHADERS {
+            let id = e.insert(ROOT, far(4e5 + i as f64 * 100.0)).unwrap();
+            e.set_shader(id, Some(format!("shader_type spatial;\nvoid fragment() {{ ALBEDO = vec3({i}.0); }}\n"))).unwrap();
+        }
+        map.apply(e.finish());
+        renderer.set_scene(&scene(&map));
+        assert_eq!(renderer.godot.len(), 3 + MAX_SHADERS, "sources past the cap are refused, not compiled");
+        assert!(renderer.godot.values().filter(|c| c.as_ref().err().is_some_and(|e| e.contains("draw at once"))).count() >= 3);
+        renderer.render(&target, &Camera::new(View::Perspective), RenderMode::Lit, None, &[]);
+        renderer.set_scene(&scene(&Map::new()));
+        assert!(renderer.godot.is_empty() && !renderer.animating());
         assert!(pollster::block_on(validation.pop()).is_none());
     }
 

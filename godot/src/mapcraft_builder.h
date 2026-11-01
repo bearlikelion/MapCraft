@@ -29,6 +29,8 @@ struct MapCraftBuildOptions {
 // MapCraft maps are Z up in inches, Godot is Y up in meters: (x, y, z) -> (x, z, -y) / units_per_meter.
 Error mapcraft_build(const Dictionary &p_doc, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error);
 
+// Reads a .mcmap, or the map inside a self-contained .mcpck.
+Error mapcraft_read_map(const String &p_path, Dictionary &r_doc, String &r_error);
 Error mapcraft_build_file(const String &p_path, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error);
 
 Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraftBuildOptions &p_options, Ref<PackedScene> &r_scene, String &r_error);

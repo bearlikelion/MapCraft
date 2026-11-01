@@ -198,6 +198,13 @@ fn ctrl_enter_cycles_the_clip_side_and_enter_cuts() {
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(h.state_mut().session_for_test().selected_brushes().len(), 2, "Enter cuts and Both keeps the two halves");
+    h.state_mut().run_command_for_test("tool.select");
+    h.state_mut().run_command_for_test("tool.clip");
+    h.run_steps(2);
+    let (a, b) = (h.state().screen_for_test(1, DVec3::new(16.0, -32.0, 0.0)), h.state().screen_for_test(1, DVec3::new(16.0, 96.0, 0.0)));
+    click(&mut h, a);
+    click(&mut h, b);
+    assert_eq!(h.state().clip_keep_for_test(), ClipKeep::Both, "the next clip keeps the side picked last instead of the bigger part");
 }
 
 fn bounds(h: &mut Harness<MapCraftApp>, id: mapcraft_map::NodeId) -> mapcraft_geom::Aabb {
