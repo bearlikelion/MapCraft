@@ -22,7 +22,8 @@ func _initialize() -> void:
 	OS.add_logger(_messages)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(DIR))
 	var text: String = FileAccess.get_file_as_string(MAP)
-	var copy: String = text.replace("Assets/Models/box.glb", "props/crate.glb")
+	var copy: String = text.replace('["model", "Assets/Models/box.glb"],', \
+			'["model", "props/crate.glb"], ["animation", "Bob"], ["animation_loop", "pingpong"], ["collision", "trimesh"],')
 	_save(DIR + "course.mcmap", copy.to_utf8_buffer())
 	_picture = _png(8, 4)
 	_check_writer_pack()
@@ -31,6 +32,7 @@ func _initialize() -> void:
 	_check_pbr_materials()
 	_check_pictures()
 	_check_pixel_budget()
+	_check_see_through_pictures()
 	_check_models()
 	_check_map_packs()
 	OS.remove_logger(_messages)
@@ -40,6 +42,24 @@ func _initialize() -> void:
 		printerr("FAIL: ", failure)
 	print("mapcraft pack test: %d failures" % _failures.size())
 	quit(1 if _failures.size() > 0 else 0)
+
+
+# Clear pixels show through: cut out when each is fully on or off, blended otherwise.
+func _check_see_through_pictures() -> void:
+	var expected: Dictionary[BaseMaterial3D.Transparency, float] = {
+		BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR: 0.0,
+		BaseMaterial3D.TRANSPARENCY_ALPHA: 0.5,
+	}
+	for mode: BaseMaterial3D.Transparency in expected:
+		var image: Image = Image.create_empty(4, 4, false, Image.FORMAT_RGBA8)
+		image.fill(Color(0.4, 0.6, 0.8, 1.0))
+		image.set_pixel(0, 0, Color(0.4, 0.6, 0.8, expected[mode]))
+		var map: MapCraftMap = _build(_pack([[GOOD_MATERIAL, image.save_png_to_buffer()]]))
+		var world: MeshInstance3D = map.get_node_or_null("WorldMesh") as MeshInstance3D
+		var material: StandardMaterial3D = _surface_material(world, "ramps-orange1") as StandardMaterial3D
+		_expect(material != null and material.transparency == mode, \
+				"a picture with clear pixels draws see-through (%d)" % mode)
+		map.free()
 
 
 func _check_pbr_materials() -> void:
@@ -74,6 +94,38 @@ func _check_pbr_materials() -> void:
 	bytes.encode_u32(4, 2)
 	map = _build(bytes)
 	_expect(_messages.has("missing texture"), "missing PBR dependency is diagnosed")
+	map.free()
+
+	descriptor["version"] = 2
+	descriptor["emission_energy"] = 4.0
+	descriptor["normal_strength"] = 0.25
+	descriptor["height_scale"] = -2.0
+	descriptor["height_flip"] = true
+	descriptor["textures"]["height"] = "textures/height.png"
+	entries = [
+		["materials/ramps-orange1.json", JSON.stringify(descriptor).to_utf8_buffer()],
+		["textures/stone.png", _picture], ["textures/normal.png", _picture],
+		["textures/height.png", _picture],
+	]
+	bytes = _pack(entries)
+	bytes.encode_u32(4, 2)
+	map = _build(bytes)
+	world = map.get_node_or_null("WorldMesh") as MeshInstance3D
+	material = _surface_material(world, "ramps-orange1") as StandardMaterial3D
+	_expect(material != null and is_equal_approx(material.emission_energy_multiplier, 4.0) \
+			and is_equal_approx(material.normal_scale, 0.25), \
+			"a version 2 descriptor sets emission energy and normal strength")
+	_expect(material != null and material.heightmap_enabled \
+			and material.heightmap_texture is ImageTexture \
+			and is_equal_approx(material.heightmap_scale, -2.0) and material.heightmap_flip_texture, \
+			"a version 2 descriptor sets its height map, scale and flip")
+	map.free()
+	descriptor["version"] = 1
+	entries[0] = ["materials/ramps-orange1.json", JSON.stringify(descriptor).to_utf8_buffer()]
+	bytes = _pack(entries)
+	bytes.encode_u32(4, 2)
+	map = _build(bytes)
+	_expect(_messages.has("invalid material fields"), "version 1 descriptors refuse version 2 fields")
 	map.free()
 
 
@@ -164,7 +216,7 @@ func _check_names() -> void:
 		"materials\\a.png",
 		"C:/materials/a.png",
 		"materials/C:a.png",
-		"materials/a b.png",
+		"materials/a\tb.png",
 		"materials/é.png",
 		"materials/.png",
 		"materials/a.PNG",
@@ -250,6 +302,23 @@ func _check_models() -> void:
 			"a packed model keeps its embedded picture")
 	_expect(material != null and material.albedo_texture.resource_path.is_empty(), \
 			"a packed model's picture is not registered under any path")
+	var shapes: Array[Node] = []
+	if mesh != null:
+		shapes = mesh.find_children("*", "CollisionShape3D", true, false)
+	_expect(not shapes.is_empty() and (shapes[0] as CollisionShape3D).shape is ConcavePolygonShape3D, \
+			"collision trimesh gives a packed model its exact triangles")
+	map.free()
+
+	var animated: Array = _animated_box()
+	map = _build(_pack([[GOOD_MATERIAL, _picture], [BAD_MODEL, _glb(animated[0], animated[1])]]))
+	var crate: Node = map.get_node_or_null("crate")
+	var players: Array[Node] = []
+	if crate != null:
+		players = crate.find_children("*", "AnimationPlayer", true, false)
+	var player: AnimationPlayer = players[0] as AnimationPlayer if not players.is_empty() else null
+	_expect(player != null and player.autoplay == "mapcraft/default" \
+			and player.get_animation("mapcraft/default").loop_mode == Animation.LOOP_PINGPONG, \
+			"a packed model plays the animation the map names with its loop mode")
 	map.free()
 
 	for uri: String in ["file:///etc/passwd", "/etc/passwd", "res://project.godot", \
@@ -268,9 +337,11 @@ func _check_models() -> void:
 		["a node extension", ["nodes", 0, "extensions"], \
 				{"KHR_node_visibility": {"visible": false}}, "KHR_node_visibility"],
 		["lights", ["extensions"], {"KHR_lights_punctual": {"lights": []}}, "KHR_lights_punctual"],
-		["animations", ["animations"], [{"channels": [], "samplers": []}], "has animations"],
+		["an animation channel without a sampler", ["animations"], \
+				[{"channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}], \
+				"samplers": []}], "missing sampler"],
 		["cameras", ["cameras"], [{"type": "perspective"}], "has cameras"],
-		["skins", ["skins"], [{"joints": [0]}], "has skins"],
+		["a skin with a repeated joint", ["skins"], [{"joints": [0, 0]}], "repeated joints"],
 		["morph targets", ["meshes", 0, "primitives", 0, "targets"], [{"POSITION": 0}], \
 				"morph targets"],
 		["a sparse accessor", ["accessors", 0, "sparse"], {"count": 1 << 30}, "sparse accessor"],
@@ -425,6 +496,33 @@ func _box(picture: PackedByteArray) -> Array:
 	json["images"] = [{"bufferView": views.size() - 1, "mimeType": "image/png"}]
 	json["textures"] = [{"source": 0}]
 	json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+	return [json, bin]
+
+
+# The box with an animation named Bob that moves its first node through its own vertices.
+func _animated_box() -> Array:
+	var box: Array = _box(_png(4, 4))
+	var json: Dictionary = box[0]
+	var bin: PackedByteArray = box[1]
+	var positions: int = json["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+	var count: int = json["accessors"][positions]["count"]
+	var times: PackedFloat32Array = PackedFloat32Array()
+	for i: int in count:
+		times.append(i)
+	bin.resize(bin.size() + (4 - bin.size() % 4) % 4)
+	var views: Array = json["bufferViews"]
+	views.append({"buffer": 0, "byteOffset": bin.size(), "byteLength": count * 4})
+	bin.append_array(times.to_byte_array())
+	json["buffers"][0]["byteLength"] = bin.size()
+	var accessors: Array = json["accessors"]
+	accessors.append({
+		"bufferView": views.size() - 1, "componentType": 5126, "count": count, "type": "SCALAR",
+	})
+	json["animations"] = [{
+		"name": "Bob",
+		"samplers": [{"input": accessors.size() - 1, "output": positions}],
+		"channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}],
+	}]
 	return [json, bin]
 
 

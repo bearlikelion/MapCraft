@@ -15,7 +15,7 @@ const MAX_SOURCE: usize = 256 * 1024;
 /// Matches the start of `Globals` in shaders.wgsl; the lights after the first are left off.
 const GLOBALS: &str = "layout(set = 0, binding = 0) uniform Globals {
 	mat4 view_proj; vec4 light_dir; vec4 ambient; vec4 ground; vec4 eye; mat4 inv_view_proj;
-	vec4 sky_top; vec4 sky_horizon; vec4 sky_ground; vec4 fog_color; vec4 fog; vec4 tonemap;
+	vec4 sky_top; vec4 sky_horizon; vec4 sky_ground; vec4 fog_color; vec4 fog; vec4 fog_depth; vec4 fog_height; vec4 tonemap;
 	vec4 adjustments; vec4 sky_shape; vec4 minlight; vec4 paint; vec4 light0_pos; vec4 light0_color;
 } mc;
 layout(location = 0) out vec4 mc_out;

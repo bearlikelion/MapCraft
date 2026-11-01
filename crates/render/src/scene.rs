@@ -5,6 +5,7 @@ use mapcraft_geom::{DMat3, DMat4, DVec2, DVec3};
 pub use mapcraft_map::is_tool_material;
 use mapcraft_map::{AntiTile, Entity, Face, FaceId, Map, NodeId, NodeKind, Operation, TexAxis};
 
+use crate::animation::{Playing, Pose, Repeat, playing_clip};
 use crate::model::{Model, entity_transform, placed_bounds};
 
 #[repr(C)]
@@ -143,6 +144,8 @@ pub struct SceneData {
     pub environment_warnings: Vec<String>,
     /// Embedded Godot shader source of the world and of brushes, hidden or not.
     pub shaders: BTreeMap<NodeId, (String, mapcraft_map::ShaderParams)>,
+    /// Selected models playing an animation, whose triangles the renderer poses instead of `points` holding them.
+    pub playing: Vec<Playing>,
 }
 
 /// Godot's procedural sky for the Lit mode, in linear color, as the MapCraft addon builds it from a `light_environment`.
@@ -157,6 +160,8 @@ pub struct Sky {
 }
 
 const TOOL_ALPHA: f32 = 0.3;
+/// Tool faces with a picture stay readable while still showing what lies behind them.
+const PICTURED_TOOL_ALPHA: f32 = 0.75;
 
 pub const WORLD_EDGE: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
 pub const SELECTED_EDGE: [f32; 4] = [1.0, 0.1, 0.1, 1.0];
@@ -291,13 +296,20 @@ pub fn build_scene(
                     let face_selected = faces.contains(&(id, face.id));
                     // An untextured brush entity face, such as a trigger's, shows the entity color.
                     let shader = node.shader.as_ref().map(|_| id);
-                    let tool = shader.is_none() && (is_tool_material(&face.material) || (face.material.is_empty() && entity_color.is_some()));
+                    let hidden = shader.is_none() && (!b.draws(face) || (face.material.is_empty() && entity_color.is_some()));
+                    // A tool material with a picture, such as tools/skip, shows its lettering as TrenchBroom does.
+                    let pictured = hidden && !face.material.is_empty() && texture_size(&face.material).is_some();
+                    let tool = hidden && !pictured;
                     // Picked faces keep their true color so materials can be judged; the outline marks them.
                     let band = |s: Slope, n: DVec3| {
                         let t = s.tint(n);
                         if selected && !face_selected { std::array::from_fn(|i| t[i] * SELECTED_TINT[i]) } else { t }
                     };
                     let tint = match (selected || face_selected, tool, slope) {
+                        _ if pictured => {
+                            let c = if selected && !face_selected { SELECTED_TINT } else { WHITE };
+                            [c[0], c[1], c[2], PICTURED_TOOL_ALPHA]
+                        }
                         (_, false, Some(s)) => band(s, plane_normal),
                         (true, false, None) if selected && !face_selected => SELECTED_TINT,
                         (_, false, None) => WHITE,
@@ -307,7 +319,7 @@ pub fn build_scene(
                             [c[0], c[1], c[2], TOOL_ALPHA]
                         }
                     };
-                    let layer = face.blend_layer().filter(|_| displaced.contains_key(&index));
+                    let layer = face.blend_layer().filter(|_| displaced.contains_key(&index) && !hidden);
                     let key = BatchKey {
                         blend: layer.unwrap_or_default().to_string(),
                         anti_tile: face.anti_tile(),
@@ -327,7 +339,7 @@ pub fn build_scene(
                             tint,
                             tangent,
                             blend_uv: size_b.map_or([0.0; 2], |s| face.uv(grid[k], s).as_vec2().to_array()),
-                            blend: if tool { 0.0 } else { d.blend_at(k) as f32 },
+                            blend: if hidden { 0.0 } else { d.blend_at(k) as f32 },
                         };
                         let slope_tint = |[a, b, c]: [usize; 3]| {
                             let n = (grid[b] - grid[a]).cross(grid[c] - grid[a]);
@@ -370,7 +382,14 @@ pub fn build_scene(
                 let (min, max) = entity_bounds(style, e);
                 let edge = if selected { SELECTED_EDGE } else { color };
                 if let Some(model) = style.model(e) {
-                    push_model(&mut scene.points, &mut scene.edges, &model, &entity_transform(e), selected, edge);
+                    let at = entity_transform(e);
+                    let clip = selected.then(|| playing_clip(&model, e)).flatten();
+                    let mut posed = BTreeMap::new();
+                    let points = if clip.is_some() { &mut posed } else { &mut scene.points };
+                    push_model(points, &mut scene.edges, &model, &at, None, selected, edge);
+                    if let Some(clip) = clip {
+                        scene.playing.push(Playing { id, model: model.clone(), at, clip, repeat: Repeat::of(e) });
+                    }
                     if selected {
                         box_lines(&mut scene.selected_edges, min, max, SELECTED_EDGE);
                     }
@@ -544,17 +563,19 @@ pub(crate) fn push_model(
     edges: &mut Vec<LineVertex>,
     model: &Model,
     at: &DMat4,
+    pose: Option<&[Pose]>,
     selected: bool,
     edge: [f32; 4],
 ) {
     let turn = DMat3::from_mat4(*at);
-    for part in &model.parts {
+    for (k, part) in model.parts.iter().enumerate() {
         let tint = if selected { std::array::from_fn(|i| part.color[i] * SELECTED_TINT[i]) } else { part.color };
-        let world: Vec<DVec3> = part.positions.iter().map(|p| at.transform_point3(DVec3::from_array(p.map(f64::from)))).collect();
+        let (positions, normals) = pose.and_then(|p| p.get(k)).map_or((&part.positions, &part.normals), |(p, n)| (p, n));
+        let world: Vec<DVec3> = positions.iter().map(|p| at.transform_point3(DVec3::from_array(p.map(f64::from)))).collect();
         let verts = batches.entry(BatchKey::from(model.texture_name(part.texture).as_str())).or_default();
         verts.extend(part.indices.iter().filter_map(|i| {
             let i = *i as usize;
-            let n = (turn * DVec3::from_array(part.normals.get(i)?.map(f64::from))).normalize_or(DVec3::Z);
+            let n = (turn * DVec3::from_array(normals.get(i)?.map(f64::from))).normalize_or(DVec3::Z);
             Some(MeshVertex {
                 pos: world.get(i)?.as_vec3().to_array(),
                 normal: n.as_vec3().to_array(),
@@ -718,8 +739,11 @@ mod tests {
             e.insert(ROOT, NodeKind::Brush(b)).unwrap();
         }
         map.apply(e.finish());
-        let size = |m: &str| Some(if m == "b" { [32, 16] } else { [64, 64] });
+        let size = |m: &str| (m != "tools/trigger").then_some(if m == "b" { [32, 16] } else { [64, 64] });
         let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &size, &NoStyle, false, None);
+        let pictured = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| Some([64, 64]), &NoStyle, false, None);
+        let trigger = &pictured.batches[&BatchKey::from("tools/trigger")];
+        assert!(trigger.iter().all(|v| v.blend == 0.0 && v.tint[3] == PICTURED_TOOL_ALPHA), "a tool with a picture shows it, still ignoring blends");
 
         let blended = &scene.batches[&BatchKey { blend: "b".into(), ..BatchKey::from("a") }];
         assert_eq!(blended.len(), 8 * 3);

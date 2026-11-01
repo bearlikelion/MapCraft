@@ -99,6 +99,11 @@ impl Thumbs {
         }
     }
 
+    /// Drops one preview, so it is made again the next time it is asked for.
+    pub fn forget(&mut self, name: &str) {
+        self.textures.remove(name);
+    }
+
     pub fn clear(&mut self) {
         self.textures.clear();
     }

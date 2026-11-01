@@ -35,6 +35,10 @@ const int64_t MAX_GLTF_TEXTURES = 1024;
 const int64_t MAX_GLTF_IMAGES = 256;
 const int64_t MAX_ACCESSOR_ELEMENTS = int64_t(1) << 22;
 const int64_t MAX_MESH_COMPONENTS = int64_t(1) << 24;
+const int64_t MAX_GLTF_ANIMATIONS = 256;
+const int64_t MAX_GLTF_CHANNELS = 16384;
+const int64_t MAX_GLTF_SKINS = 256;
+const int64_t MAX_ANIMATION_COMPONENTS = int64_t(1) << 24;
 const char *GLTF_EXTENSIONS[] = { "KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_transform" };
 
 const uint32_t VERSION = 3;
@@ -94,7 +98,7 @@ Kind kind_of(const uint8_t *p_name, int64_t p_len, String &r_error) {
 			continue;
 		}
 		const uint8_t c = p_name[i];
-		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) {
+		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ' ')) {
 			r_error = "a character in it is not allowed in a name";
 			return Kind::NONE;
 		}
@@ -135,16 +139,52 @@ String check_material(const PackedByteArray &bytes) {
     return "invalid material descriptor";
   }
   const Dictionary d = json->get_data();
-  if (d.size() != 6 || !d.has("version") || !d.has("albedo") ||
-      !d.has("roughness") || !d.has("metallic") || !d.has("emission") ||
-      !d.has("textures")) {
+  if (!d.has("version") || !d.has("albedo") || !d.has("roughness") ||
+      !d.has("metallic") || !d.has("emission") || !d.has("textures")) {
     return "invalid material fields";
   }
   const Variant version = d["version"];
   if ((version.get_type() != Variant::FLOAT &&
        version.get_type() != Variant::INT) ||
-      double(version) != 1.0) {
+      (double(version) != 1.0 && double(version) != 2.0)) {
     return "unsupported material version";
+  }
+  const bool v2 = double(version) == 2.0;
+  const Array fields = d.keys();
+  for (int i = 0; i < fields.size(); i++) {
+    const String field = fields[i];
+    const bool v1_field = field == "version" || field == "albedo" ||
+                          field == "roughness" || field == "metallic" ||
+                          field == "emission" || field == "textures";
+    const bool v2_field = field == "emission_energy" ||
+                          field == "normal_strength" ||
+                          field == "height_scale" || field == "height_flip";
+    if (!v1_field && !(v2 && v2_field)) {
+      return "invalid material fields";
+    }
+  }
+  struct Range {
+    const char *field;
+    double low;
+    double high;
+  };
+  for (const Range &range : {Range{"emission_energy", 0.0, 64.0},
+                             Range{"normal_strength", 0.0, 16.0},
+                             Range{"height_scale", -16.0, 16.0}}) {
+    if (!d.has(range.field)) {
+      continue;
+    }
+    const Variant v = d[range.field];
+    if (v.get_type() != Variant::FLOAT && v.get_type() != Variant::INT) {
+      return "invalid material scalar";
+    }
+    const double number = v;
+    if (!Math::is_finite(number) || number < range.low || number > range.high) {
+      return "material scalar outside limits";
+    }
+  }
+  if (d.has("height_flip") && d["height_flip"].get_type() != Variant::BOOL) {
+    return "height_flip must be true or false";
   }
   for (const char *field : {"albedo", "emission"}) {
     const Variant v = d[field];
@@ -187,7 +227,7 @@ String check_material(const PackedByteArray &bytes) {
   for (int i = 0; i < keys.size(); i++) {
     const String key = keys[i];
     if (key != "albedo" && key != "normal" && key != "roughness" &&
-        key != "metallic" && key != "emission") {
+        key != "metallic" && key != "emission" && !(v2 && key == "height")) {
       return "unsupported texture slot";
     }
     const Variant value = textures[key];
@@ -428,10 +468,8 @@ String check_gltf(const Variant &p_doc, const uint8_t *p_bin, int64_t p_bin_len,
 			}
 		}
 	}
-	for (const char *key : { "animations", "skins", "cameras" }) {
-		if (root.has(key) && (root[key].get_type() != Variant::ARRAY || !Array(root[key]).is_empty())) {
-			return String("has ") + key + ", which packed models cannot";
-		}
+	if (root.has("cameras") && (root["cameras"].get_type() != Variant::ARRAY || !Array(root["cameras"]).is_empty())) {
+		return "has cameras, which packed models cannot";
 	}
 
 	Array buffers;
@@ -475,6 +513,8 @@ String check_gltf(const Variant &p_doc, const uint8_t *p_bin, int64_t p_bin_len,
 	}
 
 	Vector<int64_t> components;
+	Vector<int64_t> counts;
+	Vector<int64_t> widths;
 	if (!list(root, "accessors", MAX_GLTF_ACCESSORS, items)) {
 		return not_a_list("accessors", MAX_GLTF_ACCESSORS);
 	}
@@ -514,6 +554,8 @@ String check_gltf(const Variant &p_doc, const uint8_t *p_bin, int64_t p_bin_len,
 			n = 3;
 		} else if (type_name == "VEC4") {
 			n = 4;
+		} else if (type_name == "MAT4") {
+			n = 16;
 		} else {
 			return "has an accessor of a type packed models cannot use";
 		}
@@ -532,6 +574,8 @@ String check_gltf(const Variant &p_doc, const uint8_t *p_bin, int64_t p_bin_len,
 			return "has an accessor that reads past its buffer view";
 		}
 		components.push_back(count * n);
+		counts.push_back(count);
+		widths.push_back(n);
 	}
 
 	if (!list(root, "images", MAX_GLTF_IMAGES, items)) {
@@ -635,6 +679,126 @@ String check_gltf(const Variant &p_doc, const uint8_t *p_bin, int64_t p_bin_len,
 		for (int64_t at = parent[start]; at != -1; at = parent[at]) {
 			if (++depth > MAX_GLTF_NODE_DEPTH) {
 				return "has nodes in a loop or nested over " + itos(MAX_GLTF_NODE_DEPTH) + " deep";
+			}
+		}
+	}
+
+	Array skins;
+	if (!list(root, "skins", MAX_GLTF_SKINS, skins)) {
+		return not_a_list("skins", MAX_GLTF_SKINS);
+	}
+	for (int64_t i = 0; i < nodes.size(); i++) {
+		const Dictionary node = nodes[i];
+		int64_t skin = 0;
+		if (node.has("skin") && !whole(node["skin"], skins.size() - 1, skin)) {
+			return "has a node with a missing skin";
+		}
+	}
+	for (int64_t i = 0; i < skins.size(); i++) {
+		if (skins[i].get_type() != Variant::DICTIONARY) {
+			return "has a skin that is not an object";
+		}
+		const Dictionary skin = skins[i];
+		if (!list(skin, "joints", MAX_GLTF_NODES, items)) {
+			return not_a_list("joints", MAX_GLTF_NODES);
+		}
+		std::vector<bool> seen(nodes.size(), false);
+		bool joints_ok = !items.is_empty();
+		for (int64_t j = 0; j < items.size() && joints_ok; j++) {
+			int64_t joint = 0;
+			joints_ok = whole(items[j], nodes.size() - 1, joint) && !seen[joint];
+			if (joints_ok) {
+				seen[joint] = true;
+			}
+		}
+		if (!joints_ok) {
+			return "has a skin with missing or repeated joints";
+		}
+		int64_t at = 0;
+		if (skin.has("skeleton") && !whole(skin["skeleton"], nodes.size() - 1, at)) {
+			return "has a skin with a missing skeleton";
+		}
+		if (skin.has("inverseBindMatrices") &&
+				(!whole(skin["inverseBindMatrices"], components.size() - 1, at) || counts[at] != items.size() || widths[at] != 16)) {
+			return "has a skin whose inverseBindMatrices are not one MAT4 per joint";
+		}
+	}
+
+	Array animations;
+	if (!list(root, "animations", MAX_GLTF_ANIMATIONS, animations)) {
+		return not_a_list("animations", MAX_GLTF_ANIMATIONS);
+	}
+	int64_t channels = 0;
+	int64_t keys = 0;
+	for (int64_t i = 0; i < animations.size(); i++) {
+		if (animations[i].get_type() != Variant::DICTIONARY) {
+			return "has an animation that is not an object";
+		}
+		Array samplers;
+		if (!list(animations[i], "samplers", MAX_GLTF_CHANNELS, samplers)) {
+			return not_a_list("samplers", MAX_GLTF_CHANNELS);
+		}
+		if (!list(animations[i], "channels", MAX_GLTF_CHANNELS, items)) {
+			return not_a_list("channels", MAX_GLTF_CHANNELS);
+		}
+		for (int64_t j = 0; j < items.size(); j++) {
+			if (++channels > MAX_GLTF_CHANNELS) {
+				return "has over " + itos(MAX_GLTF_CHANNELS) + " animation channels";
+			}
+			if (items[j].get_type() != Variant::DICTIONARY) {
+				return "has an animation channel that is not an object";
+			}
+			const Dictionary channel = items[j];
+			const Variant target_value = channel.get("target", Variant());
+			if (target_value.get_type() != Variant::DICTIONARY) {
+				return "has an animation target that is not an object";
+			}
+			const Dictionary target = target_value;
+			const Variant path_value = target.get("path", Variant());
+			const String path = path_value.get_type() == Variant::STRING ? String(path_value) : String();
+			int64_t width = 0;
+			if (path == "translation" || path == "scale") {
+				width = 3;
+			} else if (path == "rotation") {
+				width = 4;
+			} else if (path == "weights") {
+				return "has morph target animation, which packed models cannot";
+			} else {
+				return "has an animation channel with an unknown path";
+			}
+			int64_t index = 0;
+			if (!target.has("node") || !whole(target["node"], nodes.size() - 1, index)) {
+				return "has an animation channel with a missing node";
+			}
+			if (!channel.has("sampler") || !whole(channel["sampler"], samplers.size() - 1, index)) {
+				return "has an animation channel with a missing sampler";
+			}
+			if (samplers[index].get_type() != Variant::DICTIONARY) {
+				return "has an animation sampler that is not an object";
+			}
+			const Dictionary sampler = samplers[index];
+			int64_t per_key = 1;
+			if (sampler.has("interpolation")) {
+				const Variant mode = sampler["interpolation"];
+				const String name = mode.get_type() == Variant::STRING ? String(mode) : String();
+				if (name == "CUBICSPLINE") {
+					per_key = 3;
+				} else if (name != "LINEAR" && name != "STEP") {
+					return "has an animation sampler with an unknown interpolation";
+				}
+			}
+			int64_t input = 0;
+			int64_t output = 0;
+			if (!sampler.has("input") || !whole(sampler["input"], components.size() - 1, input) || widths[input] != 1 || !sampler.has("output") ||
+					!whole(sampler["output"], components.size() - 1, output)) {
+				return "has an animation sampler with missing or wrong accessors";
+			}
+			if (widths[output] != width || counts[output] != counts[input] * per_key) {
+				return "has an animation sampler whose values do not match its times";
+			}
+			keys += counts[input] + components[output];
+			if (keys > MAX_ANIMATION_COMPONENTS) {
+				return "has animations over 16 million values";
 			}
 		}
 	}

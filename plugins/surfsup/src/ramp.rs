@@ -125,6 +125,8 @@ pub struct Face {
     pub points: [DVec3; 3],
     pub slot: Slot,
     pub uv: Option<(UvAxis, UvAxis)>,
+    /// Pressed against another piece of the same ramp, so never seen.
+    pub inner: bool,
 }
 
 impl Face {
@@ -478,7 +480,7 @@ fn facing(tri: [DVec3; 3], out: DVec3, slot: Slot, uv: Option<(UvAxis, UvAxis)>)
     if n.length() <= EPSILON {
         return None;
     }
-    Some(Face { points: if n.dot(out) < 0.0 { [tri[2], tri[1], tri[0]] } else { tri }, slot, uv })
+    Some(Face { points: if n.dot(out) < 0.0 { [tri[2], tri[1], tri[0]] } else { tri }, slot, uv, inner: false })
 }
 
 /// Texture flat on a face with v running down it, as Align to Face does.
@@ -566,10 +568,14 @@ fn sweep(r: &Ramp, parts: &[Vec<DVec2>], line: &[DVec2]) -> Result<Vec<Piece>, S
             }
             let mut faces = Vec::new();
             let area = |t: &[DVec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).length_squared();
-            for (cap, outward) in [(&pa, a.transform_vector3(DVec3::X)), (&pb, b.transform_vector3(-DVec3::X))] {
+            let joined = r.gap <= EPSILON;
+            let caps =
+                [(&pa, a.transform_vector3(DVec3::X), joined && (closed || s > 0)), (&pb, b.transform_vector3(-DVec3::X), joined && (closed || s + 1 < steps))];
+            for (cap, outward, inner) in caps {
                 let tri = (1..cap.len().saturating_sub(1)).map(|i| [cap[0], cap[i], cap[i + 1]]).max_by(|x, y| area(x).total_cmp(&area(y)));
                 if let Some(mut f) = tri.and_then(|t| facing(t, outward, Slot::Side, None)) {
                     f.uv = facing_uv(f.normal());
+                    f.inner = inner;
                     faces.push(f);
                 }
             }
@@ -578,6 +584,7 @@ fn sweep(r: &Ramp, parts: &[Vec<DVec2>], line: &[DVec2]) -> Result<Vec<Piece>, S
                 let k = (j + 1) % part.len();
                 let (p, q) = (part[j], part[k]);
                 let slot = edge_slot(p, q, line);
+                let inner = parts.iter().any(|o| (0..o.len()).any(|i| same(o[i], q) && same(o[(i + 1) % o.len()], p)));
                 // Counter-clockwise, so outward is the edge direction turned clockwise.
                 let d = q - p;
                 let outward = local(DVec2::new(d.y, -d.x));
@@ -597,7 +604,7 @@ fn sweep(r: &Ramp, parts: &[Vec<DVec2>], line: &[DVec2]) -> Result<Vec<Piece>, S
                 } else {
                     &[[0, 1, 3], [1, 2, 3]]
                 };
-                faces.extend(tris.iter().filter_map(|t| facing(t.map(|i| quad[i]), outward, slot, uv)));
+                faces.extend(tris.iter().filter_map(|t| facing(t.map(|i| quad[i]), outward, slot, uv)).map(|f| Face { inner, ..f }));
             }
             out.push(Piece { faces });
         }
@@ -636,6 +643,17 @@ mod tests {
         let f = frames(&arc);
         assert!(f[4].translation.length() < 1e-9, "an arc is centered on its middle frame");
         assert!(build(&Ramp { width: 0.0, ..Ramp::default() }).is_err());
+    }
+
+    #[test]
+    fn faces_pressed_between_pieces_are_inner() {
+        let inner = |r: &Ramp| build(r).unwrap().iter().flat_map(|p| &p.faces).filter(|f| f.inner).count();
+        assert_eq!(inner(&Ramp::default()), 0);
+        let curve = Ramp { shape: Shape::Right, smoothness: 8, ..Ramp::default() };
+        assert_eq!(inner(&curve), 14, "both caps of each of the 7 seams, not the two open ends");
+        assert_eq!(inner(&Ramp { shape: Shape::Right, angle: 360.0, smoothness: 8, ..Ramp::default() }), 16);
+        assert_eq!(inner(&Ramp { gap: 32.0, ..curve }), 0, "a gap opens every seam");
+        assert_eq!(inner(&Ramp { style: Style::Thin, surf: Surf::Both, ..Ramp::default() }), 2, "the two slabs meet under the peak");
     }
 
     fn corners(p: &Piece) -> impl Iterator<Item = DVec3> + '_ {

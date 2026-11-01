@@ -15,10 +15,16 @@ use crate::icons;
 use crate::inspect::{self, Action, Change, HeaderButton, Note, Prop, Section, Slot, Title, Val, find_key};
 use crate::viewport::Tool;
 
+/// The point entity key naming the model animation Godot plays.
+const ANIMATION_KEY: &str = "animation";
+/// How that animation repeats: `linear` (the default), `pingpong` or `none`.
+const ANIMATION_LOOP_KEY: &str = "animation_loop";
+
 const ROW: f32 = 18.0;
 
 /// What the inspector shows, picked once per frame; the first match wins.
 enum InspectorView {
+    Material,
     Shape,
     Faces,
     World,
@@ -35,6 +41,7 @@ impl InspectorView {
     /// Each node keeps its own scroll position.
     fn salt(&self) -> u64 {
         match self {
+            Self::Material => u64::MAX - 3,
             Self::Shape => u64::MAX,
             Self::Faces => u64::MAX - 1,
             Self::World => u64::MAX - 2,
@@ -724,6 +731,16 @@ impl MapCraftApp {
         });
     }
 
+    /// Opens `name` in the Material inspector when it is a PBR material.
+    fn inspect_material_button(&mut self, ui: &mut egui::Ui, name: Option<&str>) {
+        let Some(name) = name.filter(|n| self.project.descriptor_file(n).is_some()) else { return };
+        let tip = "Edit its tint, roughness, metallic, emission and normal strength, live in the Lit view";
+        if inspect::actions(ui, &[Action { icon: "sliders", label: "Inspect material", tip, enabled: true }]).is_some() {
+            let name = name.to_string();
+            self.inspect_material(&name);
+        }
+    }
+
     fn material_browser(&mut self, ui: &mut egui::Ui) {
         self.shader_material_button(ui);
         if self.project.sdk.is_none() {
@@ -759,8 +776,12 @@ impl MapCraftApp {
             .project
             .materials
             .iter()
-            .filter(|m| !m.folder().is_some_and(|f| in_hidden_folder(f, &hidden)))
-            .filter(|m| filter.is_empty() || m.name.to_lowercase().contains(&filter) || m.folder.as_ref().is_some_and(|f| f.to_lowercase().contains(&filter)))
+            .filter(|m| !m.browse_folder().is_some_and(|f| in_hidden_folder(&f, &hidden)))
+            .filter(|m| {
+                filter.is_empty()
+                    || m.name.to_lowercase().contains(&filter)
+                    || m.browse_folder().is_some_and(|f| format!("{}/", f.to_lowercase()).contains(&filter))
+            })
             .cloned()
             .collect();
         if count_and_previews(ui, &format!("{} materials", names.len()), &mut self.show_thumbs, "Add Material") {
@@ -770,8 +791,11 @@ impl MapCraftApp {
         let mut select = None;
         let menu = |r: &egui::Response, name: &str, select: &mut Option<(String, &'static str)>| {
             r.context_menu(|ui| {
-                for (id, label) in [("edit.select_faces_by_material", "Select Faces Using It"), ("edit.select_brushes_by_material", "Select Brushes Using It")]
-                {
+                for (id, label) in [
+                    ("material.inspect", "Inspect Material"),
+                    ("edit.select_faces_by_material", "Select Faces Using It"),
+                    ("edit.select_brushes_by_material", "Select Brushes Using It"),
+                ] {
                     if ui.add(icons::button(icons::action_icon(id), label)).clicked() {
                         *select = Some((name.to_string(), id));
                     }
@@ -901,8 +925,8 @@ impl MapCraftApp {
     pub(crate) fn texture_folder_toggles(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.project.id().map(str::to_string) else { return };
         let mut folders: BTreeMap<String, usize> = BTreeMap::new();
-        for f in self.project.materials.iter().filter_map(crate::project::Material::folder) {
-            *folders.entry(f.to_string()).or_default() += 1;
+        for f in self.project.materials.iter().filter_map(crate::project::Material::browse_folder) {
+            *folders.entry(f).or_default() += 1;
         }
         let mut hidden = self.prefs.get().hidden_textures.get(&id).cloned().unwrap_or_default();
         if folder_tree(ui, "texture-folders", &folders, &mut hidden, &mut self.material_filter) {
@@ -934,7 +958,8 @@ impl MapCraftApp {
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, ROW, classes.len(), |ui, range| {
             for (name, solid, desc, color) in classes.get(range).unwrap_or_default() {
                 let (icon, tint) = icons::class_icon(*solid, *color);
-                let mut r = ui.add(egui::Button::selectable(self.entity_class == *name, (icons::icon(icon).tint(tint), name.as_str())));
+                let picked = self.block_class.as_ref().unwrap_or(&self.entity_class) == name;
+                let mut r = ui.add(egui::Button::selectable(picked, (icons::icon(icon).tint(tint), name.as_str())));
                 if !desc.is_empty() {
                     r = r.on_hover_text(desc);
                 }
@@ -946,13 +971,13 @@ impl MapCraftApp {
         if let Some((name, solid)) = pick {
             if solid {
                 let tie = self.chord("tools.tie_to_entity");
-                self.status = format!(
-                    "{name} picked: Tie to Entity ({tie}) turns the selected brushes into it, and Tools > Zone from Selection stands one on a platform"
-                );
-                self.session.default_solid_entity = name;
+                self.status = format!("{name} picked: drag in a view to draw one, or Tie to Entity ({tie}) turns the selected brushes into it");
+                self.session.default_solid_entity = name.clone();
+                self.set_tool(Tool::Block);
+                self.block_class = Some(name);
             } else {
+                self.set_tool(Tool::Entity);
                 self.entity_class = name;
-                self.tool = Tool::Entity;
             }
         }
     }
@@ -1100,6 +1125,9 @@ impl MapCraftApp {
     }
 
     fn inspector_view(&self) -> InspectorView {
+        if self.material_inspector.is_some() {
+            return InspectorView::Material;
+        }
         if self.tool == Tool::Block && self.plugin_shape.is_some() {
             return InspectorView::Shape;
         }
@@ -1137,6 +1165,7 @@ impl MapCraftApp {
 
     fn view_header(&mut self, ui: &mut egui::Ui, view: &InspectorView) {
         match view {
+            InspectorView::Material => self.material_header(ui),
             InspectorView::Shape => self.shape_header(ui),
             InspectorView::Faces => self.faces_header(ui),
             InspectorView::World => self.entities_header(ui, &[ROOT]),
@@ -1152,6 +1181,7 @@ impl MapCraftApp {
 
     fn view_body(&mut self, ui: &mut egui::Ui, view: &InspectorView) {
         match view {
+            InspectorView::Material => self.material_body(ui),
             InspectorView::Shape => self.shape_body(ui),
             InspectorView::Faces => self.faces_body(ui),
             InspectorView::World => {
@@ -1259,10 +1289,13 @@ impl MapCraftApp {
         let class = self.project.game.class(&original.classname);
         let named = single && !world && (find_key(&original, "targetname").is_some() || class.as_ref().is_some_and(|c| c.property("targetname").is_some()));
         let angles = point && class.as_ref().is_some_and(|c| c.property("angles").is_some());
+        let model = (!world && !solid).then(|| self.project.model_path(&original).and_then(|p| self.project.models.get(&p))).flatten();
+        let animations = model.map(|m| m.animations.clone()).filter(|a| !a.is_empty() && class.as_ref().is_none_or(|c| c.property(ANIMATION_KEY).is_none()));
         let hidden = |k: &str| {
             (k.eq_ignore_ascii_case("origin") && (solid || point))
                 || (angles && k.eq_ignore_ascii_case("angles"))
                 || (named && k.eq_ignore_ascii_case("targetname"))
+                || (animations.is_some() && (k.eq_ignore_ascii_case(ANIMATION_KEY) || k.eq_ignore_ascii_case(ANIMATION_LOOP_KEY)))
         };
         let targets = self.target_names();
         let mut edits = EntityEdits::default();
@@ -1298,6 +1331,25 @@ impl MapCraftApp {
                         self.fgd_row(ui, &ents, p, None, &targets, &mut edits);
                     }
                     items = c.properties.iter().filter(|p| find_key(&original, &p.name).is_none()).map(|p| (p.name.clone(), p.display.clone())).collect();
+                }
+                if let Some(names) = &animations {
+                    let choice = |v: &str, l: &str| mapcraft_fgd::Choice { value: v.into(), label: l.into(), default_on: None };
+                    let choices = std::iter::once(choice("", "None")).chain(names.iter().map(|n| choice(n, n))).collect();
+                    let description = "Plays when the map loads in Godot.".into();
+                    let p =
+                        Property { name: ANIMATION_KEY.into(), display: "Animation".into(), ty: "choices".into(), description, choices, ..Default::default() };
+                    self.fgd_row(ui, &ents, &p, None, &targets, &mut edits);
+                    let choices = vec![choice("linear", "Loop"), choice("pingpong", "Ping-pong"), choice("none", "Once")];
+                    let p = Property {
+                        name: ANIMATION_LOOP_KEY.into(),
+                        display: "Animation loop".into(),
+                        ty: "choices".into(),
+                        description: "Loop starts over, Ping-pong plays back and forth, Once stops on the last frame.".into(),
+                        default: Some("linear".into()),
+                        choices,
+                        ..Default::default()
+                    };
+                    self.fgd_row(ui, &ents, &p, None, &targets, &mut edits);
                 }
                 self.custom_rows(ui, &ents, class.as_ref(), &hidden, &targets, &mut edits);
             }
@@ -1640,13 +1692,12 @@ impl MapCraftApp {
             ui.scope(|ui| align = inspect::icons(ui, &[("globe", "Align to world", "Align to world"), ("face", "Align to face", "Align to face")])).response
         });
         let anti_tile = anti_tile_row(ui, "brushes-anti-tile", faces.iter().copied(), faces.iter().any(|f| self.project.pixel_face(f)));
+        let one = (!mixed_material).then(|| materials.iter().next().map(|m| m.to_string())).flatten();
+        self.inspect_material_button(ui, one.as_deref());
         self.shader_actions(ui, &ids);
 
         if retyped && let Some(class) = pick {
-            if let Err(e) = self.session.set_brush_class(class) {
-                self.status = e.to_string();
-            }
-            self.mark_changed();
+            self.make_brush_class(class);
         }
         if let (true, Some(op)) = (switched, op) {
             self.run_command(if op.is_add() { "tools.boolean_add" } else { "tools.boolean_subtract" });
@@ -2099,6 +2150,7 @@ impl MapCraftApp {
                 r
             });
             self.shader_material_button(ui);
+            self.inspect_material_button(ui, (!mixed).then_some(first.material.as_str()));
             if browse {
                 self.run_action("panel.materials");
             }

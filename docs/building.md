@@ -25,7 +25,7 @@ cargo run --release -p mapcraft
 
 - `sdks/` is the [MapCraftSDKs](https://github.com/bearlikelion/MapCraftSDKs) repository as a git submodule; in a clone made without `--recursive`, run `git submodule update --init` first.
 - `cargo xtask plugins` builds the plugins in `plugins/` and copies each into the SDKs that list it, as `plugins/<id>.wasm`.
-- A build run from the source tree finds the SDKs in `sdks/` by itself.
+- A build run from the source tree finds the SDKs in `sdks/` by itself, and a debug build uses them ahead of any installed copy with the same id.
 - On Linux, `cargo xtask desktop [path to the mapcraft binary]` installs a desktop entry and icons for a source build, so it shows in the app launcher.
 
 The headless tools are in `mapcraft-cli`:

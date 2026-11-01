@@ -77,7 +77,7 @@ fn info(path: &str) -> Result<(), String> {
     println!("  layers:    {layers}");
     println!("  groups:    {groups}");
     println!("  entities:  {point} point, {solid} brush");
-    let covered = mapcraft_map::covered_faces(&file.map, None).len();
+    let covered = mapcraft_map::covered_faces(&file.map, None, &|_| false).len();
     println!("  brushes:   {brushes} ({faces} faces, {covered} hidden between brushes)");
     println!("  prefabs:   {prefabs}");
     println!("  paths:     {paths}");

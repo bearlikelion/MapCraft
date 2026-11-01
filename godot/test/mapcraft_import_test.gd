@@ -33,6 +33,7 @@ func _initialize() -> void:
 	_check_wrappers()
 	_check_blend_fallbacks()
 	_check_runtime_build()
+	_check_tool_brushes()
 	_check_runtime_load()
 	_check_untrusted_prefabs()
 	_check_paths_stay_in_project()
@@ -105,6 +106,9 @@ func _check_prop(prop: Node3D) -> void:
 	var expected: Vector3 = Vector3(0.0, 0.0, -128.0) / UNITS_PER_METER
 	_expect(prop.position.is_equal_approx(expected), "the prop sits at its origin")
 	_expect(prop.basis.x.is_equal_approx(Vector3(0.0, 0.0, -2.0)), "the prop turns and scales")
+	var shapes: Array[Node] = prop.find_children("*", "CollisionShape3D", true, false)
+	_expect(not shapes.is_empty() and (shapes[0] as CollisionShape3D).shape is ConvexPolygonShape3D, \
+			"a prop collides as a convex hull by default, saved inside its instanced model")
 
 
 # The displaced floor collides as triangles and its middle vertex rises 48 units.
@@ -315,6 +319,37 @@ func _check_runtime_build() -> void:
 		_expect(not (holder.shape as ConcavePolygonShape3D).backface_collision, \
 				"brush faces collide from outside only")
 	solid.free()
+
+
+# Brush 3 skips one face and brush 4 has one clip face, which hides all of it.
+func _check_tool_brushes() -> void:
+	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(MAP))
+	var kept: Array = []
+	for child: Dictionary in doc["map"]["root"]["children"]:
+		if child["id"] == 3 or child["id"] == 4:
+			for face: Dictionary in child["faces"]:
+				face["material"] = "checker"
+			child["faces"][0]["material"] = "tools/skip" if child["id"] == 3 else "tools/clip"
+			kept.append(child)
+	doc["map"]["root"]["children"] = kept
+	var path: String = "user://tool_brushes.mcmap"
+	_write_text(path, JSON.stringify(doc))
+	var sdk: MapCraftEntityMap = load(ENTITY_MAP) as MapCraftEntityMap
+	var map: MapCraftMap = MapCraftMap.new()
+	map.map_file = path
+	map.entity_map = sdk.duplicate() as MapCraftEntityMap
+	map.entity_map.trimesh_collision = false
+	_expect(map.build() == OK, "a map with skip and clip builds")
+	var world: MeshInstance3D = map.get_node_or_null("WorldMesh") as MeshInstance3D
+	var mesh: ArrayMesh = world.mesh as ArrayMesh if world != null else null
+	var drawn: int = 0
+	for i: int in mesh.get_surface_count() if mesh != null else 0:
+		drawn += mesh.surface_get_array_len(i)
+	_expect(drawn == 5 * 6, "skip leaves out its face and clip draws nothing")
+	var body: StaticBody3D = map.get_node_or_null("WorldCollision") as StaticBody3D
+	_expect(body != null and body.get_child_count() == 2, "skip and clip brushes still collide")
+	map.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 func _check_runtime_load() -> void:

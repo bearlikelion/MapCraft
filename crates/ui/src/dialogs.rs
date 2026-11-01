@@ -396,7 +396,7 @@ impl MapCraftApp {
                 ("Extrude a face", "Shift+Drag"),
                 ("Slide a face, keeping its shape", "Alt+Shift+Drag"),
                 ("Extrude into a new brush", "Ctrl+Shift+Drag"),
-                ("Stamp a copy along a face", "Ctrl+Alt+Shift+Drag"),
+                ("Extrude a new brush along a face's normal", "Ctrl+Alt+Shift+Drag"),
                 ("Pick a face's material, unless a face is picked in the Face tool", "Alt+Click"),
                 ("Transfer the active face's material and alignment as it is, in the Face tool", "Alt+Click, Alt+Drag, Alt+Double-click"),
                 (
@@ -463,6 +463,7 @@ impl MapCraftApp {
                     ui.label("Powered by MapCraft.");
                 }
                 ui.label("An open-source level editor by Mark Arneman (bearlikelion), released under the MIT license.");
+                ui.label("Thanks to any_other.");
                 ui.hyperlink("https://github.com/bearlikelion/MapCraft");
                 let plugins: Vec<(&str, &str)> = self.project.plugins.iter().map(|p| (p.manifest.name.as_str(), p.manifest.version.as_str())).collect();
                 let sdks: Vec<(&str, &str)> =

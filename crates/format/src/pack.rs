@@ -37,6 +37,10 @@ pub const MAX_GLTF_TEXTURES: usize = 1024;
 pub const MAX_GLTF_IMAGES: usize = 256;
 pub const MAX_ACCESSOR_ELEMENTS: u64 = 1 << 22;
 pub const MAX_MESH_COMPONENTS: u64 = 1 << 24;
+pub const MAX_GLTF_ANIMATIONS: usize = 256;
+pub const MAX_GLTF_CHANNELS: usize = 16384;
+pub const MAX_GLTF_SKINS: usize = 256;
+pub const MAX_ANIMATION_COMPONENTS: u64 = 1 << 24;
 pub const GLTF_EXTENSIONS: &[&str] = &["KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_transform"];
 
 #[derive(Debug, thiserror::Error)]
@@ -76,12 +80,55 @@ pub fn material_entry(material: &str, picture: &[u8]) -> Option<String> {
     Some(format!("materials/{material}.{ext}"))
 }
 
-/// The entry name the Godot addon looks up for a point entity's `model` value, or `None` when it is not a `.glb`.
+/// The entry name the Godot addon looks up for a point entity's `model` value, or `None` when it is not a `.glb` or `.gltf`.
 pub fn model_entry(model: &str) -> Option<String> {
     let path = model.trim().replace('\\', "/");
     let path = path.strip_prefix("res://").unwrap_or_else(|| path.strip_prefix('/').unwrap_or(&path));
-    let stem = path.len().checked_sub(4).filter(|&n| path.get(n..).is_some_and(|e| e.eq_ignore_ascii_case(".glb"))).and_then(|n| path.get(..n))?;
-    Some(format!("models/{stem}.glb"))
+    let (stem, ext) = path.rsplit_once('.')?;
+    (ext.eq_ignore_ascii_case("glb") || ext.eq_ignore_ascii_case("gltf")).then(|| format!("models/{stem}.glb"))
+}
+
+fn items(value: Option<&mut Value>) -> impl Iterator<Item = &mut Object<String, Value>> {
+    value.and_then(Value::as_array_mut).into_iter().flatten().filter_map(Value::as_object_mut)
+}
+
+/// The GLB without the morph targets packed models cannot carry; anything else comes back unchanged.
+pub fn without_morphs(data: Vec<u8>) -> Vec<u8> {
+    let le32 = |at: usize| data.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    let Some(json_end) = le32(12).and_then(|n| usize::try_from(n).ok()).map(|n| n.saturating_add(20)) else { return data };
+    if data.get(..4) != Some(b"glTF".as_slice()) || le32(16) != Some(0x4E4F_534A) {
+        return data;
+    }
+    let Some(mut doc) = data.get(20..json_end).and_then(|j| serde_json::from_slice::<Value>(j).ok()) else { return data };
+    let Some(root) = doc.as_object_mut() else { return data };
+    let mut changed = false;
+    for node in items(root.get_mut("nodes")) {
+        changed |= node.remove("weights").is_some();
+    }
+    for mesh in items(root.get_mut("meshes")) {
+        changed |= mesh.remove("weights").is_some();
+        for primitive in items(mesh.get_mut("primitives")) {
+            changed |= primitive.remove("targets").is_some();
+        }
+    }
+    for animation in items(root.get_mut("animations")) {
+        if let Some(channels) = animation.get_mut("channels").and_then(Value::as_array_mut) {
+            let before = channels.len();
+            channels.retain(|c| c.pointer("/target/path").and_then(Value::as_str) != Some("weights"));
+            changed |= channels.len() != before;
+        }
+    }
+    let Some(mut json) = changed.then(|| serde_json::to_vec(&doc).ok()).flatten() else { return data };
+    json.resize(json.len().next_multiple_of(4), b' ');
+    let rest = data.get(json_end..).unwrap_or_default();
+    let (Ok(total), Ok(json_len)) = (u32::try_from(20 + json.len() + rest.len()), u32::try_from(json.len())) else { return data };
+    let mut out = Vec::with_capacity(total as usize);
+    for word in [u32::from_le_bytes(*b"glTF"), 2, total, json_len, 0x4E4F_534A] {
+        out.extend(word.to_le_bytes());
+    }
+    out.extend(json);
+    out.extend(rest);
+    out
 }
 
 /// Builds a pack from `(name, bytes)` entries, sorted by name, refusing anything [`read`] would refuse.
@@ -255,7 +302,7 @@ fn kind_of(name: &str) -> Result<Kind, String> {
     if name.is_empty() || name.len() > MAX_NAME_LEN {
         return Err(format!("names are 1 to {MAX_NAME_LEN} bytes"));
     }
-    if let Some(c) = name.chars().find(|&c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))) {
+    if let Some(c) = name.chars().find(|&c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ' '))) {
         return Err(format!("{c:?} is not allowed in a name"));
     }
     if name.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
@@ -507,10 +554,8 @@ fn gltf(doc: &Value, bin: &[u8], pixels: &mut u64) -> Result<(), String> {
             }
         }
     }
-    for key in ["animations", "skins", "cameras"] {
-        if root.get(key).is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty())) {
-            return Err(format!("has {key}, which packed models cannot"));
-        }
+    if root.get("cameras").is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty())) {
+        return Err("has cameras, which packed models cannot".into());
     }
 
     let buffers = list(root, "buffers", 1)?;
@@ -538,7 +583,7 @@ fn gltf(doc: &Value, bin: &[u8], pixels: &mut u64) -> Result<(), String> {
         views.push(View { offset, length, stride });
     }
 
-    let mut components = Vec::new();
+    let mut accessors = Vec::new();
     for accessor in list(root, "accessors", MAX_GLTF_ACCESSORS)? {
         let accessor = object(accessor, "an accessor")?;
         if accessor.contains_key("sparse") {
@@ -556,6 +601,7 @@ fn gltf(doc: &Value, bin: &[u8], pixels: &mut u64) -> Result<(), String> {
             Some("VEC2") => 2,
             Some("VEC3") => 3,
             Some("VEC4") => 4,
+            Some("MAT4") => 16,
             _ => return Err("has an accessor of a type packed models cannot use".into()),
         };
         let count = whole(accessor.get("count"), MAX_ACCESSOR_ELEMENTS).filter(|&c| c > 0).ok_or("has an accessor with no or too many elements")?;
@@ -565,8 +611,9 @@ fn gltf(doc: &Value, bin: &[u8], pixels: &mut u64) -> Result<(), String> {
         if end.is_none_or(|end| end > view.length) {
             return Err("has an accessor that reads past its buffer view".into());
         }
-        components.push(count * n);
+        accessors.push((count, n));
     }
+    let components: Vec<u64> = accessors.iter().map(|(count, n)| count * n).collect();
 
     for picture in list(root, "images", MAX_GLTF_IMAGES)? {
         let picture = object(picture, "an image")?;
@@ -629,6 +676,67 @@ fn gltf(doc: &Value, bin: &[u8], pixels: &mut u64) -> Result<(), String> {
                 return Err(format!("has nodes in a loop or nested over {MAX_GLTF_NODE_DEPTH} deep"));
             }
             at = *up;
+        }
+    }
+
+    let skins = list(root, "skins", MAX_GLTF_SKINS)?;
+    for node in nodes {
+        if node.get("skin").is_some() && index(node.get("skin"), skins).is_none() {
+            return Err("has a node with a missing skin".into());
+        }
+    }
+    for skin in skins {
+        let skin = object(skin, "a skin")?;
+        let joints = list(skin, "joints", MAX_GLTF_NODES)?;
+        let mut seen = HashSet::new();
+        if joints.is_empty() || !joints.iter().all(|j| whole(Some(j), u64::MAX).is_some_and(|j| j < nodes.len() as u64 && seen.insert(j))) {
+            return Err("has a skin with missing or repeated joints".into());
+        }
+        if skin.get("skeleton").is_some() && index(skin.get("skeleton"), nodes).is_none() {
+            return Err("has a skin with a missing skeleton".into());
+        }
+        if skin.get("inverseBindMatrices").is_some() && index(skin.get("inverseBindMatrices"), &accessors) != Some(&(joints.len() as u64, 16)) {
+            return Err("has a skin whose inverseBindMatrices are not one MAT4 per joint".into());
+        }
+    }
+
+    let mut channels = 0;
+    let mut keys: u64 = 0;
+    for animation in list(root, "animations", MAX_GLTF_ANIMATIONS)? {
+        let animation = object(animation, "an animation")?;
+        let samplers = list(animation, "samplers", MAX_GLTF_CHANNELS)?;
+        for channel in list(animation, "channels", MAX_GLTF_CHANNELS)? {
+            channels += 1;
+            if channels > MAX_GLTF_CHANNELS {
+                return Err(format!("has over {MAX_GLTF_CHANNELS} animation channels"));
+            }
+            let channel = object(channel, "an animation channel")?;
+            let target = object(channel.get("target").unwrap_or(&Value::Null), "an animation target")?;
+            let width = match target.get("path").and_then(Value::as_str) {
+                Some("translation" | "scale") => 3,
+                Some("rotation") => 4,
+                Some("weights") => return Err("has morph target animation, which packed models cannot".into()),
+                _ => return Err("has an animation channel with an unknown path".into()),
+            };
+            if index(target.get("node"), nodes).is_none() {
+                return Err("has an animation channel with a missing node".into());
+            }
+            let sampler = object(index(channel.get("sampler"), samplers).ok_or("has an animation channel with a missing sampler")?, "an animation sampler")?;
+            let per_key = match sampler.get("interpolation").map(Value::as_str) {
+                None | Some(Some("LINEAR" | "STEP")) => 1,
+                Some(Some("CUBICSPLINE")) => 3,
+                _ => return Err("has an animation sampler with an unknown interpolation".into()),
+            };
+            let (Some(&(times, 1)), Some(&(values, n))) = (index(sampler.get("input"), &accessors), index(sampler.get("output"), &accessors)) else {
+                return Err("has an animation sampler with missing or wrong accessors".into());
+            };
+            if n != width || values != times * per_key {
+                return Err("has an animation sampler whose values do not match its times".into());
+            }
+            keys = keys.saturating_add(times + values * n);
+            if keys > MAX_ANIMATION_COMPONENTS {
+                return Err(format!("has animations over {} million values", MAX_ANIMATION_COMPONENTS >> 20));
+            }
         }
     }
 
@@ -788,6 +896,14 @@ mod tests {
     }
 
     #[test]
+    fn names_may_have_spaces() {
+        let picture = png(4, 4);
+        let name = material_entry("my rock", &picture).unwrap();
+        let bytes = write(&[entry(&name, picture), entry("models/my props/crate.glb", glb(&model().0, &model().1))]).unwrap();
+        assert!(read(&bytes).is_ok());
+    }
+
+    #[test]
     fn names_entries_as_the_addon_looks_them_up() {
         assert_eq!(material_entry("dev/grid", &png(4, 4)).as_deref(), Some("materials/dev/grid.png"));
         assert_eq!(material_entry("rock", &jpeg(4, 4)).as_deref(), Some("materials/rock.jpg"));
@@ -795,7 +911,8 @@ mod tests {
         assert_eq!(model_entry(" Props\\Crate.GLB ").as_deref(), Some("models/Props/Crate.glb"));
         assert_eq!(model_entry("res://props/crate.glb").as_deref(), Some("models/props/crate.glb"));
         assert_eq!(model_entry("/props/crate.glb").as_deref(), Some("models/props/crate.glb"));
-        assert_eq!(model_entry("props/crate.gltf"), None);
+        assert_eq!(model_entry("props/crate.gltf").as_deref(), Some("models/props/crate.glb"));
+        assert_eq!(model_entry("props/crate.fbx"), None);
     }
 
     #[test]
@@ -874,7 +991,7 @@ mod tests {
             "C:/materials/a.png",
             "materials/C:a.png",
             "materials/a\0.png",
-            "materials/a b.png",
+            "materials/a\tb.png",
             "materials/é.png",
             "materials/.png",
             "materials/a/.png",
@@ -1047,15 +1164,80 @@ mod tests {
     }
 
     #[test]
-    fn models_are_static() {
-        assert!(model_err(|j| j["animations"] = json!([{"channels": [], "samplers": []}])).contains("animations"));
-        assert!(model_err(|j| j["animations"] = json!({})).contains("animations"));
-        assert!(model_err(|j| j["skins"] = json!([{"joints": [0]}])).contains("skins"));
+    fn models_may_not_have_cameras() {
         assert!(model_err(|j| j["cameras"] = json!([{"type": "perspective"}])).contains("cameras"));
         assert!(model_err(|j| j["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION": 0}])).contains("morph targets"));
         let (mut json, bin) = model();
-        json["animations"] = json!([]);
+        json["cameras"] = json!([]);
         write(&[entry("models/a.glb", glb(&json, &bin))]).unwrap();
+    }
+
+    fn animated(edit: impl FnOnce(&mut Value)) -> Result<Vec<u8>, PackError> {
+        let (mut json, bin) = model();
+        json["animations"] =
+            json!([{"name": "Bob", "samplers": [{"input": 1, "output": 0}], "channels": [{"sampler": 0, "target": {"node": 1, "path": "translation"}}]}]);
+        edit(&mut json);
+        write(&[entry("models/a.glb", glb(&json, &bin))])
+    }
+
+    #[test]
+    fn model_animations_are_checked() {
+        animated(|_| {}).unwrap();
+        animated(|j| j["animations"][0]["samplers"][0]["interpolation"] = json!("STEP")).unwrap();
+        let err = |edit: fn(&mut Value)| reason(animated(edit));
+        assert!(err(|j| j["animations"][0]["channels"][0]["target"]["path"] = json!("rotation")).contains("do not match"));
+        assert!(err(|j| j["animations"][0]["channels"][0]["target"]["path"] = json!("weights")).contains("morph target animation"));
+        assert!(err(|j| j["animations"][0]["channels"][0]["target"]["path"] = json!("pointer")).contains("unknown path"));
+        assert!(err(|j| j["animations"][0]["channels"][0]["target"]["node"] = json!(2)).contains("missing node"));
+        assert!(err(|j| j["animations"][0]["channels"][0]["target"] = json!(null)).contains("animation target"));
+        assert!(err(|j| j["animations"][0]["channels"][0]["sampler"] = json!(1)).contains("missing sampler"));
+        assert!(err(|j| j["animations"][0]["samplers"][0]["interpolation"] = json!("CUBICSPLINE")).contains("do not match"));
+        assert!(err(|j| j["animations"][0]["samplers"][0]["interpolation"] = json!("SMOOTH")).contains("interpolation"));
+        assert!(err(|j| j["animations"][0]["samplers"][0]["input"] = json!(0)).contains("wrong accessors"));
+        assert!(err(|j| j["animations"][0]["samplers"][0]["output"] = json!(7)).contains("wrong accessors"));
+        assert!(err(|j| j["animations"] = json!({})).contains("animations"));
+    }
+
+    #[test]
+    fn model_skins_are_checked() {
+        let skinned = |edit: fn(&mut Value)| {
+            let (mut json, mut bin) = model();
+            json["bufferViews"].as_array_mut().unwrap().push(json!({"buffer": 0, "byteOffset": bin.len(), "byteLength": 64}));
+            bin.extend([0; 64]);
+            json["buffers"][0]["byteLength"] = json!(bin.len());
+            json["accessors"].as_array_mut().unwrap().push(json!({"bufferView": 3, "componentType": 5126, "count": 1, "type": "MAT4"}));
+            json["skins"] = json!([{"joints": [1], "skeleton": 1, "inverseBindMatrices": 2}]);
+            json["nodes"][0]["skin"] = json!(0);
+            edit(&mut json);
+            write(&[entry("models/a.glb", glb(&json, &bin))])
+        };
+        skinned(|_| {}).unwrap();
+        skinned(|j| j["skins"][0].as_object_mut().unwrap().remove("inverseBindMatrices").map(|_| ()).unwrap()).unwrap();
+        assert!(reason(skinned(|j| j["skins"][0]["joints"] = json!([1, 1]))).contains("repeated joints"));
+        assert!(reason(skinned(|j| j["skins"][0]["joints"] = json!([]))).contains("repeated joints"));
+        assert!(reason(skinned(|j| j["skins"][0]["joints"] = json!([0, 1]))).contains("one MAT4 per joint"));
+        assert!(reason(skinned(|j| j["skins"][0]["joints"] = json!([9]))).contains("missing or repeated"));
+        assert!(reason(skinned(|j| j["skins"][0]["skeleton"] = json!(9))).contains("missing skeleton"));
+        assert!(reason(skinned(|j| j["skins"][0]["inverseBindMatrices"] = json!(0))).contains("one MAT4 per joint"));
+        assert!(reason(skinned(|j| j["nodes"][0]["skin"] = json!(1))).contains("missing skin"));
+    }
+
+    #[test]
+    fn morph_targets_are_stripped() {
+        let (mut json, bin) = model();
+        let plain = glb(&json, &bin);
+        assert_eq!(without_morphs(plain.clone()), plain);
+        json["animations"] = json!([{"samplers": [{"input": 1, "output": 0}], "channels": [
+            {"sampler": 0, "target": {"node": 0, "path": "weights"}},
+            {"sampler": 0, "target": {"node": 1, "path": "translation"}}
+        ]}]);
+        json["nodes"][0]["weights"] = json!([0.5]);
+        json["meshes"][0]["weights"] = json!([0.5]);
+        json["meshes"][0]["primitives"][0]["targets"] = json!([{"POSITION": 0}]);
+        let morphed = glb(&json, &bin);
+        assert!(write(&[entry("models/a.glb", morphed.clone())]).is_err());
+        write(&[entry("models/a.glb", without_morphs(morphed))]).unwrap();
+        assert_eq!(without_morphs(b"not a model".to_vec()), b"not a model");
     }
 
     #[test]
@@ -1107,7 +1289,7 @@ mod tests {
         assert!(model_err(|j| j["accessors"][0].as_object_mut().unwrap().remove("bufferView").map(|_| ()).unwrap()).contains("without a buffer view"));
         assert!(model_err(|j| j["accessors"][0]["bufferView"] = json!(9)).contains("without a buffer view"));
         assert!(model_err(|j| j["accessors"][0]["sparse"] = json!({"count": 1 << 30})).contains("sparse"));
-        assert!(model_err(|j| j["accessors"][0]["type"] = json!("MAT4")).contains("type"));
+        assert!(model_err(|j| j["accessors"][0]["type"] = json!("MAT3")).contains("type"));
         assert!(model_err(|j| j["accessors"][0]["componentType"] = json!(5130)).contains("component type"));
         let (mut json, bin) = model();
         json["bufferViews"][0]["byteStride"] = json!(252);

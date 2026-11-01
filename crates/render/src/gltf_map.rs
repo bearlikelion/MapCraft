@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use gltf_json::validation::Checked;
 use mapcraft_format::Fragment;
 use mapcraft_geom::{DVec2, DVec3, EPSILON, Plane, convex_hull};
-use mapcraft_map::{Brush, Face, Group, Map, NodeId, NodeKind, ROOT, TexAxis, TexDefaults, covered_faces, is_tool_material};
+use mapcraft_map::{Brush, Face, Group, Map, NodeId, NodeKind, ROOT, TexAxis, TexDefaults, covered_faces};
 use serde_json::{Value, json};
 
 use crate::Picture;
@@ -80,7 +80,10 @@ pub fn export_glb(
     units_per_meter: f64,
 ) -> Result<Vec<u8>, String> {
     let visible = map.visible_nodes();
-    let covered = covered_faces(map, None);
+    let names: BTreeSet<&str> = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).map(|f| f.material.as_str()).collect();
+    let see_through: BTreeSet<&str> =
+        names.into_iter().filter(|m| picture(m).is_some_and(|p| p.rgba.chunks(4).any(|c| c.get(3).is_some_and(|a| *a < 255)))).collect();
+    let covered = covered_faces(map, None, &|m| see_through.contains(m));
     let mut objects: Vec<Object> = Vec::new();
     let mut holders: BTreeMap<NodeId, usize> = BTreeMap::new();
     for (id, node) in map.nodes() {
@@ -97,7 +100,7 @@ pub fn export_glb(
         for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
             let Some(w) = winding else { continue };
             // A displaced brush shows only its displaced faces, as Source compiles it.
-            if is_tool_material(&face.material)
+            if !b.draws(face)
                 || (face.material.is_empty() && in_entity)
                 || covered.contains(&(id, face.id))
                 || (b.has_displacement() && !displaced.contains_key(&index))
@@ -319,7 +322,7 @@ pub fn import_gltf(
     let mut slots: BTreeMap<Option<usize>, usize> = BTreeMap::new();
     let mut pictures = Vec::new();
     let (mut children, mut brushes, mut triangles, mut split) = (Vec::new(), 0usize, 0usize, 0usize);
-    for (k, (node, mesh, at)) in doc.meshes(units_per_meter)?.into_iter().enumerate() {
+    for (k, (_, node, mesh, at)) in doc.meshes(units_per_meter)?.into_iter().enumerate() {
         let flip = at.determinant() < 0.0;
         let mut tris = Vec::new();
         for prim in &mesh.primitives {

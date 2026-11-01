@@ -139,7 +139,7 @@ impl ShaderEditor {
 
     fn save_active(&mut self, save_as: bool) {
         let (extension, current, bytes) = if self.material_mode {
-            ("json", self.material_path.clone(), self.material.validate().and_then(|()| serde_json::to_vec_pretty(&self.material).map_err(|e| e.to_string())))
+            ("json", self.material_path.clone(), self.material.to_json())
         } else {
             (
                 "mcshader",
@@ -573,12 +573,14 @@ impl ShaderEditor {
                 ui.add(egui::DragValue::new(value).range(0.0..=64.0).speed(0.01));
             }
         });
+        egui::Grid::new("material-strengths").num_columns(2).show(ui, |ui| strength_rows(ui, &mut self.material));
         for (label, slot) in [
             ("Albedo texture", TextureSlot::Albedo),
             ("Normal texture", TextureSlot::Normal),
             ("Roughness texture", TextureSlot::Roughness),
             ("Metallic texture", TextureSlot::Metallic),
             ("Emission texture", TextureSlot::Emission),
+            ("Height texture", TextureSlot::Height),
         ] {
             ui.horizontal_wrapped(|ui| {
                 ui.label(label);
@@ -592,6 +594,7 @@ impl ShaderEditor {
                 }
             });
         }
+        self.material.version = self.material.needed_version();
         if let Err(error) = self.material.validate() {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -601,6 +604,22 @@ impl ShaderEditor {
         ui.label(&self.status);
         ui.label("Saved materials reload in the map viewport. Use Lit mode for PBR lighting. Shader bindings are not connected yet.");
     }
+}
+
+/// Grid rows for the values Godot often needs adjusting after Material Maker: emission energy, normal strength and height.
+pub(crate) fn strength_rows(ui: &mut egui::Ui, material: &mut mapcraft_format::pack_material::Material) {
+    ui.label("Emission energy").on_hover_text("Multiplies the emission color plus the emission texture.");
+    ui.add(egui::Slider::new(&mut material.emission_energy, 0.0..=64.0).logarithmic(true));
+    ui.end_row();
+    ui.label("Normal strength").on_hover_text("Turn down for subtle surfaces, up for deep grooves.");
+    ui.add(egui::Slider::new(&mut material.normal_strength, 0.0..=16.0).logarithmic(true));
+    ui.end_row();
+    ui.label("Height scale").on_hover_text("Parallax depth of the height texture in Godot; negative pushes the other way.");
+    ui.add(egui::Slider::new(&mut material.height_scale, -16.0..=16.0));
+    ui.end_row();
+    ui.label("Height is depth").on_hover_text("On when the height texture is white where the surface is lowest.");
+    ui.checkbox(&mut material.height_flip, "");
+    ui.end_row();
 }
 
 /// A save dialog for a `.extension` file, starting beside `current`.

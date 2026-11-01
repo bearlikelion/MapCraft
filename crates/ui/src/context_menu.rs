@@ -91,12 +91,60 @@ impl MapCraftApp {
                 }
             }
             if let Some(class) = pick {
-                if let Err(e) = self.session.set_brush_class(class) {
-                    self.status = e.to_string();
-                }
-                self.mark_changed();
+                self.make_brush_class(class);
             }
         });
+    }
+
+    /// Makes the selected brushes one entity of `class` with its defaults, or world brushes when `None`.
+    pub(crate) fn make_brush_class(&mut self, class: Option<&str>) {
+        let keys = class.and_then(|c| self.project.game.class(c)).map(|c| mapcraft_engine::class_defaults(&c)).unwrap_or_default();
+        if let Err(e) = self.session.set_brush_class(class, keys) {
+            self.status = e.to_string();
+        }
+        self.mark_changed();
+    }
+
+    /// Every brush class, those sharing a prefix such as `func_` or `trigger_` in a submenu of their own, as TrenchBroom lists them.
+    fn brush_entity_menu(&mut self, ui: &mut egui::Ui) {
+        let mut groups: std::collections::BTreeMap<String, Vec<(String, Option<egui::Color32>)>> = std::collections::BTreeMap::new();
+        for c in self
+            .project
+            .game
+            .class_names()
+            .filter_map(|n| self.project.game.class(n))
+            .filter(|c| c.kind.is_solid() && !c.name.eq_ignore_ascii_case("worldspawn"))
+        {
+            let prefix = c.name.split_once('_').map_or(String::new(), |(p, _)| p.to_string());
+            let color = c.color().map(|[r, g, b]| egui::Color32::from_rgb(r, g, b));
+            groups.entry(prefix).or_default().push((c.name, color));
+        }
+        if groups.is_empty() {
+            return;
+        }
+        let any = !self.session.selected_brushes().is_empty();
+        let mut pick = None;
+        let item = |ui: &mut egui::Ui, name: &str, color: Option<egui::Color32>, pick: &mut Option<String>| {
+            let (icon, tint) = icons::class_icon(true, color);
+            if ui.add_enabled(any, egui::Button::new((icons::icon(icon).tint(tint), name))).clicked() {
+                *pick = Some(name.to_string());
+            }
+        };
+        ui.menu_button((icons::slot(Some("cube")), "Create Brush Entity"), |ui| {
+            let (nested, single): (Vec<_>, Vec<_>) = groups.iter().partition(|(prefix, classes)| classes.len() > 1 && !prefix.is_empty());
+            for (prefix, classes) in nested {
+                let mut title = prefix.clone();
+                if let Some(first) = title.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                ui.menu_button(title, |ui| classes.iter().for_each(|(n, c)| item(ui, n, *c, &mut pick)));
+            }
+            single.into_iter().flat_map(|(_, classes)| classes).for_each(|(n, c)| item(ui, n, *c, &mut pick));
+        });
+        if let Some(class) = pick {
+            self.session.default_solid_entity = class.clone();
+            self.make_brush_class(Some(&class));
+        }
     }
 
     fn selection_menu(&mut self, ui: &mut egui::Ui, index: usize) {
@@ -119,6 +167,7 @@ impl MapCraftApp {
         self.menu_item(ui, "tools.merge", "Merge Brushes");
         self.menu_item(ui, "tool.clip", "Clip");
         self.brush_type_menu(ui);
+        self.brush_entity_menu(ui);
         ui.menu_button((icons::slot(Some("gimbal")), "Transform"), |ui| {
             self.menu_item(ui, "tools.rotate_cw", "Rotate 90° Clockwise");
             self.menu_item(ui, "tools.rotate_ccw", "Rotate 90° Counter-Clockwise");

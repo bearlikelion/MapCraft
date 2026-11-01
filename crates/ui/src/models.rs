@@ -39,6 +39,9 @@ pub(crate) struct Models {
     /// Pending models a plugin reads, which load on the editor's thread where plugins live.
     plugin_queue: Vec<String>,
     files: Option<Vec<String>>,
+    /// The player's own asset folders; models found in them list under Custom.
+    pub custom_roots: Vec<PathBuf>,
+    custom: BTreeSet<String>,
     pub filter: String,
     /// The model the Entity tool places.
     pub chosen: Option<String>,
@@ -61,6 +64,8 @@ impl Default for Models {
             worker: None,
             plugin_queue: Vec::new(),
             files: None,
+            custom_roots: Vec::new(),
+            custom: BTreeSet::new(),
             filter: String::new(),
             chosen: None,
             previews: HashMap::new(),
@@ -260,11 +265,18 @@ impl Models {
     /// Every glTF file in the model folders and every model `plugins` list, but the classes' own,
     /// listed the first time it is asked for.
     fn files(&mut self, plugins: &mut [mapcraft_plugin_host::Plugin], problems: &mut Vec<String>) -> &[String] {
-        let (vfs, fixed) = (&self.vfs, &self.fixed);
+        let (vfs, fixed, roots, custom) = (&self.vfs, &self.fixed, &self.custom_roots, &mut self.custom);
         self.files.get_or_insert_with(|| {
             let exts = EXTENSIONS.map(String::from);
-            let names = vfs.list(&exts).into_iter().filter_map(|(name, path)| Some(format!("{name}.{}", path.extension()?.to_string_lossy())));
-            let mut names: Vec<String> = names.collect();
+            let mut names = Vec::new();
+            for (name, path) in vfs.list(&exts) {
+                let Some(ext) = path.extension() else { continue };
+                let name = format!("{name}.{}", ext.to_string_lossy());
+                if roots.iter().any(|r| path.starts_with(r)) {
+                    custom.insert(name.clone());
+                }
+                names.push(name);
+            }
             for plugin in plugins {
                 match plugin.list_models() {
                     Ok(list) => names.extend(list),
@@ -378,16 +390,19 @@ impl MapCraftApp {
         let (models, plugins) = (&mut self.project.models, &mut self.project.plugins);
         crate::panels::search_field(ui, &mut models.filter, "Search models");
         let filter = models.filter.to_lowercase();
-        let folder = |n: &str| n.rsplit_once('/').map_or("", |(f, _)| f).to_string();
-        let all = models.files(plugins, &mut self.output);
+        let all = models.files(plugins, &mut self.output).to_vec();
+        let folder = |n: &str| {
+            let f = n.rsplit_once('/').map_or("", |(f, _)| f);
+            crate::project::custom_folder(models.custom.contains(n), f).unwrap_or_default()
+        };
         let mut folders: BTreeMap<String, usize> = BTreeMap::new();
-        for n in all {
+        for n in &all {
             *folders.entry(folder(n)).or_default() += 1;
         }
         let names: Vec<String> = all
             .iter()
             .filter(|n| !crate::panels::in_hidden_folder(&folder(n), &hidden))
-            .filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter))
+            .filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter) || format!("{}/", folder(n).to_lowercase()).contains(&filter))
             .cloned()
             .collect();
         let label = if hidden.is_empty() { "Folders".to_string() } else { format!("Folders ({} hidden)", hidden.len()) };
@@ -462,8 +477,8 @@ impl MapCraftApp {
         models.request(&name);
         models.chosen = Some(name.clone());
         if let Some(class) = models.class.clone() {
+            self.set_tool(Tool::Entity);
             self.entity_class = class;
-            self.tool = Tool::Entity;
             self.status = format!("Click in a view to place {name}");
         }
     }

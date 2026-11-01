@@ -35,13 +35,17 @@ Readers refuse versions other than the ones they know.
 | Name | Holds | Looked up by |
 |---|---|---|
 | `materials/<material>.png` or `materials/<material>.jpg` | The picture for a material | The material name a face uses |
-| `models/<path>.glb` | A binary glTF model | A point entity's `model` value |
+| `models/<path>.glb` | A binary glTF model | A point entity's `model` value, `.glb` or `.gltf` |
 
 - A face's material name is looked up as `materials/<name>`, ignoring ASCII case and the extension.
   A picture in the pack wins over the game's own material of that name, for this map only, and becomes a `StandardMaterial3D` with the picture, mipmapped, as its albedo.
-- A `model` value is trimmed, its backslashes become slashes and a leading `res://` or `/` is dropped; when it then ends in `.glb` in any case, `models/<path>` is looked up ignoring ASCII case.
-  `Props\Crate.GLB` finds `models/Props/Crate.glb`.
+- A `model` value is trimmed, its backslashes become slashes and a leading `res://` or `/` is dropped; when it then ends in `.glb` or `.gltf` in any case, `models/<path>.glb` is looked up ignoring ASCII case.
+  `Props\Crate.GLB` and `props/crate.gltf` both find `models/Props/Crate.glb`.
+  The exporter packs a `.gltf` and the buffers and pictures beside it as one `.glb`.
   A model in the pack wins over the game's file at that path, for this map only.
+- A point entity's `animation` key names one of its model's animations, which the addon plays when the map loads: it copies that animation into an `AnimationLibrary` named `mapcraft` as `default` and sets the model's `AnimationPlayer` to autoplay `mapcraft/default`.
+  Its `animation_loop` key sets the copy's loop mode: `linear` (the default), `pingpong` or `none`.
+  The name is tried as written, then as Godot sanitizes animation names.
 - Version 2 additionally supports `materials/<material>.json` PBR descriptors and `textures/<path>.png` or `.jpg` dependencies.
 - Version 3 additionally supports `map.mcmap`, the exact bytes of a `.mcmap`, at the top level and at most once.
 - Nothing else may be in a pack: no Godot resources (`.tres`, `.res`, `.scn`, `.tscn`, `.pck`), scripts, shaders, SVG, WebP, glTF text files or native libraries.
@@ -59,7 +63,8 @@ A pack without a map, opened this way, builds nothing and logs that it holds no 
 The writer selects version 2 when a material descriptor or `textures/` entry is present; image/model-only exports remain version 1.
 Both readers accept versions 1 to 3; version 1 refuses version 2 entry kinds.
 A descriptor replaces the legacy picture for its material name, so those two entries cannot coexist.
-A descriptor is UTF-8 JSON, at most 16 KiB, with these required fields and no others:
+A descriptor is UTF-8 JSON, at most 16 KiB.
+Descriptor version 1 has these required fields and no others:
 
 ```json
 {
@@ -74,6 +79,20 @@ A descriptor is UTF-8 JSON, at most 16 KiB, with these required fields and no ot
 
 Albedo components, roughness and metallic are finite values from 0 to 1; emission components are finite values from 0 to 64.
 Texture slots are `albedo`, `normal`, `roughness`, `metallic` and `emission`; all are optional.
+
+Descriptor version 2 adds these optional fields and the optional `height` texture slot:
+
+| Field | Default | Range | Godot |
+|---|---|---|---|
+| `emission_energy` | 1 | 0 to 64 | `emission_energy_multiplier` |
+| `normal_strength` | 1 | 0 to 16 | `normal_scale` |
+| `height_scale` | 1 | -16 to 16 | `heightmap_scale` |
+| `height_flip` | false | true or false | `heightmap_flip_texture`: the height texture is a depth map, white lowest |
+
+A `height` texture turns on height mapping with deep parallax.
+Emission is the emission color plus the emission texture, times `emission_energy`, in Godot and in Lit mode alike.
+The editor writes version 1 unless a version 2 field differs from its default or a `height` texture is set, so older addons keep reading plain descriptors.
+A version 1 descriptor with a version 2 field or slot is refused.
 References must name PNG/JPEG entries under `textures/` and match an entry, ignoring ASCII case but including its extension.
 Normal maps use OpenGL conventions; roughness and metallic maps use the red channel.
 Albedo alpha below 1 enables alpha transparency.
@@ -82,18 +101,19 @@ Descriptors never load through `ResourceLoader`.
 Invalid descriptors or their texture dependencies produce a missing material and a diagnostic.
 
 The editor's **Shader Editor > PBR Material** tab writes descriptors.
+The Material inspector (**Inspect Material** on a material's right click menu in the Materials browser) edits a loaded descriptor in place: it validates the values, then writes the file atomically when the pointer is released, so a refused value never reaches the file.
 Put descriptors in `materials/` and referenced images in `textures/` beneath a configured custom asset folder.
-File > Add Material…, the Materials browser's + button or dropping pictures on the window makes a new descriptor from picked PBR maps, each assigned to a slot by its name's last word (`albedo`, `normal`, `rough`, `metal`, `glow` and the like).
+File > Add Material…, the Materials browser's + button or dropping pictures on the window makes a new descriptor from picked PBR maps, each assigned to a slot by its name's last word (`albedo`, `normal`, `rough`, `metal`, `glow`, `height`, `depth` and the like).
 It and File > Add Model… copy into the folder beside the saved map (`<map name>/`): `materials/<name>.json`, `textures/<name>_<slot>.png` and `models/<path>.glb`, refusing a name already taken.
 The pack exporter collects descriptors for face material names, including blend layers, and includes their referenced images once.
-Custom descriptors appear in the material browser and map viewport; Lit mode uses their normal, roughness, metallic and emission maps.
+Custom descriptors appear in the material browser and map viewport; Lit mode uses their normal map at its strength, their roughness and metallic maps, and their emission at its energy; height maps show only in Godot.
 Albedo tint is also applied to textured views and thumbnails.
 Saving a descriptor from the editor reloads project assets.
 Shader graphs are not yet bound to descriptors.
 
 ## Names
 
-- A name is 1 to 255 bytes of `A` to `Z`, `a` to `z`, `0` to `9`, `_`, `-` and `.`, with `/` between path segments.
+- A name is 1 to 255 bytes of `A` to `Z`, `a` to `z`, `0` to `9`, space, `_`, `-` and `.`, with `/` between path segments.
 - No segment is empty, `.` or `..`, so a name has no leading or trailing slash and no `//`.
 - A name starts with `materials/` and ends in `.png` or `.jpg`, or starts with `models/` and ends in `.glb`, with at least one character in between; extensions are lower case.
   Version 2 also permits the descriptor and texture names listed above.
@@ -121,11 +141,15 @@ Its JSON:
 - Is an object nested at most 64 deep.
 - Has at most one buffer, with no `uri` and a `byteLength` that fits in the BIN chunk.
 - Has buffer views on buffer 0 that lie inside the buffer, with a `byteStride` of 4 to 252 when they have one.
-- Has accessors that each name a buffer view, have no `sparse`, use one of glTF's six component types and the type `SCALAR`, `VEC2`, `VEC3` or `VEC4`, hold 1 to 4,194,304 elements, and read only inside their buffer view.
+- Has accessors that each name a buffer view, have no `sparse`, use one of glTF's six component types and the type `SCALAR`, `VEC2`, `VEC3`, `VEC4` or `MAT4`, hold 1 to 4,194,304 elements, and read only inside their buffer view.
 - Has images with no `uri`, a buffer view, and a `mimeType` of `image/png` or `image/jpeg` that matches their bytes, which follow the picture rules above.
 - Has mesh primitives with no morph targets, whose attributes and `indices` name accessors; counting an accessor's elements times its components each time a primitive uses it, all primitives add up to at most 16,777,216 values.
 - Has nodes whose children exist, where no node has two parents and none is its own ancestor, nested at most 64 deep.
-- Has no `animations`, `skins` or `cameras`: packed models are static props.
+- Has skins whose joints are distinct nodes that exist, whose `skeleton` exists, and whose `inverseBindMatrices`, when present, is a `MAT4` accessor with one element per joint; a node's `skin` exists.
+- Has animations whose channels target an existing node's `translation`, `rotation` or `scale` (not `weights`), through an existing sampler whose `interpolation` is `LINEAR`, `STEP` or `CUBICSPLINE`, whose input is a `SCALAR` accessor and whose output has 3 components (4 for `rotation`) and as many elements as the input has, three times as many for `CUBICSPLINE`.
+  Counting each channel's input elements plus its output values, all channels add up to at most 16,777,216 values.
+  The exporter drops morph targets, and the animation channels that drive them, before it writes a model.
+- Has no `cameras`.
 - Names only these extensions, in `extensionsUsed`, `extensionsRequired` and every `extensions` object anywhere: `KHR_materials_emissive_strength`, `KHR_materials_unlit`, `KHR_mesh_quantization` and `KHR_texture_transform`.
 - May carry `extras`, which Godot keeps as `extras` metadata on the nodes and resources it makes.
 
@@ -154,8 +178,12 @@ Its JSON:
 | glTF textures | 1024 |
 | glTF images | 256 |
 | glTF buffers | 1 |
+| glTF animations | 256 |
+| glTF animation channels | 16,384 |
+| glTF skins | 256 |
 | Elements per accessor | 4,194,304 |
 | Mesh values per model | 16,777,216 |
+| Animation values per model | 16,777,216 |
 
 ## Reading a pack
 
@@ -197,7 +225,8 @@ In the pack that means every byte: the header, the names, offsets and lengths, e
 - The JPEG scan cap stops progressive JPEGs whose thousands of scans each make the decoder pass over the whole picture.
 - Refusing `uri` on buffers and images, and loading with an empty base path, stop every file read: Godot reads a buffer `uri` as a file and loads an image `uri` through `ResourceLoader`, which can load a scene or a script.
 - The glTF extension allowlist stops extensions Godot acts on without checking `extensionsUsed`, such as lights and node visibility, and ones that make physics bodies or decode other picture formats.
-- Refusing animations, skins and cameras keeps models static: no animation track can drive another node, and no camera can take the view.
+- Animation channels can only target the model's own nodes, so no track reaches outside it, and refusing cameras means no model can take the view.
+- Matching each sampler's output count to its input count keeps Godot's track builder inside its arrays, and the animation budget caps what it decodes.
 - The node check stops a parent loop, which makes Godot's glTF importer loop forever.
 - The accessor caps and the mesh budget stop memory bombs: Godot decodes an accessor into arrays sized by its element count, a sparse accessor or one without a buffer view makes a zero-filled array from its count alone, and one accessor shared by many primitives is decoded once for each.
 - Never registering pack content stops a pack from replacing the game's assets for other maps.

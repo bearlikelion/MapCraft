@@ -24,7 +24,7 @@ pub use commands::{CommandSpec, commands, execute, find};
 pub use generate::generator_transform;
 pub use issues::{Fix, Issue, LINK_KEYS, Severity, is_broken_link, is_unresolved, target_names, validate};
 pub use noise::{FractalType, HeightNoise, NoiseType};
-pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape};
+pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape, dragged_model_scale, model_scale};
 pub use organize::{class_defaults, entities_of, fill_class_defaults, fill_trigger_materials, find_entities, is_trigger};
 pub use prefab::{expand_instance, flatten, flatten_for_game, prefab_transform};
 pub use session::{SelectMode, Session, pick_target};

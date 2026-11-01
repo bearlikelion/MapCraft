@@ -37,6 +37,9 @@ pub fn is_tool_material(name: &str) -> bool {
     name.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("tools/"))
 }
 
+/// Clip on any face makes the whole brush invisible but solid, as Quake and Source compilers treat it.
+pub const CLIP_MATERIAL: &str = "tools/clip";
+
 /// The second layer a face of `material` shows: `layer`, unless it is empty, the face's own material or a tool material.
 pub fn blend_layer<'a>(material: &str, layer: Option<&'a str>) -> Option<&'a str> {
     layer.filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case(material) && !is_tool_material(l))
@@ -606,6 +609,15 @@ impl Brush {
         self.faces.iter().any(|f| f.disp.is_some())
     }
 
+    pub fn is_clip(&self) -> bool {
+        self.faces.iter().any(|f| f.material.eq_ignore_ascii_case(CLIP_MATERIAL))
+    }
+
+    /// Whether `face` shows in the game: tool faces and every face of a clip brush do not.
+    pub fn draws(&self, face: &Face) -> bool {
+        !is_tool_material(&face.material) && !self.is_clip()
+    }
+
     /// The displaced grid of each face whose displacement fits it, by face index.
     pub fn displaced(&self, solid: &Solid) -> Vec<(usize, Vec<DVec3>)> {
         self.faces
@@ -915,6 +927,16 @@ pub fn wrap_runs(brushes: &mut [Brush]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skip_hides_its_face_and_clip_its_brush() {
+        let tex = TexDefaults { material: "ramp".into(), scale: 1.0 };
+        let mut b = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), &tex);
+        b.faces[0].material = "tools/skip".into();
+        assert_eq!(b.faces.iter().filter(|f| b.draws(f)).count(), 5);
+        b.faces[1].material = "TOOLS/Clip".into();
+        assert!(b.is_clip() && !b.faces.iter().any(|f| b.draws(f)));
+    }
 
     #[test]
     fn wrapped_runs_meet_at_their_seams() {

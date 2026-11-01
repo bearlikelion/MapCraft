@@ -84,7 +84,7 @@ A selection cannot shrink below one grid step.
 ![Resizing a ramp in the Top view: the moving side is red and labels show its size in every view](img/tools-select-resize.webp)
 
 Shift+drag a face of a selected brush to extrude it, as the [Extrude](#extrude) tool does.
-Ctrl+Shift+drag splits off a new brush, Ctrl+Alt+Shift+drag stamps one, and Alt+Shift+drag slides the face.
+Ctrl+Shift+drag splits off a new brush, Ctrl+Alt+Shift+drag extrudes a new brush straight out along the face's normal, and Alt+Shift+drag slides the face.
 
 ### Select in the 3D view
 
@@ -176,7 +176,8 @@ Press `R`.
 - In a 2D view, drag around the selection's center (the orange circle and cross) to turn it.
 - In the 3D view, drag a ring: red turns about X, green about Y, blue about Z.
 
-With **Snap** on, rotation goes in 15 degree steps, and the status bar shows the angle.
+While you drag, a faint yellow outline keeps the selection where it started, a shaded slice sweeps from the starting angle to the current one, and a label shows the signed angle turned (positive is counterclockwise looking down the axis).
+With **Snap** on, rotation goes in 15 degree steps, and the label adds the unsnapped angle in brackets.
 For exact quarter turns about Z, use **Tools > Rotate 90° Clockwise** (`Ctrl+R`) or **Tools > Rotate 90° Counter-Clockwise** (`Ctrl+Shift+R`).
 The TrenchBroom shortcut preset adds TrenchBroom's quarter turns about the view under the pointer: roll (`Alt+Up` and `Alt+Down`) about the way the view looks, pitch (`Alt+Page Up` and `Alt+Page Down`) about its right side, and yaw (`Alt+Left` and `Alt+Right`) about Z in the 3D view or the view's up axis in a 2D view.
 
@@ -194,6 +195,8 @@ Each axis has a bright handle on its positive side and a dim one on its negative
 The side you drag moves and the opposite side stays put.
 The moving side turns red and labels show the size.
 A selection cannot shrink below one grid step, and with **Snap** on its edge lands on the grid.
+Selected entities that show a model grow or shrink evenly by the drag's largest change, which sets their **Scale**.
+With **Snap** on the scale lands on a whole number, never below 1.
 
 ![The Scale tool's handles on a selected ramp in the 3D view](img/tools-scale.webp)
 

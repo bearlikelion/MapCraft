@@ -19,3 +19,4 @@ Third-party assets also have an `.attribution` file next to them with the full d
 | `site/assets/made-*.webp` (21 pictures) | surf_weave, surf_colossus, quicksand_cove and mFPS dungeon rooms in the 3D and Top views, with thumbnails | Mark Arneman | MIT |
 | `site/assets/card-*.webp` (9 pictures) | Feature screenshots of the editor | Mark Arneman | MIT |
 | `sdks/surfsup/models/y_bot.glb` | Y Bot, the SurfsUp SDK's player start model | Adobe Mixamo | Mixamo terms of use |
+| `sdks/surfsup/textures/tools/clip.png`, `sdks/surfsup/textures/tools/skip.png` | Clip and skip tool material pictures, lettered in DejaVu Sans Bold (Bitstream Vera license) | Mark Arneman | MIT |

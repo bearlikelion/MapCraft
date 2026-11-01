@@ -329,7 +329,7 @@ impl MapCraftApp {
         let staging = tempfile::Builder::new().prefix("mapcraft-workshop-").tempdir().map_err(|e| e.to_string())?;
         let dir = staging.path();
         let file = dir.join(format!("{name}.{}", mapcraft_format::EXTENSION));
-        mapcraft_format::save(&file, self.view_map(), self.session.sdk.as_deref(), &Value::Null).map_err(|e| e.to_string())?;
+        mapcraft_format::save_with(&file, self.view_map(), self.session.sdk.as_deref(), &Value::Null, &self.session.see_through).map_err(|e| e.to_string())?;
         if !entries.is_empty() {
             pack::save(&pack::path_for(&file), &entries).map_err(|e| e.to_string())?;
         }

@@ -25,7 +25,8 @@ A cube icon marks brush classes and a diamond marks point classes, each in the c
 Type in the search box to filter, and hover a class to read what it does.
 
 - Click a **point class** to place it with the Entity tool.
-- Click a **brush class** to choose what **Tie to Entity** and **Zone from Selection** make.
+- Click a **brush class** to pick it and switch to the Block tool: each block you draw becomes one of that class, in one undo step, untextured when it is a trigger or zone.
+  The pick also chooses what **Tie to Entity** and **Zone from Selection** make, and choosing another tool goes back to drawing plain brushes.
   This never changes the selection.
 
 The tab is empty when the SDK defines no classes.
@@ -61,11 +62,19 @@ An entity shows a model when its class names one, or when its `model` key names 
 - They draw with their colors and textures in the 3D view, and as wireframes in the 2D views.
 - Click anywhere in a model's box to select its entity.
 
+When a model has animations, the inspector shows an **Animation** list for its entity.
+The one you pick plays when the map loads in Godot, and **Animation loop** sets how it repeats: **Loop** starts over, **Ping-pong** plays back and forth, and **Once** stops on the last frame.
+Select the entity to watch its animation play in the 3D view; it starts from the beginning each time you select it, and keeps playing while you move or edit it.
+
+In Godot a model entity collides by default: its **Collision** key is `convex` (one hull around each mesh, cheap and right for crates and rocks), `trimesh` (the exact triangles, for complex static props) or `none`.
+The collision bodies use the collision layer and mask the SDK's entity map gives the class.
+
 Models load in the background the first time a map uses them.
 A model that is missing, broken or huge (over about a million triangles) shows as a plain box, and the Output panel says why.
 
 > [!NOTE]
-> Only still meshes are drawn: no animation.
+> Models are drawn in their rest pose, except a selected entity's animation in the 3D view; the 2D views and wireframes keep the rest pose.
+> Skinned and node animations play; morph target (blend shape) animation does not, and a model with more than about 260,000 vertices stays still.
 > Source and Quake `.mdl` models are not drawn; their entities stay boxes.
 >
 > For SDK authors: a class names its model in the FGD, the file that defines the SDK's entity classes, with `studio("props/crate.glb")` or TrenchBroom's `model({ "path": "props/crate.glb" })`.
@@ -85,6 +94,11 @@ Each model shows as a picture with its file name under it; hover a picture for t
 Type in the search box to filter.
 **Previews**, the grid or list icon at the right of the model count, switches between the pictures and a plain list of paths, as it does in the Materials panel.
 
+You can also drag a `.glb` file from your file manager onto a view.
+MapCraft copies it to `models/` in the folder beside the map, as **File > Add Model** does, and places it as a prop where you let go, in one undo step.
+An untitled map is saved first, and dropping the same file again reuses the copy.
+A `.gltf` file, or any glTF file in an SDK without a prop class, comes in as brushes instead, as with **File > Import > glTF**.
+
 In the SurfsUp SDK the prop class is `prop_static`: its **Angles** are under **Transform**, and **Model** and **Scale** under **Properties**.
 An SDK without a prop class can preview models but not place them.
 
@@ -92,6 +106,7 @@ An SDK without a prop class can preview models but not place them.
 
 > [!NOTE]
 > The tab lists every model in the SDK's model folders, except those an entity class always shows, such as SurfsUp's platforms.
+> Your own models, such as those you added or dropped in the folder beside the map, sit in a **Custom** folder under **Folders**.
 > Pictures are drawn the first time a model scrolls into view and kept, so they show at once next time and are redrawn only when the model file changes.
 > A model that cannot be loaded shows a gray cube instead of a picture.
 
@@ -179,6 +194,10 @@ An entity with no name has no inputs.
 
 Brushes you draw start out as world brushes: plain solid geometry.
 To turn some into a trigger, a door or another brush entity, tie them to an entity.
+
+**Right-click > Create Brush Entity** does the same in one step for any brush class, as in TrenchBroom.
+Classes sharing a prefix, such as `func_` or `zone_`, sit in a submenu of their own.
+It also takes brushes out of the entity they are in, so it changes a brush entity's class, and the new entity starts with the class's default keys.
 
 **Tools > Tie to Entity** (`Ctrl+T`) moves the selected world brushes into a new brush entity.
 

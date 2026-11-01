@@ -92,7 +92,8 @@ pub fn user_dir(data: &Path) -> PathBuf {
 
 /// Folders searched for SDKs, each once, so earlier copies shadow later ones: `sdks` next to the
 /// executable, the data folder's `sdks`, the source tree this was built from, `MAPCRAFT_SDK_PATH`,
-/// and `extra` folders from the preferences.
+/// and `extra` folders from the preferences. Debug builds search the source tree first, so SDKs
+/// being worked on win over installed copies.
 pub fn search_dirs(data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origin)> {
     let exe = std::env::current_exe().ok();
     dirs_with(exe.as_deref().and_then(Path::parent).map(|d| d.join("sdks")), data, extra)
@@ -100,7 +101,11 @@ pub fn search_dirs(data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origi
 
 fn dirs_with(bundled: Option<PathBuf>, data: Option<&Path>, extra: &[String]) -> Vec<(PathBuf, Origin)> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks");
-    let mut dirs: Vec<(PathBuf, Origin)> = bundled.map(|d| (d, Origin::Bundled)).into_iter().collect();
+    let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
+    if cfg!(debug_assertions) {
+        dirs.push((source.clone(), Origin::Source));
+    }
+    dirs.extend(bundled.map(|d| (d, Origin::Bundled)));
     dirs.extend(data.map(|d| (user_dir(d), Origin::User)));
     dirs.push((source.clone(), Origin::Source));
     if let Some(paths) = std::env::var_os("MAPCRAFT_SDK_PATH") {
@@ -178,6 +183,16 @@ mod tests {
         let surfsup: Vec<_> = found.iter().filter(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == "surfsup")).collect();
         assert_eq!(surfsup.len(), 1);
         assert_eq!(surfsup[0].origin, Origin::Source);
+    }
+
+    #[test]
+    fn debug_builds_search_the_source_tree_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data/sdks/surfsup")).unwrap();
+        std::fs::write(tmp.path().join("data/sdks/surfsup/sdk.toml"), "id = \"surfsup\"\nname = \"Old\"\n").unwrap();
+        let found = installed(&dirs_with(None, Some(&tmp.path().join("data")), &[]));
+        let first = found.iter().find(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == "surfsup")).unwrap();
+        assert_eq!(first.origin, if cfg!(debug_assertions) { Origin::Source } else { Origin::User });
     }
 
     #[test]

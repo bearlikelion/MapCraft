@@ -87,3 +87,36 @@ fn pictures_come_from_the_cache_until_the_model_changes() {
     file.set_modified(then + Duration::from_secs(1)).unwrap();
     assert_eq!(settled(&mut app(settings.path(), project.path())), [("box.glb".to_string(), false)], "a changed model is loaded again");
 }
+
+#[test]
+fn a_dropped_glb_is_copied_beside_the_map_and_placed_as_a_prop() {
+    let (settings, project, maps) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let map = maps.path().join("drop.mcmap");
+    let world = r#"{"format":"mapcraft.map","schema_version":2,"sdk":"surfsup","map":{"root":{"id":1,"type":"world","classname":"worldspawn"}}}"#;
+    std::fs::write(&map, world).unwrap();
+    let sdk = settings.path().join("data/sdks/surfsup");
+    std::fs::create_dir_all(&sdk).unwrap();
+    let roots = project.path();
+    std::fs::write(sdk.join("sdk.toml"), format!("id = \"surfsup\"\nname = \"SurfsUp\"\n[models]\nroots = [{roots:?}]\nclass = \"prop_static\"\n")).unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), open: Some(map.clone()), fresh_install: true, ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(2);
+
+    let props = |h: &mut Harness<MapCraftApp>| {
+        let s = h.state_mut().session_for_test();
+        s.map
+            .nodes()
+            .filter_map(|(_, n)| n.kind.entity())
+            .filter(|e| e.classname == "prop_static")
+            .map(|e| e.get("model").unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+    };
+    h.state_mut().drop_file_for_test(BOX.into());
+    h.run_steps(1);
+    assert_eq!(props(&mut h), ["models/box.glb"], "{}", h.state().status_for_test());
+    assert!(maps.path().join("drop/models/box.glb").exists());
+    h.state_mut().drop_file_for_test(BOX.into());
+    assert_eq!(props(&mut h).len(), 2, "dropping the same file again reuses its copy: {}", h.state().status_for_test());
+    h.state_mut().session_for_test().undo();
+    assert_eq!(props(&mut h).len(), 1, "one undo takes one placement back");
+}

@@ -88,7 +88,7 @@ fn dropping_a_gltf_adds_its_meshes_as_brushes_in_one_undo_step() {
 
     let before = h.state().node_count_for_test();
     drop_file(&mut h, &path);
-    assert_eq!(h.state().status_for_test(), "Imported blockout.glb");
+    assert_eq!(h.state().status_for_test(), "This SDK has no prop class, so the model came in as brushes. Imported blockout.glb");
     assert_eq!(h.state().node_count_for_test(), before + 2, "a group named after the file holding one brush");
     let s = h.state_mut().session_for_test();
     let brush = s.map.nodes().find_map(|(_, n)| n.kind.brush()).unwrap();

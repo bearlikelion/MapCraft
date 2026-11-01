@@ -144,4 +144,6 @@ MapCraft searches these folders in order and uses the first SDK with a given id:
 4. Folders in `MAPCRAFT_SDK_PATH`.
 5. Extra SDK folders from Preferences.
 
+A debug build searches the source tree's `sdks` first, so the SDKs you are working on win over installed copies.
+
 Release downloads hold no SDKs, so a fresh install finds none and opens the Add an SDK window described in [`sdk-registry.md`](sdk-registry.md#the-first-launch).

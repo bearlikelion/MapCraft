@@ -62,6 +62,8 @@ pub struct Session {
     /// Where new nodes go: the world, a layer or a group.
     pub active_parent: NodeId,
     pub default_solid_entity: String,
+    /// Materials with clear pixels, such as glass and grates, whose faces hide nothing behind them when saved.
+    pub see_through: BTreeSet<String>,
     /// Trigger classes, as the SDK's `triggers` lists them.
     pub triggers: Vec<String>,
     /// How the project's materials blend; a key ending in `*` covers every material starting with the rest.
@@ -103,6 +105,7 @@ impl Session {
             grid: 16.0,
             active_parent: ROOT,
             default_solid_entity: "func_detail".into(),
+            see_through: BTreeSet::new(),
             triggers: vec!["trigger*".into()],
             blend_roles: BTreeMap::new(),
             paint_stroke: None,
@@ -131,7 +134,7 @@ impl Session {
     }
 
     pub fn save_as(&mut self, path: &Path) -> Result<(), EngineError> {
-        mapcraft_format::save(path, &self.map, self.sdk.as_deref(), &self.view)?;
+        mapcraft_format::save_with(path, &self.map, self.sdk.as_deref(), &self.view, &self.see_through)?;
         self.path = Some(path.to_path_buf());
         self.saved_serial = self.current_serial();
         Ok(())

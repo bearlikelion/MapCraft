@@ -106,6 +106,7 @@ pub(crate) struct Pointfile {
 
 pub struct MapCraftApp {
     pub(crate) shader_editor: crate::shader_editor::ShaderEditor,
+    pub(crate) material_inspector: Option<crate::material_inspector::MaterialInspector>,
     environment_warnings: Vec<String>,
     shader_quit_dialog: bool,
     shader_quit_approved: bool,
@@ -117,6 +118,8 @@ pub struct MapCraftApp {
     pub(crate) panes: [Pane; 4],
     pub(crate) split: Vec2,
     pub(crate) maximized: Option<usize>,
+    /// Where the pointer last was, for placing a file dropped on a view.
+    pub(crate) pointer: Option<egui::Pos2>,
     pub(crate) tool: Tool,
     pub(crate) shape: mapcraft_engine::Shape,
     pub(crate) drag: Drag,
@@ -131,6 +134,8 @@ pub struct MapCraftApp {
     pub(crate) material_filter: String,
     pub(crate) entity_filter: String,
     pub(crate) entity_class: String,
+    /// The brush entity class the Block tool draws, picked in the Entities tab; none draws world brushes.
+    pub(crate) block_class: Option<String>,
     pub(crate) expanded: BTreeSet<mapcraft_map::NodeId>,
     /// Scene tree rows being dragged, empty when none are.
     pub(crate) tree_drag: Vec<mapcraft_map::NodeId>,
@@ -287,6 +292,7 @@ impl MapCraftApp {
         let pane = |view| Pane { camera: Camera::new(view), target: None, texture: None, rect: Rect::NOTHING, uv: None };
         let mut app = Self {
             shader_editor: Default::default(),
+            material_inspector: None,
             environment_warnings: Vec::new(),
             shader_quit_dialog: false,
             shader_quit_approved: false,
@@ -298,6 +304,7 @@ impl MapCraftApp {
             panes: [pane(View::Perspective), pane(View::Top), pane(View::Front), pane(View::Side)],
             split: Vec2::splat(0.5),
             maximized: None,
+            pointer: None,
             tool: Tool::Select,
             shape: mapcraft_engine::Shape::Block,
             drag: Drag::None,
@@ -312,6 +319,7 @@ impl MapCraftApp {
             material_filter: String::new(),
             entity_filter: String::new(),
             entity_class: "info_player_start".into(),
+            block_class: None,
             expanded: BTreeSet::from([mapcraft_map::ROOT]),
             tree_drag: Vec::new(),
             tree_revealed: BTreeSet::new(),
@@ -799,6 +807,8 @@ impl MapCraftApp {
         }
         gpu.renderer.set_scene(&scene);
         gpu.renderer.set_bake_stale(self.bake.stale(map));
+        let see_through: BTreeSet<String> = gpu.renderer.see_through_materials().map(String::from).collect();
+        self.session.see_through = see_through;
         self.scene_dirty = false;
     }
 
@@ -1018,13 +1028,14 @@ impl MapCraftApp {
     }
 
     /// Switches tools; the Face tool takes over the selected brushes as picked faces, as in Hammer.
-    fn set_tool(&mut self, t: Tool) {
+    pub(crate) fn set_tool(&mut self, t: Tool) {
         self.clip_points.clear();
+        self.block_class = None;
         self.drag = Drag::None;
         if t == Tool::Face && self.tool != Tool::Face {
             let map = &self.session.map;
             let brushes: BTreeSet<NodeId> = self.session.selected_brushes().into_iter().collect();
-            let covered = mapcraft_map::covered_faces(map, Some(&brushes));
+            let covered = mapcraft_map::covered_faces(map, Some(&brushes), &|m| self.session.see_through.contains(m));
             let faces: BTreeSet<_> = brushes
                 .iter()
                 .filter_map(|id| Some(map.get(*id)?.kind.brush()?.faces.iter().map(move |f| (*id, f.id)).collect::<Vec<_>>()))
@@ -1113,6 +1124,8 @@ impl MapCraftApp {
             "file.export_asset_pack" => self.export_asset_pack(),
             "file.add_material" => self.add_assets(crate::new_asset::AssetKind::Material),
             "file.add_model" => self.add_assets(crate::new_asset::AssetKind::Model),
+            "material.inspect" => self.inspect_material(&self.session.tex.material.clone()),
+            "material.revert" => self.revert_material(),
             "tools.shader_editor" | "tools.shader_graph" => self.shader_editor.open_graph(),
             "tools.shader_script" => {
                 self.shader_editor.open_script();
@@ -1904,9 +1917,10 @@ impl MapCraftApp {
             && let Some(file) = path.file_name()
         {
             let copy = dir.join(file);
-            let written = std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|()| mapcraft_format::save(&copy, flat, self.session.sdk.as_deref(), &serde_json::Value::Null).map_err(|e| e.to_string()));
+            let written = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|()| {
+                mapcraft_format::save_with(&copy, flat, self.session.sdk.as_deref(), &serde_json::Value::Null, &self.session.see_through)
+                    .map_err(|e| e.to_string())
+            });
             match written {
                 Ok(()) => {
                     vars.insert("map".into(), copy.to_string_lossy().into_owned());
@@ -2051,9 +2065,10 @@ impl MapCraftApp {
         self.last_autosave = Instant::now();
         let Some(path) = self.autosave_path() else { return };
         let Some(dir) = path.parent() else { return };
-        let result = std::fs::create_dir_all(dir)
-            .map_err(|e| e.to_string())
-            .and_then(|()| mapcraft_format::save(&path, &self.session.map, self.session.sdk.as_deref(), &self.session.view).map_err(|e| e.to_string()));
+        let result = std::fs::create_dir_all(dir).map_err(|e| e.to_string()).and_then(|()| {
+            mapcraft_format::save_with(&path, &self.session.map, self.session.sdk.as_deref(), &self.session.view, &self.session.see_through)
+                .map_err(|e| e.to_string())
+        });
         if let Err(e) = result {
             self.status = format!("Autosave failed: {e}");
         }
@@ -2331,6 +2346,11 @@ impl eframe::App for MapCraftApp {
             && gpu.renderer.animating()
         {
             gpu.renderer.time = ctx.input(|i| i.time) as f32;
+            ctx.request_repaint();
+        }
+        if let Some(gpu) = &mut self.gpu
+            && gpu.renderer.animate_models(ctx.input(|i| i.time))
+        {
             ctx.request_repaint();
         }
         if std::mem::take(&mut self.shader_editor.reload_assets) {

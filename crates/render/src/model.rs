@@ -1,6 +1,7 @@
 //! Static glTF 2.0 models that point entities show in place of their boxes.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use gltf_json as json;
 use json::accessor::ComponentType;
@@ -8,11 +9,13 @@ use json::validation::Checked;
 use mapcraft_geom::{DMat4, DQuat, DVec3};
 use mapcraft_map::Entity;
 
+use crate::animation::{Rig, Source};
+
 /// Model and buffer files larger than this are refused.
 pub const MAX_MODEL_BYTES: u64 = 512 << 20;
 const MAX_TRIANGLES: usize = 1 << 20;
-const MAX_NODES: usize = 100_000;
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_NODES: usize = 100_000;
+pub(crate) const MAX_DEPTH: usize = 64;
 /// Textures are shrunk to fit this many pixels on a side.
 const TEXTURE_SIDE: u32 = 1024;
 
@@ -49,6 +52,10 @@ pub struct Model {
     pub textures: Vec<Picture>,
     pub min: DVec3,
     pub max: DVec3,
+    /// The names of its named animations, in file order.
+    pub animations: Vec<String>,
+    /// What poses it for its animations; `None` when it has none it can play.
+    pub rig: Option<Arc<Rig>>,
 }
 
 impl Model {
@@ -153,10 +160,9 @@ impl<'a> Doc<'a> {
 
     /// Each node of the scene that has a mesh, and where it sits in map space: glTF (x, y, z) at
     /// map (x, -z, y) times `units_per_meter`.
-    pub fn meshes(&self, units_per_meter: f64) -> Result<Vec<(&json::Node, &json::Mesh, DMat4)>, String> {
-        let scene = self.root.scene.and_then(|s| self.root.get(s)).or(self.root.scenes.first()).ok_or("no scene")?;
-        let to_map = DMat4::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        let to_map = DMat4::from_scale(DVec3::splat(units_per_meter)) * to_map;
+    pub fn meshes(&self, units_per_meter: f64) -> Result<Vec<(usize, &json::Node, &json::Mesh, DMat4)>, String> {
+        let scene = self.scene().ok_or("no scene")?;
+        let to_map = to_map(units_per_meter);
         let mut out = Vec::new();
         let mut left = MAX_NODES;
         let mut stack: Vec<(json::Index<json::Node>, DMat4, usize)> = scene.nodes.iter().take(left).map(|n| (*n, to_map, 0)).collect();
@@ -169,9 +175,13 @@ impl<'a> Doc<'a> {
             stack.extend(children.iter().map(|c| (*c, at, depth + 1)));
             let Some(mesh) = node.mesh.and_then(|m| self.root.get(m)) else { continue };
             // A skinned mesh ignores its node's transform; without its joints it shows in its bind pose.
-            out.push((node, mesh, if node.skin.is_some() { to_map } else { at }));
+            out.push((index.value(), node, mesh, if node.skin.is_some() { to_map } else { at }));
         }
         Ok(out)
+    }
+
+    pub fn scene(&self) -> Option<&json::Scene> {
+        self.root.scene.and_then(|s| self.root.get(s)).or(self.root.scenes.first())
     }
 
     /// A triangle primitive's positions and its triangles, leaving out those with an index out of range.
@@ -248,6 +258,12 @@ fn component(ct: ComponentType, b: &[u8], normalized: bool) -> Option<f64> {
     Some(if normalized { (v / max).max(-1.0) } else { v })
 }
 
+/// glTF space to map space: glTF (x, y, z) at map (x, -z, y) times `units_per_meter`.
+pub(crate) fn to_map(units_per_meter: f64) -> DMat4 {
+    let axes = DMat4::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    DMat4::from_scale(DVec3::splat(units_per_meter)) * axes
+}
+
 fn node_matrix(node: &json::Node) -> DMat4 {
     if let Some(m) = node.matrix {
         return DMat4::from_cols_array(&m.map(f64::from));
@@ -275,7 +291,8 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
         model.textures.len() - 1
     };
     let mut triangles = 0usize;
-    for (_, mesh, at) in doc.meshes(units_per_meter)? {
+    let mut sources: Option<Vec<Source>> = (!doc.root.animations.is_empty() || !doc.root.skins.is_empty()).then(Vec::new);
+    for (node, mesh, at) in doc.meshes(units_per_meter)?.into_iter().map(|(i, _, m, at)| (i, m, at)) {
         let turn = at.inverse().transpose();
         for prim in &mesh.primitives {
             let attr = |s: json::mesh::Semantic| prim.attributes.get(&Checked::Valid(s)).copied();
@@ -302,15 +319,29 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
             edges.sort_unstable();
             edges.dedup();
             let texture = texture_of(image, &mut model);
+            if let Some(sources) = &mut sources {
+                sources.push(Source::read(&doc, prim, node, &pos, &tris));
+            }
             model.parts.push(ModelPart {
                 texture,
                 color: pbr.map_or([1.0; 4], |p| p.base_color_factor.0),
                 positions: positions.iter().map(|p| p.as_vec3().to_array()).collect(),
                 normals,
-                uvs: uvs.filter(|v| v.len() == 2 * n).map_or_else(|| vec![[0.0; 2]; n], |v| v.as_chunks::<2>().0.iter().map(|c| c.map(|x| x as f32)).collect()),
+                // Varying, since a sampler that filters anisotropically can return nothing for a constant coordinate.
+                uvs: uvs.filter(|v| v.len() == 2 * n).map_or_else(
+                    || pos.iter().map(|p| [p.x as f32, p.y as f32]).collect(),
+                    |v| v.as_chunks::<2>().0.iter().map(|c| c.map(|x| x as f32)).collect(),
+                ),
                 indices: tris.into_iter().flatten().collect(),
                 edges,
             });
+        }
+    }
+    let rig = sources.and_then(|s| Rig::build(&doc, units_per_meter, s));
+    // Skinned meshes stand where their joints put them, which may differ from their bind shape.
+    if let Some(rest) = rig.as_ref().filter(|_| !doc.root.skins.is_empty()).and_then(Rig::rest_pose) {
+        for (part, (positions, normals)) in model.parts.iter_mut().zip(rest) {
+            (part.positions, part.normals) = (positions, normals);
         }
     }
     let used = model.parts.iter().flat_map(|p| p.indices.iter().filter_map(|i| p.positions.get(*i as usize)));
@@ -322,7 +353,72 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
         return Err("no triangles".into());
     }
     (model.min, model.max) = (min, max);
+    model.animations = doc.root.animations.iter().filter_map(|a| a.name.clone()).collect();
+    model.rig = rig.filter(|r| !r.clips.is_empty()).map(Arc::new);
     Ok(model)
+}
+
+/// A `.gltf` and the files its URIs name as one `.glb`; a `.glb` comes back unchanged.
+pub fn to_glb(bytes: Vec<u8>, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(b"glTF") {
+        return Ok(bytes);
+    }
+    let mut doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("not glTF: {e}"))?;
+    let root = doc.as_object_mut().ok_or("not glTF: not an object")?;
+    let fetch = |uri: &str| data_uri(uri).or_else(|| read(&percent_decoded(uri))).ok_or_else(|| format!("missing {uri}"));
+    let mut bin: Vec<u8> = Vec::new();
+    let mut starts = Vec::new();
+    for buffer in root.get("buffers").and_then(|b| b.as_array()).into_iter().flatten() {
+        let uri = buffer.get("uri").and_then(|u| u.as_str()).ok_or("has a buffer without a uri")?;
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        starts.push(bin.len() as u64);
+        bin.extend(fetch(uri)?);
+    }
+    for view in root.get_mut("bufferViews").and_then(|v| v.as_array_mut()).into_iter().flatten() {
+        let buffer =
+            view.get("buffer").and_then(serde_json::Value::as_u64).and_then(|b| starts.get(b as usize)).ok_or("has a buffer view outside its buffers")?;
+        let offset = view.get("byteOffset").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        view["buffer"] = 0.into();
+        view["byteOffset"] = (buffer + offset).into();
+    }
+    let mut views = root.get("bufferViews").and_then(|v| v.as_array()).map_or(0, Vec::len);
+    let mut added = Vec::new();
+    for image in root.get_mut("images").and_then(|v| v.as_array_mut()).into_iter().flatten() {
+        let Some(uri) = image.as_object_mut().and_then(|i| i.remove("uri")) else { continue };
+        let picture = fetch(uri.as_str().unwrap_or_default())?;
+        let mime = if picture.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else { "image/jpeg" };
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        added.push(serde_json::json!({"buffer": 0, "byteOffset": bin.len(), "byteLength": picture.len()}));
+        bin.extend(picture);
+        image["bufferView"] = views.into();
+        image["mimeType"] = mime.into();
+        views += 1;
+    }
+    if !added.is_empty() {
+        let list = root.entry("bufferViews").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        list.as_array_mut().ok_or("has bufferViews that are not a list")?.extend(added);
+    }
+    if bin.is_empty() {
+        root.remove("buffers");
+    } else {
+        root.insert("buffers".into(), serde_json::json!([{"byteLength": bin.len()}]));
+    }
+    let mut json = serde_json::to_vec(&doc).map_err(|e| e.to_string())?;
+    json.resize(json.len().next_multiple_of(4), b' ');
+    bin.resize(bin.len().next_multiple_of(4), 0);
+    let bin_chunk = if bin.is_empty() { 0 } else { 8 + bin.len() };
+    let total = u32::try_from(20 + json.len() + bin_chunk).map_err(|_| "too big for a GLB")?;
+    let mut out = Vec::with_capacity(total as usize);
+    for word in [u32::from_le_bytes(*b"glTF"), 2, total, json.len() as u32, 0x4E4F_534A] {
+        out.extend(word.to_le_bytes());
+    }
+    out.extend(json);
+    if !bin.is_empty() {
+        out.extend((bin.len() as u32).to_le_bytes());
+        out.extend(0x004E_4942u32.to_le_bytes());
+        out.extend(bin);
+    }
+    Ok(out)
 }
 
 /// Triangles for [`mesh_model`]: an index into its textures (none is plain white), positions in
@@ -410,7 +506,7 @@ fn creased_normals(positions: &[DVec3], tris: &[[u32; 3]]) -> Vec<[f32; 3]> {
 }
 
 /// One normal per vertex from the triangles that use it, for meshes saved without normals.
-fn flat_normals(positions: &[DVec3], tris: &[[u32; 3]]) -> Vec<[f32; 3]> {
+pub(crate) fn flat_normals(positions: &[DVec3], tris: &[[u32; 3]]) -> Vec<[f32; 3]> {
     let mut sum = vec![DVec3::ZERO; positions.len()];
     for t in tris {
         let [a, b, c] = t.map(|k| positions.get(k as usize).copied().unwrap_or_default());
@@ -532,5 +628,27 @@ pub(crate) mod tests {
         let read = |uri: &str| (uri == "quad data.bin").then(|| bin.clone());
         assert_eq!(load_gltf("b.gltf", external.as_bytes(), &read, 1.0).unwrap().triangles(), 2);
         assert!(load_gltf("c.gltf", external.as_bytes(), &|_| None, 1.0).is_err(), "a missing buffer leaves no triangles");
+    }
+
+    #[test]
+    fn gltf_files_become_glbs() {
+        let bin = quad_bin();
+        let external = QUAD.replace(r#""buffers":[{"byteLength":60}]"#, r#""buffers":[{"byteLength":60,"uri":"quad.bin"}],"images":[{"uri":"a%20b.png"}]"#);
+        let png = [0x89, b'P', b'N', b'G', 1, 2];
+        let read = |uri: &str| match uri {
+            "quad.bin" => Some(bin.clone()),
+            "a b.png" => Some(png.to_vec()),
+            _ => None,
+        };
+        let packed = to_glb(external.clone().into_bytes(), &read).unwrap();
+        let model = load_gltf("a.glb", &packed, &|_| None, 1.0).unwrap();
+        assert_eq!(model.triangles(), 2);
+        let (json, chunk) = split_glb(&packed).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(json).unwrap();
+        assert_eq!(json["images"][0], serde_json::json!({"bufferView": 2, "mimeType": "image/png"}));
+        assert_eq!(json["bufferViews"][2], serde_json::json!({"buffer": 0, "byteOffset": 60, "byteLength": 6}));
+        assert_eq!(chunk.unwrap().get(60..66), Some(&png[..]));
+        assert_eq!(to_glb(packed.clone(), &|_| None).unwrap(), packed);
+        assert!(to_glb(external.into_bytes(), &|_| None).unwrap_err().contains("quad.bin"));
     }
 }

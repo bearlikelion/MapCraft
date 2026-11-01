@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use mapcraft_geom::{Aabb, DVec3, Plane, Winding};
 
-use crate::{FaceId, Map, NodeId, NodeKind, is_tool_material};
+use crate::{FaceId, Map, NodeId, NodeKind};
 
 /// Faces closer than this to an opposite face count as touching it.
 const TOUCH: f64 = 0.01;
@@ -31,20 +31,21 @@ fn inside(p: DVec3, w: &Winding, normal: DVec3) -> bool {
 }
 
 /// Faces of world brushes in `only` (all with `None`) wholly covered by touching faces of other world brushes.
-pub fn covered_faces(map: &Map, only: Option<&BTreeSet<NodeId>>) -> BTreeSet<(NodeId, FaceId)> {
-    let mut faces: Vec<(NodeId, FaceId, Winding, Plane, Aabb)> = Vec::new();
+/// Faces whose material `see_through` names, such as glass or grates, cover nothing.
+pub fn covered_faces(map: &Map, only: Option<&BTreeSet<NodeId>>, see_through: &dyn Fn(&str) -> bool) -> BTreeSet<(NodeId, FaceId)> {
+    let mut faces: Vec<(NodeId, FaceId, Winding, Plane, Aabb, bool)> = Vec::new();
     for (id, node) in map.nodes() {
         let NodeKind::Brush(b) = &node.kind else { continue };
         // Brush entities may move or be invisible in the game, so they neither cover nor get covered.
-        if b.has_displacement() || map.ancestors(id).iter().any(|a| map.get(*a).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)))) {
+        if b.has_displacement() || b.is_clip() || map.ancestors(id).iter().any(|a| map.get(*a).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)))) {
             continue;
         }
         let Ok(solid) = b.solid() else { continue };
         for (f, w) in b.faces.iter().zip(solid.faces) {
-            if let (Some(w), Some(p), false) = (w, f.plane(), is_tool_material(&f.material))
+            if let (Some(w), Some(p), false) = (w, f.plane(), !b.draws(f))
                 && let Some(bounds) = w.bounds()
             {
-                faces.push((id, f.id, w, p, bounds));
+                faces.push((id, f.id, w, p, bounds, see_through(&f.material)));
             }
         }
     }
@@ -53,10 +54,10 @@ pub fn covered_faces(map: &Map, only: Option<&BTreeSet<NodeId>>) -> BTreeSet<(No
         by_plane.entry(key(f.3.normal, f.3.dist)).or_default().push(i);
     }
     let mut out = BTreeSet::new();
-    for (id, face, w, p, bounds) in faces.iter().filter(|f| only.is_none_or(|o| o.contains(&f.0))) {
+    for (id, face, w, p, bounds, _) in faces.iter().filter(|f| only.is_none_or(|o| o.contains(&f.0))) {
         let Some(others) = by_plane.get(&key(-p.normal, -p.dist)) else { continue };
         let near = Aabb::new(bounds.min - TOUCH, bounds.max + TOUCH);
-        let covers: Vec<&Winding> = others.iter().filter_map(|&j| faces.get(j)).filter(|o| o.0 != *id && o.4.intersects(&near)).map(|o| &o.2).collect();
+        let covers: Vec<&Winding> = others.iter().filter_map(|&j| faces.get(j)).filter(|o| o.0 != *id && !o.5 && o.4.intersects(&near)).map(|o| &o.2).collect();
         let area: f64 = covers.iter().filter_map(|o| overlap(w, o, p.normal)).map(|o| o.area()).sum();
         if area < w.area() - TOUCH {
             continue;
@@ -99,9 +100,16 @@ mod tests {
     #[test]
     fn touching_faces_hide_each_other() {
         let (m, ids) = map(&[(DVec3::ZERO, DVec3::splat(64.0), "a"), (DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0), "b")]);
-        let covered = covered_faces(&m, None);
+        let covered = covered_faces(&m, None, &|_| false);
         assert_eq!(covered, BTreeSet::from([(ids[0], facing(&m, ids[0], DVec3::X)), (ids[1], facing(&m, ids[1], -DVec3::X))]));
-        assert_eq!(covered_faces(&m, Some(&BTreeSet::from([ids[0]]))).len(), 1);
+        assert_eq!(covered_faces(&m, Some(&BTreeSet::from([ids[0]])), &|_| false).len(), 1);
+    }
+
+    #[test]
+    fn see_through_faces_cover_nothing() {
+        let (m, ids) = map(&[(DVec3::ZERO, DVec3::splat(64.0), "stone"), (DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0), "glass")]);
+        let covered = covered_faces(&m, None, &|name| name == "glass");
+        assert_eq!(covered, BTreeSet::from([(ids[1], facing(&m, ids[1], -DVec3::X))]), "the stone shows through the glass, which stays hidden against it");
     }
 
     #[test]
@@ -111,22 +119,29 @@ mod tests {
         let zone = e.insert(ROOT, NodeKind::Entity(crate::Entity::new("zone_start"))).unwrap();
         e.reparent(ids[1], zone, None).unwrap();
         m.apply(e.finish());
-        assert!(covered_faces(&m, None).is_empty());
+        assert!(covered_faces(&m, None, &|_| false).is_empty());
     }
 
     #[test]
     fn partly_covered_tool_and_split_covers() {
         // The small box covers only part of the big one's side; the big one covers all of the small one's.
         let (m, ids) = map(&[(DVec3::ZERO, DVec3::splat(64.0), "a"), (DVec3::new(64.0, 0.0, 0.0), DVec3::new(96.0, 32.0, 32.0), "b")]);
-        assert_eq!(covered_faces(&m, None), BTreeSet::from([(ids[1], facing(&m, ids[1], -DVec3::X))]));
+        assert_eq!(covered_faces(&m, None, &|_| false), BTreeSet::from([(ids[1], facing(&m, ids[1], -DVec3::X))]));
         let (m, _) = map(&[(DVec3::ZERO, DVec3::splat(64.0), "a"), (DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0), "tools/toolstrigger")]);
-        assert!(covered_faces(&m, None).is_empty(), "a trigger hides nothing");
+        assert!(covered_faces(&m, None, &|_| false).is_empty(), "a trigger hides nothing");
+        let (mut m, ids) = map(&[(DVec3::ZERO, DVec3::splat(64.0), "a"), (DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 64.0), "b")]);
+        let mut clipped = m.get(ids[1]).and_then(|n| n.kind.brush()).unwrap().clone();
+        clipped.faces[0].material = "tools/clip".into();
+        let mut e = m.edit();
+        e.set_kind(ids[1], NodeKind::Brush(clipped)).unwrap();
+        m.apply(e.finish());
+        assert!(covered_faces(&m, None, &|_| false).is_empty(), "one clip face makes the whole brush hide nothing");
         // Two halves together cover the big side.
         let (m, ids) = map(&[
             (DVec3::ZERO, DVec3::splat(64.0), "a"),
             (DVec3::new(64.0, 0.0, 0.0), DVec3::new(96.0, 32.0, 64.0), "b"),
             (DVec3::new(64.0, 32.0, 0.0), DVec3::new(96.0, 64.0, 64.0), "b"),
         ]);
-        assert!(covered_faces(&m, None).contains(&(ids[0], facing(&m, ids[0], DVec3::X))));
+        assert!(covered_faces(&m, None, &|_| false).contains(&(ids[0], facing(&m, ids[0], DVec3::X))));
     }
 }

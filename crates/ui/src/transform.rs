@@ -4,10 +4,10 @@ use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use mapcraft_engine::{ExtrudeMode, Push};
 use mapcraft_geom::{Aabb, DMat4, DQuat, DVec3, Solid, snap_travel};
 use mapcraft_map::{Brush, FaceId, NodeId, share_edge};
-use mapcraft_render::Camera;
+use mapcraft_render::{Camera, EntityStyle, LineVertex, box_lines};
 
 use crate::app::MapCraftApp;
-use crate::viewport::{AXES, Drag, Tool, box_transform, closest_on_axis, dvec, segment_distance};
+use crate::viewport::{AXES, Drag, Tool, box_transform, closest_on_axis, dvec, segment_distance, uniform_stretch};
 
 /// Rotation snaps to this many degrees while grid snapping is on.
 const ROTATE_STEP: f64 = 15.0;
@@ -66,6 +66,31 @@ fn angle_about(axis: DVec3, center: DVec3, p: DVec3) -> f64 {
     let b2 = axis.cross(b1);
     let d = p - center;
     d.dot(b2).atan2(d.dot(b1))
+}
+
+/// Points on the circle of `radius` about `axis` through `center`, from angle `from` to `to` as
+/// `angle_about` measures them, at most one full turn.
+fn arc_points(axis: DVec3, center: DVec3, radius: f64, from: f64, to: f64) -> Vec<DVec3> {
+    let b1 = axis.any_orthonormal_vector();
+    let b2 = axis.cross(b1);
+    let sweep = (to - from).clamp(-std::f64::consts::TAU, std::f64::consts::TAU);
+    let steps = ((sweep.abs() / std::f64::consts::TAU * 64.0).ceil() as usize).max(1);
+    (0..=steps)
+        .map(|k| {
+            let a = from + sweep * k as f64 / steps as f64;
+            center + (b1 * a.cos() + b2 * a.sin()) * radius
+        })
+        .collect()
+}
+
+/// `p` turned `degrees` about `axis` through `center`.
+fn turn_about(axis: DVec3, center: DVec3, degrees: f64, p: DVec3) -> DVec3 {
+    center + DQuat::from_axis_angle(axis, degrees.to_radians()) * (p - center)
+}
+
+/// The signed turn in degrees, with the unsnapped angle after it when snapping moved it.
+fn turn_label(applied: f64, raw: f64) -> String {
+    if (raw - applied).abs() < 0.05 { format!("{applied:+.1}\u{b0}") } else { format!("{applied:+.1}\u{b0} ({raw:+.1}\u{b0})") }
 }
 
 fn wrap(a: f64) -> f64 {
@@ -409,7 +434,7 @@ impl MapCraftApp {
             axis
         };
         let Some(angle) = self.rotate_angle(&cam, size, pos - rect.min, axis, center) else { return };
-        self.drag = Drag::Rotate { view: index, axis, center, last: angle, turned: 0.0, applied: 0.0 };
+        self.drag = Drag::Rotate { view: index, axis, center, start: angle, last: angle, turned: 0.0, applied: 0.0 };
     }
 
     fn rotate_angle(&self, cam: &Camera, size: mapcraft_geom::DVec2, at: Vec2, axis: DVec3, center: DVec3) -> Option<f64> {
@@ -427,7 +452,7 @@ impl MapCraftApp {
     }
 
     pub(crate) fn update_rotate(&mut self, index: usize, rect: Rect, pos: Pos2) {
-        let Drag::Rotate { view, axis, center, last, turned, applied } = self.drag.clone() else { return };
+        let Drag::Rotate { view, axis, center, start, last, turned, applied } = self.drag.clone() else { return };
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let Some(angle) = self.rotate_angle(&cam, dvec(rect.size()), pos - rect.min, axis, center) else { return };
         let turned = turned + wrap(angle - last);
@@ -446,7 +471,7 @@ impl MapCraftApp {
             }
             self.mark_changed();
         }
-        self.drag = Drag::Rotate { view, axis, center, last: angle, turned, applied: applied_now };
+        self.drag = Drag::Rotate { view, axis, center, start, last: angle, turned, applied: applied_now };
     }
 
     /// 3D scale handles on both sides of each axis: axis, low side, screen start and end, color.
@@ -479,12 +504,12 @@ impl MapCraftApp {
         let (Some((axis, low, ..)), Some(b), Some(cam)) = (handle, self.selection_bounds(), self.panes.get(index).map(|p| p.camera)) else { return false };
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let Some(start) = closest_on_axis(b.center(), AXES[axis].0, origin, dir) else { return false };
-        self.drag = Drag::Scale { view: index, axis, low, bounds: b, start, applied: b };
+        self.drag = Drag::Scale { view: index, axis, low, bounds: b, start, applied: b, models: self.selected_models() };
         true
     }
 
     pub(crate) fn update_scale(&mut self, index: usize, rect: Rect, pos: Pos2) {
-        let Drag::Scale { view, axis, low, bounds, start, applied } = self.drag.clone() else { return };
+        let Drag::Scale { view, axis, low, bounds, start, applied, models } = self.drag.clone() else { return };
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let Some(t) = closest_on_axis(bounds.center(), AXES[axis].0, origin, dir) else { return };
@@ -500,11 +525,34 @@ impl MapCraftApp {
             target.max[axis] = edge.max(bounds.min[axis] + g.max(1.0));
         }
         if target != applied {
-            if let Err(e) = self.session.transform_selection(&box_transform(&applied, &target), "Scale", Some("drag-scale")) {
-                self.status = e.to_string();
-            }
-            self.drag = Drag::Scale { view, axis, low, bounds, start, applied: target };
+            self.stretch_selection(&bounds, &applied, &target, &models, "Scale", "drag-scale");
+            self.drag = Drag::Scale { view, axis, low, bounds, start, applied: target, models };
             self.mark_changed();
+        }
+    }
+
+    /// Selected point entities that show a model, with their current scale.
+    pub(crate) fn selected_models(&self) -> Vec<(NodeId, f64)> {
+        let map = &self.session.map;
+        self.session
+            .selection
+            .iter()
+            .flat_map(|id| map.subtree(*id))
+            .filter_map(|id| {
+                let n = map.get(id)?;
+                let e = n.kind.entity().filter(|e| n.children.is_empty() && self.project.model(e).is_some())?;
+                Some((id, mapcraft_engine::model_scale(e)))
+            })
+            .collect()
+    }
+
+    /// Moves the selection from box `applied` to `target`, and scales `models` by the whole stretch from `bounds`.
+    pub(crate) fn stretch_selection(&mut self, bounds: &Aabb, applied: &Aabb, target: &Aabb, models: &[(NodeId, f64)], label: &str, coalesce: &str) {
+        let snap = self.prefs.get().view.snap_grid;
+        let factor = uniform_stretch(bounds, target);
+        let scales: Vec<(NodeId, f64)> = models.iter().map(|(id, base)| (*id, mapcraft_engine::dragged_model_scale(*base, factor, snap))).collect();
+        if let Err(e) = self.session.scale_selection(&box_transform(applied, target), &scales, label, Some(coalesce)) {
+            self.status = e.to_string();
         }
     }
 
@@ -526,5 +574,106 @@ impl MapCraftApp {
             painter.line_segment([a, b], Stroke::new(3.0, color));
             painter.rect_filled(Rect::from_center_size(b, Vec2::splat(9.0)), 1.0, color);
         }
+        self.draw_rotate_sweep(&painter, index, rect);
+    }
+
+    /// The slice a rotate drag has swept, from where it began to where the selection is now, and the angle turned.
+    fn draw_rotate_sweep(&self, painter: &egui::Painter, index: usize, rect: Rect) {
+        let Drag::Rotate { view, axis, center, start, turned, applied, .. } = self.drag else { return };
+        let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|_| view == index) else { return };
+        let Some(c) = to_screen(&cam, rect, center) else { return };
+        let (radius, color) = if cam.is_2d() {
+            (48.0 / cam.zoom.max(1e-9), crate::chrome::ACCENT)
+        } else {
+            let color = AXES.iter().find(|(a, _)| a.abs_diff_eq(axis, 1e-9)).map_or(crate::chrome::ACCENT, |(_, color)| *color);
+            (cam.position.distance(center) * 0.12, color)
+        };
+        let pts: Vec<Pos2> =
+            arc_points(axis, center, radius, start, start + applied.to_radians()).into_iter().filter_map(|p| to_screen(&cam, rect, p)).collect();
+        let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) else { return };
+        let mut fan = egui::Mesh::default();
+        let fill = color.gamma_multiply(0.3);
+        fan.colored_vertex(c, fill);
+        for p in &pts {
+            fan.colored_vertex(*p, fill);
+        }
+        for k in 1..pts.len() as u32 {
+            fan.add_triangle(0, k, k + 1);
+        }
+        painter.add(egui::Shape::mesh(fan));
+        painter.add(egui::Shape::line(pts, Stroke::new(2.5, color)));
+        painter.line_segment([c, first], Stroke::new(1.5, Color32::from_white_alpha(160)));
+        painter.line_segment([c, last], Stroke::new(2.0, color));
+        let out = (last - c).normalized();
+        let out = if out.is_finite() { out } else { Vec2::X };
+        // The pointer sits at `last`, so the text starts past it and runs away from the center.
+        let align = if out.x < 0.0 { egui::Align2::RIGHT_CENTER } else { egui::Align2::LEFT_CENTER };
+        crate::measure::label(painter, last + out * 28.0, align, turn_label(applied, turned.to_degrees()));
+    }
+
+    /// Where the selection was when the rotate drag began: its brush edges and point entity boxes turned back.
+    pub(crate) fn rotate_ghost(&self, out: &mut Vec<LineVertex>, color: [f32; 4]) {
+        let Drag::Rotate { axis, center, applied, .. } = self.drag else { return };
+        if applied.abs() < 1e-9 {
+            return;
+        }
+        let map = &self.session.map;
+        let mut lines = Vec::new();
+        for id in self.session.selection.iter().flat_map(|id| map.subtree(*id)).take(256) {
+            match map.get(id).map(|n| &n.kind) {
+                Some(mapcraft_map::NodeKind::Brush(brush)) => {
+                    let Ok(solid) = brush.solid() else { continue };
+                    for w in solid.faces.iter().flatten() {
+                        lines.extend(w.0.iter().zip(w.0.iter().cycle().skip(1)).flat_map(|(a, b)| [LineVertex::new(*a, color), LineVertex::new(*b, color)]));
+                    }
+                }
+                Some(mapcraft_map::NodeKind::Entity(_)) => {
+                    if let Some(b) = self.leaf_bounds(id) {
+                        box_lines(&mut lines, b.min, b.max, color);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.extend(lines.into_iter().map(|v| LineVertex::new(turn_about(axis, center, -applied, DVec3::from(v.pos.map(f64::from))), v.color)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arc_runs_from_start_to_current_angle() {
+        let (axis, center) = (DVec3::Z, DVec3::new(10.0, 20.0, 5.0));
+        let from = angle_about(axis, center, center + DVec3::X);
+        let pts = arc_points(axis, center, 4.0, from, from + 135f64.to_radians());
+        let (first, last) = (pts[0], pts[pts.len() - 1]);
+        assert!((angle_about(axis, center, first) - from).abs() < 1e-9);
+        assert!((wrap(angle_about(axis, center, last) - from) - 135f64.to_radians()).abs() < 1e-9);
+        assert!(pts.iter().all(|p| ((p.distance(center)) - 4.0).abs() < 1e-9 && (p.z - center.z).abs() < 1e-9));
+        // From +X toward +Y is a positive turn about Z.
+        let quarter = arc_points(axis, center, 1.0, from, from + 90f64.to_radians());
+        assert!(quarter[quarter.len() - 1].abs_diff_eq(center + DVec3::Y, 1e-9));
+    }
+
+    #[test]
+    fn turning_back_returns_to_the_start_pose() {
+        let (axis, center, p) = (DVec3::Z, DVec3::new(0.0, 24.0, 32.0), DVec3::new(16.0, 32.0, 0.0));
+        assert!(turn_about(axis, center, 90.0, center + DVec3::X).abs_diff_eq(center + DVec3::Y, 1e-9));
+        assert!(turn_about(axis, center, -60.0, turn_about(axis, center, 60.0, p)).abs_diff_eq(p, 1e-9));
+    }
+
+    #[test]
+    fn arc_stops_at_one_turn() {
+        let pts = arc_points(DVec3::X, DVec3::ZERO, 1.0, 0.0, -20.0);
+        assert!(pts[0].abs_diff_eq(pts[pts.len() - 1], 1e-9));
+        assert_eq!(arc_points(DVec3::Y, DVec3::ZERO, 1.0, 1.0, 1.0).len(), 2);
+    }
+
+    #[test]
+    fn turn_label_is_signed_and_shows_the_unsnapped_angle() {
+        assert_eq!(turn_label(-45.0, -45.0), "-45.0\u{b0}");
+        assert_eq!(turn_label(45.0, 47.3), "+45.0\u{b0} (+47.3\u{b0})");
     }
 }

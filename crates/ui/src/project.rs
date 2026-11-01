@@ -14,6 +14,8 @@ pub struct Material {
     pub name: String,
     /// The Materials panel folder a plugin gives a name that carries none, such as a WAD's texture.
     pub folder: Option<String>,
+    /// From the player's own asset folders rather than the SDK's, so the browser lists it under Custom.
+    pub custom: bool,
     pub image: Option<PathBuf>,
     pub color: Option<[u8; 3]>,
     /// A picture a plugin decoded itself, such as a texture from a WAD.
@@ -84,7 +86,24 @@ impl Material {
     pub fn folder(&self) -> Option<&str> {
         self.folder.as_deref().or_else(|| self.name.rsplit_once('/').map(|(f, _)| f))
     }
+
+    /// Its folder in the Materials browser, under `Custom` when it is the player's own.
+    pub fn browse_folder(&self) -> Option<String> {
+        custom_folder(self.custom, self.folder().unwrap_or_default())
+    }
 }
+
+/// `folder` as the browsers list it: custom assets go under a `Custom` folder of their own.
+pub fn custom_folder(custom: bool, folder: &str) -> Option<String> {
+    match (custom, folder.is_empty()) {
+        (true, true) => Some(CUSTOM.into()),
+        (true, false) => Some(format!("{CUSTOM}/{folder}")),
+        (false, true) => None,
+        (false, false) => Some(folder.into()),
+    }
+}
+
+pub const CUSTOM: &str = "Custom";
 
 /// Real texture sizes of cached imported pictures that were shrunk, by material name.
 const SIZES: &str = "sizes.json";
@@ -180,9 +199,15 @@ impl Project {
             Err(e) => p.problems.push(e.to_string()),
         }
         p.vfs = sdk.vfs(&p.vars);
-        p.materials =
-            p.vfs.list(&sdk.manifest.textures.extensions).into_iter().map(|(name, path)| Material { name, image: Some(path), ..Material::default() }).collect();
+        let own = |path: &Path| sdk.user_textures.iter().any(|u| path.starts_with(u));
+        p.materials = p
+            .vfs
+            .list(&sdk.manifest.textures.extensions)
+            .into_iter()
+            .map(|(name, path)| Material { name, custom: own(&path), image: Some(path), ..Material::default() })
+            .collect();
         p.models = crate::models::Models::new(sdk.model_vfs(&p.vars), &sdk.manifest, &p.game);
+        p.models.custom_roots = sdk.user_textures.clone();
         p.load_descriptors();
         if let Some(host) = host {
             p.load_plugins(host, user_plugins);
@@ -234,10 +259,11 @@ impl Project {
                 Ok(Material {
                     name: name.into(),
                     image: images.get(&TextureSlot::Albedo).cloned(),
-                    color: Some(descriptor.albedo[..3].try_into().map_or([255; 3], |rgb: [f32; 3]| rgb.map(linear_byte))),
+                    color: Some(descriptor_color(&descriptor)),
                     size: (!images.contains_key(&TextureSlot::Albedo)).then_some([SWATCH; 2]),
                     emission: images.get(&TextureSlot::Emission).cloned(),
                     descriptor: Some(descriptor),
+                    custom: true,
                     pbr: Some(pbr),
                     ..Material::default()
                 })
@@ -253,6 +279,25 @@ impl Project {
             }
         }
         self.merge_descriptors();
+    }
+
+    /// The `materials/<name>.json` file behind a descriptor material, in the custom asset folders.
+    pub fn descriptor_file(&self, name: &str) -> Option<PathBuf> {
+        self.descriptors.get(name)?.descriptor.as_ref()?;
+        Vfs::new(self.sdk.as_ref()?.user_textures.clone()).find(&format!("materials/{name}.json"))
+    }
+
+    /// Shows `values` on the loaded descriptor material `name`; its textures stay the ones it loaded with.
+    pub fn set_descriptor_values(&mut self, name: &str, values: &mapcraft_format::pack_material::Material) {
+        let apply = |m: &mut Material| {
+            let Some(d) = &mut m.descriptor else { return };
+            *d = mapcraft_format::pack_material::Material { textures: std::mem::take(&mut d.textures), ..values.clone() };
+            m.color = Some(descriptor_color(values));
+            if let Some(pbr) = &mut m.pbr {
+                (pbr.roughness_value, pbr.metallic_value) = (values.roughness, values.metallic);
+            }
+        };
+        self.descriptors.get_mut(name).into_iter().chain(self.materials.iter_mut().filter(|m| m.name == name)).for_each(apply);
     }
 
     /// Loads the SDK's plugins from its `plugins` folder, then the user's.
@@ -310,6 +355,7 @@ impl Project {
                                 image: m.image.and_then(|i| vfs.find(&i)),
                                 name: m.name,
                                 folder: m.folder,
+                                custom: false,
                                 color: m.color,
                                 pixels: m.pixels,
                                 size: m.size,
@@ -465,8 +511,9 @@ impl Project {
                     renderer.set_material_size(name, [tiled(w, sx), tiled(h, sy)]);
                 }
                 if let Some(pbr) = &m.pbr {
-                    let (normal, orm) = pack(pbr, &|path| self.picture(path));
+                    let (mut normal, orm) = pack(pbr, &|path| self.picture(path));
                     if let Some(descriptor) = &m.descriptor {
+                        bend(&mut normal, descriptor.normal_strength);
                         let emission = match &m.emission {
                             Some(path) => match bounded_picture(path) {
                                 Ok(image) => image,
@@ -476,15 +523,16 @@ impl Project {
                                     continue;
                                 }
                             },
-                            None => RgbaImage::from_pixel(1, 1, Rgba([255; 4])),
+                            None => RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 255])),
                         };
+                        let [r, g, b] = descriptor.emission;
                         renderer.set_material_surface(
                             name,
                             (normal.width(), normal.height(), normal.as_raw()),
                             (orm.width(), orm.height(), orm.as_raw()),
                             (emission.width(), emission.height(), emission.as_raw()),
                             descriptor.albedo,
-                            descriptor.emission,
+                            [r, g, b, descriptor.emission_energy],
                         );
                     } else {
                         renderer.set_material_maps(name, (normal.width(), normal.height(), normal.as_raw()), (orm.width(), orm.height(), orm.as_raw()));
@@ -537,6 +585,20 @@ fn resized(p: RgbaImage, (w, h): (u32, u32)) -> RgbaImage {
     if p.dimensions() == (w, h) { p } else { image::imageops::resize(&p, w, h, image::imageops::FilterType::Triangle) }
 }
 
+/// Scales a green-up normal map's tilt by `strength`, as Godot's normal scale does.
+fn bend(normal: &mut RgbaImage, strength: f32) {
+    if strength == 1.0 {
+        return;
+    }
+    let byte = |v: f32| (v * 127.5 + 127.5).round().clamp(0.0, 255.0) as u8;
+    for p in normal.pixels_mut() {
+        let [x, y] = [p[0], p[1]].map(|c| (f32::from(c) / 127.5 - 1.0) * strength);
+        let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+        let len = (x * x + y * y + z * z).sqrt().max(1e-6);
+        p.0 = [byte(x / len), byte(y / len), byte(z / len), p[3]];
+    }
+}
+
 /// A material's Lit maps: a normal map with green up, and occlusion, roughness and metallic in RGB with the values applied.
 fn pack(pbr: &Pbr, load: &dyn Fn(&str) -> Option<RgbaImage>) -> (RgbaImage, RgbaImage) {
     let mut normal = pbr.normal.as_deref().and_then(load).map_or_else(
@@ -581,6 +643,10 @@ fn pack(pbr: &Pbr, load: &dyn Fn(&str) -> Option<RgbaImage>) -> (RgbaImage, Rgba
         Rgba([byte(value(ao, x, y)), byte(value(rough, x, y) * pbr.roughness_value), byte(value(metal, x, y) * pbr.metallic_value), 255])
     });
     (normal, orm)
+}
+
+fn descriptor_color(d: &mapcraft_format::pack_material::Material) -> [u8; 3] {
+    d.albedo[..3].try_into().map_or([255; 3], |rgb: [f32; 3]| rgb.map(linear_byte))
 }
 
 fn linear_byte(value: f32) -> u8 {
@@ -664,6 +730,18 @@ impl EntityStyle for Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_assets_list_under_custom() {
+        let sdk = Material { name: "dev/grid".into(), ..Material::default() };
+        let mine = Material { name: "rock".into(), custom: true, ..Material::default() };
+        let nested = Material { name: "walls/brick".into(), custom: true, ..Material::default() };
+        assert_eq!(
+            (sdk.browse_folder(), mine.browse_folder(), nested.browse_folder()),
+            (Some("dev".into()), Some("Custom".into()), Some("Custom/walls".into()))
+        );
+        assert_eq!(custom_folder(false, ""), None);
+    }
 
     #[test]
     fn custom_descriptors_load_maps_and_survive_plugin_listing() {
@@ -753,5 +831,19 @@ mod tests {
         let plain = plain_pbr();
         let (normal, orm) = pack(&plain, &load);
         assert_eq!((normal.get_pixel(0, 0).0, orm.get_pixel(0, 0).0, orm.dimensions()), ([128, 128, 255, 255], [255, 255, 0, 255], (1, 1)));
+    }
+
+    #[test]
+    fn normal_strength_scales_the_tilt() {
+        let tilted = RgbaImage::from_pixel(1, 1, Rgba([200, 128, 220, 255]));
+        let mut same = tilted.clone();
+        bend(&mut same, 1.0);
+        assert_eq!(same, tilted);
+        let mut flat = tilted.clone();
+        bend(&mut flat, 0.0);
+        assert_eq!(flat.get_pixel(0, 0).0, [128, 128, 255, 255]);
+        let mut half = tilted;
+        bend(&mut half, 0.5);
+        assert!((129..200).contains(&half.get_pixel(0, 0).0[0]));
     }
 }

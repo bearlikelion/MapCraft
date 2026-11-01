@@ -67,6 +67,7 @@ pub enum Drag {
         handle: (i8, i8),
         bounds: Aabb,
         applied: Aabb,
+        models: Vec<(NodeId, f64)>,
     },
     Block {
         view: usize,
@@ -127,12 +128,13 @@ pub enum Drag {
         created: Vec<NodeId>,
         offset: DVec3,
     },
-    /// Turning the selection about `axis` through `center`; `turned` is the unwrapped angle in
-    /// radians and `applied` the degrees already applied.
+    /// Turning the selection about `axis` through `center` from pointer angle `start`; `turned` is
+    /// the unwrapped angle in radians and `applied` the degrees already applied.
     Rotate {
         view: usize,
         axis: DVec3,
         center: DVec3,
+        start: f64,
         last: f64,
         turned: f64,
         applied: f64,
@@ -145,6 +147,8 @@ pub enum Drag {
         bounds: Aabb,
         start: f64,
         applied: Aabb,
+        /// Model entities the drag rescales, with their scale when it began.
+        models: Vec<(NodeId, f64)>,
     },
     /// Drawing a block on a surface in the 3D view: the base lies on the plane where `axis` is
     /// `offset`, and the block rises `height` toward `sign` along that axis.
@@ -677,6 +681,7 @@ impl MapCraftApp {
         if let Some(b) = guide {
             box_lines(&mut out, b.min, b.max, [SELECTED_EDGE[0], SELECTED_EDGE[1], SELECTED_EDGE[2], 0.35]);
         }
+        self.rotate_ghost(&mut out, [PREVIEW[0], PREVIEW[1], PREVIEW[2], 0.4]);
         out
     }
 
@@ -1167,7 +1172,7 @@ impl MapCraftApp {
     }
 
     /// The keys a new entity of the picked class starts with: its class defaults and model.
-    fn new_entity_keys(&self) -> Vec<(String, String)> {
+    pub(crate) fn new_entity_keys(&self) -> Vec<(String, String)> {
         let class = &self.entity_class;
         let defaults = self.project.game.class(class).map(|c| mapcraft_engine::class_defaults(&c)).unwrap_or_default();
         self.project.with_model(class, defaults)
@@ -1451,7 +1456,8 @@ impl MapCraftApp {
                 if let Some((handle, _)) = self.handle_rects(index, rect).into_iter().find(|(_, r)| r.expand(3.0).contains(pos))
                     && let Some(b) = self.selection_bounds()
                 {
-                    self.drag = Drag::Resize { view: index, handle, bounds: b, applied: b };
+                    let models = if self.tool == Tool::Scale { self.selected_models() } else { Vec::new() };
+                    self.drag = Drag::Resize { view: index, handle, bounds: b, applied: b, models };
                     return;
                 }
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
@@ -1597,7 +1603,7 @@ impl MapCraftApp {
                     self.mark_changed();
                 }
             }
-            Drag::Resize { view, handle, bounds, applied } if view == index => {
+            Drag::Resize { view, handle, bounds, applied, models } if view == index => {
                 let moving = self.moving_nodes();
                 let (p, caught) = self.snap_point(index, rect, cursor, &moving, &[]);
                 self.snap_mark = Some((index, p, caught));
@@ -1612,11 +1618,8 @@ impl MapCraftApp {
                     }
                 }
                 if target != applied {
-                    let m = box_transform(&applied, &target);
-                    if let Err(e) = self.session.transform_selection(&m, "Resize", Some("drag-resize")) {
-                        self.status = e.to_string();
-                    }
-                    self.drag = Drag::Resize { view, handle, bounds, applied: target };
+                    self.stretch_selection(&bounds, &applied, &target, &models, "Resize", "drag-resize");
+                    self.drag = Drag::Resize { view, handle, bounds, applied: target, models };
                     self.mark_changed();
                 }
             }
@@ -1733,11 +1736,7 @@ impl MapCraftApp {
             d @ Drag::Extrude { .. } => self.end_extrude(d),
             Drag::Block3d { .. } => {
                 if let Some(b) = self.block_3d_box_of(&dragged) {
-                    match self.session.create_shape(self.shape, b) {
-                        Ok(_) => self.last_box = b,
-                        Err(e) => self.status = e.to_string(),
-                    }
-                    self.mark_changed();
+                    self.draw_block(b);
                 }
             }
             Drag::Sculpt { .. } => self.session.end_coalesce(),
@@ -1751,15 +1750,27 @@ impl MapCraftApp {
             Drag::Block { start, end, .. } => {
                 let b = self.block_box(start, end);
                 if b.size().min_element() > 0.0 {
-                    match self.session.create_shape(self.shape, b) {
-                        Ok(_) => self.last_box = b,
-                        Err(e) => self.status = e.to_string(),
-                    }
-                    self.mark_changed();
+                    self.draw_block(b);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Makes the Block tool's shape filling `b`, as a brush entity of the picked class when there is one.
+    fn draw_block(&mut self, b: Aabb) {
+        let made = match self.block_class.clone() {
+            Some(class) => {
+                let keys = self.project.game.class(&class).map(|c| mapcraft_engine::class_defaults(&c)).unwrap_or_default();
+                self.session.create_brush_entity(self.shape, b, &class, keys).map(|_| ())
+            }
+            None => self.session.create_shape(self.shape, b).map(|_| ()),
+        };
+        match made {
+            Ok(()) => self.last_box = b,
+            Err(e) => self.status = e.to_string(),
+        }
+        self.mark_changed();
     }
 
     /// Arrow keys move the selection a grid step; Shift moves it one unit and Ctrl moves a copy.
@@ -1877,6 +1888,12 @@ impl MapCraftApp {
 /// The fly speed after scrolling while flying, as Godot's freelook does; the range matches Preferences.
 fn fly_speed_scrolled(speed: f64, scroll: f32) -> f64 {
     (speed * (f64::from(scroll) / 250.0).exp()).clamp(16.0, 8192.0)
+}
+
+/// The uniform factor a stretch from box `from` to box `to` scales models by: its largest axis change.
+pub(crate) fn uniform_stretch(from: &Aabb, to: &Aabb) -> f64 {
+    let (a, b) = (from.size(), to.size());
+    (0..3).filter(|i| a[*i] > 1e-9 && b[*i] > 1e-9).map(|i| b[i] / a[i]).max_by(|x, y| x.ln().abs().total_cmp(&y.ln().abs())).unwrap_or(1.0)
 }
 
 /// Maps box `from` onto box `to`.

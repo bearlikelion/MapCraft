@@ -6,7 +6,7 @@ It works with every SDK, so you can block out a level in Blender and finish it h
 ## Import
 
 **File > Import > glTF** brings in a `.glb` or `.gltf` file as brushes in a new group named after the file.
-You can also drag the file onto the MapCraft window.
+You can also drag a `.gltf` file onto the MapCraft window; a dropped `.glb` is placed as a prop instead when the SDK has a prop class (see [Models](entities.md#models)).
 One **Undo** takes the whole import back.
 
 - Each mesh object that is convex, such as a box, a ramp or a wedge, becomes one brush.
@@ -19,7 +19,7 @@ One **Undo** takes the whole import back.
 
 **File > Export > glTF** writes the map as a `.glb` that Blender, Godot and other 3D tools open.
 
-- It holds what the views show: hidden objects, layers left out of exports, faces with `tools/` materials and faces hidden between touching brushes stay out.
+- It holds what the views show: hidden objects, layers left out of exports, faces with `tools/` materials, every face of a `tools/clip` brush and faces hidden between touching brushes stay out.
 - Each brush is its own object with its textures and UVs, inside one object per layer, group and brush entity that holds it.
 - Displacements come along as their sculpted surface.
 - Point entities and their models are not exported.

@@ -104,6 +104,20 @@ fn fmt_vec(v: DVec3) -> String {
     format!("{} {} {}", fmt_num(v.x), fmt_num(v.y), fmt_num(v.z))
 }
 
+/// An entity's uniform model scale, read as the renderer and the Godot importer read it.
+pub fn model_scale(e: &Entity) -> f64 {
+    ["scale", "modelscale"].iter().find_map(|k| e.get(k)?.split_whitespace().next()?.parse::<f64>().ok()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0)
+}
+
+/// A model scale of `base` stretched by `factor`: whole numbers from 1 up when snapping, hundredths otherwise.
+pub fn dragged_model_scale(base: f64, factor: f64, snap: bool) -> f64 {
+    let v = base * factor;
+    if !v.is_finite() {
+        return base;
+    }
+    if snap { v.round().max(1.0) } else { ((v * 100.0).round() / 100.0).max(0.01) }
+}
+
 fn is_point_entity(edit: &Edit, id: NodeId) -> bool {
     edit.node(id).is_some_and(|n| matches!(n.kind, NodeKind::Entity(_)) && n.children.is_empty())
 }
@@ -138,6 +152,21 @@ fn moved_group(mut g: Group, m: &DMat4) -> Group {
 }
 
 /// A brush, entity, prefab or group placement moved by `m`; `None` for kinds placed by their children.
+/// Pitch, yaw and roll after turning `angles` by the rotation in `m`, in the order models are drawn: yaw about Z, pitch about Y, roll about X.
+/// `None` when `m` does not turn, or mirrors.
+pub(crate) fn turned_angles(m: &DMat4, angles: DVec3) -> Option<DVec3> {
+    let axes = DMat3::from_mat4(*m);
+    let turn = DMat3::from_cols(axes.x_axis.normalize_or_zero(), axes.y_axis.normalize_or_zero(), axes.z_axis.normalize_or_zero());
+    if turn.determinant() <= 0.0 || turn.abs_diff_eq(DMat3::IDENTITY, 1e-9) {
+        return None;
+    }
+    let (p, y, r) = (angles.x.to_radians(), angles.y.to_radians(), angles.z.to_radians());
+    let before = DQuat::from_rotation_z(y) * DQuat::from_rotation_y(p) * DQuat::from_rotation_x(r);
+    let (yaw, pitch, roll) = (DQuat::from_mat3(&turn) * before).normalize().to_euler(mapcraft_geom::EulerRot::ZYX);
+    let tidy = |d: f64| if d.abs() < 1e-9 { 0.0 } else { d };
+    Some(DVec3::new(tidy(pitch.to_degrees()), tidy(yaw.to_degrees().rem_euclid(360.0)), tidy(roll.to_degrees())))
+}
+
 pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool) -> Result<Option<NodeKind>, EngineError> {
     Ok(Some(match kind {
         NodeKind::Brush(b) => NodeKind::Brush(b.transformed(m, lock)?),
@@ -146,15 +175,23 @@ pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool)
         NodeKind::Entity(mut ent) if point => {
             let origin = ent.origin().unwrap_or_default();
             ent.set("origin", fmt_vec(m.transform_point3(origin)));
-            let turn = m.x_axis.y.atan2(m.x_axis.x).to_degrees();
-            if turn.abs() > 1e-9 && m.determinant() > 0.0 {
-                if let Some(a) = ent.get("angles").and_then(mapcraft_map::parse_vec3) {
-                    ent.set("angles", fmt_vec(moved_placement(m, origin, a).1));
+            let angles = ent.get("angles").and_then(mapcraft_map::parse_vec3);
+            let yaw = ent.get("angle").and_then(|s| s.trim().parse::<f64>().ok()).filter(|y| y.is_finite());
+            match (angles, yaw) {
+                // A tilt needs pitch and roll, which a lone `angle` key cannot hold.
+                (Some(_), _) | (None, None) => {
+                    if let Some(turned) = turned_angles(m, angles.unwrap_or_default()) {
+                        ent.set("angles", fmt_vec(turned));
+                    }
                 }
                 // -1 and -2 mean straight up and straight down, which a turn about Z leaves alone.
-                if let Some(yaw) = ent.get("angle").and_then(|s| s.trim().parse::<f64>().ok()).filter(|y| y.is_finite() && *y >= 0.0) {
-                    ent.set("angle", fmt_num(moved_placement(m, origin, DVec3::new(0.0, yaw, 0.0)).1.y));
+                (None, Some(yaw)) if yaw >= 0.0 && m.determinant() > 0.0 => {
+                    let turn = m.x_axis.y.atan2(m.x_axis.x).to_degrees();
+                    if turn.abs() > 1e-9 {
+                        ent.set("angle", fmt_num(moved_placement(m, origin, DVec3::new(0.0, yaw, 0.0)).1.y));
+                    }
                 }
+                (None, Some(_)) => {}
             }
             NodeKind::Entity(ent)
         }
@@ -259,6 +296,27 @@ impl Session {
         self.apply("Create brush", c);
         self.selection = ids.iter().copied().collect();
         Ok(ids)
+    }
+
+    /// Draws `shape` as a new brush entity of `classname` with `properties`, in one undo step; a trigger's brushes are untextured.
+    pub fn create_brush_entity(&mut self, shape: Shape, bounds: Aabb, classname: &str, properties: Vec<(String, String)>) -> Result<NodeId, EngineError> {
+        let brushes = shape.brushes(bounds, &self.tex)?;
+        let mut entity = Entity::new(classname);
+        entity.properties = properties;
+        let trigger = is_trigger(&self.triggers, classname);
+        let mut e = self.map.edit();
+        let ent = e.insert(self.active_parent, NodeKind::Entity(entity))?;
+        for mut b in brushes {
+            b.solid()?;
+            if trigger {
+                b.faces.iter_mut().for_each(|f| f.material.clear());
+            }
+            e.insert(ent, NodeKind::Brush(b))?;
+        }
+        let c = e.finish();
+        self.apply(&format!("Create {classname}"), c);
+        self.selection = BTreeSet::from([ent]);
+        Ok(ent)
     }
 
     /// Center of the selection's bounds, with point entities counted as their origin.
@@ -568,9 +626,22 @@ impl Session {
 
     /// Applies an affine transform to everything selected, honoring texture lock.
     pub fn transform_selection(&mut self, m: &DMat4, label: &str, coalesce: Option<&str>) -> Result<(), EngineError> {
+        self.scale_selection(m, &[], label, coalesce)
+    }
+
+    /// Like `transform_selection`, and also sets each listed model entity's uniform scale in the same step.
+    pub fn scale_selection(&mut self, m: &DMat4, models: &[(NodeId, f64)], label: &str, coalesce: Option<&str>) -> Result<(), EngineError> {
         let roots = self.require_selection()?;
         let mut e = self.map.edit();
         self.transform_nodes(&mut e, &roots, m)?;
+        for (id, scale) in models {
+            let Some(NodeKind::Entity(mut ent)) = e.node(*id).map(|n| n.kind.clone()) else { continue };
+            if (model_scale(&ent) - scale).abs() > 1e-9 {
+                let key = if ent.get("scale").is_none() && ent.get("modelscale").is_some() { "modelscale" } else { "scale" };
+                ent.set(key, fmt_num(*scale));
+                e.set_kind(*id, NodeKind::Entity(ent))?;
+            }
+        }
         let c = e.finish();
         self.apply_coalesced(label, c, coalesce);
         let map = &self.map;
@@ -919,9 +990,8 @@ impl Session {
         Ok(ent)
     }
 
-    /// Turns selected brush entities back into world brushes.
-    /// Takes the selected brushes out of their entities and, given a class, ties them to one new entity of it.
-    pub fn set_brush_class(&mut self, classname: Option<&str>) -> Result<(), EngineError> {
+    /// Takes the selected brushes out of their entities and, given a class, ties them to one new entity of it with `properties`.
+    pub fn set_brush_class(&mut self, classname: Option<&str>, properties: Vec<(String, String)>) -> Result<(), EngineError> {
         let brushes = self.selected_brushes();
         if brushes.is_empty() {
             return Err(EngineError::NothingSelected);
@@ -944,7 +1014,9 @@ impl Session {
         }
         let mut selection: BTreeSet<NodeId> = brushes.iter().copied().collect();
         if let (Some(class), Some(parent)) = (classname, parents.first()) {
-            let ent = e.insert(*parent, NodeKind::Entity(Entity::new(class)))?;
+            let mut entity = Entity::new(class);
+            entity.properties = properties;
+            let ent = e.insert(*parent, NodeKind::Entity(entity))?;
             let trigger = is_trigger(&self.triggers, class);
             for id in &brushes {
                 e.reparent(*id, ent, None)?;
@@ -1361,14 +1433,15 @@ mod tests {
         let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
         let b = s.create_brush(Aabb::new(DVec3::splat(64.0), DVec3::splat(128.0))).unwrap();
         s.selection = BTreeSet::from([a, b]);
-        s.set_brush_class(Some("func_detail")).unwrap();
+        s.set_brush_class(Some("func_detail"), Vec::new()).unwrap();
         let detail = *s.selection.first().unwrap();
         assert_eq!(s.map.get(detail).unwrap().kind.entity().unwrap().classname, "func_detail");
-        s.set_brush_class(Some("func_illusionary")).unwrap();
+        s.set_brush_class(Some("func_illusionary"), vec![("alpha".into(), "128".into())]).unwrap();
         let ill = *s.selection.first().unwrap();
         assert!(s.map.get(detail).is_none(), "the emptied entity goes");
         assert_eq!(s.map.get(ill).unwrap().children.len(), 2);
-        s.set_brush_class(None).unwrap();
+        assert_eq!(s.map.get(ill).unwrap().kind.entity().unwrap().get("alpha"), Some("128"));
+        s.set_brush_class(None, Vec::new()).unwrap();
         assert!(s.map.get(ill).is_none() && s.map.get(a).unwrap().parent == Some(ROOT), "back in the world");
         assert!(s.undo() && s.map.get(ill).is_some(), "each switch is one undo step");
     }
@@ -1430,6 +1503,24 @@ mod tests {
         let origin = |id| s.map.get(id).unwrap().kind.entity().unwrap().origin();
         assert_eq!(origin(ent), Some(DVec3::new(0.0, 0.0, 8.0)), "a zone trigger is not a floor");
         assert_eq!(origin(sunk), Some(DVec3::new(128.0, 128.0, 8.0)), "a box half in its floor rises onto it");
+    }
+
+    #[test]
+    fn tilting_a_point_entity_records_pitch_and_roll() {
+        let quat = |a: DVec3| DQuat::from_rotation_z(a.y.to_radians()) * DQuat::from_rotation_y(a.x.to_radians()) * DQuat::from_rotation_x(a.z.to_radians());
+        let angles = |s: &Session, id| mapcraft_map::parse_vec3(s.map.get(id).unwrap().kind.entity().unwrap().get("angles").unwrap()).unwrap();
+        let mut s = session();
+        let prop = s.create_point_entity("prop_static", DVec3::ZERO, vec![("angles".into(), "0 90 0".into())]).unwrap();
+        let bare = s.create_point_entity("prop_static", DVec3::splat(64.0), vec![]).unwrap();
+        s.selection = BTreeSet::from([prop]);
+        s.rotate_selection(DVec3::X, 90.0).unwrap();
+        let expected = DQuat::from_rotation_x(90f64.to_radians()) * quat(DVec3::new(0.0, 90.0, 0.0));
+        assert!(quat(angles(&s, prop)).abs_diff_eq(expected, 1e-9) || quat(angles(&s, prop)).abs_diff_eq(-expected, 1e-9), "{:?}", angles(&s, prop));
+        s.selection = BTreeSet::from([bare]);
+        s.rotate_selection(DVec3::Y, 45.0).unwrap();
+        assert!(angles(&s, bare).abs_diff_eq(DVec3::new(45.0, 0.0, 0.0), 1e-9), "{:?}", angles(&s, bare));
+        s.rotate_selection(DVec3::Z, 30.0).unwrap();
+        assert!(angles(&s, bare).abs_diff_eq(DVec3::new(45.0, 30.0, 0.0), 1e-9), "a turn about Z adds to the yaw");
     }
 
     #[test]
@@ -1514,6 +1605,23 @@ mod tests {
         let ent = s.create_point_entity("info_target", DVec3::new(32.0, 32.0, 256.0), vec![]).unwrap();
         s.selection = BTreeSet::from([ent]);
         assert!(s.drop_to_floor(&|_| None).is_err(), "a trigger is not a floor");
+    }
+
+    #[test]
+    fn drawing_a_brush_entity_is_one_undo_step() {
+        let mut s = session();
+        let before = s.map.nodes().count();
+        let ent = s.create_brush_entity(Shape::Block, Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), "trigger_once", vec![("wait".into(), "1".into())]).unwrap();
+        let node = s.map.get(ent).unwrap();
+        assert_eq!(node.kind.entity().map(|e| (e.classname.as_str(), e.get("wait"))), Some(("trigger_once", Some("1"))));
+        assert_eq!(node.children.len(), 1);
+        assert!(brush(&s, node.children[0]).faces.iter().all(|f| f.material.is_empty()), "a trigger is untextured");
+        assert_eq!(s.selection, BTreeSet::from([ent]));
+        s.undo();
+        assert_eq!(s.map.nodes().count(), before);
+        let door = s.create_brush_entity(Shape::Block, Aabb::new(DVec3::ZERO, DVec3::splat(64.0)), "func_door", Vec::new()).unwrap();
+        let child = s.map.get(door).unwrap().children[0];
+        assert!(brush(&s, child).faces.iter().all(|f| !f.material.is_empty()), "a door keeps its material");
     }
 
     #[test]
@@ -1755,5 +1863,29 @@ mod tests {
         assert_eq!(s.map.get(ent).unwrap().kind.entity().unwrap().get("targetname"), Some("spawn"));
         s.undo();
         assert_eq!(s.map.get(ent).unwrap().kind.entity().unwrap().get("targetname"), None);
+    }
+
+    #[test]
+    fn scale_drags_rescale_models_in_one_step() {
+        assert_eq!(dragged_model_scale(1.0, 1.4, true), 1.0);
+        assert_eq!(dragged_model_scale(1.0, 2.6, true), 3.0);
+        assert_eq!(dragged_model_scale(2.0, 0.1, true), 1.0, "snapping never goes below 1");
+        assert_eq!(dragged_model_scale(1.0, 1.234, false), 1.23);
+        assert!(dragged_model_scale(1.0, 0.0, false) > 0.0);
+        assert_eq!(dragged_model_scale(2.0, f64::NAN, false), 2.0);
+
+        let mut s = session();
+        let ent = s.create_point_entity("prop", DVec3::new(8.0, 0.0, 0.0), vec![("modelscale".into(), "2".into())]).unwrap();
+        let get = |s: &Session, k: &str| s.map.get(ent).unwrap().kind.entity().unwrap().get(k).map(str::to_owned);
+        let m = DMat4::from_scale(DVec3::new(2.0, 1.0, 1.0));
+        s.scale_selection(&m, &[(ent, 3.0)], "Scale", Some("drag-scale")).unwrap();
+        s.scale_selection(&m, &[(ent, 4.0)], "Scale", Some("drag-scale")).unwrap();
+        s.end_coalesce();
+        assert_eq!(get(&s, "modelscale").as_deref(), Some("4"), "the key the entity already uses is kept");
+        assert_eq!(get(&s, "scale"), None);
+        assert_eq!(get(&s, "origin").as_deref(), Some("32 0 0"));
+        s.undo();
+        assert_eq!(get(&s, "modelscale").as_deref(), Some("2"), "the whole drag undoes at once");
+        assert_eq!(get(&s, "origin").as_deref(), Some("8 0 0"));
     }
 }

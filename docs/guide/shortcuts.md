@@ -294,7 +294,7 @@ These cannot be rebound.
 | Extrude a face | `Shift+Drag` |
 | Slide a face, keeping its shape | `Alt+Shift+Drag` |
 | Extrude into a new brush | `Ctrl+Shift+Drag` |
-| Stamp a copy along a face | `Ctrl+Alt+Shift+Drag` |
+| Extrude a new brush along a face's normal | `Ctrl+Alt+Shift+Drag` |
 | Pick a face's material, unless a face is picked in the Face tool | `Alt+Click` |
 | Transfer the active face's material and alignment as it is, in the Face tool | `Alt+Click, Alt+Drag, Alt+Double-click` |
 | Transfer the active face's material and alignment wrapped around corners, in the Face tool | `Alt+Shift+Click, Alt+Shift+Drag, Alt+Shift+Double-click` |

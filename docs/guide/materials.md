@@ -35,6 +35,7 @@ It lists every material of the map's SDK, including the [texture folders](sdks-a
 
 To shorten a long list, open **Folders** under the search box.
 It lists the SDK's top-level material folders, or the folders its plugin puts materials in, such as one per WAD file on the Quake SDK.
+Your own materials, from the folder beside the map and the texture folders you added, sit together in a **Custom** folder at the top, so you can click it to see only them or untick it to hide them.
 Untick a folder to hide its materials, or click **Hide all** and tick the ones you want.
 The choice is saved per SDK, so it holds for every map on that SDK.
 Faces already using a hidden material still draw.
@@ -45,6 +46,22 @@ Faces already using a hidden material still draw.
 
 > [!NOTE]
 > Without an SDK the panel asks you to pick one with **File > New Map**.
+
+## The Material inspector
+
+PBR materials, the ones **File > Add Material…** makes from a set of pictures, keep their settings in a small `materials/<name>.json` file in a custom asset folder, such as the one beside the saved map.
+The Material inspector edits those settings after the import, and the views show each change as you drag.
+
+1. Right click the material in the Materials panel and choose **Inspect Material**.
+   With faces or brushes using it, **Inspect material** under the inspector's Material row does the same, and **Inspect Material** in command search opens the current material.
+2. Drag **Albedo tint**, **Roughness**, **Metallic**, **Emission color**, **Emission energy**, **Normal strength** or **Height scale**, or tick **Height is depth**.
+   Switch a view to Lit (`Ctrl+Alt+4`) to see roughness, metallic, normals and emission.
+3. Let go, and the change is saved to the material's file.
+   A value the file cannot hold is refused with a message in red, and the file keeps its last good values.
+4. Click **Revert Material** (the curved arrow) at the top to go back to the values it had when you opened it, or the cross to close the inspector.
+
+The texture rows show which picture fills each slot; hover one for its full name.
+Plain pictures have no settings to edit: the inspector's button only appears for PBR materials, and the right click entry says so in the status bar.
 
 ## Applying a material
 
@@ -65,6 +82,21 @@ You can also find it in the right click menu, and as **Clear material** (the era
 
 > [!NOTE]
 > Untextured faces export as `tools/toolsnodraw` in a VMF, except on triggers, which export as `tools/toolstrigger`.
+
+## Tool materials
+
+Materials whose names start with `tools/` mark faces the game never draws.
+The editor shows them see-through in orange, or in the entity's color on a brush entity, so you can still see and pick them.
+They still collide in the game.
+
+| Material | Does |
+|---|---|
+| `tools/skip` | Leaves out just that face, such as the hidden side of a ramp behind a see-through material |
+| `tools/clip` | Makes the whole brush invisible but solid, even when only one face has it, as Quake and Source compilers do |
+| `tools/trigger` | Marks a brush entity, such as a zone, that the game turns into an invisible area |
+
+The SurfsUp SDK lists `tools/skip` and `tools/clip` in the Materials panel.
+Map packs never carry their pictures, and glTF exports leave their faces out.
 
 ## Picking a material
 

@@ -188,8 +188,14 @@ impl MapCraftApp {
         let models: BTreeSet<String> = map.nodes().filter_map(|(_, n)| self.project.model_path(n.kind.entity()?)).collect();
         for model in models {
             let Some(path) = self.project.models.vfs.find(&model).filter(|p| own(p)) else { continue };
-            let entry = pack::model_entry(&model).ok_or_else(|| format!("{model}: maps carry only .glb models"))?;
-            entries.push((entry, read(&path)?));
+            let entry = pack::model_entry(&model).ok_or_else(|| format!("{model}: maps carry only .glb and .gltf models"))?;
+            if entries.iter().any(|(e, _)| *e == entry) {
+                continue;
+            }
+            let vfs = &self.project.models.vfs;
+            let glb = mapcraft_render::to_glb(read(&path)?, &|uri| crate::models::read_capped(vfs, &crate::models::beside(&model, uri)?))
+                .map_err(|e| format!("{model}: {e}"))?;
+            entries.push((entry, pack::without_morphs(glb)));
         }
         Ok(entries)
     }

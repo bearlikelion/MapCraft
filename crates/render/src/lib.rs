@@ -2,6 +2,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod animation;
 mod camera;
 mod environment;
 mod gltf_map;
@@ -15,11 +16,12 @@ use mapcraft_geom::{DMat4, DVec2, DVec3, DVec4};
 use mapcraft_map::{AntiTile, NodeId, ROOT};
 use wgpu::util::DeviceExt;
 
+pub use animation::{Clip, Playing, Repeat, Rig};
 pub use camera::{Camera, View};
 pub use environment::EnvironmentEffects;
 pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
 pub use godot_shader::{ShaderKind, TextureSource, Uniform, uniforms};
-pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds};
+pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds, to_glb};
 pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,
     is_tool_material,
@@ -66,7 +68,12 @@ struct Globals {
     sky_horizon: [f32; 4],
     sky_ground: [f32; 4],
     fog_color: [f32; 4],
+    /// x density, y sun scatter, z sky affect, w mode (1 is depth fog).
     fog: [f32; 4],
+    /// x curve, yz start and end in meters, w aerial perspective.
+    fog_depth: [f32; 4],
+    /// x height in meters, y height density.
+    fog_height: [f32; 4],
     tonemap: [f32; 4],
     adjustments: [f32; 4],
     sky_shape: [f32; 4],
@@ -94,6 +101,10 @@ struct Material {
     albedo: wgpu::TextureView,
     /// The game draws it with nearest filtering, whatever the renderer's own setting.
     pixelated: bool,
+    /// Its picture has clear pixels.
+    clear_pixels: bool,
+    /// Clear pixels or a tint alpha below 1, so it draws after solid surfaces and hides nothing behind it.
+    see_through: bool,
 }
 
 struct Batch {
@@ -168,6 +179,8 @@ pub struct Renderer {
     /// Mesh pipelines by (lit, layers, anti-tiling); a variant the device rejected is missing.
     pipelines: HashMap<(bool, u32, AntiTile), wgpu::RenderPipeline>,
     translucent_pipeline: wgpu::RenderPipeline,
+    /// Mesh pipelines for see-through materials by lit, which test depth without writing it.
+    see_through_pipelines: HashMap<bool, wgpu::RenderPipeline>,
     line_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
@@ -211,6 +224,11 @@ pub struct Renderer {
     clear: wgpu::TextureView,
     /// Seconds for Godot shaders' TIME.
     pub time: f32,
+    /// Each playing model with the clock it started at and the clip time it was last posed at.
+    playing: Vec<(Playing, Option<f64>, Option<f64>)>,
+    /// The playing models' posed triangles, which 3D views draw.
+    posed: Vec<Batch>,
+    clock: f64,
 }
 
 fn vertex_layout<'a>(stride: usize, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -341,6 +359,13 @@ impl Renderer {
                 }
             }
         }
+        let see_through_pipelines: HashMap<bool, wgpu::RenderPipeline> = [(false, "fs_mesh"), (true, "fs_lit")]
+            .into_iter()
+            .map(|(lit, fs)| {
+                let constants = [("LAYERS", 1.0), ("ANTI_TILE", f64::from(AntiTile::Off as u32)), ("CULL_BACK", 1.0)];
+                (lit, pipeline(fs, &mesh_layout, "vs_mesh", fs, &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (false, true), none, &constants))
+            })
+            .collect();
         // Pulled toward the camera so a trigger lying on a floor never fights it.
         let pull = wgpu::DepthBiasState { constant: 8, slope_scale: 2.0, clamp: 0.0 };
         let translucent_pipeline =
@@ -406,6 +431,7 @@ impl Renderer {
             rough,
             pipelines,
             translucent_pipeline,
+            see_through_pipelines,
             line_pipeline,
             overlay_pipeline,
             sky_pipeline,
@@ -436,7 +462,48 @@ impl Renderer {
             black: texture(device, queue, 1, 1, &[0, 0, 0, 255], wgpu::TextureFormat::Rgba8Unorm),
             clear: texture(device, queue, 1, 1, &[0, 0, 0, 0], wgpu::TextureFormat::Rgba8Unorm),
             time: 0.0,
+            playing: Vec::new(),
+            posed: Vec::new(),
+            clock: 0.0,
         }
+    }
+
+    /// Poses the playing models for `now` seconds on a steady clock; true while any still moves.
+    pub fn animate_models(&mut self, now: f64) -> bool {
+        self.clock = now;
+        self.pose_models()
+    }
+
+    fn pose_models(&mut self) -> bool {
+        let (mut moving, mut changed) = (false, false);
+        for (p, start, last) in &mut self.playing {
+            let Some(clip) = p.model.rig.as_ref().and_then(|r| r.clips.get(p.clip)) else { continue };
+            let elapsed = self.clock - *start.get_or_insert(self.clock);
+            let t = p.repeat.clip_time(elapsed, clip.duration);
+            moving |= p.repeat.moving(elapsed, clip.duration);
+            changed |= last.replace(t) != Some(t);
+        }
+        if changed {
+            let mut batches = std::collections::BTreeMap::new();
+            for (p, _, last) in &self.playing {
+                let pose = p.model.rig.as_ref().and_then(|r| r.pose(p.clip, last.unwrap_or(0.0)));
+                scene::push_model(&mut batches, &mut Vec::new(), &p.model, &p.at, pose.as_deref(), true, SELECTED_EDGE);
+            }
+            // ponytail: fresh buffers per posed frame; reuse them if many models play at once.
+            self.posed = (batches.into_iter().filter(|(_, v)| !v.is_empty()))
+                .map(|(key, v)| Batch {
+                    key,
+                    buffer: self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("posed"),
+                        contents: bytemuck::cast_slice(&v),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    count: v.len() as u32,
+                    brush: false,
+                })
+                .collect();
+        }
+        moving
     }
 
     /// Compiles each shaded node's source, reusing what earlier scenes compiled.
@@ -610,8 +677,14 @@ impl Renderer {
         }
         let albedo = texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
         let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &albedo, &self.flat, &self.rough, None);
-        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo, pixelated });
+        let clear_pixels = rgba.chunks(4).any(|p| p.get(3).is_some_and(|a| *a < 255));
+        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo, pixelated, clear_pixels, see_through: clear_pixels });
         true
+    }
+
+    /// Materials with clear pixels or a tint alpha below 1, whose faces hide nothing behind them.
+    pub fn see_through_materials(&self) -> impl Iterator<Item = &str> {
+        self.materials.iter().filter(|(_, m)| m.see_through).map(|(n, _)| n.as_str())
     }
 
     /// Uploads a sky in Quake's layout: the far layer on the right half, the near layer on the left
@@ -632,17 +705,17 @@ impl Renderer {
         let far = texture(&self.device, &self.queue, half, h, &layer(half), wgpu::TextureFormat::Rgba8UnormSrgb);
         let near = texture(&self.device, &self.queue, half, h, &layer(0), wgpu::TextureFormat::Rgba8UnormSrgb);
         let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &far, &near, &self.rough, None);
-        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo: far, pixelated });
+        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo: far, pixelated, clear_pixels: false, see_through: false });
         self.skies.insert(name.to_string());
         true
     }
 
     /// Gives an uploaded material Lit's maps: a normal map with green up, and occlusion, roughness and metallic in RGB.
     pub fn set_material_maps(&mut self, name: &str, normal: (u32, u32, &[u8]), orm: (u32, u32, &[u8])) -> bool {
-        self.set_material_surface(name, normal, orm, (1, 1, &[255; 4]), [1.0; 4], [0.0; 3])
+        self.set_material_surface(name, normal, orm, (1, 1, &[0, 0, 0, 255]), [1.0; 4], [0.0; 4])
     }
 
-    /// Gives a material its PBR maps, linear tint, and emission.
+    /// Gives a material its PBR maps, linear tint, and emission: the texture plus the RGB color, times the energy in A, as Godot does.
     pub fn set_material_surface(
         &mut self,
         name: &str,
@@ -650,7 +723,7 @@ impl Renderer {
         orm: (u32, u32, &[u8]),
         emission: (u32, u32, &[u8]),
         albedo: [f32; 4],
-        emission_color: [f32; 3],
+        emission_color: [f32; 4],
     ) -> bool {
         if !self.fits(normal.0, normal.1, normal.2)
             || !self.fits(orm.0, orm.1, orm.2)
@@ -660,6 +733,7 @@ impl Renderer {
             return false;
         }
         let Some(m) = self.materials.get_mut(name) else { return false };
+        m.see_through = m.clear_pixels || albedo[3] < 1.0;
         let linear = |(w, h, rgba)| texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8Unorm);
         let emitted = texture(&self.device, &self.queue, emission.0, emission.1, emission.2, wgpu::TextureFormat::Rgba8UnormSrgb);
         let sampler = if m.pixelated || self.pixelated { &self.nearest } else { &self.sampler };
@@ -679,6 +753,12 @@ impl Renderer {
     pub fn forget_materials(&mut self) {
         self.materials.clear();
         self.skies.clear();
+    }
+
+    /// Drops one uploaded material, so the next scene uploads it again.
+    pub fn forget_material(&mut self, name: &str) {
+        self.materials.remove(name);
+        self.skies.remove(name);
     }
 
     /// Switches texture magnification between smooth and pixelated; uploaded materials are dropped
@@ -738,6 +818,11 @@ impl Renderer {
         self.minlight = scene.minlight;
         self.sky = scene.sky;
         self.set_shaders(&scene.shaders);
+        let old = std::mem::take(&mut self.playing);
+        let same = |a: &Playing, b: &Playing| a.id == b.id && a.clip == b.clip && std::sync::Arc::ptr_eq(&a.model, &b.model);
+        self.playing = (scene.playing.iter()).map(|p| (p.clone(), old.iter().find(|(o, ..)| same(o, p)).and_then(|(_, start, _)| *start), None)).collect();
+        self.posed.clear();
+        self.pose_models();
     }
 
     /// Draws the live brushes in Lit while the bake shows an older map, keeping the bake for later.
@@ -903,7 +988,10 @@ impl Renderer {
                 globals.sky_ground = [s.ground[0], s.ground[1], s.ground[2], 0.0];
                 let effects = s.effects;
                 globals.fog_color = [effects.fog_color[0], effects.fog_color[1], effects.fog_color[2], effects.fog_energy];
-                globals.fog = [effects.fog_density, effects.fog_sun_scatter, effects.fog_sky_affect, 0.0];
+                globals.fog = [effects.fog_density, effects.fog_sun_scatter, effects.fog_sky_affect, effects.fog_mode as f32];
+                let [curve, begin, end] = effects.fog_depth;
+                globals.fog_depth = [curve, begin, end, effects.fog_aerial_perspective];
+                globals.fog_height = [effects.fog_height[0], effects.fog_height[1], 0.0, 0.0];
                 globals.tonemap = [effects.tonemap as f32, effects.exposure, effects.white, 0.0];
                 globals.adjustments = [effects.brightness, effects.contrast, effects.saturation, 0.0];
                 globals.sky_shape = [effects.sky_curve, effects.ground_curve, effects.sky_energy, effects.ground_energy];
@@ -957,17 +1045,30 @@ impl Renderer {
                 pass.set_vertex_buffer(0, b.slice(..));
                 pass.draw(0..extra.len() as u32, 0..1);
             }
-            if !camera.is_2d() && mode != RenderMode::Wireframe {
-                for batch in self.batches.iter().filter(|b| !(baked && b.brush)) {
+            // See-through batches draw last without writing depth, so whatever lies behind them is already drawn.
+            let draw_batches = |pass: &mut wgpu::RenderPass<'_>, see_through: bool| {
+                if camera.is_2d() || mode == RenderMode::Wireframe {
+                    return;
+                }
+                for batch in self.batches.iter().filter(|b| !(baked && b.brush)).chain(&self.posed) {
                     let material = batch.key.material.as_str();
                     if shaded.iter().any(|(b, _)| std::ptr::eq(*b, batch)) {
                         continue;
                     }
                     let sky = self.skies.contains(material);
+                    if (mapcraft_map::is_tool_material(material) || self.materials.get(material).is_some_and(|m| m.see_through)) != see_through {
+                        continue;
+                    }
                     let sky_face = mode != RenderMode::Flat && sky && self.show_sky;
+                    let lit = lit && !material.is_empty() && !sky;
                     // Entity boxes stay unlit, or a light's own box would be dark.
-                    let pipeline =
-                        if sky_face { Some(&self.sky_face_pipeline) } else { self.mesh_pipeline(lit && !material.is_empty() && !sky, mode, &batch.key) };
+                    let pipeline = if sky_face {
+                        Some(&self.sky_face_pipeline)
+                    } else if see_through {
+                        self.see_through_pipelines.get(&lit)
+                    } else {
+                        self.mesh_pipeline(lit, mode, &batch.key)
+                    };
                     let Some(pipeline) = pipeline else { continue };
                     pass.set_pipeline(pipeline);
                     let bind = |m: &str| match (mode, m) {
@@ -979,7 +1080,8 @@ impl Renderer {
                     pass.set_vertex_buffer(0, batch.buffer.slice(..));
                     pass.draw(0..batch.count, 0..1);
                 }
-            }
+            };
+            draw_batches(&mut pass, false);
             for batch in self.bake.iter().filter(|_| baked) {
                 let lightmap = batch.lightmap.and_then(|l| self.lightmaps.get(l));
                 pass.set_pipeline(match lightmap {
@@ -1004,6 +1106,7 @@ impl Renderer {
                     pass.draw(0..batch.count, 0..1);
                 }
             }
+            draw_batches(&mut pass, true);
             // Triggers and other tool faces do not show in the game a bake stands for.
             if let Some((b, n)) = self.translucent.as_ref().filter(|_| !camera.is_2d() && mode != RenderMode::Wireframe && !baked) {
                 pass.set_pipeline(&self.translucent_pipeline);
@@ -1040,7 +1143,7 @@ impl Renderer {
         let size = DVec2::new(f64::from(target.size[0]), f64::from(target.size[1]));
         self.queue.write_buffer(&target.globals, 0, bytemuck::bytes_of(&Globals::unlit(&camera, size, 0.0)));
         let mut batches = std::collections::BTreeMap::new();
-        scene::push_model(&mut batches, &mut Vec::new(), model, &DMat4::IDENTITY, false, WORLD_EDGE);
+        scene::push_model(&mut batches, &mut Vec::new(), model, &DMat4::IDENTITY, None, false, WORLD_EDGE);
         let textures: HashMap<String, wgpu::BindGroup> = (model.textures.iter().enumerate())
             .filter(|(_, p)| self.fits(p.width, p.height, &p.rgba))
             .map(|(i, p)| {
@@ -1094,6 +1197,8 @@ impl Globals {
             sky_ground: [0.0; 4],
             fog_color: [0.0; 4],
             fog: [0.0; 4],
+            fog_depth: [0.0; 4],
+            fog_height: [0.0; 4],
             tonemap: [2.0, 1.0, 1.0, 0.0],
             adjustments: [1.0, 1.0, 1.0, 0.0],
             sky_shape: [0.15, 0.02, 1.0, 1.0],
@@ -1225,10 +1330,10 @@ fn material_bind_group(
     albedo: &wgpu::TextureView,
     normal: &wgpu::TextureView,
     orm: &wgpu::TextureView,
-    surface: Option<(&wgpu::TextureView, [f32; 4], [f32; 3])>,
+    surface: Option<(&wgpu::TextureView, [f32; 4], [f32; 4])>,
 ) -> wgpu::BindGroup {
-    let (emission, tint, color) = surface.unwrap_or((albedo, [1.0; 4], [0.0; 3]));
-    let values = [tint, [color[0], color[1], color[2], 0.0]];
+    let (emission, tint, color) = surface.unwrap_or((albedo, [1.0; 4], [0.0; 4]));
+    let values = [tint, color];
     let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("material parameters"),
         contents: bytemuck::cast_slice(&values),
@@ -1373,15 +1478,28 @@ mod tests {
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut renderer = Renderer::new(&device, &queue);
         assert!(renderer.upload_material("pbr", 1, 1, &[255; 4]));
+        assert!(renderer.upload_material("grate", 2, 1, &[255, 255, 255, 255, 0, 0, 0, 0]));
+        assert_eq!(renderer.see_through_materials().collect::<Vec<_>>(), ["grate"], "clear pixels make a material see-through");
         assert!(renderer.set_material_surface(
             "pbr",
             (1, 1, &[128, 128, 255, 255]),
             (1, 1, &[255, 128, 192, 255]),
             (1, 1, &[255; 4]),
             [0.5, 0.3, 0.1, 1.0],
-            [2.0, 0.0, 0.0]
+            [2.0, 0.0, 0.0, 1.0]
         ));
-        assert!(!renderer.set_material_surface("pbr", (0, 1, &[]), (1, 1, &[255; 4]), (1, 1, &[255; 4]), [1.0; 4], [0.0; 3]));
+        assert!(!renderer.set_material_surface("pbr", (0, 1, &[]), (1, 1, &[255; 4]), (1, 1, &[255; 4]), [1.0; 4], [0.0; 4]));
+        assert!(renderer.set_material_surface(
+            "pbr",
+            (1, 1, &[128, 128, 255, 255]),
+            (1, 1, &[255; 4]),
+            (1, 1, &[0, 0, 0, 255]),
+            [1.0, 1.0, 1.0, 0.5],
+            [0.0; 4]
+        ));
+        let mut see: Vec<&str> = renderer.see_through_materials().collect();
+        see.sort_unstable();
+        assert_eq!(see, ["grate", "pbr"], "a tint alpha below 1 does too");
         assert!(pollster::block_on(validation.pop()).is_none());
     }
 

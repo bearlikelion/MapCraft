@@ -836,7 +836,12 @@ fn sdk_manager_checks_and_creates_sdks() {
     h.get_by_label("Create SDK").click();
     h.run_steps(3);
     assert!(settings.path().join("data/sdks/my-game/sdk.toml").is_file());
-    assert_eq!(h.state().sdk_ids_for_test().first().map(String::as_str), Some("my-game"), "user SDKs list first");
+    let ids = h.state().sdk_ids_for_test();
+    if cfg!(debug_assertions) {
+        assert!(ids.iter().any(|id| id == "my-game"), "{ids:?}");
+    } else {
+        assert_eq!(ids.first().map(String::as_str), Some("my-game"), "user SDKs list first");
+    }
     assert!(h.query_by_label("Remove…").is_some(), "a user SDK can be removed");
 }
 

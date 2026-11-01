@@ -30,7 +30,8 @@ For maps in user folders or downloads, with no import step:
 ## How maps become nodes
 
 - World brushes become one mesh, `WorldMesh`, with a surface per material, and one collision body, `WorldCollision`, with a shape per brush (or one triangle mesh with trimesh collision).
-- Faces with `tools/` materials (`tools/nodraw`, `tools/clip`, `tools/trigger`) collide but are not drawn.
+- Faces with `tools/` materials (`tools/nodraw`, `tools/skip`, `tools/trigger`) collide but are not drawn.
+- A brush with `tools/clip` on any face collides but draws none of its faces.
 - Point entities become `Marker3D` nodes at their origin, facing the way the entity faces.
 - Brush entities become `Area3D` nodes centered on their brushes, with a collision shape per brush.
 - An [entity map](#entity-maps) can make an entity a different node, a scene, a model or part of the world instead.

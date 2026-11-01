@@ -209,10 +209,15 @@ struct FileNodeRef<'a> {
 }
 
 pub fn to_string(map: &Map, sdk: Option<&str>, view: &Value) -> Result<String, FormatError> {
+    to_string_with(map, sdk, view, &BTreeSet::new())
+}
+
+/// [`to_string`] where faces of the `see_through` materials, such as glass, hide nothing behind them.
+pub fn to_string_with(map: &Map, sdk: Option<&str>, view: &Value, see_through: &BTreeSet<String>) -> Result<String, FormatError> {
     let (full, owner) = mapcraft_map::mirror::expand(map);
     let mut derived = Derived {
         nodes: owner.into_keys().collect(),
-        covered: mapcraft_map::covered_faces(&full, None),
+        covered: mapcraft_map::covered_faces(&full, None, &|m| see_through.contains(m)),
         next_node: map.nodes().map(|(id, _)| id.0).max().unwrap_or(0).saturating_add(1),
         next_face: map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces).map(|f| f.id.0).max().unwrap_or(0).saturating_add(1),
     };
@@ -405,7 +410,12 @@ pub fn load(path: &Path) -> Result<MapFile, FormatError> {
 
 /// Writes atomically: a failed save leaves the previous file intact.
 pub fn save(path: &Path, map: &Map, sdk: Option<&str>, view: &Value) -> Result<(), FormatError> {
-    craft_atomic::atomic_write(path, to_string(map, sdk, view)?.as_bytes())?;
+    save_with(path, map, sdk, view, &BTreeSet::new())
+}
+
+/// [`save`] with the materials whose faces hide nothing behind them; see [`to_string_with`].
+pub fn save_with(path: &Path, map: &Map, sdk: Option<&str>, view: &Value, see_through: &BTreeSet<String>) -> Result<(), FormatError> {
+    craft_atomic::atomic_write(path, to_string_with(map, sdk, view, see_through)?.as_bytes())?;
     Ok(())
 }
 
@@ -489,6 +499,9 @@ mod tests {
         let text = file.to_string().unwrap();
         assert_eq!(text.matches("\"covered\": true").count(), 2);
         assert_eq!(from_str(&text).unwrap(), file, "covered is derived and ignored on load");
+        let glass = BTreeSet::from(["a".to_string()]);
+        let text = to_string_with(&file.map, None, &Value::Null, &glass).unwrap();
+        assert_eq!(text.matches("\"covered\": true").count(), 0, "see-through faces hide nothing, so both stay");
     }
 
     #[test]

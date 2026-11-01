@@ -1,5 +1,8 @@
 #include "mapcraft_builder.h"
 
+#include <godot_cpp/classes/animation.hpp>
+#include <godot_cpp/classes/animation_library.hpp>
+#include <godot_cpp/classes/animation_player.hpp>
 #include <godot_cpp/classes/area3d.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/base_material3d.hpp>
@@ -388,13 +391,60 @@ struct Shape {
 	bool triangles = false;
 };
 
-void own(Node *p_node, Node *p_owner) {
-	p_node->set_owner(p_owner);
-	if (!p_node->get_scene_file_path().is_empty()) {
+// Inside an instanced scene only nodes the builder added, which have no owner yet, are claimed; true when any were.
+bool own(Node *p_node, Node *p_owner, bool p_instanced = false) {
+	const bool claimed = !p_instanced || p_node->get_owner() == nullptr;
+	if (claimed) {
+		p_node->set_owner(p_owner);
+	}
+	const bool instance = !p_node->get_scene_file_path().is_empty();
+	bool inside = false;
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		inside = own(p_node->get_child(i), p_owner, p_instanced || instance) || inside;
+	}
+	// PackedScene skips an instance's insides unless it is an editable instance.
+	if (instance && inside) {
+		p_owner->set_editable_instance(p_node, true);
+	}
+	return (p_instanced && claimed) || inside;
+}
+
+// Gives every mesh in a model a static body shaped as one convex hull per mesh, or as its exact triangles.
+void add_model_collision(Node3D *p_model, const String &p_mode, const Dictionary &p_config) {
+	if (p_mode == "none") {
 		return;
 	}
-	for (int i = 0; i < p_node->get_child_count(); i++) {
-		own(p_node->get_child(i), p_owner);
+	const bool trimesh = p_mode == "trimesh";
+	if (!trimesh && p_mode != "convex") {
+		UtilityFunctions::push_warning("MapCraft: unsupported collision ", p_mode, "; using convex");
+	}
+	TypedArray<Node> meshes = p_model->find_children("*", "MeshInstance3D", true, false);
+	for (int64_t i = 0; i < meshes.size(); i++) {
+		MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(meshes[i]);
+		if (mesh == nullptr || mesh->get_mesh().is_null()) {
+			continue;
+		}
+		const int64_t before = mesh->get_child_count();
+		if (trimesh) {
+			mesh->create_trimesh_collision();
+		} else {
+			mesh->create_convex_collision(true, true);
+		}
+		for (int64_t j = before; j < mesh->get_child_count(); j++) {
+			StaticBody3D *body = Object::cast_to<StaticBody3D>(mesh->get_child(j));
+			// Godot hands the new nodes the model's own owner, which would keep them out of the saved map.
+			TypedArray<Node> made = mesh->get_child(j)->find_children("*", "", true, false);
+			made.push_back(mesh->get_child(j));
+			for (int64_t k = 0; k < made.size(); k++) {
+				Object::cast_to<Node>(made[k])->set_owner(nullptr);
+			}
+			if (body != nullptr && p_config.has("collision_layer")) {
+				body->set_collision_layer(int64_t(p_config["collision_layer"]));
+			}
+			if (body != nullptr && p_config.has("collision_mask")) {
+				body->set_collision_mask(int64_t(p_config["collision_mask"]));
+			}
+		}
 	}
 }
 
@@ -414,6 +464,38 @@ Node3D *load_glb(const PackedByteArray &p_bytes) {
 		memdelete(scene);
 	}
 	return node;
+}
+
+// Plays a copy of the animation from its own library, since an imported model's animations are shared by every instance.
+void autoplay(Node3D *p_model, const String &p_animation, const String &p_loop) {
+	Animation::LoopMode mode = Animation::LOOP_LINEAR;
+	if (p_loop == "pingpong") {
+		mode = Animation::LOOP_PINGPONG;
+	} else if (p_loop == "none") {
+		mode = Animation::LOOP_NONE;
+	} else if (!p_loop.is_empty() && p_loop != "linear") {
+		UtilityFunctions::push_warning("MapCraft: unsupported animation_loop ", p_loop, "; using linear");
+	}
+	TypedArray<Node> players = p_model->find_children("*", "AnimationPlayer", true, false);
+	for (int64_t i = 0; i < players.size(); i++) {
+		AnimationPlayer *player = Object::cast_to<AnimationPlayer>(players[i]);
+		String name = p_animation;
+		if (player != nullptr && !player->has_animation(name)) {
+			name = name.validate_node_name();
+		}
+		if (player == nullptr || !player->has_animation(name)) {
+			continue;
+		}
+		Ref<Animation> looped = player->get_animation(name)->duplicate();
+		looped->set_loop_mode(mode);
+		Ref<AnimationLibrary> library;
+		library.instantiate();
+		library->add_animation("default", looped);
+		player->add_animation_library("mapcraft", library);
+		player->set_autoplay("mapcraft/default");
+		return;
+	}
+	UtilityFunctions::push_warning("MapCraft: ", p_model->get_name(), " has no animation ", p_animation);
 }
 
 class Builder {
@@ -488,6 +570,19 @@ public:
 	Error build(const Dictionary &p_doc, String &r_error);
 };
 
+// Clear pixels show through as they do in MapCraft's views: cut out when every pixel is fully on or off, blended otherwise.
+void match_alpha(const Ref<StandardMaterial3D> &p_material, const Ref<Image> &p_image) {
+	if (p_image.is_null() || p_material->get_transparency() != BaseMaterial3D::TRANSPARENCY_DISABLED) {
+		return;
+	}
+	const Image::AlphaMode alpha = p_image->detect_alpha();
+	if (alpha == Image::ALPHA_BIT) {
+		p_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR);
+	} else if (alpha == Image::ALPHA_BLEND) {
+		p_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+	}
+}
+
 void Builder::add(Node *p_parent, Node *p_child, bool p_readable_name) {
 	p_parent->add_child(p_child, p_readable_name);
 }
@@ -522,6 +617,7 @@ Ref<Material> Builder::material(const String &p_name, Vector2 &r_size) {
 				Ref<StandardMaterial3D> generated;
 				generated.instantiate();
 				generated->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, texture);
+				match_alpha(generated, texture->get_image());
 				mat = generated;
 			}
 		}
@@ -553,7 +649,9 @@ Ref<Material> Builder::pack_material(const String &p_name, const PackedByteArray
     generated->set_roughness(descriptor["roughness"]);
     generated->set_metallic(descriptor["metallic"]);
     generated->set_emission(Color(emission[0], emission[1], emission[2]));
+    generated->set_emission_energy_multiplier(descriptor.get("emission_energy", 1.0));
     generated->set_feature(BaseMaterial3D::FEATURE_EMISSION, true);
+    generated->set_normal_scale(descriptor.get("normal_strength", 1.0));
     if (double(albedo[3]) < 1.0) {
       generated->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
     }
@@ -599,6 +697,16 @@ Ref<Material> Builder::pack_material(const String &p_name, const PackedByteArray
       if (slot == "emission") {
         target = BaseMaterial3D::TEXTURE_EMISSION;
       }
+      if (slot == "height") {
+        target = BaseMaterial3D::TEXTURE_HEIGHTMAP;
+        generated->set_feature(BaseMaterial3D::FEATURE_HEIGHT_MAPPING, true);
+        generated->set_heightmap_scale(descriptor.get("height_scale", 1.0));
+        generated->set_flag(BaseMaterial3D::FLAG_INVERT_HEIGHTMAP, descriptor.get("height_flip", false));
+        generated->set_heightmap_deep_parallax(true);
+      }
+      if (target == BaseMaterial3D::TEXTURE_ALBEDO) {
+        match_alpha(generated, image);
+      }
       generated->set_texture(target, ImageTexture::create_from_image(image));
     }
     return generated;
@@ -617,16 +725,18 @@ Ref<Material> Builder::pack_material(const String &p_name, const PackedByteArray
 	image->generate_mipmaps();
 	Ref<StandardMaterial3D> generated;
 	generated.instantiate();
+	match_alpha(generated, image);
 	generated->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, ImageTexture::create_from_image(image));
 	return generated;
 }
 
 // True when the map's pack holds this model; r_node stays null when that entry fails.
 bool Builder::pack_model(const String &p_path, Node3D *&r_node) {
-	if (!p_path.to_lower().ends_with(".glb")) {
+	const String extension = p_path.get_extension().to_lower();
+	if (extension != "glb" && extension != "gltf") {
 		return false;
 	}
-	const String stem = ("models/" + p_path.left(p_path.length() - 4)).to_lower();
+	const String stem = ("models/" + p_path.get_basename()).to_lower();
 	if (!models.has(stem)) {
 		PackedByteArray bytes;
 		String problem;
@@ -891,7 +1001,12 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 	Array faces = p_brush.get("faces", Array());
 	bool displaced = false;
 	for (int i = 0; i < faces.size(); i++) {
-		displaced = displaced || Dictionary(faces[i]).has("disp_vertices");
+		const Dictionary face = faces[i];
+		displaced = displaced || face.has("disp_vertices");
+		// One clip face hides the whole brush, as in the editor.
+		if (equal_ignore_ascii_case(String(face.get("material", "")), "tools/clip")) {
+			p_surfaces = nullptr;
+		}
 	}
 	AABB bounds;
 	bool first = true;
@@ -944,7 +1059,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			triangles.push_back(points[k]);
 		}
 		String name = face.get("material", "");
-		// Hammer's tools/ materials (nodraw, clip, trigger) collide but are never drawn.
+		// Hammer's tools/ materials (nodraw, skip, clip, trigger) collide but are never drawn.
 		if (p_surfaces == nullptr || name.to_lower().begins_with("tools/")) {
 			continue;
 		}
@@ -1120,6 +1235,13 @@ void Builder::add_entity(const Dictionary &p_entity) {
 		if (node == nullptr) {
 			UtilityFunctions::push_warning("MapCraft: ", classname, " has no usable scene ", path, "; using a Node3D");
 		}
+		const String animation = String(properties.get("animation", "")).strip_edges();
+		if (node != nullptr && kind == "model" && !animation.is_empty()) {
+			autoplay(node, animation, String(properties.get("animation_loop", "")).strip_edges().to_lower());
+		}
+		if (node != nullptr && kind == "model") {
+			add_model_collision(node, String(properties.get("collision", "convex")).strip_edges().to_lower(), config);
+		}
 	}
 	if (node == nullptr) {
 		if (kind == "area") {
@@ -1274,9 +1396,13 @@ void Builder::add_environment(const Dictionary &p_properties) {
 		if (!p_properties.has(key)) { return fallback; }
 		const String raw = String(p_properties[key]).strip_edges();
 		const double value = raw.is_valid_float() ? raw.to_float() : NAN;
-		if (!Math::is_finite(value) || value < minimum || value > maximum) {
+		if (!Math::is_finite(value)) {
 			UtilityFunctions::push_warning("MapCraft: light_environment ", key, " must be finite and between ", minimum, " and ", maximum, "; using ", fallback);
 			return fallback;
+		}
+		if (value < minimum || value > maximum) {
+			UtilityFunctions::push_warning("MapCraft: light_environment ", key, " ", value, " is outside ", minimum, " to ", maximum, "; using ", CLAMP(value, minimum, maximum));
+			return CLAMP(value, minimum, maximum);
 		}
 		return value;
 	};
@@ -1337,9 +1463,38 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	environment->set_adjustment_brightness(bounded("adjustment_brightness", 1.0, 0.0, 8.0));
 	environment->set_adjustment_contrast(bounded("adjustment_contrast", 1.0, 0.0, 8.0));
 	environment->set_adjustment_saturation(bounded("adjustment_saturation", 1.0, 0.0, 8.0));
+	environment->set_glow_enabled(enabled("glow_enabled", false));
+	environment->set_glow_intensity(bounded("glow_intensity", 0.3, 0.0, 8.0));
+	environment->set_glow_strength(bounded("glow_strength", 1.0, 0.0, 2.0));
+	environment->set_glow_bloom(bounded("glow_bloom", 0.0, 0.0, 1.0));
+	environment->set_glow_hdr_bleed_threshold(bounded("glow_hdr_threshold", 1.0, 0.0, 4.0));
+	environment->set_glow_hdr_bleed_scale(bounded("glow_hdr_scale", 2.0, 0.0, 4.0));
+	environment->set_glow_hdr_luminance_cap(bounded("glow_hdr_luminance_cap", 12.0, 0.0, 256.0));
+	environment->set_glow_mix(bounded("glow_mix", 0.05, 0.0, 1.0));
+	const String blend = String(p_properties.get("glow_blend_mode", "1")).strip_edges().to_lower();
+	Environment::GlowBlendMode glow_blend = Environment::GLOW_BLEND_MODE_SCREEN;
+	if (blend == "0" || blend == "additive") { glow_blend = Environment::GLOW_BLEND_MODE_ADDITIVE; }
+	else if (blend == "2" || blend == "softlight") { glow_blend = Environment::GLOW_BLEND_MODE_SOFTLIGHT; }
+	else if (blend == "3" || blend == "replace") { glow_blend = Environment::GLOW_BLEND_MODE_REPLACE; }
+	else if (blend == "4" || blend == "mix") { glow_blend = Environment::GLOW_BLEND_MODE_MIX; }
+	else if (blend != "1" && blend != "screen") { UtilityFunctions::push_warning("MapCraft: unsupported glow_blend_mode ", blend, "; using screen"); }
+	environment->set_glow_blend_mode(glow_blend);
 	const double fog = bounded("fog_density", 0.0, 0.0, 1.0);
-	environment->set_fog_enabled(enabled("fog_enabled", fog > 0.0));
+	const double height_density = bounded("fog_height_density", 0.0, -16.0, 16.0);
+	environment->set_fog_enabled(enabled("fog_enabled", fog > 0.0 || height_density != 0.0));
 	environment->set_fog_density(fog);
+	const String fog_mode = String(p_properties.get("fog_mode", "0")).strip_edges().to_lower();
+	const bool depth = fog_mode == "depth" || (fog_mode.is_valid_float() && fog_mode.to_float() == 1.0);
+	if (!depth && fog_mode != "exponential" && !(fog_mode.is_valid_float() && fog_mode.to_float() == 0.0)) {
+		UtilityFunctions::push_warning("MapCraft: unsupported fog_mode ", fog_mode, "; using exponential");
+	}
+	environment->set_fog_mode(depth ? Environment::FOG_MODE_DEPTH : Environment::FOG_MODE_EXPONENTIAL);
+	environment->set_fog_depth_curve(bounded("fog_depth_curve", 1.0, 0.00001, 16.0));
+	environment->set_fog_depth_begin(bounded("fog_depth_begin", 10.0, 0.0, 4000.0));
+	environment->set_fog_depth_end(bounded("fog_depth_end", 100.0, 0.0, 4000.0));
+	environment->set_fog_height(bounded("fog_height", 0.0, -1024.0, 1024.0));
+	environment->set_fog_height_density(height_density);
+	environment->set_fog_aerial_perspective(bounded("fog_aerial_perspective", 0.0, 0.0, 1.0));
 	environment->set_fog_light_color(environment_color("fog_color", horizon));
 	environment->set_fog_light_energy(bounded("fog_light_energy", 1.0, 0.0, 64.0));
 	environment->set_fog_sun_scatter(bounded("fog_sun_scatter", 0.0, 0.0, 1.0));

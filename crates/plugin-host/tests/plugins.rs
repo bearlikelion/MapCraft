@@ -48,7 +48,11 @@ fn surf_ramp_and_bhop() {
     let out = p.run("surf_ramp", &trimmed, &ctx()).unwrap();
     assert_eq!(out.len(), 2, "the ramp and its trim");
     assert!(matches!(&out[1].kind, NodeKind::Entity(e) if e.classname == "func_illusionary"), "trim is drawn but never collides");
-    assert!(out[1].children.iter().all(|c| matches!(&c.kind, NodeKind::Brush(b) if b.faces.iter().all(|f| f.material == "trim"))));
+    let trim_faces: Vec<&str> = out[1].children.iter().filter_map(|c| c.kind.brush()).flat_map(|b| &b.faces).map(|f| f.material.as_str()).collect();
+    assert!(
+        trim_faces.iter().all(|m| *m == "trim" || *m == "tools/skip") && trim_faces.contains(&"trim"),
+        "trim shows outside, hidden faces skip: {trim_faces:?}"
+    );
 
     params["shape"] = json!("Right");
     params["smoothness"] = json!(8.0);
@@ -60,7 +64,9 @@ fn surf_ramp_and_bhop() {
         let NodeKind::Brush(b) = b.kind else { panic!() };
         let surf = b.faces.iter().filter(|f| f.material == "ramps-orange1").count();
         assert!((1..=2).contains(&surf), "a twisted surf face is one or two triangles, all surf: {surf}");
-        assert!(b.faces.iter().filter(|f| f.material == "side").count() >= 3);
+        let side = b.faces.iter().filter(|f| f.material == "side").count();
+        let skipped = b.faces.iter().filter(|f| f.material == "tools/skip").count();
+        assert!(side >= 1 && side + skipped >= 3, "sides take the side material, hidden ones skip: {side} {skipped}");
     }
 
     params["width"] = json!(-5);

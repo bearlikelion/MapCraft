@@ -47,7 +47,8 @@ The scene uses only Godot's built-in nodes, so your game needs neither the addon
 Here is what each part of the map becomes:
 
 - World brushes become one mesh, with a surface per material, and one collision body.
-- Faces with `tools/` materials (`tools/nodraw`, `tools/clip`, `tools/trigger`) collide but are not drawn.
+- Faces with `tools/` materials (`tools/nodraw`, `tools/skip`, `tools/trigger`) collide but are not drawn.
+- A brush with `tools/clip` on any face collides but draws none of its faces.
 - Point entities become `Marker3D` nodes and brush entities `Area3D` nodes, unless the entity map says otherwise, and their key values become metadata.
 - Props such as SurfsUp's `prop_static` place the model their `model` key names; see [Models](entities.md#models).
 - Prefab instances load the prefab's `.mcmap` as a scene instance.

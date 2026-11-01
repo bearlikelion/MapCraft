@@ -11,7 +11,7 @@ mod solid;
 mod winding;
 
 pub use aabb::Aabb;
-pub use glam::{DAffine2, DMat2, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4};
+pub use glam::{DAffine2, DMat2, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4, EulerRot};
 pub use hull::convex_hull;
 pub use plane::{Plane, Side};
 pub use solid::{Solid, SolidError, ray_hit};

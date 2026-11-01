@@ -158,16 +158,19 @@ impl MapCraftApp {
         }
         match self.tool {
             Tool::Select => {
-                "Click to select, click again to pick the object behind; drag to move, Alt+drag up and down in the 3D view; drag the white handles to resize; Shift+drag a face extrudes".into()
+                "Click to select, click again to pick the object behind; drag to move, Alt+drag up and down in the 3D view; drag the white handles to resize; Shift+drag a face extrudes, Ctrl+Shift splits off a new brush, Ctrl+Alt+Shift extrudes a new brush along its normal, Alt+Shift slides it".into()
             }
             Tool::Move => "Drag the selection or one of its arrows to move it; Alt+drag moves it up and down in the 3D view".into(),
             Tool::Extrude => {
-                "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt stamps one, Alt slides the face keeping its shape".into()
+                "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt extrudes a new brush along the face's normal, Alt slides the face keeping its shape".into()
             }
             Tool::Rotate => format!("Drag in a 2D view to turn the selection about its center, or drag a ring in the 3D view; {ROTATE_HINT}"),
             Tool::Scale => "Drag the white handles in a 2D view or the square handles in the 3D view to stretch the selection".into(),
             Tool::Block if self.plugin_shape.is_some() => "Click in a view to place it; its parameters are in the inspector".into(),
-            Tool::Block => format!("Drag in a 2D view to draw a {}; its depth matches the last brush", shape_name(self.shape)),
+            Tool::Block => match &self.block_class {
+                Some(class) => format!("Drag in a view to draw a {class} {}; its depth matches the last brush", shape_name(self.shape)),
+                None => format!("Drag in a 2D view to draw a {}; its depth matches the last brush", shape_name(self.shape)),
+            },
             Tool::Entity => format!(
                 "Click in a view to place {}; in the 3D view it rests on the face under the pointer; pick the class in the Entities tab",
                 self.entity_class

@@ -14,6 +14,7 @@ mod drop;
 mod icons;
 mod inspect;
 mod keys;
+mod material_inspector;
 mod measure;
 mod models;
 mod new_asset;

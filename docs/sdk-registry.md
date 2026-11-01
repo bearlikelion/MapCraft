@@ -107,7 +107,8 @@ That is `~/.local/share/mapcraft/sdks` on Linux, `%LOCALAPPDATA%\mapcraft\sdks` 
 - The SDK unpacks into a staging folder first; an older copy is swapped out only once the new one has loaded, and comes back if the swap fails.
 - An SDK installed or updated this way asks again before its compile profiles first run a program.
 
-User SDKs load before the source tree's and those in other SDK folders, so an installed copy wins over a development one without touching it.
+In release builds user SDKs load before the source tree's and those in other SDK folders, so an installed copy wins over a development one without touching it.
+Debug builds load the source tree's first, so an SDK being developed there wins over its installed copy.
 
 ## Removing
 

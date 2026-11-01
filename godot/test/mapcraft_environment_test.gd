@@ -15,6 +15,10 @@ func _initialize() -> void:
 		"fog_density": "0.01", "fog_light_energy": "2", "fog_sun_scatter": "0.3",
 		"fog_sky_affect": "0.4", "sky_curve": "0.3", "ground_curve": "0.2",
 		"sky_energy_multiplier": "2", "ground_energy_multiplier": "3",
+		"glow_enabled": "1", "glow_intensity": "1.5", "glow_bloom": "0.2",
+		"glow_hdr_threshold": "0.8", "glow_blend_mode": "0",
+		"fog_mode": "depth", "fog_depth_curve": "2", "fog_depth_begin": "5", "fog_depth_end": "50",
+		"fog_height": "-3", "fog_height_density": "0.5", "fog_aerial_perspective": "0.25",
 	})
 	var world: WorldEnvironment = map.get_node_or_null("WorldEnvironment") as WorldEnvironment
 	_expect(world != null, "environment node exists")
@@ -29,6 +33,16 @@ func _initialize() -> void:
 		_expect(is_equal_approx(env.fog_light_energy, 2.0), "fog energy")
 		_expect(is_equal_approx(env.fog_sun_scatter, 0.3), "fog scatter")
 		_expect(is_equal_approx(env.fog_sky_affect, 0.4), "fog sky affect")
+		_expect(env.glow_enabled and is_equal_approx(env.glow_intensity, 1.5), "glow intensity")
+		_expect(is_equal_approx(env.glow_bloom, 0.2), "glow bloom")
+		_expect(is_equal_approx(env.glow_hdr_threshold, 0.8), "glow threshold")
+		_expect(env.glow_blend_mode == Environment.GLOW_BLEND_MODE_ADDITIVE, "glow blend mode")
+		_expect(env.fog_mode == Environment.FOG_MODE_DEPTH, "depth fog")
+		_expect(is_equal_approx(env.fog_depth_curve, 2.0) and is_equal_approx(env.fog_depth_begin, 5.0) \
+				and is_equal_approx(env.fog_depth_end, 50.0), "depth fog range")
+		_expect(is_equal_approx(env.fog_height, -3.0) and is_equal_approx(env.fog_height_density, 0.5), \
+				"height fog")
+		_expect(is_equal_approx(env.fog_aerial_perspective, 0.25), "aerial perspective")
 		var sky: ProceduralSkyMaterial = env.sky.sky_material as ProceduralSkyMaterial
 		_expect(sky != null and is_equal_approx(sky.sky_curve, 0.3), "sky curve")
 		_expect(sky != null and is_equal_approx(sky.ground_energy_multiplier, 3.0), \
@@ -45,6 +59,11 @@ func _initialize() -> void:
 	_expect(world != null and not world.environment.fog_enabled, "explicit fog off")
 	_expect(world != null and world.environment.tonemap_mode == Environment.TONE_MAPPER_AGX, \
 			"AgX remains available in Godot")
+	map.free()
+	map = _build({"fog_density": "100"})
+	world = map.get_node_or_null("WorldEnvironment") as WorldEnvironment
+	_expect(world != null and world.environment.fog_enabled \
+			and is_equal_approx(world.environment.fog_density, 1.0), "out of range fog clamps")
 	map.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(PATH))
 	print("mapcraft environment test: %d failures" % _failures)

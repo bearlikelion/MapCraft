@@ -17,21 +17,23 @@ pub(crate) enum AssetKind {
     Model,
 }
 
-const SLOTS: [(TextureSlot, &str); 5] = [
+const SLOTS: [(TextureSlot, &str); 6] = [
     (TextureSlot::Albedo, "Albedo"),
     (TextureSlot::Normal, "Normal"),
     (TextureSlot::Roughness, "Roughness"),
     (TextureSlot::Metallic, "Metallic"),
     (TextureSlot::Emission, "Emission"),
+    (TextureSlot::Height, "Height"),
 ];
 
 /// The words at the end of a picture's name that say which map it is.
-const SLOT_WORDS: [(TextureSlot, &[&str]); 5] = [
+const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
     (TextureSlot::Albedo, &["albedo", "basecolor", "base_color", "diffuse", "color", "col"]),
     (TextureSlot::Normal, &["normal", "nrm", "nor"]),
     (TextureSlot::Roughness, &["roughness", "rough"]),
     (TextureSlot::Metallic, &["metallic", "metalness", "metal"]),
     (TextureSlot::Emission, &["emission", "emissive", "glow"]),
+    (TextureSlot::Height, &["height", "depth", "displacement", "disp"]),
 ];
 
 /// The open window and the files the snapshot tool picks in place of a file dialog.
@@ -160,8 +162,7 @@ fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[
         material.textures.insert(*slot, texture);
         files.push((path, bytes));
     }
-    material.validate()?;
-    let json = serde_json::to_vec_pretty(&material).map_err(|e| e.to_string())?;
+    let json = material.to_json()?;
     files.push((root.join(format!("materials/{name}.json")), json));
     write_all(&files)
 }
@@ -270,6 +271,7 @@ impl MapCraftApp {
                     }
                 });
                 ui.end_row();
+                crate::shader_editor::strength_rows(ui, &mut new.material);
             });
             if !new.error.is_empty() {
                 ui.colored_label(crate::chrome::ERROR, &new.error);
@@ -290,17 +292,52 @@ impl MapCraftApp {
         }
     }
 
-    fn create_new_asset(&mut self) {
-        // The assets go in a folder beside the map, so an untitled map is saved first.
-        if self.session.path.is_none() && self.new_assets.dialog.is_some() {
+    /// The folder beside the map that new materials and models go in, saving an untitled map first.
+    fn asset_root(&mut self) -> Result<PathBuf, String> {
+        if self.session.path.is_none() {
             self.save(false);
         }
-        let Some(new) = &mut self.new_assets.dialog else { return };
-        let Some(map) = self.session.path.clone() else {
-            new.error = "Save the map first: new materials and models go in a folder beside it".into();
-            return;
+        let map = self.session.path.clone().ok_or("Save the map first: new materials and models go in a folder beside it")?;
+        Ok(map.with_extension(""))
+    }
+
+    /// Loads the SDK again so assets just written under `root` show, keeping the brush material.
+    fn reload_asset_folder(&mut self, root: &Path) {
+        let tex = self.session.tex.clone();
+        if crate::assets::folders(&self.session.view).iter().any(|f| f.as_path() == root) {
+            self.load_project(self.session.sdk.clone());
+        } else {
+            self.add_asset_folder(root.to_path_buf());
+        }
+        self.session.tex = tex;
+    }
+
+    /// Copies a dropped `.glb` beside the map as Add Model does and returns its model path; a copy already there is reused.
+    pub(crate) fn add_dropped_model(&mut self, file: &Path) -> Result<String, String> {
+        let root = self.asset_root()?;
+        let path = model_path(&stem(file));
+        let dest = root.join(format!("models/{path}.glb"));
+        let model = match read_limited(&dest, pack::MAX_ENTRY_SIZE) {
+            Ok(have) if read_limited(file, pack::MAX_ENTRY_SIZE).is_ok_and(|b| b == have) => format!("models/{path}.glb"),
+            _ => create_model(&root, &path, file)?,
         };
-        let root = map.with_extension("");
+        self.reload_asset_folder(&root);
+        Ok(model)
+    }
+
+    fn create_new_asset(&mut self) {
+        if self.new_assets.dialog.is_none() {
+            return;
+        }
+        let root = self.asset_root();
+        let Some(new) = &mut self.new_assets.dialog else { return };
+        let root = match root {
+            Ok(root) => root,
+            Err(e) => {
+                new.error = e;
+                return;
+            }
+        };
         let result = match new.kind {
             AssetKind::Material if self.project.find_material(&new.name).is_some() => Err(format!("The SDK already has a material named {}", new.name)),
             AssetKind::Material => {
@@ -318,16 +355,10 @@ impl MapCraftApp {
         };
         let kind = new.kind;
         self.new_assets.dialog = None;
-        let mut tex = self.session.tex.clone();
-        if crate::assets::folders(&self.session.view).contains(&root) {
-            self.load_project(self.session.sdk.clone());
-        } else {
-            self.add_asset_folder(root.clone());
-        }
+        self.reload_asset_folder(&root);
         if kind == AssetKind::Material {
-            tex.material = added.clone();
+            self.session.tex.material = added.clone();
         }
-        self.session.tex = tex;
         self.status = format!("Added {added} to {}", root.display());
         self.output.push(self.status.clone());
     }

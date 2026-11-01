@@ -1,4 +1,4 @@
-//! Files dropped on the window: maps open, glTF files and files a plugin imports are added to the map, and pictures start a new material.
+//! Files dropped on the window: maps open, `.glb` models are placed as props, `.gltf` files and files a plugin imports are added to the map, and pictures start a new material.
 
 use std::path::{Path, PathBuf};
 
@@ -12,6 +12,8 @@ impl MapCraftApp {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         if is_map(path) {
             format!("Open {name}")
+        } else if is_glb(path) && self.project.models.class.is_some() {
+            format!("Place {name} as a model")
         } else if is_gltf(path) {
             format!("Import {name} as brushes")
         } else if is_picture(path) {
@@ -27,6 +29,7 @@ impl MapCraftApp {
     pub(crate) fn handle_drops(&mut self, ctx: &egui::Context) {
         let (hovered, dropped): (Vec<Option<PathBuf>>, Vec<PathBuf>) =
             ctx.input(|i| (i.raw.hovered_files.iter().map(|f| f.path.clone()).collect(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect()));
+        self.pointer = ctx.input(|i| i.pointer.latest_pos()).or(self.pointer);
         for path in dropped {
             self.drop_file(path);
         }
@@ -49,6 +52,8 @@ impl MapCraftApp {
     fn drop_file(&mut self, path: PathBuf) {
         if is_map(&path) {
             self.open_dialog_path(path);
+        } else if is_glb(&path) {
+            self.drop_model(&path);
         } else if is_gltf(&path) {
             self.import_gltf(&path);
         } else if is_picture(&path) {
@@ -59,6 +64,48 @@ impl MapCraftApp {
             self.status = self.drop_verb(&path);
         }
     }
+
+    /// Copies a dropped `.glb` beside the map and places it as a prop under the pointer, or imports it as brushes when the SDK has no prop class.
+    fn drop_model(&mut self, path: &Path) {
+        let Some(class) = self.project.models.class.clone() else {
+            self.import_gltf(path);
+            self.status = format!("This SDK has no prop class, so the model came in as brushes. {}", self.status);
+            return;
+        };
+        let model = match self.add_dropped_model(path) {
+            Ok(model) => model,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        self.project.models.request(&model);
+        self.project.models.chosen = Some(model.clone());
+        self.entity_class = class.clone();
+        let pointer = self.pointer;
+        let index = self
+            .panes
+            .iter()
+            .position(|p| pointer.is_some_and(|at| p.rect.contains(at)))
+            .filter(|i| self.maximized.is_none_or(|m| m == *i))
+            .or(self.maximized)
+            .unwrap_or(0);
+        let Some(rect) = self.panes.get(index).map(|p| p.rect) else { return };
+        let at = pointer.filter(|p| rect.contains(*p)).unwrap_or(rect.center());
+        let Some(spot) = self.entity_spot(index, rect, at) else {
+            self.status = format!("Added {model}; pick it in the Models tab to place it");
+            return;
+        };
+        match self.session.create_point_entity(&class, spot, self.new_entity_keys()) {
+            Ok(_) => self.status = format!("Placed {model}"),
+            Err(e) => self.status = e.to_string(),
+        }
+        self.mark_changed();
+    }
+}
+
+fn is_glb(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb"))
 }
 
 fn is_map(path: &Path) -> bool {

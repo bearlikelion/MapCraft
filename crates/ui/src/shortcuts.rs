@@ -95,6 +95,8 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.export_asset_pack", "Export Custom Asset Pack", ""),
     ("file.add_material", "Add Material", ""),
     ("file.add_model", "Add Model", ""),
+    ("material.inspect", "Inspect Material", ""),
+    ("material.revert", "Revert Material", ""),
     ("file.reload_assets", "Reload Assets", "F5"),
     ("edit.search", "Search Commands", "F3"),
     ("edit.preferences", "Preferences", "Ctrl+Comma"),

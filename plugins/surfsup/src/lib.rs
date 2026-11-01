@@ -16,6 +16,7 @@ use mapcraft::plugin::types::{Brush, CommandSpec, Entity, Face, Hull, ImporterSp
 wit_bindgen::generate!({ path: "../../wit", world: "scalable-plugin" });
 
 const SHAPES: &[&str] = &["Straight", "Left", "Right", "Up", "Down", "Dip", "Arc", "Spiral", "S-Curve"];
+const SKIP: &str = "tools/skip";
 
 struct SurfsUp;
 
@@ -137,6 +138,12 @@ fn ramp_command() -> CommandSpec {
                 Value::Number(d.trim_depth),
             ),
             material("trim_material", "Trim material", "Empty uses the side material"),
+            toggle(
+                "skip_hidden",
+                "Skip hidden faces",
+                "Puts tools/skip on the bottom and on faces pressed between pieces, so see-through materials do not show them; the game draws neither",
+                true,
+            ),
         ],
     }
 }
@@ -234,6 +241,7 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
     let or_side = |id: &str| if p.text(id).is_empty() { side } else { p.text(id) };
     let (bottom, trim) = (or_side("bottom_material"), or_side("trim_material"));
     let scale = p.num("uv_scale", 1.0);
+    let skip_hidden = p.flag("skip_hidden");
     let axis = |(a, offset): ramp::UvAxis| TexAxis { axis: v(a.normalize_or_zero()), offset: offset / scale, scale: scale / a.length().max(1e-9) };
     let brush = |piece: ramp::Piece, [surf, side, bottom]: [&str; 3]| {
         let faces = piece
@@ -242,6 +250,7 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
             .map(|f| Face {
                 points: (v(f.points[0]), v(f.points[1]), v(f.points[2])),
                 material: match f.slot {
+                    _ if skip_hidden && (f.inner || f.slot == ramp::Slot::Bottom) => SKIP,
                     ramp::Slot::Surf => surf,
                     ramp::Slot::Side => side,
                     ramp::Slot::Bottom => bottom,

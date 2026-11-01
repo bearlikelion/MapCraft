@@ -17,6 +17,8 @@ struct Globals {
     sky_ground: vec4<f32>,
     fog_color: vec4<f32>,
     fog: vec4<f32>,
+    fog_depth: vec4<f32>,
+    fog_height: vec4<f32>,
     tonemap: vec4<f32>,
     adjustments: vec4<f32>,
     sky_shape: vec4<f32>,
@@ -45,6 +47,12 @@ const PI: f32 = 3.14159265;
 
 override LAYERS: u32 = 1u;
 override ANTI_TILE: u32 = 0u;
+// See-through surfaces show only faces turned toward the camera, as Godot draws them, so a glass brush's far side stays hidden.
+override CULL_BACK: bool = false;
+
+fn culled(i: MeshOut) -> bool {
+    return CULL_BACK && dot(i.normal, globals.eye.xyz - i.world) < 0.0;
+}
 
 // Shared with mapcraft_geom::noise and the Godot addon's mapcraft_surface.gdshaderinc; change all three together.
 const BLEND_DEPTH: f32 = 0.1;
@@ -262,6 +270,9 @@ fn vs_mesh(v: MeshIn) -> MeshOut {
 
 @fragment
 fn fs_mesh(i: MeshOut) -> @location(0) vec4<f32> {
+    if culled(i) {
+        discard;
+    }
     let shade = 0.6 + 0.4 * abs(dot(normalize(i.normal), globals.light_dir.xyz));
     let c = albedo(i).color;
     return vec4<f32>(paint_overlay(c.rgb * shade, i), c.a);
@@ -281,6 +292,9 @@ fn env_brdf(f0: vec3<f32>, rough: f32, nv: f32) -> vec3<f32> {
 
 @fragment
 fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
+    if culled(i) {
+        discard;
+    }
     let a = albedo(i);
     let c = a.color;
     let maps = layer_maps(normal_map, orm_map, samp, i.uv, a.hex_a);
@@ -349,9 +363,9 @@ fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
     let ambient = (diffuse * hemisphere(n) + env_brdf(f0, rough, nv) * hemisphere(r)) * orm.r;
     // A lightmap byte tops out at twice the texture's brightness.
     let lightmapped = diffuse * pow(clamp(max(lightmap, globals.minlight.rgb), vec3<f32>(0.0), vec3<f32>(2.0)), vec3<f32>(2.2));
-    var emitted = layer(emission_map, samp, i.uv).color.rgb * material.emission.rgb;
+    var emitted = (layer(emission_map, samp, i.uv).color.rgb + material.emission.rgb) * material.emission.a;
     if LAYERS == 2u {
-        emitted = mix(emitted, layer(emission_b, samp_b, i.blend_uv).color.rgb * material_b.emission.rgb, a.share);
+        emitted = mix(emitted, (layer(emission_b, samp_b, i.blend_uv).color.rgb + material_b.emission.rgb) * material_b.emission.a, a.share);
     }
     let color = max(sum, vec3<f32>(0.0)) + lightmapped + ambient + emitted;
     return vec4<f32>(paint_overlay(environment_color(color, i.world), i), c.a);
@@ -385,6 +399,9 @@ fn tone_adjust(c: vec3<f32>) -> vec3<f32> {
 
 fn fog_light(direction: vec3<f32>) -> vec3<f32> {
     var color = globals.fog_color.rgb * globals.fog_color.w;
+    // Godot blends toward its blurred sky; the procedural sky's gradient stands in for it.
+    let sky = mix(globals.sky_horizon.rgb, globals.sky_top.rgb, clamp(direction.z, 0.0, 1.0)) * globals.sky_shape.z;
+    color = mix(color, sky, globals.fog_depth.w);
     if globals.ambient.w > 0.0 && globals.lights[0].pos.w == 0.0 {
         color += globals.lights[0].color.rgb * pow(max(dot(direction, globals.lights[0].pos.xyz), 0.0), 8.0) * globals.fog.y;
     }
@@ -396,8 +413,16 @@ fn environment_color(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let delta = world - globals.eye.xyz;
     let distance = length(delta);
     let direction = delta / max(distance, 0.0001);
-    // Map space uses inches; Godot's fog density is per meter.
-    let amount = 1.0 - exp(-distance / 39.37 * globals.fog.x);
+    // Map space uses inches; Godot's fog distances and densities are in meters.
+    let meters = distance / 39.37;
+    var amount = 1.0 - exp(-meters * globals.fog.x);
+    if globals.fog.w > 0.5 {
+        let end = select(4000.0, globals.fog_depth.z, globals.fog_depth.z > 0.0);
+        amount = pow(smoothstep(min(globals.fog_depth.y, end - 0.001), end, meters), globals.fog_depth.x) * globals.fog.x;
+    }
+    if abs(globals.fog_height.y) >= 0.0001 {
+        amount = max(amount, 1.0 - exp(min(0.0, (world.z / 39.37 - globals.fog_height.x) * globals.fog_height.y)));
+    }
     return tone_adjust(mix(c, fog_light(direction), clamp(amount, 0.0, 1.0)));
 }
 
@@ -452,7 +477,7 @@ fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
     if c.a < 0.5 {
         discard;
     }
-    let emitted = textureSample(emission_map, samp, i.uv).rgb * material.emission.rgb;
+    let emitted = (textureSample(emission_map, samp, i.uv).rgb + material.emission.rgb) * material.emission.a;
     return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
 }
 
@@ -504,7 +529,7 @@ fn fs_sky(i: SkyOut) -> @location(0) vec4<f32> {
     }
     let ground = mix(globals.sky_horizon.rgb, globals.sky_ground.rgb, clamp(1.0 - pow(1.0 - (v - PI * 0.5) / (PI * 0.5), 1.0 / globals.sky_shape.y), 0.0, 1.0)) * globals.sky_shape.w;
     var background = select(ground, sky, d.z >= 0.0);
-    if globals.fog.x > 0.0 { background = mix(background, fog_light(d), globals.fog.z); }
+    if globals.fog.x > 0.0 || abs(globals.fog_height.y) >= 0.0001 { background = mix(background, fog_light(d), globals.fog.z); }
     return vec4<f32>(tone_adjust(background), 1.0);
 }
 

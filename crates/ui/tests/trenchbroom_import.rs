@@ -35,7 +35,7 @@ fn imports_a_trenchbroom_game_as_an_sdk() {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert_eq!(h.state().sdk_ids_for_test().first().map(String::as_str), Some("ui-test-game"), "the import lands in the user SDK folder");
+    assert!(h.state().sdk_ids_for_test().iter().any(|id| id == "ui-test-game"), "the import is listed");
     assert!(settings.path().join("data/sdks/ui-test-game/fgd/ui.fgd").is_file());
     h.run_steps(2);
     assert!(h.query_by_label_contains("Imported UI Test Game").is_some(), "the result shows in the SDK Manager");
