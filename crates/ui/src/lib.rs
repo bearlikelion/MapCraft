@@ -29,6 +29,7 @@ mod shader_syntax;
 mod shortcuts;
 mod thumbs;
 mod transform;
+mod updates;
 mod uv;
 mod vertex;
 mod viewport;

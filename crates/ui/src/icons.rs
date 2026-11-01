@@ -188,6 +188,7 @@ pub(crate) fn action_icon(id: &str) -> Option<&'static str> {
         "run.cancel" => "square",
         "help.shortcuts" => "keyboard",
         "help.about" => "help",
+        "help.check_updates" => "arrows_clockwise",
         _ => return None,
     })
 }

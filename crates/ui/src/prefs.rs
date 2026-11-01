@@ -11,6 +11,8 @@ pub struct Prefs {
     pub sdk_dirs: Vec<String>,
     /// SDK registry URLs or paths the SDK Manager lists SDKs from.
     pub registries: Vec<String>,
+    /// Look for MapCraft and SDK updates at launch.
+    pub check_updates: bool,
     /// Per SDK id, the folders and programs the user picked for its `paths`.
     pub sdk_paths: BTreeMap<String, BTreeMap<String, String>>,
     /// Per SDK id, the user's own texture folders, searched after the SDK's.
@@ -38,6 +40,7 @@ impl Default for Prefs {
             last_sdk: None,
             sdk_dirs: Vec::new(),
             registries: vec![mapcraft_sdk_manager::DEFAULT_REGISTRY.to_string()],
+            check_updates: true,
             sdk_paths: BTreeMap::new(),
             sdk_textures: BTreeMap::new(),
             hidden_textures: BTreeMap::new(),

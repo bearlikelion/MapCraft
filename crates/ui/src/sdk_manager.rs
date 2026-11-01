@@ -40,10 +40,10 @@ enum Tab {
 }
 
 /// Work on a background thread; `poll` gives its result once, or an error if the thread died.
-struct Job<T>(mpsc::Receiver<T>);
+pub(crate) struct Job<T>(mpsc::Receiver<T>);
 
 impl<T: Send + 'static> Job<T> {
-    fn spawn(f: impl FnOnce() -> T + Send + 'static) -> Self {
+    pub(crate) fn spawn(f: impl FnOnce() -> T + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(f());
@@ -51,7 +51,7 @@ impl<T: Send + 'static> Job<T> {
         Self(rx)
     }
 
-    fn poll(&self) -> Option<Result<T, String>> {
+    pub(crate) fn poll(&self) -> Option<Result<T, String>> {
         match self.0.try_recv() {
             Ok(v) => Some(Ok(v)),
             Err(mpsc::TryRecvError::Empty) => None,
@@ -189,6 +189,8 @@ pub(crate) struct SdkManager {
     /// Folder name of the user SDK waiting for the remove confirmation.
     confirm_remove: Option<String>,
     download: Option<Download>,
+    /// Updates waiting for the download to finish, from the update banner.
+    queue: Vec<(String, Entry)>,
     new_id: String,
     new_name: String,
     /// A TrenchBroom game folder or Godot project to import.
@@ -625,7 +627,7 @@ impl MapCraftApp {
         self.sdk_manager.running.push((dir, job));
     }
 
-    fn fetch_registries(&mut self) {
+    pub(crate) fn fetch_registries(&mut self) {
         let urls = self.prefs.get().registries.clone();
         self.sdk_manager.fetching =
             Some(Job::spawn(move || urls.into_iter().map(|u| (u.clone(), manager::fetch_registry(&u).map_err(|e| e.to_string()))).collect()));
@@ -728,13 +730,22 @@ impl MapCraftApp {
         busy |= m.download.is_some() && finished.is_none();
         if let Some((entry, result)) = finished {
             m.download = None;
+            let update = self.sdks.iter().any(|i| i.origin == Origin::User && i.sdk.as_ref().is_ok_and(|s| s.manifest.id == entry.id));
             m.note = Some(match &result {
                 Ok(sdk) => (true, format!("Installed {} {} into {}", sdk.manifest.name, sdk.manifest.version, sdk.dir.display())),
                 Err(e) => (false, format!("{} was not installed: {e}", entry.name)),
             });
-            if let Ok(sdk) = result {
-                self.sdk_installed(sdk);
+            match result {
+                Ok(sdk) if update => self.sdk_changed(&sdk.manifest.id),
+                Ok(sdk) => self.sdk_installed(sdk),
+                Err(_) => {}
             }
+        }
+        if self.sdk_manager.download.is_none()
+            && let Some((registry, entry)) = self.sdk_manager.queue.pop()
+        {
+            self.start_install(registry, entry);
+            busy = true;
         }
         match imported {
             Some(Ok((sdk, notes))) => {
@@ -751,6 +762,36 @@ impl MapCraftApp {
         if busy {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+    }
+
+    /// Newer registry versions of user-installed SDKs, or `None` while the registries load.
+    pub(crate) fn sdk_updates(&self) -> Option<Vec<(String, Entry)>> {
+        let m = &self.sdk_manager;
+        let registries = m.registries.as_ref().filter(|_| m.fetching.is_none())?;
+        let mut out: Vec<(String, Entry)> = Vec::new();
+        for (url, e) in registries.iter().filter_map(|(u, r)| Some((u, r.as_ref().ok()?))).flat_map(|(u, r)| r.sdks.iter().map(move |e| (u, e))) {
+            let first = self.sdks.iter().find(|i| i.sdk.as_ref().is_ok_and(|s| s.manifest.id == e.id));
+            let Some(Ok(have)) = first.filter(|i| i.origin == Origin::User).map(|i| &i.sdk) else { continue };
+            if manager::newer(&e.version, &have.manifest.version) && e.unsupported().is_none() && !out.iter().any(|(_, o)| o.id == e.id) {
+                out.push((url.clone(), e.clone()));
+            }
+        }
+        Some(out)
+    }
+
+    /// Installs `updates` one after another, without asking for each.
+    pub(crate) fn update_sdks(&mut self, updates: Vec<(String, Entry)>) {
+        self.sdk_manager.queue.extend(updates);
+    }
+
+    /// The name of the SDK downloading now, while any are.
+    pub(crate) fn sdk_downloading(&self) -> Option<&str> {
+        self.sdk_manager.download.as_ref().map(|d| d.entry.name.as_str())
+    }
+
+    /// Whether the registries are loaded or loading.
+    pub(crate) fn registries_requested(&self) -> bool {
+        self.sdk_manager.registries.is_some() || self.sdk_manager.fetching.is_some()
     }
 
     fn sdk_modals(&mut self, ctx: &egui::Context) {

@@ -721,6 +721,7 @@ impl MapCraftApp {
                     prefs.registries.insert(0, default.to_string());
                 }
             });
+            ui.checkbox(&mut prefs.check_updates, "Check for MapCraft and SDK updates at launch");
             ui.separator();
             egui::CollapsingHeader::new("Key bindings").show(ui, |ui| {
                 ui.label("Type a chord such as Ctrl+Shift+K; clear it to unbind.");

@@ -7,6 +7,7 @@ mod check;
 mod install;
 mod registry;
 mod trenchbroom;
+pub mod update;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

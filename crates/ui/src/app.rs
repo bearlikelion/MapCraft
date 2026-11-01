@@ -217,7 +217,7 @@ pub struct MapCraftApp {
     /// The compile profile Run Last Profile repeats.
     last_compile: Option<usize>,
     /// Quit was asked for from a menu or shortcut.
-    quit_requested: bool,
+    pub(crate) quit_requested: bool,
     /// SDK paths were edited since the SDK last loaded.
     sdk_paths_changed: bool,
     /// FGD-driven property widgets; off shows raw key values (Hammer's SmartEdit).
@@ -228,6 +228,7 @@ pub struct MapCraftApp {
     /// The SDK the SDK Settings window edits, when not the map's own.
     pub(crate) sdk_settings_for: Option<Sdk>,
     pub(crate) sdk_manager: crate::sdk_manager::SdkManager,
+    pub(crate) updates: crate::updates::Updates,
     pending: Option<Pending>,
     pub(crate) confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
@@ -374,6 +375,7 @@ impl MapCraftApp {
             show_sdk_dialog: false,
             sdk_settings_for: None,
             sdk_manager: crate::sdk_manager::SdkManager::default(),
+            updates: crate::updates::Updates::default(),
             pending: None,
             confirm_tools: None,
             compile: None,
@@ -397,6 +399,12 @@ impl MapCraftApp {
         app.session.grid = grid;
         app.rescan_sdks();
         app.sdk_manager.first_run = !app.sdks.iter().any(|i| i.sdk.is_ok());
+        if options.settings_dir.is_none() && app.screenshot.is_none() {
+            crate::updates::clean();
+            if app.prefs.get().check_updates {
+                app.check_updates(false);
+            }
+        }
         if app.screenshot.is_none() {
             app.control = app.data_dir.as_deref().and_then(|d| crate::control::start(d, &cc.egui_ctx));
         }
@@ -1212,6 +1220,7 @@ impl MapCraftApp {
             "file.quit" => self.quit_requested = true,
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
             "help.about" => self.dialogs.about = true,
+            "help.check_updates" => self.check_updates(true),
             "file.publish_workshop" => self.open_workshop(),
             "tools.check_problems" => self.check_problems(),
             "layer.new" => {
@@ -1566,6 +1575,7 @@ impl MapCraftApp {
             });
             ui.menu_button("Help", |ui| {
                 self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
+                self.action_button(ui, "help.check_updates", "Check for Updates", true);
                 ui.separator();
                 self.action_button(ui, "help.about", &format!("About {}", crate::BRAND), true);
             });
@@ -1664,6 +1674,7 @@ impl MapCraftApp {
                 Some(_) => {
                     self.shader_quit_dialog = false;
                     self.shader_quit_approved = false;
+                    self.updates.relaunch = false;
                 }
                 None => {}
             }
@@ -1690,6 +1701,7 @@ impl MapCraftApp {
                 Some(2) => self.run_pending(action),
                 Some(_) => {
                     self.shader_quit_approved = false;
+                    self.updates.relaunch = false;
                 }
                 None => self.pending = Some(action),
             }
@@ -2295,6 +2307,7 @@ impl eframe::App for MapCraftApp {
             ui.add_space(2.0);
             self.top_bar(ui);
             ui.add_space(2.0);
+            self.update_bar(ui);
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         if self.show_bottom {
@@ -2339,6 +2352,9 @@ impl eframe::App for MapCraftApp {
     }
 
     fn on_exit(&mut self) {
+        if self.updates.relaunch {
+            crate::updates::relaunch();
+        }
         for a in self.autosave_path().into_iter().chain(self.recovered.take()) {
             let _ = std::fs::remove_file(a);
         }

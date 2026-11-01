@@ -114,6 +114,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.quit", "Quit", "Ctrl+Q"),
     ("help.shortcuts", "Keyboard Shortcuts", "F1"),
     ("help.about", "About MapCraft", ""),
+    ("help.check_updates", "Check for Updates", ""),
     ("tools.check_problems", "Check for Problems", "Alt+P"),
     ("prefab.save", "Save Selection as Prefab", "Ctrl+Shift+P"),
     ("prefab.insert", "Insert Prefab", "Ctrl+Alt+P"),
