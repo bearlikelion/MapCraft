@@ -22,6 +22,11 @@
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/json.hpp>
+#include <godot_cpp/classes/light3d.hpp>
+#include <godot_cpp/classes/lightmap_gi.hpp>
+#include <godot_cpp/classes/lightmap_gi_data.hpp>
+#include <godot_cpp/classes/texture2d_array.hpp>
+#include <godot_cpp/templates/rb_map.hpp>
 #include <godot_cpp/classes/marker3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
@@ -690,6 +695,82 @@ void autoplay(Node3D *p_model, const String &p_animation, const String &p_loop) 
 	UtilityFunctions::push_warning("MapCraft: ", p_model->get_name(), " has no animation ", p_animation);
 }
 
+// Baked lighting from a .mclight file (docs/mclight-format.md): where each face's luxels are, and the atlas.
+struct Lighting {
+	struct Face {
+		int slice = 0;
+		float uv[8] = {};
+	};
+	HashMap<uint64_t, Face> faces;
+	Ref<Texture2DArray> texture;
+
+	static uint64_t key(uint64_t p_node, uint32_t p_face) {
+		return (p_node << 16) ^ uint64_t(p_face & 0xFFFF);
+	}
+
+	Error parse(const PackedByteArray &p_bytes, String &r_error) {
+		const int64_t total = p_bytes.size();
+		if (total < 28 || p_bytes[0] != 'M' || p_bytes[1] != 'C' || p_bytes[2] != 'L' || p_bytes[3] != 'M') {
+			r_error = "is not MapCraft baked lighting";
+			return ERR_FILE_UNRECOGNIZED;
+		}
+		if (p_bytes.decode_u32(4) != 2) {
+			r_error = "is a lighting version this addon does not read; bake the lighting again";
+			return ERR_FILE_UNRECOGNIZED;
+		}
+		const int64_t size = p_bytes.decode_u32(16);
+		const int64_t slices = p_bytes.decode_u32(20);
+		const int64_t count = p_bytes.decode_u32(24);
+		if (size < 1 || size > 8192 || slices < 1 || slices > 64 || count > 4000000 || 28 + count * 48 + 8 > total) {
+			r_error = "has a damaged header";
+			return ERR_FILE_CORRUPT;
+		}
+		int64_t at = 28;
+		for (int64_t i = 0; i < count; i++, at += 48) {
+			Face face;
+			face.slice = int(p_bytes.decode_u32(at + 12));
+			bool finite = face.slice < slices;
+			for (int k = 0; k < 8; k++) {
+				face.uv[k] = float(p_bytes.decode_float(at + 16 + k * 4));
+				finite = finite && Math::is_finite(face.uv[k]);
+			}
+			if (!finite) {
+				r_error = "has a face with a bad slice or mapping";
+				return ERR_FILE_CORRUPT;
+			}
+			faces.insert(key(p_bytes.decode_u64(at), p_bytes.decode_u32(at + 8)), face);
+		}
+		const int64_t packed = int64_t(p_bytes.decode_u64(at));
+		at += 8;
+		const int64_t layer = size * size * 4;
+		const int64_t expected = slices * 4 * layer;
+		if (packed < 1 || packed > total - at || expected > (int64_t(1) << 30)) {
+			r_error = "has damaged or oversized texels";
+			return ERR_FILE_CORRUPT;
+		}
+		const PackedByteArray texels = p_bytes.slice(at, at + packed).decompress(expected, FileAccess::COMPRESSION_DEFLATE);
+		if (texels.size() != expected) {
+			r_error = "has texels that do not decompress";
+			return ERR_FILE_CORRUPT;
+		}
+		TypedArray<Image> layers;
+		for (int64_t i = 0; i < slices * 4; i++) {
+			Ref<Image> image = Image::create_from_data(int32_t(size), int32_t(size), false, Image::FORMAT_RGBE9995, texels.slice(i * layer, (i + 1) * layer));
+			if (image.is_null()) {
+				r_error = "has a layer Godot cannot make an image of";
+				return ERR_FILE_CORRUPT;
+			}
+			layers.push_back(image);
+		}
+		texture.instantiate();
+		if (texture->create_from_images(layers) != OK) {
+			r_error = "has layers Godot cannot make a texture of";
+			return ERR_FILE_CORRUPT;
+		}
+		return OK;
+	}
+};
+
 class Builder {
 	Node3D *root;
 	const MapCraftBuildOptions &options;
@@ -707,6 +788,10 @@ class Builder {
 	bool has_environment = false;
 	MapCraftPack pack;
 	String pack_path;
+	Lighting lighting;
+	bool lit = false;
+	// Mesh instances drawn with the baked lighting, and the atlas slice each samples.
+	Vector<std::pair<MeshInstance3D *, int>> lightmap_users;
 	Ref<ShaderMaterial> sky_shader;
 	// Brush shaders by source, so brushes with the same code share a material and a surface.
 	HashMap<String, Ref<ShaderMaterial>> brush_shaders;
@@ -746,6 +831,8 @@ class Builder {
 	MeshInstance3D *make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset);
 	void add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset);
 	void add(Node *p_parent, Node *p_child, bool p_readable_name);
+	void load_lighting();
+	void add_lightmap();
 
 public:
 	Builder(Node3D *p_root, const MapCraftBuildOptions &p_options) :
@@ -1255,6 +1342,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 
 	PackedVector3Array hull;
 	PackedVector3Array triangles;
+	const uint64_t node_id = uint64_t(int64_t(p_brush.get("id", -1)));
 	const Ref<ShaderMaterial> shaded = p_surfaces != nullptr ? embedded_shader(p_brush, Shader::MODE_SPATIAL) : Ref<ShaderMaterial>();
 	for (int i = 0; i < faces.size(); i++) {
 		Dictionary face = faces[i];
@@ -1294,9 +1382,12 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 		const AntiTile mode = anti_tile_of(face);
 		Vector2 size;
 		Ref<Material> face_material = variant(name, String(), mode, size);
+		const Lighting::Face *baked = lit ? lighting.faces.getptr(Lighting::key(node_id, uint32_t(i))) : nullptr;
+		// Faces on each lightmap slice get surfaces of their own, which make_mesh gives meshes of their own.
+		const String slice = baked != nullptr ? "#lm" + itos(baked->slice) : String();
 		Ref<SurfaceTool> st = shaded.is_valid()
-				? surface_for(*p_surfaces, "shader:" + itos(shaded->get_instance_id()), shaded)
-				: surface_for(*p_surfaces, surface_key(name, String(), mode), face_material);
+				? surface_for(*p_surfaces, "shader:" + itos(shaded->get_instance_id()) + slice, shaded)
+				: surface_for(*p_surfaces, surface_key(name, String(), mode) + slice, face_material);
 		Dictionary u = face.get("u", Dictionary());
 		Dictionary v = face.get("v", Dictionary());
 		Vector3 u_axis = read_vec3(u.get("axis", Array()));
@@ -1314,6 +1405,10 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 			const Vector3 &m = map_points[k];
 			st->set_normal(normal);
 			st->set_uv(Vector2((m.dot(u_axis) / u_scale + u_offset) / size.x, (m.dot(v_axis) / v_scale + v_offset) / size.y));
+			if (baked != nullptr) {
+				const float *r = baked->uv;
+				st->set_uv2(Vector2(r[0] * m.x + r[1] * m.y + r[2] * m.z + r[3], r[4] * m.x + r[5] * m.y + r[6] * m.z + r[7]));
+			}
 			st->add_vertex(points[k]);
 		};
 		// Polygons are counter-clockwise seen from outside; Godot treats clockwise as front.
@@ -1337,9 +1432,17 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 }
 
 MeshInstance3D *Builder::make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset) {
-	Ref<ArrayMesh> mesh;
-	mesh.instantiate();
+	// Godot gives a mesh instance one lightmap slice, so lightmapped surfaces split off by slice; -1 is unlit.
+	RBMap<int, Ref<ArrayMesh>> meshes;
 	for (KeyValue<String, Ref<SurfaceTool>> &kv : p_surfaces) {
+		const int at = kv.key.rfind("#lm");
+		const int slice = at >= 0 ? kv.key.substr(at + 3).to_int() : -1;
+		if (!meshes.has(slice)) {
+			Ref<ArrayMesh> mesh;
+			mesh.instantiate();
+			meshes.insert(slice, mesh);
+		}
+		Ref<ArrayMesh> mesh = meshes[slice];
 		kv.value->generate_tangents();
 		kv.value->commit(mesh);
 		int surface = mesh->get_surface_count() - 1;
@@ -1349,11 +1452,94 @@ MeshInstance3D *Builder::make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset
 			mesh->surface_set_material(surface, *mat);
 		}
 	}
-	MeshInstance3D *mi = memnew(MeshInstance3D);
-	mi->set_name("Mesh");
-	mi->set_mesh(mesh);
-	mi->set_position(-p_offset);
-	return mi;
+	MeshInstance3D *first = nullptr;
+	for (const KeyValue<int, Ref<ArrayMesh>> &kv : meshes) {
+		MeshInstance3D *mi = memnew(MeshInstance3D);
+		mi->set_mesh(kv.value);
+		if (first == nullptr) {
+			first = mi;
+			mi->set_name("Mesh");
+			mi->set_position(-p_offset);
+		} else {
+			mi->set_name("Lightmap" + itos(kv.key));
+			first->add_child(mi);
+		}
+		if (kv.key >= 0) {
+			lightmap_users.push_back({ mi, kv.key });
+		}
+	}
+	if (first == nullptr) {
+		first = memnew(MeshInstance3D);
+		first->set_name("Mesh");
+	}
+	return first;
+}
+
+void Builder::load_lighting() {
+	PackedByteArray bytes;
+	String from = pack_path;
+	if (!pack.lighting(bytes)) {
+		// A plain .mcmap finds the .mclight the editor bakes beside it.
+		from = options.source_path.get_basename() + ".mclight";
+		if (options.source_path.is_empty() || options.source_path.get_extension().to_lower() == "mcpck" || !FileAccess::file_exists(from)) {
+			return;
+		}
+		bytes = FileAccess::get_file_as_bytes(from);
+	}
+	String error;
+	if (lighting.parse(bytes, error) != OK) {
+		UtilityFunctions::push_error("MapCraft: the baked lighting in ", from, " ", error, ", so the map uses realtime lighting");
+		lighting = Lighting();
+		return;
+	}
+	lit = true;
+}
+
+void Builder::add_lightmap() {
+	LightmapGI *gi = memnew(LightmapGI);
+	gi->set_name("BakedLighting");
+	gi->set_directional(true);
+	add(root, gi, false);
+	Ref<LightmapGIData> data;
+	data.instantiate();
+	data->set_uses_spherical_harmonics(true);
+	// The L1 bands are stored divided by L0 the way Godot 4.4's baker packs them; this internal flag says so.
+	data->set("_uses_packed_directional", true);
+	TypedArray<TextureLayered> textures;
+	textures.push_back(lighting.texture);
+	data->set_lightmap_textures(textures);
+	AABB bounds;
+	bool first = true;
+	for (const std::pair<MeshInstance3D *, int> &user : lightmap_users) {
+		data->add_user(gi->get_path_to(user.first), Rect2(0, 0, 1, 1), user.second, -1);
+		Transform3D to_root;
+		for (Node *n = user.first; n != nullptr && n != root; n = n->get_parent()) {
+			if (Node3D *n3 = Object::cast_to<Node3D>(n)) {
+				to_root = n3->get_transform() * to_root;
+			}
+		}
+		const AABB box = to_root.xform(user.first->get_aabb());
+		bounds = first ? box : bounds.merge(box);
+		first = false;
+	}
+	// Godot culls a lightmap by its probe bounds, and drops empty probe data's bounds, so one tetrahedron spans the map.
+	bounds = bounds.grow(1.0);
+	const Vector3 lo = bounds.position;
+	const Vector3 hi = bounds.get_end();
+	Dictionary probes;
+	probes["bounds"] = bounds;
+	probes["points"] = PackedVector3Array({ lo, Vector3(hi.x * 3.0 - lo.x * 2.0, lo.y, lo.z), Vector3(lo.x, hi.y * 3.0 - lo.y * 2.0, lo.z), Vector3(lo.x, lo.y, hi.z * 3.0 - lo.z * 2.0) });
+	PackedColorArray sh;
+	sh.resize(36);
+	sh.fill(Color(0, 0, 0, 0));
+	probes["sh"] = sh;
+	probes["tetrahedra"] = PackedInt32Array({ 0, 1, 2, 3 });
+	// One BSP node whose both sides lead to tetrahedron 0, encoded as -1.
+	probes["bsp"] = PackedInt32Array({ 0, 0, 0, 0, -1, -1 });
+	probes["interior"] = false;
+	probes["baked_exposure"] = 1.0;
+	data->set("probe_data", probes);
+	gi->set_light_data(data);
 }
 
 void Builder::add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset) {
@@ -1717,13 +1903,14 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	const double fog = bounded("fog_density", 0.0, 0.0, 1.0);
 	const double height_density = bounded("fog_height_density", 0.0, -16.0, 16.0);
 	environment->set_fog_enabled(enabled("fog_enabled", fog > 0.0 || height_density != 0.0));
-	environment->set_fog_density(fog);
 	const String fog_mode = String(p_properties.get("fog_mode", "0")).strip_edges().to_lower();
 	const bool depth = fog_mode == "depth" || (fog_mode.is_valid_float() && fog_mode.to_float() == 1.0);
 	if (!depth && fog_mode != "exponential" && !(fog_mode.is_valid_float() && fog_mode.to_float() == 0.0)) {
 		UtilityFunctions::push_warning("MapCraft: unsupported fog_mode ", fog_mode, "; using exponential");
 	}
+	// Godot's set_fog_mode resets the density, so the density goes in after it.
 	environment->set_fog_mode(depth ? Environment::FOG_MODE_DEPTH : Environment::FOG_MODE_EXPONENTIAL);
+	environment->set_fog_density(fog);
 	environment->set_fog_depth_curve(bounded("fog_depth_curve", 1.0, 0.00001, 16.0));
 	environment->set_fog_depth_begin(bounded("fog_depth_begin", 10.0, 0.0, 4000.0));
 	environment->set_fog_depth_end(bounded("fog_depth_end", 100.0, 0.0, 4000.0));
@@ -1753,6 +1940,10 @@ void Builder::add_environment(const Dictionary &p_properties) {
 	sun->set_param(Light3D::PARAM_ENERGY, bounded("sun_energy", 1.0, 0.0, 64.0));
 	sun->set_shadow(number_key(p_properties, "shadows", 1.0) != 0.0);
 	sun->set_param(Light3D::PARAM_SHADOW_MAX_DISTANCE, 1000.0);
+	// Baked lighting already holds the sun, so it lights only what moves, such as players.
+	if (lit) {
+		sun->set_bake_mode(Light3D::BAKE_STATIC);
+	}
 	add(root, sun, false);
 }
 
@@ -1771,6 +1962,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		String error;
 		if (FileAccess::file_exists(pack_path) && pack.open(pack_path, error) != OK) {
 			UtilityFunctions::push_error("MapCraft: ", pack_path, " ", error, ", so the map uses stock materials and models");
+		}
+		if (options.prefabs_above.is_empty()) {
+			load_lighting();
 		}
 	}
 	Dictionary map = p_doc.get("map", Dictionary());
@@ -1815,6 +2009,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 	}
 	if (!world_triangles.is_empty()) {
 		world_hulls.push_back(Shape{ world_triangles, true });
+	}
+	if (lit && !lightmap_users.is_empty()) {
+		add_lightmap();
 	}
 	if (options.collision && !world_hulls.is_empty()) {
 		StaticBody3D *body = memnew(StaticBody3D);

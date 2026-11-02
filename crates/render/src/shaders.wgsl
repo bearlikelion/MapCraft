@@ -491,6 +491,18 @@ fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
     return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
 }
 
+// MapCraft's baker stores linear light the way Godot applies it: the albedo times the lightmap.
+@fragment
+fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, i.uv) * material.tint;
+    if c.a < 0.5 {
+        discard;
+    }
+    let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb;
+    let emitted = (textureSample(emission_map, samp, i.uv).rgb + material.emission.rgb) * material.emission.a;
+    return vec4<f32>(environment_color(c.rgb * light + emitted, i.world), 1.0);
+}
+
 @fragment
 fn fs_baked_unlit(i: BakedOut) -> @location(0) vec4<f32> {
     return vec4<f32>(textureSample(tex, samp, i.uv).rgb * material.tint.rgb, 1.0);

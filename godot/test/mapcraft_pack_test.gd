@@ -189,7 +189,7 @@ func _check_containers() -> void:
 	_expect_refused("a pack with trailing data", longer, "data after its last entry")
 	_expect_refused("a zip file", "PK\u0003\u0004 not a pack".to_utf8_buffer(), \
 			"not a MapCraft pack")
-	_expect_refused("a newer pack", _patched32(good, 4, 4), "version 4")
+	_expect_refused("a newer pack", _patched32(good, 4, 5), "version 5")
 	_expect_refused("a huge entry count", _patched32(good, 8, 0xFFFFFFFF), "4294967295 entries")
 	_expect_refused("overlapping entries", _patched64(good, second_offset, \
 			good.decode_u64(first_offset)), "does not start where")
@@ -266,7 +266,7 @@ func _check_pictures() -> void:
 	_expect_dropped("a cut-short PNG", BAD_MATERIAL, truncated, "cut-short PNG")
 
 
-# Four 4096x4096 pictures fill the budget, so the fifth draws as missing.
+# Five 4096x4096 pictures fit, but seventeen pass the budget.
 func _check_pixel_budget() -> void:
 	var big: PackedByteArray = _png(4096, 4096)
 	var entries: Array[Array] = []
@@ -285,9 +285,15 @@ func _check_pixel_budget() -> void:
 					as ImageTexture
 		if texture != null and texture.get_width() == 4096:
 			textures[texture] = true
-	_expect(textures.size() == 4, "the pixel budget lets four 4096x4096 pictures through")
-	_expect(_messages.has("past 64 million pixels"), "the fifth picture is refused")
+	_expect(textures.size() == 5, "the pixel budget lets five 4096x4096 pictures through")
 	map.free()
+	var box: Array = _box(_sized_png(4096, 4096))
+	var json: Dictionary = box[0]
+	var images: Array = json["images"]
+	for i: int in 16:
+		images.append(images[0])
+	_expect_dropped("a model with seventeen 4096x4096 pictures", BAD_MODEL, \
+			_glb(json, box[1]), "past 256 million pixels")
 
 
 func _check_models() -> void:

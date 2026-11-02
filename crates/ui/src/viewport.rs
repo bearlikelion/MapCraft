@@ -227,6 +227,9 @@ fn face_on_ray(map: &mapcraft_map::Map, origin: DVec3, dir: DVec3) -> Option<(No
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
+/// Point entities can be clicked anywhere in a square this many pixels across, however far out the view is.
+const POINT_PICK: f64 = 14.0;
+
 impl MapCraftApp {
     fn point_box(&self, e: &mapcraft_map::Entity) -> Aabb {
         let (min, max) = mapcraft_render::entity_bounds(&self.project, e);
@@ -258,8 +261,9 @@ impl MapCraftApp {
     }
 
     /// Visible brushes and point entities on the ray, nearest first, as the nodes of the real map
-    /// they belong to; locked ones count only as a `surface` to place on or aim at.
-    pub(crate) fn pick_all(&self, origin: DVec3, dir: DVec3, surface: bool) -> Vec<(NodeId, f64)> {
+    /// they belong to; locked ones count only as a `surface` to place on or aim at. `grow` gives the
+    /// half size a point entity is picked at, at a distance, so small ones stay easy to click zoomed out.
+    pub(crate) fn pick_all(&self, origin: DVec3, dir: DVec3, surface: bool, grow: &dyn Fn(f64) -> f64) -> Vec<(NodeId, f64)> {
         let map = self.view_map();
         let reach = if surface { map.visible_nodes() } else { map.editable_nodes() };
         let mut hits: Vec<(NodeId, f64)> = Vec::new();
@@ -271,7 +275,12 @@ impl MapCraftApp {
                 // A boolean group's Add brushes are reached through the pieces of its result.
                 NodeKind::Brush(_) if mapcraft_map::boolean::source_op(map, id) == Some(mapcraft_map::Operation::Add) => None,
                 NodeKind::Brush(b) => b.ray_hit(origin, dir).map(|(t, _)| t),
-                NodeKind::Entity(e) if n.children.is_empty() => self.point_box(e).ray_hit(origin, dir),
+                NodeKind::Entity(e) if n.children.is_empty() => {
+                    let b = self.point_box(e);
+                    let half = (b.max - b.min) / 2.0;
+                    let pad = DVec3::splat(grow(b.center().distance(origin)));
+                    Aabb::new(b.center() - half.max(pad), b.center() + half.max(pad)).ray_hit(origin, dir)
+                }
                 _ => None,
             };
             if let Some(t) = t {
@@ -286,7 +295,31 @@ impl MapCraftApp {
 
     /// Nearest visible brush or point entity on the ray, with the hit distance.
     pub(crate) fn pick(&self, origin: DVec3, dir: DVec3, surface: bool) -> Option<(NodeId, f64)> {
-        self.pick_all(origin, dir, surface).into_iter().next()
+        self.pick_all(origin, dir, surface, &|_| 0.0).into_iter().next()
+    }
+
+    /// What a click in view `index` hits, best first. Depth means little in a 2D view, where a wall in front
+    /// covers everything behind it, so there the smallest outline under the pointer comes first.
+    fn view_hits(&self, index: usize, rect: Rect, origin: DVec3, dir: DVec3) -> Vec<(NodeId, f64)> {
+        let mut hits = self.pick_all(origin, dir, false, &self.point_grow(index, rect));
+        if let Some(cam) = self.panes.get(index).map(|p| p.camera).filter(|c| c.is_2d()) {
+            let (u, v, _) = cam.view.axes();
+            let area = |id: &NodeId| {
+                self.node_bounds(*id).map_or(f64::INFINITY, |b| {
+                    let d = b.max - b.min;
+                    (d.dot(u).abs() * d.dot(v).abs()).max(1.0)
+                })
+            };
+            hits.sort_by(|a, b| area(&a.0).total_cmp(&area(&b.0)).then(a.1.total_cmp(&b.1)));
+        }
+        hits
+    }
+
+    /// How large a point entity is picked in view `index`: at least [`POINT_PICK`] pixels across.
+    fn point_grow(&self, index: usize, rect: Rect) -> impl Fn(f64) -> f64 + use<> {
+        let cam = self.panes.get(index).map(|p| p.camera);
+        let height = f64::from(rect.height());
+        move |d| cam.map_or(0.0, |c| c.units_per_pixel(d, height) * POINT_PICK / 2.0)
     }
 
     /// Nearest visible brush face on the ray, a boolean result's face counting as the face it lies on; locked ones count only as a `surface`.
@@ -886,7 +919,14 @@ impl MapCraftApp {
                 gpu.renderer.set_weight_overlay(if weights { 0.5 } else { 0.0 });
                 // The target is in physical pixels, the camera's zoom in points.
                 let camera = mapcraft_render::Camera { zoom: pane.camera.zoom * f64::from(ppp), ..pane.camera };
+                let started = std::time::Instant::now();
                 gpu.renderer.render(t, &camera, mode, Some(grid), &overlay);
+                if self.render_ms.len() <= index {
+                    self.render_ms.resize(index + 1, 0.0);
+                }
+                if let Some(ms) = self.render_ms.get_mut(index) {
+                    *ms = started.elapsed().as_secs_f32() * 1000.0;
+                }
             }
             if let Some(tex) = pane.texture {
                 ui.painter().image(tex, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
@@ -918,6 +958,28 @@ impl MapCraftApp {
         self.draw_measurements(ui, index, rect);
         self.draw_clip_points(ui, index, rect);
         self.draw_snap_mark(ui, index, rect);
+        self.draw_fps(ui, index, rect);
+    }
+
+    /// Frames per second over the last frames, and the time the last render of this view took on the CPU.
+    fn draw_fps(&self, ui: &egui::Ui, index: usize, rect: Rect) {
+        if !self.prefs.get().view.show_fps || self.panes.get(index).is_none_or(|p| p.camera.is_2d()) {
+            return;
+        }
+        let span = match (self.frames.front(), self.frames.back()) {
+            (Some(a), Some(b)) if self.frames.len() > 1 => b.duration_since(*a).as_secs_f32() / (self.frames.len() - 1) as f32,
+            _ => 0.0,
+        };
+        let fps = if span > 0.0 { 1.0 / span } else { 0.0 };
+        let render = self.render_ms.get(index).copied().unwrap_or_default();
+        let text = format!("{fps:.0} fps  {:.1} ms frame  {render:.1} ms render", span * 1000.0);
+        let at = rect.right_top() + egui::vec2(-8.0, 30.0);
+        let font = egui::FontId::monospace(12.0);
+        let painter = ui.painter_at(rect);
+        let galley = painter.layout_no_wrap(text, font, Color32::WHITE);
+        let back = Rect::from_min_size(at - egui::vec2(galley.size().x, 0.0), galley.size()).expand(3.0);
+        painter.rect_filled(back, 3.0, Color32::from_black_alpha(160));
+        painter.galley(back.min + egui::vec2(3.0, 3.0), galley, Color32::WHITE);
     }
 
     /// The move arrows drawn at the selection's center in the 3D view: axis, screen start and end.
@@ -1305,7 +1367,7 @@ impl MapCraftApp {
                 // Clicking the same spot again steps to the next object behind (drill select).
                 let mut targets = BTreeSet::new();
                 let hits: Vec<NodeId> = self
-                    .pick_all(origin, dir, false)
+                    .view_hits(index, rect, origin, dir)
                     .into_iter()
                     .map(|(id, _)| id)
                     .filter(|id| targets.insert(pick_target(&self.session.map, *id, self.session.select_mode)))
@@ -1469,7 +1531,7 @@ impl MapCraftApp {
                     return;
                 }
                 let (origin, dir) = cam.ray(dvec(pos - rect.min), size);
-                let hits = self.pick_all(origin, dir, false);
+                let hits = self.view_hits(index, rect, origin, dir);
                 let selected = self.moving_nodes();
                 // The selection under the pointer drags even when something else is nearer the camera.
                 let grabbed = hits.iter().find(|(id, _)| selected.contains(id)).copied();

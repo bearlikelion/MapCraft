@@ -401,6 +401,9 @@ pub fn build_scene(
                         facing_arrow(out, &entity_transform(e), min, max, edge);
                     }
                 }
+                if selected && let Some(l) = mapcraft_light::lights::entity(e, &mut Vec::new()) {
+                    light_gizmo(&mut scene.selected_edges, &l, color);
+                }
                 if let Some((sun, sky, warnings)) = read_environment(e) {
                     scene.lights.push(sun);
                     scene.sky = Some(sky);
@@ -592,6 +595,51 @@ pub(crate) fn push_model(
                 edges.push(LineVertex::new(*a, edge));
                 edges.push(LineVertex::new(*b, edge));
             }
+        }
+    }
+}
+
+/// A circle of `radius` around `center` in the plane square to `normal`.
+fn circle(out: &mut Vec<LineVertex>, center: DVec3, normal: DVec3, radius: f64, color: [f32; 4]) {
+    let u = normal.any_orthonormal_vector();
+    let v = normal.cross(u);
+    let at = |k: u32| {
+        let a = f64::from(k) / 48.0 * std::f64::consts::TAU;
+        center + (u * a.cos() + v * a.sin()) * radius
+    };
+    for k in 0..48 {
+        out.push(LineVertex::new(at(k), color));
+        out.push(LineVertex::new(at(k + 1), color));
+    }
+}
+
+/// What a selected light reaches, as Godot draws it: a spot's cone out to its range with the inner cone
+/// inside it, a point light's range as a sphere, and the light's size around its origin.
+fn light_gizmo(out: &mut Vec<LineVertex>, l: &mapcraft_light::lights::Light, color: [f32; 4]) {
+    let range = l.range.min(65_536.0);
+    match l.kind {
+        mapcraft_light::lights::Kind::Spot { dir, cos_outer, cos_inner, .. } => {
+            let end = l.pos + dir * range;
+            let radius = |cos: f64| range * cos.clamp(0.017, 1.0).acos().min(89f64.to_radians()).tan();
+            circle(out, end, dir, radius(cos_outer), color);
+            circle(out, end, dir, radius(cos_inner), [color[0], color[1], color[2], color[3] * 0.5]);
+            let u = dir.any_orthonormal_vector();
+            let v = dir.cross(u);
+            for side in [u, -u, v, -v] {
+                out.push(LineVertex::new(l.pos, color));
+                out.push(LineVertex::new(end + side * radius(cos_outer), color));
+            }
+        }
+        mapcraft_light::lights::Kind::Point => {
+            for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+                circle(out, l.pos, axis, range, color);
+            }
+        }
+        mapcraft_light::lights::Kind::Sun { .. } => {}
+    }
+    if l.size > 0.0 {
+        for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+            circle(out, l.pos, axis, l.size / 2.0, color);
         }
     }
 }

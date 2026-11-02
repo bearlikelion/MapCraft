@@ -163,6 +163,8 @@ pub struct BakePart {
 pub struct Bake {
     pub parts: Vec<BakePart>,
     pub lightmaps: Vec<Picture>,
+    /// The lightmaps hold linear light as RGB9E5 texels, as MapCraft's baker makes them, rather than Quake's bytes.
+    pub linear: bool,
 }
 
 #[repr(C)]
@@ -219,8 +221,10 @@ pub struct Renderer {
     lightmap_sampler: wgpu::Sampler,
     baked_pipeline: wgpu::RenderPipeline,
     baked_unlit_pipeline: wgpu::RenderPipeline,
+    baked_linear_pipeline: wgpu::RenderPipeline,
     baked_sky_pipeline: wgpu::RenderPipeline,
     bake: Vec<BakedBatch>,
+    bake_linear: bool,
     lightmaps: Vec<wgpu::BindGroup>,
     /// The brushes changed since the bake, so Lit draws them live until the next one lands.
     bake_stale: bool,
@@ -428,6 +432,7 @@ impl Renderer {
         let triangles = wgpu::PrimitiveTopology::TriangleList;
         let baked_pipeline = pipeline("baked", &baked_layout, "vs_baked", "fs_baked", &baked_buffers, triangles, (true, true), none, &[]);
         let baked_unlit_pipeline = pipeline("baked unlit", &plain_layout, "vs_baked", "fs_baked_unlit", &baked_buffers, triangles, (true, true), none, &[]);
+        let baked_linear_pipeline = pipeline("baked linear", &baked_layout, "vs_baked", "fs_baked_linear", &baked_buffers, triangles, (true, true), none, &[]);
         let baked_sky_pipeline = pipeline("baked sky", &plain_layout, "vs_baked", "fs_sky_face", &baked_buffers, triangles, (true, true), none, &[]);
         // Engines filter lightmaps smoothly between luxel centers.
         let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -470,8 +475,10 @@ impl Renderer {
             lightmap_sampler,
             baked_pipeline,
             baked_unlit_pipeline,
+            baked_linear_pipeline,
             baked_sky_pipeline,
             bake: Vec::new(),
+            bake_linear: false,
             lightmaps: Vec::new(),
             bake_stale: false,
             materials: HashMap::new(),
@@ -870,10 +877,12 @@ impl Renderer {
     pub fn set_bake(&mut self, bake: Option<&Bake>) {
         (self.bake, self.lightmaps) = (Vec::new(), Vec::new());
         let Some(bake) = bake else { return };
+        self.bake_linear = bake.linear;
+        let format = if bake.linear { wgpu::TextureFormat::Rgb9e5Ufloat } else { wgpu::TextureFormat::Rgba8Unorm };
         let black = Picture { width: 1, height: 1, rgba: vec![0, 0, 0, 255] };
         for p in &bake.lightmaps {
             let p = if self.fits(p.width, p.height, &p.rgba) { p } else { &black };
-            let view = single_level(&self.device, &self.queue, p.width, p.height, &p.rgba);
+            let view = single_level(&self.device, &self.queue, p.width, p.height, &p.rgba, format);
             self.lightmaps.push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("lightmap"),
                 layout: &self.lightmap_layout,
@@ -1122,6 +1131,7 @@ impl Renderer {
                 let lightmap = batch.lightmap.and_then(|l| self.lightmaps.get(l));
                 pass.set_pipeline(match lightmap {
                     _ if self.skies.contains(&batch.material) => &self.baked_sky_pipeline,
+                    Some(_) if self.bake_linear => &self.baked_linear_pipeline,
                     Some(_) => &self.baked_pipeline,
                     None => &self.baked_unlit_pipeline,
                 });
@@ -1339,7 +1349,8 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u
 }
 
 /// A linear texture without mipmaps, as lightmaps are drawn.
-fn single_level(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
+/// A lightmap texture of 4-byte texels: RGBA8, or RGB9E5 for linear light.
+fn single_level(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], format: wgpu::TextureFormat) -> wgpu::TextureView {
     device
         .create_texture_with_data(
             queue,
@@ -1349,7 +1360,7 @@ fn single_level(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
@@ -1559,7 +1570,7 @@ mod tests {
             lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             indices: vec![0, 1, 2, 0, 2, 3],
         };
-        r.set_bake(Some(&Bake { parts: vec![quad], lightmaps: vec![Picture { width: 1, height: 1, rgba: vec![64, 128, 255, 255] }] }));
+        r.set_bake(Some(&Bake { parts: vec![quad], lightmaps: vec![Picture { width: 1, height: 1, rgba: vec![64, 128, 255, 255] }], linear: false }));
         let target = r.target([4, 4]);
         let camera = Camera { position: DVec3::new(0.0, 0.0, 100.0), pitch: -89.0, ..Camera::new(View::Perspective) };
         r.render(&target, &camera, RenderMode::Lit, None, &[]);

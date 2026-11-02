@@ -1461,8 +1461,37 @@ impl MapCraftApp {
                 }
             } else {
                 if let Some(c) = &class {
-                    for p in c.properties.iter().filter(|p| !hidden(&p.name)) {
-                        self.fgd_row(ui, &ents, p, None, &targets, &mut edits);
+                    let shown: Vec<&Property> = c.properties.iter().filter(|p| !hidden(&p.name)).collect();
+                    let keys: Vec<&str> = shown.iter().map(|p| p.name.as_str()).collect();
+                    let mut groups: Vec<(&str, Vec<&Property>)> = Vec::new();
+                    for p in &shown {
+                        match inspect::key_group(&p.name, &keys) {
+                            Some(g) => match groups.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(g)) {
+                                Some((_, rows)) => rows.push(p),
+                                None => groups.push((g, vec![p])),
+                            },
+                            None => self.fgd_row(ui, &ents, p, None, &targets, &mut edits),
+                        }
+                    }
+                    for (name, rows) in groups {
+                        let mut title = name.to_lowercase();
+                        if let Some(first) = title.get_mut(0..1) {
+                            first.make_ascii_uppercase();
+                        }
+                        let key = format!("entity.group.{}", name.to_lowercase());
+                        let section = Section { key: &key, title: &title, badge: rows.len().to_string(), closed: true, ..Default::default() };
+                        let mut group = |ui: &mut egui::Ui| {
+                            if self.section(ui, &section) {
+                                for p in &rows {
+                                    self.fgd_row(ui, &ents, p, None, &targets, &mut edits);
+                                }
+                            }
+                        };
+                        if inspect::filtering(ui) {
+                            group(ui);
+                        } else {
+                            ui.indent(("entity-group", &key), group);
+                        }
                     }
                     items = c.properties.iter().filter(|p| find_key(&original, &p.name).is_none()).map(|p| (p.name.clone(), p.display.clone())).collect();
                 }

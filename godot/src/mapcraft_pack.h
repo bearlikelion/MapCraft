@@ -26,6 +26,8 @@ public:
 	bool find(const String &p_stem, PackedByteArray &r_bytes, String &r_error);
 	// The map a self-contained pack carries, unchecked: the builder parses it like any .mcmap.
 	bool map(PackedByteArray &r_bytes) const;
+	// The map's baked lighting (docs/mclight-format.md), unchecked: the builder parses it.
+	bool lighting(PackedByteArray &r_bytes) const;
 };
 
 } // namespace godot

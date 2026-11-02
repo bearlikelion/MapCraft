@@ -21,6 +21,7 @@ mapcraft-engine = { path = "crates/engine" }
 mapcraft-sdk-manager = { path = "crates/sdk-manager" }
 mapcraft-steam = { path = "crates/steam" }
 mapcraft-render = { path = "crates/render" }
+mapcraft-light = { path = "crates/light" }
 mapcraft-ui = { path = "crates/ui" }
 
 # craft-libs (MIT OR Apache-2.0), pinned by rev
@@ -42,6 +43,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 gltf-json = { version = "1.4", features = ["names"] }
 base64 = "0.22"
 fastnoise-lite = "1.1"
+miniz_oxide = "0.8"
 
 # plugins
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "parallel-compilation", "cache"] }
@@ -87,6 +89,9 @@ debug = "line-tables-only"
 opt-level = 3
 
 [profile.dev.package.mapcraft-render]
+opt-level = 3
+
+[profile.dev.package.mapcraft-light]
 opt-level = 3
 
 [profile.release]

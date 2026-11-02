@@ -767,6 +767,23 @@ whole names ignoring case, or every occurrence inside a name with `partial`. Ret
         run: |s, _| Ok(issues_json(&validate(&s.map, None))),
     },
     Tool {
+        name: "bake_lighting",
+        description: "Bakes the map's lighting with MapCraft's baker into <map>.mclight beside the saved map, for SDKs whose games read it. \
+In the editor it bakes in the background and shows the result in the Lit view: call again to see its progress and, once done, where the file went.",
+        schema: || object(json!({}), &[]),
+        run: |s, _| {
+            let path = s.path.clone().ok_or(EngineError::NoPath)?;
+            let settings = mapcraft_light::Settings::default().for_map(&s.map);
+            let skip = mapcraft_map::covered_faces(&s.map, None, &|m| s.see_through.contains(m));
+            let progress = mapcraft_light::Progress::default();
+            let (lightmap, warnings) = mapcraft_light::bake(&s.map, &|_| mapcraft_light::Surface::default(), &skip, &settings, &progress)
+                .map_err(|e| EngineError::Argument(e.to_string()))?;
+            let out = path.with_extension("mclight");
+            std::fs::write(&out, mapcraft_light::write(&lightmap)).map_err(|e| EngineError::Argument(format!("cannot write {}: {e}", out.display())))?;
+            Ok(json!({"file": out, "faces": lightmap.faces.len(), "slices": lightmap.slices.len(), "warnings": warnings}))
+        },
+    },
+    Tool {
         name: "screenshot",
         description: "Editor only: renders the map to a PNG. `view` is all (the four views), 3d, top, front or side. \
 The 3D view frames `focus` (node ids, default the whole map) or looks from `eye` at `look_at`.",

@@ -184,6 +184,7 @@ impl MapCraftApp {
                 Ok(self.info())
             }
             "info" => Ok(self.info()),
+            "bake_lighting" => self.bake_tool(),
             "validate" => {
                 self.check_problems();
                 Ok(issues_json(&self.issues))

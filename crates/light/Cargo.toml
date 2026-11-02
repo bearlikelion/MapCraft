@@ -1,0 +1,16 @@
+[package]
+name = "mapcraft-light"
+description = "Lightmap baking for MapCraft maps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mapcraft-geom = { workspace = true }
+mapcraft-map = { workspace = true }
+miniz_oxide = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

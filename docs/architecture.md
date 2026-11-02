@@ -9,7 +9,7 @@ Dependencies only point down.
 |---|---|---|
 | L0 | `geom` | Math and the brush kernel |
 | L1 | `map`, `fgd` | Document model, entity definitions |
-| L2 | `format`, `sdk`, `steam` | `.mcmap` files, SDK manifests and assets, Steam for builds shipped there |
+| L2 | `format`, `light`, `sdk`, `steam` | `.mcmap` files, lightmap baking, SDK manifests and assets, Steam for builds shipped there |
 | L3 | `plugin-host`, `render` | WebAssembly plugins, wgpu renderer |
 | L4 | `engine` | Session, commands, undo, selection |
 | L5 | `sdk-manager` | SDK registries, installs, packaging and checks |

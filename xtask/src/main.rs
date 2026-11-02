@@ -16,6 +16,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("map", 1),
     ("fgd", 1),
     ("format", 2),
+    ("light", 2),
     ("sdk", 2),
     ("steam", 2),
     ("plugin-host", 3),

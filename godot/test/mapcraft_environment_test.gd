@@ -60,6 +60,12 @@ func _initialize() -> void:
 	_expect(world != null and world.environment.tonemap_mode == Environment.TONE_MAPPER_AGX, \
 			"AgX remains available in Godot")
 	map.free()
+	map = _build({"fog_density": "0.004"})
+	world = map.get_node_or_null("WorldEnvironment") as WorldEnvironment
+	_expect(world != null and world.environment.fog_mode == Environment.FOG_MODE_EXPONENTIAL \
+			and is_equal_approx(world.environment.fog_density, 0.004), \
+			"exponential fog keeps its density")
+	map.free()
 	map = _build({"fog_density": "100"})
 	world = map.get_node_or_null("WorldEnvironment") as WorldEnvironment
 	_expect(world != null and world.environment.fog_enabled \

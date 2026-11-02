@@ -180,6 +180,13 @@ fn matches(filter: &str, label: &str, key: &str) -> bool {
     filter.is_empty() || label.to_lowercase().contains(filter) || key.to_lowercase().contains(filter)
 }
 
+/// The group a key folds into: the text before its first underscore, when at least three of `keys` share it.
+pub(crate) fn key_group<'k>(key: &'k str, keys: &[&str]) -> Option<&'k str> {
+    let prefix = key.split_once('_').map(|(p, _)| p).filter(|p| !p.is_empty())?;
+    let shared = keys.iter().filter(|k| k.split_once('_').is_some_and(|(p, _)| p.eq_ignore_ascii_case(prefix))).count();
+    (shared >= 3).then_some(prefix)
+}
+
 fn filter_id() -> Id {
     Id::new("inspector-filter")
 }
@@ -1190,6 +1197,15 @@ mod tests {
         assert_eq!(label_width(284.0), 113.6);
         assert_eq!(label_width(600.0), LABEL_MAX);
         assert_eq!(label_width(100.0), LABEL_MIN);
+    }
+
+    #[test]
+    fn keys_sharing_a_prefix_group() {
+        let keys = ["shadows", "sun_color", "sun_energy", "sun_spread", "fog_density", "fog_color", "_light", "_cone", "_exponent"];
+        assert_eq!(key_group("sun_energy", &keys), Some("sun"));
+        assert_eq!(key_group("fog_color", &keys), None);
+        assert_eq!(key_group("shadows", &keys), None);
+        assert_eq!(key_group("_light", &keys), None);
     }
 
     #[test]

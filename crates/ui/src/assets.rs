@@ -203,7 +203,20 @@ impl MapCraftApp {
     /// Writes `to` as one `.mcpck` holding `map` and its custom assets, or copies `map` there as a `.mcmap` when it has
     /// none, deleting the file of the other kind so a game cannot load a stale copy; returns what it wrote.
     pub(crate) fn pack_map(&self, map: &Path, to: &Path) -> Result<PathBuf, String> {
-        let entries = self.custom_asset_entries()?;
+        let mut entries = self.custom_asset_entries()?;
+        // Baked lighting only travels with the map it was baked from.
+        if let Some(path) = self.session.path.as_ref().filter(|p| self.native_lightmaps() && self.saved_bake_current(p)) {
+            let light = path.with_extension("mclight");
+            let size = std::fs::metadata(&light).map(|m| m.len()).unwrap_or(0);
+            if size > pack::MAX_ENTRY_SIZE {
+                return Err(format!(
+                    "the baked lighting is {} MB, more than the {} MB a pack can carry; raise the map's Lightmap scale (worldspawn) and bake again",
+                    size >> 20,
+                    pack::MAX_ENTRY_SIZE >> 20
+                ));
+            }
+            entries.push((pack::LIGHTING_ENTRY.into(), read_limited(&light, pack::MAX_ENTRY_SIZE)?));
+        }
         pack_or_copy(map, to, entries)
     }
 
@@ -238,14 +251,18 @@ fn pack_or_copy(map: &Path, to: &Path, mut entries: Vec<(String, Vec<u8>)>) -> R
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let (written, stale) = if entries.is_empty() {
-        std::fs::copy(map, &plain).map_err(|e| format!("copy {} to {}: {e}", map.display(), plain.display()))?;
+        if std::fs::canonicalize(&plain).ok() != std::fs::canonicalize(map).ok() {
+            std::fs::copy(map, &plain).map_err(|e| format!("copy {} to {}: {e}", map.display(), plain.display()))?;
+        }
         (plain, packed)
     } else {
         entries.push((pack::MAP_ENTRY.into(), read_limited(map, pack::MAX_ENTRY_SIZE)?));
         pack::save(&packed, &entries).map_err(|e| format!("{}: {e}", packed.display()))?;
         (packed, plain)
     };
-    if stale.exists() {
+    // The game's folder can be the map's own, and the map being packed is never a stale copy.
+    let source = |p: &Path| std::fs::canonicalize(p).ok() == std::fs::canonicalize(map).ok();
+    if stale.exists() && !source(&stale) {
         std::fs::remove_file(&stale).map_err(|e| format!("cannot remove the old {}: {e}", stale.display()))?;
     }
     Ok(written)
@@ -254,6 +271,23 @@ fn pack_or_copy(map: &Path, to: &Path, mut entries: Vec<(String, Vec<u8>)>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packing_into_the_maps_own_folder_keeps_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let map = dir.path().join("level.mcmap");
+        std::fs::write(&map, br#"{"format":"mapcraft.map","schema_version":1}"#).unwrap();
+        let png = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(1, 1).write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        let written = pack_or_copy(&map, &map, vec![("textures/a.png".into(), png)]).unwrap();
+        assert!(written.exists());
+        assert!(map.exists(), "the source map must survive packing beside itself");
+        assert_eq!(pack_or_copy(&map, &map, Vec::new()).unwrap(), map, "copying a map onto itself leaves it alone");
+        assert!(map.exists());
+    }
 
     #[test]
     fn view_lists_merge_and_keep_other_state() {

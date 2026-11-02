@@ -240,6 +240,10 @@ pub struct MapCraftApp {
     pub(crate) confirm_tools: Option<usize>,
     pub(crate) compile: Option<CompileJob>,
     pub(crate) bake: crate::bake::BakeState,
+    /// When each of the last frames started, for the FPS readout.
+    pub(crate) frames: std::collections::VecDeque<Instant>,
+    /// How long each 3D view's last render call took, by pane.
+    pub(crate) render_ms: Vec<f32>,
     /// Plugin materials still being listed on a worker thread.
     pub(crate) material_list: Option<mpsc::Receiver<crate::project::Listed>>,
     /// Whether the last import was checked for textures and models no folder holds.
@@ -391,6 +395,8 @@ impl MapCraftApp {
             confirm_tools: None,
             compile: None,
             bake: Default::default(),
+            frames: std::collections::VecDeque::new(),
+            render_ms: Vec::new(),
             material_list: None,
             assets_checked: true,
             missing_assets: None,
@@ -1258,6 +1264,14 @@ impl MapCraftApp {
             "view.render_flat" => self.render_mode = RenderMode::Flat,
             "view.render_wireframe" => self.render_mode = RenderMode::Wireframe,
             "view.render_lit" => self.render_mode = RenderMode::Lit,
+            "run.bake_lighting" => self.start_native_bake(true),
+            "run.auto_bake" => {
+                self.prefs.update(|p| p.view.auto_bake = !p.view.auto_bake);
+                self.bake.changed();
+            }
+            "view.show_fps" => {
+                self.prefs.update(|p| p.view.show_fps = !p.view.show_fps);
+            }
             "view.colorize" => {
                 self.prefs.update(|p| p.view.colorize = !p.view.colorize);
                 self.mark_changed();
@@ -1303,7 +1317,10 @@ impl MapCraftApp {
                     None => self.status = "This SDK has no compile profiles".into(),
                 }
             }
-            "run.cancel" => self.cancel_compile(),
+            "run.cancel" => {
+                self.cancel_compile();
+                self.cancel_native_bake();
+            }
             "uv.grab" => self.begin_uv_modal(crate::uv::UvMode::Grab),
             "uv.rotate" => self.begin_uv_modal(crate::uv::UvMode::Rotate),
             "uv.scale" => self.begin_uv_modal(crate::uv::UvMode::Scale),
@@ -1518,6 +1535,7 @@ impl MapCraftApp {
                         self.action_toggle(ui, "view.link_zoom", "Link 2D Zoom", view.link_zoom);
                         self.action_toggle(ui, "view.colorize", "Color Brushes by Object", view.colorize);
                         self.action_toggle(ui, "view.slope", "Color by Slope", view.slope_colors);
+                        self.action_toggle(ui, "view.show_fps", "Show FPS", view.show_fps);
                         self.action_toggle(ui, "view.snap_grid", "Snap to Grid", view.snap_grid);
                         self.action_toggle(ui, "view.snap_vertices", "Snap to Corners", view.snap_vertices);
                         ui.separator();
@@ -1584,9 +1602,14 @@ impl MapCraftApp {
                         self.start_compile(i);
                     }
                 }
+                if self.native_lightmaps() {
+                    self.action_button(ui, "run.bake_lighting", "Bake Lighting", !self.baking());
+                    let auto = self.prefs.get().view.auto_bake;
+                    self.action_toggle(ui, "run.auto_bake", "Automatic Light Bake", auto);
+                }
                 ui.separator();
                 self.action_button(ui, "run.again", "Run Last Profile", !profiles.is_empty() && self.compile.is_none());
-                self.action_button(ui, "run.cancel", "Cancel", self.compile.is_some());
+                self.action_button(ui, "run.cancel", "Cancel", self.compile.is_some() || self.baking());
                 ui.separator();
                 let trail = self.pointfile.is_some();
                 self.action_button(ui, "run.load_pointfile", "Load Leak Trail…", true);
@@ -1916,6 +1939,13 @@ impl MapCraftApp {
             return;
         }
         let Some(path) = self.session.path.clone() else { return };
+        // The game gets the map's full bake, so a missing or outdated one is baked before packing.
+        if self.native_lightmaps() && profile.steps.iter().any(|s| matches!(s, mapcraft_sdk::Step::Pack { .. })) && !self.saved_bake_current(&path) {
+            self.output.push(format!("== {}: baking lighting first ==", profile.name));
+            self.bake.then_compile = Some(index);
+            self.start_native_bake(true);
+            return;
+        }
         let mut vars = self.project.vars.clone();
         vars.extend(mapcraft_sdk::builtin_vars(&path, &sdk.dir));
         // Games load one file, so prefabs are baked in first; the copy keeps the map's name.
@@ -2301,6 +2331,10 @@ impl eframe::App for MapCraftApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.prefs.tick(Instant::now());
+        self.frames.push_back(Instant::now());
+        while self.frames.len() > 60 {
+            self.frames.pop_front();
+        }
         self.autosave();
         self.poll_compile(ctx);
         self.poll_bake(ctx);

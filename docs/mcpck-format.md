@@ -12,7 +12,7 @@ Every integer is little-endian.
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 4 | Magic, the bytes `MCPK` |
-| 4 | 4 | Version, `1`, `2` or `3` |
+| 4 | 4 | Version, `1` to `4` |
 | 8 | 4 | Entry count |
 | 12 | | Table of contents, one record per entry |
 
@@ -48,7 +48,15 @@ Readers refuse versions other than the ones they know.
   The name is tried as written, then as Godot sanitizes animation names.
 - Version 2 additionally supports `materials/<material>.json` PBR descriptors and `textures/<path>.png` or `.jpg` dependencies.
 - Version 3 additionally supports `map.mcmap`, the exact bytes of a `.mcmap`, at the top level and at most once.
+- Version 4 additionally supports `lighting.mclight`, the map's baked lighting in the [`.mclight` format](mclight-format.md), at the top level and at most once; it must start with `MCLM`.
 - Nothing else may be in a pack: no Godot resources (`.tres`, `.res`, `.scn`, `.tscn`, `.pck`), scripts, shaders, SVG, WebP, glTF text files or native libraries.
+
+## Baked lighting (version 4)
+
+The writer selects version 4 only when `lighting.mclight` is present, so packs without baked lighting stay readable by older addons, and versions 1 to 3 refuse that entry.
+The editor adds it only when the `.mclight` beside the map was baked from the map being packed.
+The Godot addon gives the map's lightmapped meshes UV2 from the file's face table, splits them into one mesh per atlas slice, adds a `LightmapGI` named `BakedLighting` with the atlas, and sets the `light_environment` sun to static bake mode so it lights only what moves.
+A damaged entry is reported and the map falls back to realtime lighting.
 
 ## Self-contained maps (version 3)
 
@@ -61,7 +69,7 @@ A pack without a map, opened this way, builds nothing and logs that it holds no 
 ## PBR descriptors (version 2)
 
 The writer selects version 2 when a material descriptor or `textures/` entry is present; image/model-only exports remain version 1.
-Both readers accept versions 1 to 3; version 1 refuses version 2 entry kinds.
+Both readers accept versions 1 to 4; version 1 refuses version 2 entry kinds.
 A descriptor replaces the legacy picture for its material name, so those two entries cannot coexist.
 A descriptor is UTF-8 JSON, at most 16 KiB.
 Descriptor version 1 has these required fields and no others:
@@ -127,7 +135,7 @@ Shader graphs are not yet bound to descriptors.
 - A JPEG starts with `FF D8`, and its markers are walked to its frame header: baseline, extended and progressive frames (`SOF0` to `SOF2`) are allowed, lossless, hierarchical and arithmetic ones are refused, there is one frame, every segment ends inside the file, and there are at most 64 scans.
 - The content must be the kind of picture the name's extension says.
 - Width and height are each 1 to 4096, read from the header before anything decodes the picture.
-- All the pictures a map decodes from its pack, including the ones inside models, add up to at most 67,108,864 pixels, four 4096 by 4096 pictures.
+- All the pictures a map decodes from its pack, including the ones inside models, add up to at most 268,435,456 pixels, sixteen 4096 by 4096 pictures.
 
 ## Models
 
@@ -164,7 +172,7 @@ Its JSON:
 | Name length | 255 bytes |
 | Entry size | 64 MiB |
 | Picture width and height | 4096 |
-| Pixels decoded per map | 67,108,864 |
+| Pixels decoded per map | 268,435,456 |
 | JPEG scans | 64 |
 | GLB JSON chunk | 2 MiB |
 | JSON nesting | 64 |

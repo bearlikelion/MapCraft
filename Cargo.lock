@@ -2605,6 +2605,7 @@ dependencies = [
  "mapcraft-fgd",
  "mapcraft-format",
  "mapcraft-geom",
+ "mapcraft-light",
  "mapcraft-map",
  "mapcraft-plugin-host",
  "mapcraft-sdk",
@@ -2621,6 +2622,7 @@ dependencies = [
  "mapcraft-fgd",
  "mapcraft-format",
  "mapcraft-geom",
+ "mapcraft-light",
  "mapcraft-map",
  "serde_json",
  "tempfile",
@@ -2650,6 +2652,16 @@ version = "0.4.2"
 dependencies = [
  "glam",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mapcraft-light"
+version = "0.4.2"
+dependencies = [
+ "mapcraft-geom",
+ "mapcraft-map",
+ "miniz_oxide 0.8.9",
  "thiserror 2.0.21",
 ]
 
@@ -2690,6 +2702,7 @@ dependencies = [
  "log",
  "mapcraft-format",
  "mapcraft-geom",
+ "mapcraft-light",
  "mapcraft-map",
  "naga",
  "pollster 0.4.0",
@@ -2755,6 +2768,7 @@ dependencies = [
  "mapcraft-fgd",
  "mapcraft-format",
  "mapcraft-geom",
+ "mapcraft-light",
  "mapcraft-map",
  "mapcraft-plugin-host",
  "mapcraft-render",

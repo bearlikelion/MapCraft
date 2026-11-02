@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map as Object, Value};
 
 pub const EXTENSION: &str = "mcpck";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 /// The map a self-contained pack carries, which needs version 3.
 pub const MAP_ENTRY: &str = "map.mcmap";
+/// The map's baked lighting (`docs/mclight-format.md`), which needs version 4.
+pub const LIGHTING_ENTRY: &str = "lighting.mclight";
 const MAGIC: &[u8; 4] = b"MCPK";
 const HEADER_LEN: u64 = 12;
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -22,7 +24,7 @@ pub const MAX_ENTRIES: u32 = 1024;
 pub const MAX_NAME_LEN: usize = 255;
 pub const MAX_ENTRY_SIZE: u64 = 64 << 20;
 pub const MAX_IMAGE_SIZE: u32 = 4096;
-pub const MAX_TOTAL_PIXELS: u64 = 64 << 20;
+pub const MAX_TOTAL_PIXELS: u64 = 256 << 20;
 pub const MAX_JPEG_SCANS: u32 = 64;
 pub const MAX_GLB_JSON: u64 = 2 << 20;
 pub const MAX_JSON_DEPTH: usize = 64;
@@ -64,6 +66,7 @@ enum Kind {
     Glb,
     Material,
     Map,
+    Lighting,
 }
 
 /// The pack that goes beside a map: `<map>.mcpck`.
@@ -154,8 +157,11 @@ pub fn write(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, PackError> {
     }
     let mut out = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
     out.extend_from_slice(MAGIC);
-    let version = if sorted.iter().any(|(name, _)| name == MAP_ENTRY) {
-        VERSION
+    // Each pack takes the oldest version that holds its entries, so older games still read it.
+    let version: u32 = if sorted.iter().any(|(name, _)| name == LIGHTING_ENTRY) {
+        4
+    } else if sorted.iter().any(|(name, _)| name == MAP_ENTRY) {
+        3
     } else if sorted.iter().any(|(name, _)| name.ends_with(".json") || name.starts_with("textures/")) {
         2
     } else {
@@ -262,6 +268,9 @@ fn entries(bytes: &[u8]) -> Result<Vec<(String, &[u8])>, PackError> {
         if version < 3 && name == MAP_ENTRY {
             return Err(invalid("versions 1 and 2 cannot contain a map"));
         }
+        if version < 4 && name == LIGHTING_ENTRY {
+            return Err(invalid("versions 1 to 3 cannot contain baked lighting"));
+        }
         toc.push((name, u64::from_le_bytes(c.array()?), u64::from_le_bytes(c.array()?)));
     }
     let mut at = c.at as u64;
@@ -311,6 +320,9 @@ fn kind_of(name: &str) -> Result<Kind, String> {
     if name == MAP_ENTRY {
         return Ok(Kind::Map);
     }
+    if name == LIGHTING_ENTRY {
+        return Ok(Kind::Lighting);
+    }
     let (stem, kind, folder) = if let Some(stem) = name.strip_suffix(".png") {
         (stem, Kind::Png, "materials/")
     } else if let Some(stem) = name.strip_suffix(".jpg") {
@@ -320,7 +332,7 @@ fn kind_of(name: &str) -> Result<Kind, String> {
     } else if let Some(stem) = name.strip_suffix(".json") {
         (stem, Kind::Material, "materials/")
     } else {
-        return Err(format!("only .png, .jpg, .glb, material .json and {MAP_ENTRY} entries are allowed"));
+        return Err(format!("only .png, .jpg, .glb, material .json, {MAP_ENTRY} and {LIGHTING_ENTRY} entries are allowed"));
     };
     let folder = if matches!(kind, Kind::Png | Kind::Jpeg) && stem.starts_with("textures/") { "textures/" } else { folder };
     match stem.strip_prefix(folder) {
@@ -342,6 +354,8 @@ fn check(name: &str, data: &[u8], pixels: &mut u64) -> Result<(), String> {
             Some("mapcraft.map") => Ok(()),
             _ => Err("is not a MapCraft map".into()),
         },
+        Kind::Lighting if data.starts_with(b"MCLM") => Ok(()),
+        Kind::Lighting => Err("is not MapCraft baked lighting".into()),
         kind => image(data, kind, pixels),
     }
 }
@@ -946,11 +960,24 @@ mod tests {
     }
 
     #[test]
+    fn baked_lighting_needs_version_4_and_older_packs_stay_older() {
+        let map = br#"{"format":"mapcraft.map","schema_version":1}"#.to_vec();
+        let lit = write(&[entry(MAP_ENTRY, map.clone()), entry(LIGHTING_ENTRY, b"MCLM\x01\0\0\0".to_vec())]).unwrap();
+        assert_eq!(lit[4], 4);
+        assert!(read(&lit).unwrap().iter().any(|(n, _)| n == LIGHTING_ENTRY));
+        assert_eq!(write(&[entry(MAP_ENTRY, map.clone())]).unwrap()[4], 3, "a map without lighting stays version 3");
+        assert!(write_err(LIGHTING_ENTRY, b"nope".to_vec()).contains("not MapCraft baked lighting"));
+        let mut older = lit;
+        older[4] = 3;
+        assert!(reason(read(&older)).contains("cannot contain baked lighting"));
+    }
+
+    #[test]
     fn bad_headers_are_refused() {
         assert!(reason(read(b"PK\x03\x04 zip file")).contains("not a MapCraft pack"));
         let mut newer = write(&good()).unwrap();
-        newer[4] = 4;
-        assert!(reason(read(&newer)).contains("version 4"));
+        newer[4] = 5;
+        assert!(reason(read(&newer)).contains("version 5"));
         assert!(reason(read(&raw(&[], u32::MAX, &[]))).contains("at most 1024"));
         assert!(reason(read(&raw(&[], MAX_ENTRIES + 1, &[]))).contains("at most 1024"));
     }
@@ -1089,8 +1116,10 @@ mod tests {
         assert!(write_err("materials/a.jpg", jpeg(65535, 65535)).contains("65535x65535"));
         assert!(write_err("materials/a.jpg", jpeg(16, 0)).contains("16x0"));
         write(&[entry("materials/a.png", png(4096, 4096)), entry("materials/b.jpg", jpeg(4096, 4096))]).unwrap();
-        let many: Vec<_> = (0..5).map(|i| entry(&format!("materials/{i}.png"), png(4096, 4096))).collect();
-        assert!(reason(write(&many)).contains("64 million pixels"));
+        let pbr: Vec<_> = (0..5).map(|i| entry(&format!("textures/a_{i}.png"), png(4096, 4096))).collect();
+        assert_eq!(read(&write(&pbr).unwrap()).unwrap().len(), 5);
+        let many: Vec<_> = (0..17).map(|i| entry(&format!("materials/{i}.png"), png(4096, 4096))).collect();
+        assert!(reason(write(&many)).contains("256 million pixels"));
         assert!(write_err("materials/a.png", PNG_SIGNATURE.to_vec()).contains("without its header"));
         assert!(write_err("materials/a.png", png(1, 1)[..20].to_vec()).contains("cut-short"));
     }
@@ -1314,7 +1343,7 @@ mod tests {
         let (json, bin) = model();
         let images = json!((0..=MAX_GLTF_IMAGES).map(|_| json["images"][0].clone()).collect::<Vec<_>>());
         assert!(model_err(|j| j["images"] = images).contains("images"));
-        let big: Vec<_> = (0..4).map(|i| entry(&format!("materials/{i}.png"), png(4096, 4096))).collect();
+        let big: Vec<_> = (0..16).map(|i| entry(&format!("materials/{i}.png"), png(4096, 4096))).collect();
         let mut with_model = big.clone();
         with_model.push(entry("models/a.glb", glb(&json, &bin)));
         write(&big).unwrap();

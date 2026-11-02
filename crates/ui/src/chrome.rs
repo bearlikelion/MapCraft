@@ -761,6 +761,22 @@ impl MapCraftApp {
                     self.run_action("panel.output");
                 }
                 ui.separator();
+                if self.lighting_stale() {
+                    if ui.small_button("Bake").on_hover_text("Bake the lighting now (Run > Bake Lighting)").clicked() {
+                        self.start_native_bake(true);
+                    }
+                    ui.label(RichText::new("LIGHTING IS STALE").color(Color32::from_rgb(255, 170, 40)).strong())
+                        .on_hover_text("The map has changed since its lighting was baked; turn on Run > Automatic Light Bake to keep it current");
+                    ui.separator();
+                }
+                if let Some(done) = self.bake_progress() {
+                    if ui.small_button("Cancel").on_hover_text("Stop baking lighting").clicked() {
+                        self.cancel_native_bake();
+                    }
+                    let bar = egui::ProgressBar::new(done).text(format!("Baking lighting {:.0}%", done * 100.0)).desired_width(180.0);
+                    ui.add(bar).on_hover_text("MapCraft is baking this map's lighting in the background; the Lit view shows it when it is done");
+                    ui.separator();
+                }
                 let (text, color) = if fresh { (self.status.clone(), TEXT) } else { (self.tool_hint(), TEXT_WEAK) };
                 ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
             });

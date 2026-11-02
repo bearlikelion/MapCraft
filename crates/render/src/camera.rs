@@ -89,6 +89,11 @@ impl Camera {
     }
 
     /// The ray under a pixel (origin at the top left): origin and unit direction.
+    /// World units one pixel covers `distance` from the camera, in a view `height` pixels tall.
+    pub fn units_per_pixel(&self, distance: f64, height: f64) -> f64 {
+        if self.is_2d() { 1.0 / self.zoom.max(1e-9) } else { 2.0 * distance.max(0.0) * (self.fov_y.to_radians() / 2.0).tan() / height.max(1.0) }
+    }
+
     pub fn ray(&self, pixel: DVec2, size: DVec2) -> (DVec3, DVec3) {
         if self.is_2d() {
             let (_, _, t) = self.view.axes();

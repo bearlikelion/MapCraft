@@ -20,7 +20,7 @@ const uint32_t MAX_ENTRIES = 1024;
 const int64_t MAX_NAME_LEN = 255;
 const uint64_t MAX_ENTRY_SIZE = uint64_t(64) << 20;
 const int64_t MAX_IMAGE_SIZE = 4096;
-const int64_t MAX_TOTAL_PIXELS = int64_t(64) << 20;
+const int64_t MAX_TOTAL_PIXELS = int64_t(256) << 20;
 const int64_t MAX_JPEG_SCANS = 64;
 const int64_t MAX_GLB_JSON = int64_t(2) << 20;
 const int MAX_JSON_DEPTH = 64;
@@ -41,8 +41,9 @@ const int64_t MAX_GLTF_SKINS = 256;
 const int64_t MAX_ANIMATION_COMPONENTS = int64_t(1) << 24;
 const char *GLTF_EXTENSIONS[] = { "KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_transform" };
 
-const uint32_t VERSION = 3;
+const uint32_t VERSION = 4;
 const char *MAP_ENTRY = "map.mcmap";
+const char *LIGHTING_ENTRY = "lighting.mclight";
 const int64_t HEADER_LEN = 12;
 const uint8_t PNG_SIGNATURE[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 const uint8_t PNG_IHDR[8] = { 0, 0, 0, 13, 'I', 'H', 'D', 'R' };
@@ -58,6 +59,7 @@ enum class Kind {
 	GLB,
 	MATERIAL,
 	MAP,
+	LIGHTING,
 };
 
 uint32_t le16(const uint8_t *p) {
@@ -106,6 +108,9 @@ Kind kind_of(const uint8_t *p_name, int64_t p_len, String &r_error) {
 	const String name = String::utf8(reinterpret_cast<const char *>(p_name), p_len);
 	if (name == MAP_ENTRY) {
 		return Kind::MAP;
+	}
+	if (name == LIGHTING_ENTRY) {
+		return Kind::LIGHTING;
 	}
 	Kind kind = Kind::GLB;
 	String folder = "models/";
@@ -343,7 +348,7 @@ String check_image(const uint8_t *p, int64_t n, Kind p_expected, int64_t &r_pixe
 	}
 	r_pixels += width * height;
 	if (r_pixels > MAX_TOTAL_PIXELS) {
-		return "takes the map's pictures past 64 million pixels";
+		return "takes the map's pictures past 256 million pixels";
 	}
 	return String();
 }
@@ -897,7 +902,7 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
 		return ERR_FILE_CORRUPT;
 	}
 	if (le32(p + 4) < 1 || le32(p + 4) > VERSION) {
-		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads versions 1 to 3";
+		r_error = "is version " + itos(le32(p + 4)) + ", this addon reads versions 1 to 4";
 		return ERR_FILE_UNRECOGNIZED;
 	}
 	const uint32_t count = le32(p + 8);
@@ -932,6 +937,10 @@ Error MapCraftPack::parse(const PackedByteArray &p_data, String &r_error) {
         }
 		if (le32(p + 4) < 3 && raw.name == MAP_ENTRY) {
 			r_error = "versions 1 and 2 cannot contain a map";
+			return ERR_FILE_CORRUPT;
+		}
+		if (le32(p + 4) < 4 && raw.name == LIGHTING_ENTRY) {
+			r_error = "versions 1 to 3 cannot contain baked lighting";
 			return ERR_FILE_CORRUPT;
 		}
 		raw.offset = le64(p + at + len);
@@ -979,9 +988,18 @@ bool MapCraftPack::map(PackedByteArray &r_bytes) const {
 	return true;
 }
 
+bool MapCraftPack::lighting(PackedByteArray &r_bytes) const {
+	const Entry *entry = entries.getptr("lighting");
+	if (entry == nullptr || entry->name != LIGHTING_ENTRY) {
+		return false;
+	}
+	r_bytes = data.slice(entry->offset, entry->offset + entry->length);
+	return true;
+}
+
 bool MapCraftPack::find(const String &p_stem, PackedByteArray &r_bytes, String &r_error) {
 	const Entry *entry = entries.getptr(p_stem.to_lower());
-	if (entry == nullptr || entry->name == MAP_ENTRY) {
+	if (entry == nullptr || entry->name == MAP_ENTRY || entry->name == LIGHTING_ENTRY) {
 		return false;
 	}
 	r_bytes = data.slice(entry->offset, entry->offset + entry->length);

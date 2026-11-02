@@ -86,6 +86,10 @@ pub struct ViewPrefs {
     pub sky: bool,
     /// The corner of the views that shows each shortcut pressed; `None` hides them.
     pub show_keys: Option<crate::keys::Corner>,
+    /// The 3D views show frames per second and how long their last frame took to draw.
+    pub show_fps: bool,
+    /// The Lit view re-bakes a draft of the lighting after each edit; off, a warning offers a bake instead.
+    pub auto_bake: bool,
 }
 
 impl Default for ViewPrefs {
@@ -107,6 +111,8 @@ impl Default for ViewPrefs {
             slope_surfable: 72.0,
             sky: true,
             show_keys: None,
+            show_fps: false,
+            auto_bake: true,
         }
     }
 }

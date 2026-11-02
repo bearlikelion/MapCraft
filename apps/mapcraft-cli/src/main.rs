@@ -20,6 +20,7 @@ const USAGE: &str = "usage:
   mapcraft-cli info <map.mcmap>
   mapcraft-cli validate <map.mcmap> [--sdk <dir>] [--var name=value]...
   mapcraft-cli fgd <file.fgd>... [--class <name>]
+  mapcraft-cli bake <map.mcmap> [--luxel <units>] [--bounces <n>] [--rays <n>] [--threads <n>]
   mapcraft-cli mcp
   mapcraft-cli sdk <list|check|install|remove|package|new|import-trenchbroom> ...";
 
@@ -156,6 +157,60 @@ fn fgd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Bakes a map's lighting into `<map>.mclight` beside it.
+fn bake(args: &[String]) -> Result<(), String> {
+    let (mut path, mut settings) = (None, mapcraft_light::Settings::default());
+    let mut it = args.iter();
+    let number = |v: Option<&String>| v.and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0).ok_or_else(|| USAGE.to_string());
+    let mut overrides: Vec<(&str, f64)> = Vec::new();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            flag @ ("--luxel" | "--bounces" | "--rays" | "--threads") => overrides.push((flag, number(it.next())?)),
+            _ => path = Some(a),
+        }
+    }
+    let path = Path::new(path.ok_or(USAGE)?);
+    let file = mapcraft_format::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    settings = settings.for_map(&file.map);
+    for (flag, v) in overrides {
+        match flag {
+            "--luxel" => settings.luxel = v.max(1.0),
+            "--bounces" => settings.bounces = v.min(16.0) as u32,
+            "--rays" => settings.rays = v.clamp(1.0, 4096.0) as u32,
+            _ => settings.threads = v.min(1024.0) as usize,
+        }
+    }
+    let skip = mapcraft_map::covered_faces(&file.map, None, &|_| false);
+    let progress = mapcraft_light::Progress::default();
+    let started = std::time::Instant::now();
+    let result = std::thread::scope(|s| {
+        let job = s.spawn(|| mapcraft_light::bake(&file.map, &|_| mapcraft_light::Surface::default(), &skip, &settings, &progress));
+        while !job.is_finished() {
+            eprint!("\rbaking {:5.1}%", progress.fraction() * 100.0);
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!();
+        job.join().map_err(|_| "the bake thread failed".to_string())
+    })?;
+    let (lightmap, warnings) = result.map_err(|e| e.to_string())?;
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
+    let bytes = mapcraft_light::write(&lightmap);
+    let out = path.with_extension("mclight");
+    std::fs::write(&out, &bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    println!(
+        "wrote {} in {:.1}s: {} faces, {} slices of {} luxels, {:.1} MB",
+        out.display(),
+        started.elapsed().as_secs_f64(),
+        lightmap.faces.len(),
+        lightmap.slices.len(),
+        lightmap.size,
+        bytes.len() as f64 / 1e6
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.split_first() {
@@ -163,6 +218,7 @@ fn main() -> ExitCode {
         Some((cmd, [path])) if cmd == "info" => info(path).map(|()| true),
         Some((cmd, rest)) if cmd == "validate" => validate_cmd(rest),
         Some((cmd, rest)) if cmd == "fgd" => fgd(rest).map(|()| true),
+        Some((cmd, rest)) if cmd == "bake" => bake(rest).map(|()| true),
         Some((cmd, [])) if cmd == "mcp" => mcp::run().map(|()| true),
         Some((cmd, rest)) if cmd == "sdk" => sdk::run(rest).map_err(|e| if e == sdk::USAGE { format!("usage:\n{e}") } else { e }),
         _ => Err(USAGE.into()),

@@ -21,3 +21,4 @@ pack="$tmp/course.pck"
 
 "$godot" --headless --path "$here/test" -s mapcraft_environment_test.gd
 "$godot" --headless --path "$here/test" -s mapcraft_shader_test.gd
+"$godot" --headless --path "$here/test" -s mapcraft_lightmap_test.gd

@@ -74,6 +74,23 @@ pub struct Manifest {
     /// The Steam Workshop maps publish to, in builds shipped on Steam.
     #[serde(default)]
     pub workshop: Option<Workshop>,
+    /// Bake lighting with MapCraft's own baker, for games whose importer reads `.mclight` files.
+    #[serde(default)]
+    pub lightmaps: Option<Lightmaps>,
+}
+
+/// Defaults for MapCraft's lightmap baker; a map's worldspawn keys override them.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lightmaps {
+    /// World units per luxel.
+    #[serde(default)]
+    pub luxel: Option<f64>,
+    #[serde(default)]
+    pub bounces: Option<u32>,
+    /// Rays each luxel gathers per bounce.
+    #[serde(default)]
+    pub rays: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
