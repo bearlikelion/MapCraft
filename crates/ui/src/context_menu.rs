@@ -76,26 +76,6 @@ impl MapCraftApp {
         }
     }
 
-    fn brush_type_menu(&mut self, ui: &mut egui::Ui) {
-        let classes: Vec<&str> =
-            ["func_detail", "func_illusionary", "func_wall"].into_iter().filter(|c| self.project.game.class(c).is_some_and(|d| d.kind.is_solid())).collect();
-        let any = !self.session.selected_brushes().is_empty();
-        ui.menu_button((icons::slot(None), "Brush Type"), |ui| {
-            let mut pick = None;
-            if ui.add_enabled(any, icons::button(Some("globe"), "World")).clicked() {
-                pick = Some(None);
-            }
-            for c in classes {
-                if ui.add_enabled(any, icons::button(Some("cube"), c)).clicked() {
-                    pick = Some(Some(c));
-                }
-            }
-            if let Some(class) = pick {
-                self.make_brush_class(class);
-            }
-        });
-    }
-
     /// Makes the selected brushes one entity of `class` with its defaults, or world brushes when `None`.
     pub(crate) fn make_brush_class(&mut self, class: Option<&str>) {
         let keys = class.and_then(|c| self.project.game.class(c)).map(|c| mapcraft_engine::class_defaults(&c)).unwrap_or_default();
@@ -105,8 +85,8 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    /// Every brush class, those sharing a prefix such as `func_` or `trigger_` in a submenu of their own, as TrenchBroom lists them.
-    fn brush_entity_menu(&mut self, ui: &mut egui::Ui) {
+    /// World, then every brush class, those sharing a prefix such as `func_` or `trigger_` in a submenu of their own, as TrenchBroom lists them.
+    fn brush_type_menu(&mut self, ui: &mut egui::Ui) {
         let mut groups: std::collections::BTreeMap<String, Vec<(String, Option<egui::Color32>)>> = std::collections::BTreeMap::new();
         for c in self
             .project
@@ -119,9 +99,6 @@ impl MapCraftApp {
             let color = c.color().map(|[r, g, b]| egui::Color32::from_rgb(r, g, b));
             groups.entry(prefix).or_default().push((c.name, color));
         }
-        if groups.is_empty() {
-            return;
-        }
         let any = !self.session.selected_brushes().is_empty();
         let mut pick = None;
         let item = |ui: &mut egui::Ui, name: &str, color: Option<egui::Color32>, pick: &mut Option<String>| {
@@ -130,7 +107,12 @@ impl MapCraftApp {
                 *pick = Some(name.to_string());
             }
         };
-        ui.menu_button((icons::slot(Some("cube")), "Create Brush Entity"), |ui| {
+        let mut world = false;
+        ui.menu_button((icons::slot(Some("cube")), "Brush Type"), |ui| {
+            world = ui.add_enabled(any, icons::button(Some("globe"), "World")).clicked();
+            if !groups.is_empty() {
+                ui.separator();
+            }
             let (nested, single): (Vec<_>, Vec<_>) = groups.iter().partition(|(prefix, classes)| classes.len() > 1 && !prefix.is_empty());
             for (prefix, classes) in nested {
                 let mut title = prefix.clone();
@@ -141,7 +123,9 @@ impl MapCraftApp {
             }
             single.into_iter().flat_map(|(_, classes)| classes).for_each(|(n, c)| item(ui, n, *c, &mut pick));
         });
-        if let Some(class) = pick {
+        if world {
+            self.make_brush_class(None);
+        } else if let Some(class) = pick {
             self.session.default_solid_entity = class.clone();
             self.make_brush_class(Some(&class));
         }
@@ -167,7 +151,6 @@ impl MapCraftApp {
         self.menu_item(ui, "tools.merge", "Merge Brushes");
         self.menu_item(ui, "tool.clip", "Clip");
         self.brush_type_menu(ui);
-        self.brush_entity_menu(ui);
         ui.menu_button((icons::slot(Some("gimbal")), "Transform"), |ui| {
             self.menu_item(ui, "tools.rotate_cw", "Rotate 90° Clockwise");
             self.menu_item(ui, "tools.rotate_ccw", "Rotate 90° Counter-Clockwise");

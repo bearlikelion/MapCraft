@@ -85,7 +85,7 @@ These settings shape it:
 | **Lead in**, **Lead out** | Straight runs before and after a curve |
 | **Surf**, **Side** and **Bottom material** | Empty uses the current material; the bucket (**Use current material**) fills one in |
 | **UV scale** | Map units per texel; the texture runs along the ramp and down its faces, as SURGE lays it out |
-| **Skip hidden faces** | Puts `tools/skip` on the bottom and on the faces pressed between pieces, so a see-through surf or side material does not show them; on by default |
+| **Skip hidden faces** | Puts `tools/skip` on the faces pressed between pieces, so a see-through surf or side material does not show them; on by default |
 
 **Skip hidden faces** is on by default, so a see-through surf or side material never shows the ramp's insides.
 Turn it off when players can fall under a ramp and should see its bottom; opaque ramps look the same either way, since the game already leaves out faces pressed flat between pieces.

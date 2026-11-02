@@ -195,7 +195,7 @@ An entity with no name has no inputs.
 Brushes you draw start out as world brushes: plain solid geometry.
 To turn some into a trigger, a door or another brush entity, tie them to an entity.
 
-**Right-click > Create Brush Entity** does the same in one step for any brush class, as in TrenchBroom.
+**Right-click > Brush Type** does the same in one step for any brush class, as in TrenchBroom, and **World** turns them back into world brushes.
 Classes sharing a prefix, such as `func_` or `zone_`, sit in a submenu of their own.
 It also takes brushes out of the entity they are in, so it changes a brush entity's class, and the new entity starts with the class's default keys.
 

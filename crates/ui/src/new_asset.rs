@@ -33,7 +33,7 @@ const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
     (TextureSlot::Roughness, &["roughness", "rough"]),
     (TextureSlot::Metallic, &["metallic", "metalness", "metal"]),
     (TextureSlot::Emission, &["emission", "emissive", "glow"]),
-    (TextureSlot::Height, &["height", "depth", "displacement", "disp"]),
+    (TextureSlot::Height, &["height", "heightmap", "height_map", "depth", "displacement", "disp"]),
 ];
 
 /// The open window and the files the snapshot tool picks in place of a file dialog.
@@ -53,12 +53,13 @@ struct NewAsset {
 }
 
 impl NewAsset {
-    fn new(kind: AssetKind, files: Vec<PathBuf>) -> Self {
+    fn new(kind: AssetKind, mut files: Vec<PathBuf>) -> Self {
         let name = match kind {
             AssetKind::Material => material_name(&files),
             AssetKind::Model => files.first().map(|f| safe_name(&stem(f))).unwrap_or_default(),
         };
         let mut new = Self { kind, name, files: Vec::new(), slots: BTreeMap::new(), material: Material::default(), error: String::new() };
+        files.sort_by_key(|f| slot_of(f).is_none());
         for file in files {
             new.add_file(file);
         }
@@ -387,6 +388,10 @@ mod tests {
         assert_eq!(new.slots.get(&TextureSlot::Roughness), Some(&2));
         assert_eq!(new.slots.get(&TextureSlot::Emission), Some(&3));
         assert_eq!(new.slots.get(&TextureSlot::Metallic), None, "scifimetal is not a slot word at the end");
+        let picked = ["SCIFIRED_orm.png", "SCIFIRED_heightmap.png", "SCIFIRED_albedo.png"].map(PathBuf::from).to_vec();
+        let new = NewAsset::new(AssetKind::Material, picked);
+        let slot = |s: TextureSlot| new.slots.get(&s).and_then(|i| new.files.get(*i)).map(|f| stem(f));
+        assert_eq!((slot(TextureSlot::Albedo), slot(TextureSlot::Height)), (Some("SCIFIRED_albedo".into()), Some("SCIFIRED_heightmap".into())));
         assert_eq!(material_name(&[PathBuf::from("Rusty Metal_basecolor.png")]), "Rusty_Metal");
         assert_eq!(material_name(&[PathBuf::from("crate.png")]), "crate");
         assert_eq!(model_path(" props/../Bee Model.glb"), "props/Bee_Model");

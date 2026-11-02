@@ -141,7 +141,7 @@ fn ramp_command() -> CommandSpec {
             toggle(
                 "skip_hidden",
                 "Skip hidden faces",
-                "Puts tools/skip on the bottom and on faces pressed between pieces, so see-through materials do not show them; the game draws neither",
+                "Puts tools/skip on faces pressed between pieces, so see-through materials do not show them; the game does not draw them",
                 true,
             ),
         ],
@@ -250,7 +250,7 @@ fn surf_ramp(p: &Params) -> Result<Output, String> {
             .map(|f| Face {
                 points: (v(f.points[0]), v(f.points[1]), v(f.points[2])),
                 material: match f.slot {
-                    _ if skip_hidden && (f.inner || f.slot == ramp::Slot::Bottom) => SKIP,
+                    _ if skip_hidden && f.inner => SKIP,
                     ramp::Slot::Surf => surf,
                     ramp::Slot::Side => side,
                     ramp::Slot::Bottom => bottom,
