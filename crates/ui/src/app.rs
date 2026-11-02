@@ -137,6 +137,8 @@ pub struct MapCraftApp {
     /// The brush entity class the Block tool draws, picked in the Entities tab; none draws world brushes.
     pub(crate) block_class: Option<String>,
     pub(crate) expanded: BTreeSet<mapcraft_map::NodeId>,
+    /// The mesh of an editable prop picked in place of the whole prop.
+    pub(crate) picked_mesh: Option<(mapcraft_map::NodeId, String)>,
     /// Scene tree rows being dragged, empty when none are.
     pub(crate) tree_drag: Vec<mapcraft_map::NodeId>,
     /// The selection the scene tree last unfolded and scrolled to.
@@ -321,6 +323,7 @@ impl MapCraftApp {
             entity_class: "info_player_start".into(),
             block_class: None,
             expanded: BTreeSet::from([mapcraft_map::ROOT]),
+            picked_mesh: None,
             tree_drag: Vec::new(),
             tree_revealed: BTreeSet::new(),
             tree_view: (0.0, 0.0),
@@ -460,6 +463,7 @@ impl MapCraftApp {
         if let Some(s) = &mut sdk {
             s.user_textures = self.prefs.get().sdk_textures.get(&s.manifest.id).into_iter().flatten().map(PathBuf::from).collect();
             s.user_textures.extend(crate::assets::folders(&self.session.view));
+            s.user_textures.extend(self.custom_folder(&s.manifest.id));
         }
         self.missing_assets = None;
         if let (Some(id), None) = (&sdk_id, &sdk) {
@@ -1119,7 +1123,6 @@ impl MapCraftApp {
                 None => self.status = "This map has never been saved, so there is nothing to revert to".into(),
             },
             "file.reload_assets" => self.reload_assets(),
-            "file.import_gltf" => self.import_gltf_dialog(),
             "file.export_gltf" => self.export_gltf_dialog(),
             "file.export_asset_pack" => self.export_asset_pack(),
             "file.add_material" => self.add_assets(crate::new_asset::AssetKind::Material),
@@ -1334,6 +1337,11 @@ impl MapCraftApp {
             self.status = e.to_string();
         }
         self.mark_changed();
+    }
+
+    /// Where Add Material and Add Model put the SDK's custom assets, shared by every map made with it.
+    pub(crate) fn custom_folder(&self, sdk_id: &str) -> Option<PathBuf> {
+        Some(self.data_dir.as_ref()?.join("custom").join(sdk_id))
     }
 
     /// Where pictures of materials brought in by imports are kept between sessions, one folder per SDK.
@@ -2300,6 +2308,7 @@ impl eframe::App for MapCraftApp {
         self.poll_models(ctx);
         self.check_missing_assets();
         self.poll_control();
+        self.sync_mesh_frame();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

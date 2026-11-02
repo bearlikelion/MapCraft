@@ -149,8 +149,7 @@ The addon ships the SurfsUp entity map, so SurfsUp maps need no setup:
 - `func_detail` merges into the world;
 - `prop_static` places its model.
 
-Props get no collision of their own.
-When players should hit one, give the model collision in its Godot import settings.
+Props collide as their **Collision** key says, and each mesh can override it; see [Models](entities.md#models).
 
 ## Load maps while the game runs
 

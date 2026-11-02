@@ -28,7 +28,7 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
-struct MaterialParameters { tint: vec4<f32>, emission: vec4<f32>, };
+struct MaterialParameters { tint: vec4<f32>, emission: vec4<f32>, surface: vec4<f32>, };
 
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
@@ -192,6 +192,16 @@ struct Maps {
     bump: vec3<f32>,
 };
 
+// Scales a tangent-space normal's tilt by x and the roughness and metallic maps by y and z.
+fn adjusted(m: Maps, surface: vec4<f32>) -> Maps {
+    var bump = m.bump;
+    if surface.x != 1.0 {
+        let xy = bump.xy * surface.x;
+        bump = normalize(vec3<f32>(xy, sqrt(max(1.0 - dot(xy, xy), 0.0))));
+    }
+    return Maps(m.orm * vec3<f32>(1.0, surface.y, surface.z), bump);
+}
+
 fn layer_maps(normal: texture_2d<f32>, orm: texture_2d<f32>, s: sampler, uv: vec2<f32>, h: Hex) -> Maps {
     if ANTI_TILE != 2u {
         return Maps(textureSample(orm, s, uv).rgb, textureSample(normal, s, uv).xyz * 2.0 - 1.0);
@@ -297,11 +307,11 @@ fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
     }
     let a = albedo(i);
     let c = a.color;
-    let maps = layer_maps(normal_map, orm_map, samp, i.uv, a.hex_a);
+    let maps = adjusted(layer_maps(normal_map, orm_map, samp, i.uv, a.hex_a), material.surface);
     var orm = maps.orm;
     var bump = maps.bump;
     if LAYERS == 2u {
-        let b = layer_maps(normal_b, orm_b, samp_b, i.blend_uv, a.hex_b);
+        let b = adjusted(layer_maps(normal_b, orm_b, samp_b, i.blend_uv, a.hex_b), material_b.surface);
         orm = mix(orm, b.orm, a.share);
         bump = normalize(mix(bump, b.bump, a.share));
     }

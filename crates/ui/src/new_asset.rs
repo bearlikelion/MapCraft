@@ -36,6 +36,9 @@ const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
     (TextureSlot::Height, &["height", "heightmap", "height_map", "depth", "displacement", "disp"]),
 ];
 
+/// Name endings of one picture holding occlusion, roughness and metallic in its red, green and blue.
+const PACKED_WORDS: [&str; 2] = ["orm", "arm"];
+
 /// The open window and the files the snapshot tool picks in place of a file dialog.
 #[derive(Default)]
 pub(crate) struct NewAssets {
@@ -59,7 +62,7 @@ impl NewAsset {
             AssetKind::Model => files.first().map(|f| safe_name(&stem(f))).unwrap_or_default(),
         };
         let mut new = Self { kind, name, files: Vec::new(), slots: BTreeMap::new(), material: Material::default(), error: String::new() };
-        files.sort_by_key(|f| slot_of(f).is_none());
+        files.sort_by_key(|f| slot_of(f).is_none() && !is_packed(f));
         for file in files {
             new.add_file(file);
         }
@@ -68,6 +71,13 @@ impl NewAsset {
 
     /// Adds a picture, giving it the slot its name says when that slot is free, else Albedo when that is.
     fn add_file(&mut self, file: PathBuf) {
+        if is_packed(&file) {
+            for slot in [TextureSlot::Roughness, TextureSlot::Metallic] {
+                self.slots.entry(slot).or_insert(self.files.len());
+            }
+            self.files.push(file);
+            return;
+        }
         let slot =
             slot_of(&file).filter(|s| !self.slots.contains_key(s)).or_else(|| (!self.slots.contains_key(&TextureSlot::Albedo)).then_some(TextureSlot::Albedo));
         if let Some(slot) = slot {
@@ -87,11 +97,26 @@ fn safe_name(name: &str) -> String {
     if name.trim_matches('_').is_empty() { String::new() } else { name }
 }
 
-fn slot_of(path: &Path) -> Option<TextureSlot> {
+fn ends_with_word(path: &Path, words: &[&str]) -> bool {
     let stem = stem(path).to_ascii_lowercase();
-    SLOT_WORDS.iter().find_map(|(slot, words)| {
-        words.iter().any(|w| stem == *w || stem.strip_suffix(w).is_some_and(|rest| rest.ends_with(['_', '-', ' ', '.']))).then_some(*slot)
-    })
+    words.iter().any(|w| stem == *w || stem.strip_suffix(w).is_some_and(|rest| rest.ends_with(['_', '-', ' ', '.'])))
+}
+
+fn slot_of(path: &Path) -> Option<TextureSlot> {
+    SLOT_WORDS.iter().find_map(|(slot, words)| ends_with_word(path, words).then_some(*slot))
+}
+
+fn is_packed(path: &Path) -> bool {
+    ends_with_word(path, &PACKED_WORDS)
+}
+
+/// One channel of a picture as a gray PNG.
+fn channel_png(bytes: &[u8], channel: usize) -> Result<Vec<u8>, String> {
+    let rgba = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();
+    let gray = image::GrayImage::from_fn(rgba.width(), rgba.height(), |x, y| image::Luma([rgba.get_pixel(x, y).0[channel]]));
+    let mut png = Vec::new();
+    gray.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(png)
 }
 
 /// The pictures' shared name prefix, or one picture's name without its slot word.
@@ -105,7 +130,7 @@ fn material_name(files: &[PathBuf]) -> String {
     }
     if stems.len() == 1 {
         let lower = first.to_ascii_lowercase();
-        let word = SLOT_WORDS.iter().flat_map(|(_, w)| w.iter()).filter(|w| lower.ends_with(*w)).map(|w| w.len()).max().unwrap_or(0);
+        let word = SLOT_WORDS.iter().flat_map(|(_, w)| w.iter()).chain(&PACKED_WORDS).filter(|w| lower.ends_with(*w)).map(|w| w.len()).max().unwrap_or(0);
         prefix = first.get(..first.len().saturating_sub(word)).unwrap_or(first);
     }
     let name = safe_name(prefix.trim_end_matches(['_', '-', ' ', '.']));
@@ -153,6 +178,11 @@ fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[
         let bytes = read_limited(file, pack::MAX_ENTRY_SIZE)?;
         let label = file.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         pack::validate_picture(&bytes).map_err(|e| format!("{label}: {e}"))?;
+        let bytes = match slot {
+            TextureSlot::Roughness if is_packed(file) => channel_png(&bytes, 1).map_err(|e| format!("{label}: {e}"))?,
+            TextureSlot::Metallic if is_packed(file) => channel_png(&bytes, 2).map_err(|e| format!("{label}: {e}"))?,
+            _ => bytes,
+        };
         let ext = pack::material_entry(name, &bytes).and_then(|e| e.rsplit('.').next().map(str::to_string)).unwrap_or_else(|| "png".into());
         let slot_name = SLOTS.iter().find(|(s, _)| s == slot).map_or("texture", |(_, l)| l).to_ascii_lowercase();
         let texture = format!("textures/{name}_{slot_name}.{ext}");
@@ -278,7 +308,7 @@ impl MapCraftApp {
                 ui.colored_label(crate::chrome::ERROR, &new.error);
             }
             ui.label(
-                RichText::new("Copied into a folder beside the map and packed into its .mcpck; an untitled map is saved first.")
+                RichText::new("Copied into this SDK's custom folder for every map to use, and packed into the .mcpck of each map that uses it.")
                     .color(crate::chrome::TEXT_WEAK),
             );
             ui.horizontal(|ui| {
@@ -293,27 +323,19 @@ impl MapCraftApp {
         }
     }
 
-    /// The folder beside the map that new materials and models go in, saving an untitled map first.
-    fn asset_root(&mut self) -> Result<PathBuf, String> {
-        if self.session.path.is_none() {
-            self.save(false);
-        }
-        let map = self.session.path.clone().ok_or("Save the map first: new materials and models go in a folder beside it")?;
-        Ok(map.with_extension(""))
+    fn asset_root(&self) -> Result<PathBuf, String> {
+        let id = self.project.id().ok_or("Open a map made with an SDK first: new materials and models belong to its SDK")?;
+        self.custom_folder(id).ok_or_else(|| "There is no data folder to keep new materials and models in".into())
     }
 
-    /// Loads the SDK again so assets just written under `root` show, keeping the brush material.
-    fn reload_asset_folder(&mut self, root: &Path) {
+    /// Loads the SDK again so assets just written show, keeping the brush material.
+    fn reload_asset_folder(&mut self) {
         let tex = self.session.tex.clone();
-        if crate::assets::folders(&self.session.view).iter().any(|f| f.as_path() == root) {
-            self.load_project(self.session.sdk.clone());
-        } else {
-            self.add_asset_folder(root.to_path_buf());
-        }
+        self.load_project(self.session.sdk.clone());
         self.session.tex = tex;
     }
 
-    /// Copies a dropped `.glb` beside the map as Add Model does and returns its model path; a copy already there is reused.
+    /// Copies a dropped `.glb` into the custom folder as Add Model does and returns its model path; a copy already there is reused.
     pub(crate) fn add_dropped_model(&mut self, file: &Path) -> Result<String, String> {
         let root = self.asset_root()?;
         let path = model_path(&stem(file));
@@ -322,7 +344,7 @@ impl MapCraftApp {
             Ok(have) if read_limited(file, pack::MAX_ENTRY_SIZE).is_ok_and(|b| b == have) => format!("models/{path}.glb"),
             _ => create_model(&root, &path, file)?,
         };
-        self.reload_asset_folder(&root);
+        self.reload_asset_folder();
         Ok(model)
     }
 
@@ -356,7 +378,7 @@ impl MapCraftApp {
         };
         let kind = new.kind;
         self.new_assets.dialog = None;
-        self.reload_asset_folder(&root);
+        self.reload_asset_folder();
         if kind == AssetKind::Material {
             self.session.tex.material = added.clone();
         }
@@ -392,6 +414,7 @@ mod tests {
         let new = NewAsset::new(AssetKind::Material, picked);
         let slot = |s: TextureSlot| new.slots.get(&s).and_then(|i| new.files.get(*i)).map(|f| stem(f));
         assert_eq!((slot(TextureSlot::Albedo), slot(TextureSlot::Height)), (Some("SCIFIRED_albedo".into()), Some("SCIFIRED_heightmap".into())));
+        assert_eq!((slot(TextureSlot::Roughness), slot(TextureSlot::Metallic)), (Some("SCIFIRED_orm".into()), Some("SCIFIRED_orm".into())));
         assert_eq!(material_name(&[PathBuf::from("Rusty Metal_basecolor.png")]), "Rusty_Metal");
         assert_eq!(material_name(&[PathBuf::from("crate.png")]), "crate");
         assert_eq!(model_path(" props/../Bee Model.glb"), "props/Bee_Model");
@@ -420,6 +443,17 @@ mod tests {
         assert_eq!(texture, "textures/stone_albedo.png");
         let picture = std::fs::read(vfs.find(&texture).unwrap()).unwrap();
         assert!(pack::write(&[("materials/stone.json".into(), json), (texture, picture)]).is_ok());
+    }
+
+    #[test]
+    fn an_orm_picture_splits_into_roughness_and_metallic() {
+        let src = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let orm = src.path().join("panel_orm.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255])).save(&orm).unwrap();
+        create_material(root.path(), "panel", Material::default(), &[(TextureSlot::Roughness, &orm), (TextureSlot::Metallic, &orm)]).unwrap();
+        let gray = |name: &str| image::open(root.path().join(format!("textures/panel_{name}.png"))).unwrap().to_luma8().get_pixel(0, 0).0[0];
+        assert_eq!((gray("roughness"), gray("metallic")), (20, 30));
     }
 
     #[test]

@@ -69,6 +69,23 @@ Select the entity to watch its animation play in the 3D view; it starts from the
 In Godot a model entity collides by default: its **Collision** key is `convex` (one hull around each mesh, cheap and right for crates and rocks), `trimesh` (the exact triangles, for complex static props) or `none`.
 The collision bodies use the collision layer and mask the SDK's entity map gives the class.
 
+### Editable Children
+
+A model with several meshes, such as a crate with a separate lid, can have each mesh moved, hidden or given its own collision, as Godot's Editable Children does.
+
+1. Right click the prop in the scene tree and tick **Editable Children**.
+   Its meshes appear under it, nested as they are in the model.
+2. Click a mesh in the tree, or click it in a view, to select only that mesh.
+3. Move, rotate or scale it with the usual tools, or type its **Origin**, **Angles** and **Scale** in the inspector.
+   Moving a mesh carries the meshes under it along.
+4. Untick **Visible**, or click its eye in the tree, to hide it; a hidden mesh, and every mesh under it, is neither drawn nor collided with in Godot.
+5. Pick its **Collision** to override the prop's own: **None**, **Convex** or **Trimesh**.
+
+**Reset Transform** puts the mesh back where the model has it.
+The changes are kept on the prop as `mesh.<name>.origin`, `.angles`, `.scale`, `.hidden` and `.collision` keys, so undo, copy and paste and prefabs keep them.
+A mesh is named by its glTF node name, or `#<index>` when the node has no name or shares it with another.
+Animated models cannot have their meshes edited.
+
 Models load in the background the first time a map uses them.
 A model that is missing, broken or huge (over about a million triangles) shows as a plain box, and the Output panel says why.
 
@@ -95,9 +112,9 @@ Type in the search box to filter.
 **Previews**, the grid or list icon at the right of the model count, switches between the pictures and a plain list of paths, as it does in the Materials panel.
 
 You can also drag a `.glb` file from your file manager onto a view.
-MapCraft copies it to `models/` in the folder beside the map, as **File > Add Model** does, and places it as a prop where you let go, in one undo step.
+MapCraft copies it to `models/` in the SDK's custom folder, as **File > Add Model** does, and places it as a prop where you let go, in one undo step.
 An untitled map is saved first, and dropping the same file again reuses the copy.
-A `.gltf` file, or any glTF file in an SDK without a prop class, comes in as brushes instead, as with **File > Import > glTF**.
+A `.gltf` file, or any glTF file in an SDK without a prop class, comes in as brushes instead (see [Blender and glTF](gltf.md#import)).
 
 In the SurfsUp SDK the prop class is `prop_static`: its **Angles** are under **Transform**, and **Model** and **Scale** under **Properties**.
 An SDK without a prop class can preview models but not place them.
@@ -106,7 +123,7 @@ An SDK without a prop class can preview models but not place them.
 
 > [!NOTE]
 > The tab lists every model in the SDK's model folders, except those an entity class always shows, such as SurfsUp's platforms.
-> Your own models, such as those you added or dropped in the folder beside the map, sit in a **Custom** folder under **Folders**.
+> Your own models, such as those you added or dropped into the SDK's custom folder, sit in a **Custom** folder under **Folders**.
 > Pictures are drawn the first time a model scrolls into view and kept, so they show at once next time and are redrawn only when the model file changes.
 > A model that cannot be loaded shows a gray cube instead of a picture.
 

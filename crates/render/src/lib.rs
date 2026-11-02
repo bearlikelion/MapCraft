@@ -21,7 +21,10 @@ pub use camera::{Camera, View};
 pub use environment::EnvironmentEffects;
 pub use gltf_map::{ImportedGltf, export_glb, import_gltf};
 pub use godot_shader::{ShaderKind, TextureSource, Uniform, uniforms};
-pub use model::{MAX_MODEL_BYTES, MeshPart, Model, ModelPart, Picture, entity_transform, load_gltf, mesh_model, placed_bounds, to_glb};
+pub use model::{
+    MAX_MODEL_BYTES, MeshPart, Model, ModelNode, ModelPart, Picture, edited_model, entity_transform, load_gltf, mesh_matrices, mesh_model, placed_bounds,
+    to_glb,
+};
 pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,
     is_tool_material,
@@ -95,8 +98,35 @@ struct GodotShader {
     textures: Vec<TextureSource>,
 }
 
+/// A PBR material's numbers, which change without uploading its maps again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialValues {
+    /// Linear; an alpha below 1 makes the material see-through.
+    pub tint: [f32; 4],
+    /// RGB added to the emission texture, times the energy in A, as Godot does.
+    pub emission: [f32; 4],
+    pub normal_strength: f32,
+    /// Multiplies the roughness map.
+    pub roughness: f32,
+    /// Multiplies the metallic map.
+    pub metallic: f32,
+}
+
+impl Default for MaterialValues {
+    fn default() -> Self {
+        Self { tint: [1.0; 4], emission: [0.0; 4], normal_strength: 1.0, roughness: 1.0, metallic: 1.0 }
+    }
+}
+
+impl MaterialValues {
+    fn uniform(&self) -> [[f32; 4]; 3] {
+        [self.tint, self.emission, [self.normal_strength, self.roughness, self.metallic, 0.0]]
+    }
+}
+
 struct Material {
     bind_group: wgpu::BindGroup,
+    parameters: wgpu::Buffer,
     size: [u32; 2],
     albedo: wgpu::TextureView,
     /// The game draws it with nearest filtering, whatever the renderer's own setting.
@@ -409,7 +439,7 @@ impl Renderer {
 
         let flat = texture(device, queue, 1, 1, &[128, 128, 255, 255], wgpu::TextureFormat::Rgba8Unorm);
         let rough = texture(device, queue, 1, 1, &[255, 255, 0, 255], wgpu::TextureFormat::Rgba8Unorm);
-        let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough, None);
+        let bind = |albedo: &wgpu::TextureView| material_bind_group(device, &texture_layout, &sampler, albedo, &flat, &rough, None).0;
         let white_albedo = texture(device, queue, 1, 1, &[255, 255, 255, 255], wgpu::TextureFormat::Rgba8UnormSrgb);
         let checker: Vec<u8> = (0..64u32).flat_map(|i| if (i % 8 < 4) ^ (i / 8 < 4) { [255, 0, 255, 255] } else { [0, 0, 0, 255] }).collect();
         let missing_albedo = texture(device, queue, 8, 8, &checker, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -676,9 +706,10 @@ impl Renderer {
             return false;
         }
         let albedo = texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
-        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &albedo, &self.flat, &self.rough, None);
+        let (bind_group, parameters) =
+            material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &albedo, &self.flat, &self.rough, None);
         let clear_pixels = rgba.chunks(4).any(|p| p.get(3).is_some_and(|a| *a < 255));
-        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo, pixelated, clear_pixels, see_through: clear_pixels });
+        self.materials.insert(name.to_string(), Material { bind_group, parameters, size: [w, h], albedo, pixelated, clear_pixels, see_through: clear_pixels });
         true
     }
 
@@ -704,15 +735,16 @@ impl Renderer {
         };
         let far = texture(&self.device, &self.queue, half, h, &layer(half), wgpu::TextureFormat::Rgba8UnormSrgb);
         let near = texture(&self.device, &self.queue, half, h, &layer(0), wgpu::TextureFormat::Rgba8UnormSrgb);
-        let bind_group = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &far, &near, &self.rough, None);
-        self.materials.insert(name.to_string(), Material { bind_group, size: [w, h], albedo: far, pixelated, clear_pixels: false, see_through: false });
+        let (bind_group, parameters) = material_bind_group(&self.device, &self.texture_layout, self.sampler_for(pixelated), &far, &near, &self.rough, None);
+        let material = Material { bind_group, parameters, size: [w, h], albedo: far, pixelated, clear_pixels: false, see_through: false };
+        self.materials.insert(name.to_string(), material);
         self.skies.insert(name.to_string());
         true
     }
 
     /// Gives an uploaded material Lit's maps: a normal map with green up, and occlusion, roughness and metallic in RGB.
     pub fn set_material_maps(&mut self, name: &str, normal: (u32, u32, &[u8]), orm: (u32, u32, &[u8])) -> bool {
-        self.set_material_surface(name, normal, orm, (1, 1, &[0, 0, 0, 255]), [1.0; 4], [0.0; 4])
+        self.set_material_surface(name, normal, orm, (1, 1, &[0, 0, 0, 255]), MaterialValues::default())
     }
 
     /// Gives a material its PBR maps, linear tint, and emission: the texture plus the RGB color, times the energy in A, as Godot does.
@@ -722,30 +754,34 @@ impl Renderer {
         normal: (u32, u32, &[u8]),
         orm: (u32, u32, &[u8]),
         emission: (u32, u32, &[u8]),
-        albedo: [f32; 4],
-        emission_color: [f32; 4],
+        values: MaterialValues,
     ) -> bool {
         if !self.fits(normal.0, normal.1, normal.2)
             || !self.fits(orm.0, orm.1, orm.2)
             || !self.fits(emission.0, emission.1, emission.2)
-            || !albedo.iter().chain(emission_color.iter()).all(|v| v.is_finite())
+            || !values.uniform().as_flattened().iter().all(|v| v.is_finite())
         {
             return false;
         }
         let Some(m) = self.materials.get_mut(name) else { return false };
-        m.see_through = m.clear_pixels || albedo[3] < 1.0;
+        m.see_through = m.clear_pixels || values.tint[3] < 1.0;
         let linear = |(w, h, rgba)| texture(&self.device, &self.queue, w, h, rgba, wgpu::TextureFormat::Rgba8Unorm);
         let emitted = texture(&self.device, &self.queue, emission.0, emission.1, emission.2, wgpu::TextureFormat::Rgba8UnormSrgb);
         let sampler = if m.pixelated || self.pixelated { &self.nearest } else { &self.sampler };
-        m.bind_group = material_bind_group(
-            &self.device,
-            &self.texture_layout,
-            sampler,
-            &m.albedo,
-            &linear(normal),
-            &linear(orm),
-            Some((&emitted, albedo, emission_color)),
-        );
+        (m.bind_group, m.parameters) =
+            material_bind_group(&self.device, &self.texture_layout, sampler, &m.albedo, &linear(normal), &linear(orm), Some((&emitted, values)));
+        true
+    }
+
+    /// Changes an uploaded material's values in place, so a slider drag uploads no pictures.
+    pub fn set_material_values(&mut self, name: &str, values: MaterialValues) -> bool {
+        let Some(m) = self.materials.get_mut(name) else { return false };
+        let uniform = values.uniform();
+        if !uniform.as_flattened().iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        m.see_through = m.clear_pixels || values.tint[3] < 1.0;
+        self.queue.write_buffer(&m.parameters, 0, bytemuck::cast_slice(&uniform));
         true
     }
 
@@ -769,7 +805,7 @@ impl Renderer {
         }
         self.pixelated = on;
         let bind = |albedo: &wgpu::TextureView| {
-            material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), albedo, &self.flat, &self.rough, None)
+            material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), albedo, &self.flat, &self.rough, None).0
         };
         (self.white, self.missing) = (bind(&self.white_albedo), bind(&self.missing_albedo));
         self.materials.clear();
@@ -1150,7 +1186,7 @@ impl Renderer {
                 let albedo = texture(&self.device, &self.queue, p.width, p.height, &p.rgba, wgpu::TextureFormat::Rgba8UnormSrgb);
                 (
                     model.texture_name(i),
-                    material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), &albedo, &self.flat, &self.rough, None),
+                    material_bind_group(&self.device, &self.texture_layout, self.sampler_for(false), &albedo, &self.flat, &self.rough, None).0,
                 )
             })
             .collect();
@@ -1330,16 +1366,15 @@ fn material_bind_group(
     albedo: &wgpu::TextureView,
     normal: &wgpu::TextureView,
     orm: &wgpu::TextureView,
-    surface: Option<(&wgpu::TextureView, [f32; 4], [f32; 4])>,
-) -> wgpu::BindGroup {
-    let (emission, tint, color) = surface.unwrap_or((albedo, [1.0; 4], [0.0; 4]));
-    let values = [tint, color];
+    surface: Option<(&wgpu::TextureView, MaterialValues)>,
+) -> (wgpu::BindGroup, wgpu::Buffer) {
+    let (emission, values) = surface.unwrap_or((albedo, MaterialValues::default()));
     let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("material parameters"),
-        contents: bytemuck::cast_slice(&values),
-        usage: wgpu::BufferUsages::UNIFORM,
+        contents: bytemuck::cast_slice(&values.uniform()),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
         layout,
         entries: &[
@@ -1350,7 +1385,8 @@ fn material_bind_group(
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(emission) },
             wgpu::BindGroupEntry { binding: 5, resource: parameters.as_entire_binding() },
         ],
-    })
+    });
+    (group, parameters)
 }
 
 /// Grid lines covering a 2D view; spacing doubles until lines are at least 6 pixels apart.
@@ -1485,21 +1521,23 @@ mod tests {
             (1, 1, &[128, 128, 255, 255]),
             (1, 1, &[255, 128, 192, 255]),
             (1, 1, &[255; 4]),
-            [0.5, 0.3, 0.1, 1.0],
-            [2.0, 0.0, 0.0, 1.0]
+            MaterialValues { tint: [0.5, 0.3, 0.1, 1.0], emission: [2.0, 0.0, 0.0, 1.0], ..MaterialValues::default() }
         ));
-        assert!(!renderer.set_material_surface("pbr", (0, 1, &[]), (1, 1, &[255; 4]), (1, 1, &[255; 4]), [1.0; 4], [0.0; 4]));
+        assert!(!renderer.set_material_surface("pbr", (0, 1, &[]), (1, 1, &[255; 4]), (1, 1, &[255; 4]), MaterialValues::default()));
         assert!(renderer.set_material_surface(
             "pbr",
             (1, 1, &[128, 128, 255, 255]),
             (1, 1, &[255; 4]),
             (1, 1, &[0, 0, 0, 255]),
-            [1.0, 1.0, 1.0, 0.5],
-            [0.0; 4]
+            MaterialValues { tint: [1.0, 1.0, 1.0, 0.5], ..MaterialValues::default() }
         ));
         let mut see: Vec<&str> = renderer.see_through_materials().collect();
         see.sort_unstable();
         assert_eq!(see, ["grate", "pbr"], "a tint alpha below 1 does too");
+        assert!(renderer.set_material_values("pbr", MaterialValues { normal_strength: 2.0, ..MaterialValues::default() }));
+        assert_eq!(renderer.see_through_materials().count(), 1, "values in place change see-through too");
+        assert!(!renderer.set_material_values("pbr", MaterialValues { roughness: f32::NAN, ..MaterialValues::default() }));
+        assert!(!renderer.set_material_values("nope", MaterialValues::default()));
         assert!(pollster::block_on(validation.pop()).is_none());
     }
 

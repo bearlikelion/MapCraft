@@ -1222,6 +1222,29 @@
           ]
         },
         {
+          "id": 951,
+          "type": "entity",
+          "classname": "prop_static",
+          "properties": [
+            ["targetname", "lidded"],
+            ["model", "Assets/Models/two_box.glb"],
+            ["origin", "256 128 0"],
+            ["mesh.Lid.origin", "0 0 39.37"],
+            ["mesh.Lid.collision", "none"]
+          ]
+        },
+        {
+          "id": 952,
+          "type": "entity",
+          "classname": "prop_static",
+          "properties": [
+            ["targetname", "emptied"],
+            ["model", "Assets/Models/two_box.glb"],
+            ["origin", "384 128 0"],
+            ["mesh.Base.hidden", "1"]
+          ]
+        },
+        {
           "id": 22,
           "type": "group",
           "name": "Group",

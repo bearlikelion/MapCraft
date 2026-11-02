@@ -27,7 +27,7 @@ pub use noise::{FractalType, HeightNoise, NoiseType};
 pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape, dragged_model_scale, model_scale};
 pub use organize::{class_defaults, entities_of, fill_class_defaults, fill_trigger_materials, find_entities, is_trigger};
 pub use prefab::{expand_instance, flatten, flatten_for_game, prefab_transform};
-pub use session::{SelectMode, Session, pick_target};
+pub use session::{MeshFrame, SelectMode, Session, pick_target};
 pub use shader::{SKY_TEMPLATE, SPATIAL_TEMPLATE};
 pub use terrain::{BlendFill, Falloff, Sculpt, SculptMode};
 pub use uv::{FacePick, FaceTransfer, face_polygons, uv_islands};

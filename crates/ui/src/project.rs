@@ -511,9 +511,9 @@ impl Project {
                     renderer.set_material_size(name, [tiled(w, sx), tiled(h, sy)]);
                 }
                 if let Some(pbr) = &m.pbr {
-                    let (mut normal, orm) = pack(pbr, &|path| self.picture(path));
+                    let unit = Pbr { roughness_value: 1.0, metallic_value: 1.0, ..pbr.clone() };
+                    let (normal, orm) = pack(if m.descriptor.is_some() { &unit } else { pbr }, &|path| self.picture(path));
                     if let Some(descriptor) = &m.descriptor {
-                        bend(&mut normal, descriptor.normal_strength);
                         let emission = match &m.emission {
                             Some(path) => match bounded_picture(path) {
                                 Ok(image) => image,
@@ -525,14 +525,12 @@ impl Project {
                             },
                             None => RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 255])),
                         };
-                        let [r, g, b] = descriptor.emission;
                         renderer.set_material_surface(
                             name,
                             (normal.width(), normal.height(), normal.as_raw()),
                             (orm.width(), orm.height(), orm.as_raw()),
                             (emission.width(), emission.height(), emission.as_raw()),
-                            descriptor.albedo,
-                            [r, g, b, descriptor.emission_energy],
+                            surface_values(descriptor),
                         );
                     } else {
                         renderer.set_material_maps(name, (normal.width(), normal.height(), normal.as_raw()), (orm.width(), orm.height(), orm.as_raw()));
@@ -586,16 +584,15 @@ fn resized(p: RgbaImage, (w, h): (u32, u32)) -> RgbaImage {
 }
 
 /// Scales a green-up normal map's tilt by `strength`, as Godot's normal scale does.
-fn bend(normal: &mut RgbaImage, strength: f32) {
-    if strength == 1.0 {
-        return;
-    }
-    let byte = |v: f32| (v * 127.5 + 127.5).round().clamp(0.0, 255.0) as u8;
-    for p in normal.pixels_mut() {
-        let [x, y] = [p[0], p[1]].map(|c| (f32::from(c) / 127.5 - 1.0) * strength);
-        let z = (1.0 - x * x - y * y).max(0.0).sqrt();
-        let len = (x * x + y * y + z * z).sqrt().max(1e-6);
-        p.0 = [byte(x / len), byte(y / len), byte(z / len), p[3]];
+/// What the views draw a descriptor's numbers with; its normal strength, roughness and metallic are applied in the shader.
+pub fn surface_values(d: &mapcraft_format::pack_material::Material) -> mapcraft_render::MaterialValues {
+    let [r, g, b] = d.emission;
+    mapcraft_render::MaterialValues {
+        tint: d.albedo,
+        emission: [r, g, b, d.emission_energy],
+        normal_strength: d.normal_strength,
+        roughness: d.roughness,
+        metallic: d.metallic,
     }
 }
 
@@ -723,7 +720,8 @@ impl EntityStyle for Project {
     }
 
     fn model(&self, e: &mapcraft_map::Entity) -> Option<std::sync::Arc<mapcraft_render::Model>> {
-        self.models.get(&self.model_path(e)?)
+        // ponytail: edits are applied on every call; cache by the prop's mesh keys if large edited props get slow.
+        self.models.get(&self.model_path(e)?).map(|m| mapcraft_render::edited_model(&m, e))
     }
 }
 
@@ -831,19 +829,5 @@ mod tests {
         let plain = plain_pbr();
         let (normal, orm) = pack(&plain, &load);
         assert_eq!((normal.get_pixel(0, 0).0, orm.get_pixel(0, 0).0, orm.dimensions()), ([128, 128, 255, 255], [255, 255, 0, 255], (1, 1)));
-    }
-
-    #[test]
-    fn normal_strength_scales_the_tilt() {
-        let tilted = RgbaImage::from_pixel(1, 1, Rgba([200, 128, 220, 255]));
-        let mut same = tilted.clone();
-        bend(&mut same, 1.0);
-        assert_eq!(same, tilted);
-        let mut flat = tilted.clone();
-        bend(&mut flat, 0.0);
-        assert_eq!(flat.get_pixel(0, 0).0, [128, 128, 255, 255]);
-        let mut half = tilted;
-        bend(&mut half, 0.5);
-        assert!((129..200).contains(&half.get_pixel(0, 0).0[0]));
     }
 }

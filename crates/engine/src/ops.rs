@@ -631,6 +631,9 @@ impl Session {
 
     /// Like `transform_selection`, and also sets each listed model entity's uniform scale in the same step.
     pub fn scale_selection(&mut self, m: &DMat4, models: &[(NodeId, f64)], label: &str, coalesce: Option<&str>) -> Result<(), EngineError> {
+        if let Some(mesh) = self.mesh.clone().filter(|f| self.selection.len() == 1 && self.selection.contains(&f.prop)) {
+            return self.transform_mesh(&mesh, m, label, coalesce);
+        }
         let roots = self.require_selection()?;
         let mut e = self.map.edit();
         self.transform_nodes(&mut e, &roots, m)?;
@@ -647,6 +650,35 @@ impl Session {
         let map = &self.map;
         let stretched = |id: &NodeId| map.get(*id).is_some_and(|n| matches!(&n.kind, NodeKind::Group(Group { generator: Some(g), .. }) if g.stretch.is_some()));
         self.stretched = roots.iter().flat_map(|r| map.subtree(*r)).filter(stretched).collect();
+        Ok(())
+    }
+
+    /// Sets one mesh's changes on prop `id` in one undo step, merging steps that share `coalesce`.
+    pub fn set_mesh_edit(&mut self, id: NodeId, name: &str, edit: &mapcraft_map::mesh_edit::MeshEdit, coalesce: Option<&str>) -> Result<(), EngineError> {
+        let Some(NodeKind::Entity(mut ent)) = self.map.get(id).map(|n| n.kind.clone()) else { return Err(mapcraft_map::EditError::Missing(id).into()) };
+        mapcraft_map::mesh_edit::set_mesh_edit(&mut ent, name, edit);
+        let mut e = self.map.edit();
+        e.set_kind(id, NodeKind::Entity(ent))?;
+        let c = e.finish();
+        self.apply_coalesced("Edit mesh", c, coalesce);
+        Ok(())
+    }
+
+    /// Moves one mesh of a prop by the world transform `m`, rewriting its `mesh.<name>.` keys.
+    fn transform_mesh(&mut self, mesh: &crate::session::MeshFrame, m: &DMat4, label: &str, coalesce: Option<&str>) -> Result<(), EngineError> {
+        let Some(NodeKind::Entity(mut ent)) = self.map.get(mesh.prop).map(|n| n.kind.clone()) else {
+            return Err(mapcraft_map::EditError::Missing(mesh.prop).into());
+        };
+        let edit = mapcraft_map::mesh_edit::mesh_edits(&ent).remove(&mesh.name).unwrap_or_default();
+        let local = mesh.frame.inverse() * *m * mesh.frame * edit.matrix(mesh.pivot);
+        let Some(moved) = edit.with_matrix(&local, mesh.pivot) else {
+            return Err(EngineError::Argument("a mesh cannot be mirrored or flattened".into()));
+        };
+        mapcraft_map::mesh_edit::set_mesh_edit(&mut ent, &mesh.name, &moved);
+        let mut e = self.map.edit();
+        e.set_kind(mesh.prop, NodeKind::Entity(ent))?;
+        let c = e.finish();
+        self.apply_coalesced(label, c, coalesce);
         Ok(())
     }
 
@@ -1325,6 +1357,32 @@ mod tests {
         let b = brush(s, id);
         let f = b.faces.iter().find(|f| f.plane().unwrap().normal.dot(n) > 0.99).unwrap().id;
         (id, b, f)
+    }
+
+    #[test]
+    fn a_selected_mesh_moves_in_place_of_its_prop() {
+        let mut s = session();
+        let prop = s.create_point_entity("prop_static", DVec3::new(100.0, 0.0, 0.0), vec![("angles".into(), "0 90 0".into())]).unwrap();
+        s.selection = BTreeSet::from([prop]);
+        let turn = DMat4::from_quat(mapcraft_map::mesh_edit::hammer_turn(0.0, 90.0, 0.0));
+        s.mesh = Some(crate::session::MeshFrame {
+            prop,
+            name: "Lid".into(),
+            frame: DMat4::from_translation(DVec3::new(100.0, 0.0, 0.0)) * turn,
+            pivot: DVec3::new(0.0, 0.0, 8.0),
+        });
+        s.translate_selection(DVec3::new(0.0, 10.0, 0.0), Some("drag")).unwrap();
+        s.translate_selection(DVec3::new(0.0, 6.0, 0.0), Some("drag")).unwrap();
+        let ent = |s: &Session| s.map.get(prop).unwrap().kind.entity().unwrap().clone();
+        assert_eq!(ent(&s).get("mesh.Lid.origin"), Some("16 0 0"), "a move along the world's Y is along the turned prop's X");
+        assert_eq!(ent(&s).origin(), Some(DVec3::new(100.0, 0.0, 0.0)), "the prop stays put");
+        let about = DMat4::from_translation(DVec3::new(100.0, 16.0, 8.0));
+        s.transform_selection(&(about * DMat4::from_rotation_z(90f64.to_radians()) * about.inverse()), "Rotate", None).unwrap();
+        assert_eq!(ent(&s).get("mesh.Lid.angles"), Some("0 90 0"));
+        assert_eq!(ent(&s).get("mesh.Lid.origin"), Some("16 0 0"), "turning about the mesh's own origin leaves it in place");
+        s.undo();
+        s.undo();
+        assert_eq!(ent(&s).get("mesh.Lid.origin"), None, "one drag is one undo step");
     }
 
     #[test]

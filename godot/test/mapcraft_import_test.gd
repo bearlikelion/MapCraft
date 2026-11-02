@@ -78,6 +78,7 @@ func _check_imported(root: Node3D) -> void:
 	_expect(direction.is_equal_approx(Vector3.FORWARD), "boost_direction turns from +Y to -Z")
 
 	_check_prop(root.get_node_or_null("crate") as Node3D)
+	_check_mesh_keys(root.get_node_or_null("lidded") as Node3D, root.get_node_or_null("emptied") as Node3D)
 
 	var mesh: MeshInstance3D = root.get_node_or_null("WorldMesh") as MeshInstance3D
 	_expect(mesh != null and mesh.mesh.get_surface_count() == 9, \
@@ -109,6 +110,26 @@ func _check_prop(prop: Node3D) -> void:
 	var shapes: Array[Node] = prop.find_children("*", "CollisionShape3D", true, false)
 	_expect(not shapes.is_empty() and (shapes[0] as CollisionShape3D).shape is ConvexPolygonShape3D, \
 			"a prop collides as a convex hull by default, saved inside its instanced model")
+
+
+func _check_mesh_keys(lidded: Node3D, emptied: Node3D) -> void:
+	_expect(lidded != null and emptied != null, "props with mesh keys import")
+	if lidded == null or emptied == null:
+		return
+	var lid: Node3D = lidded.find_child("Lid", true, false) as Node3D
+	var base: Node3D = lidded.find_child("Base", true, false) as Node3D
+	_expect(lid != null and base != null, "a prop with mesh keys keeps its glTF nodes")
+	if lid != null and base != null:
+		var height: float = (base.transform * lid.transform).origin.y
+		_expect(is_equal_approx(height, 2.1), "mesh.Lid.origin lifts the lid a meter: %f" % height)
+		_expect(lid.find_children("*", "CollisionShape3D", true, false).is_empty(), \
+				"mesh.Lid.collision none leaves the lid without collision")
+		_expect(not base.find_children("*", "CollisionShape3D", true, false).is_empty(), \
+				"the base keeps the prop's collision")
+	_expect(emptied.find_children("*", "MeshInstance3D", true, false).is_empty(), \
+			"hiding the base frees it and the lid under it")
+	_expect(emptied.find_children("*", "CollisionShape3D", true, false).is_empty(), \
+			"a hidden mesh has no collision")
 
 
 # The displaced floor collides as triangles and its middle vertex rises 48 units.
@@ -288,7 +309,7 @@ func _check_runtime_build() -> void:
 	map.entity_built.connect(_on_entity_built)
 	_expect(map.build() == OK, "MapCraftMap builds at runtime")
 	_expect(map.get_node_or_null("WorldMesh") != null, "the runtime build has world geometry")
-	_expect(_entities_built == 8, "entity_built fires once per entity")
+	_expect(_entities_built == 10, "entity_built fires once per entity")
 	map.free()
 
 	var sdk: MapCraftEntityMap = load(ENTITY_MAP) as MapCraftEntityMap

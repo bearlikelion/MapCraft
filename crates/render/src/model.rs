@@ -6,8 +6,9 @@ use std::sync::Arc;
 use gltf_json as json;
 use json::accessor::ComponentType;
 use json::validation::Checked;
-use mapcraft_geom::{DMat4, DQuat, DVec3};
+use mapcraft_geom::{DMat3, DMat4, DQuat, DVec3};
 use mapcraft_map::Entity;
+use mapcraft_map::mesh_edit::{MESH_KEY, MeshEdit, hammer_turn, mesh_edits};
 
 use crate::animation::{Rig, Source};
 
@@ -41,6 +42,72 @@ pub struct ModelPart {
     pub indices: Vec<u32>,
     /// Triangle edges, each once, for wireframes.
     pub edges: Vec<[u32; 2]>,
+    /// Index into `Model::nodes` of the glTF node it hangs from.
+    pub node: Option<usize>,
+}
+
+/// A glTF node of a model, which a prop's `mesh.<name>.` keys move, hide or collide differently.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelNode {
+    /// Its glTF name, or `#<glTF index>` when it has none or shares it with another node.
+    pub name: String,
+    /// Index into `Model::nodes`, always before this one.
+    pub parent: Option<usize>,
+    /// Where it sits in the model, which it turns and scales about.
+    pub origin: DVec3,
+    /// It holds a mesh, rather than only grouping other nodes.
+    pub mesh: bool,
+}
+
+/// Each node's change to its meshes' model-space positions, carrying its parents' along; `None` when hidden.
+pub fn mesh_matrices(model: &Model, edits: &std::collections::BTreeMap<String, MeshEdit>) -> Vec<Option<DMat4>> {
+    let mut moved: Vec<Option<DMat4>> = Vec::with_capacity(model.nodes.len());
+    for node in &model.nodes {
+        let above = match node.parent {
+            Some(p) => moved.get(p).copied().flatten(),
+            None => Some(DMat4::IDENTITY),
+        };
+        moved.push(match (above, edits.get(&node.name)) {
+            (Some(_), Some(edit)) if edit.hidden => None,
+            (Some(m), Some(edit)) => Some(m * edit.matrix(node.origin)),
+            (m, _) => m,
+        });
+    }
+    moved
+}
+
+/// `model` with a prop's `mesh.` keys applied; the same model when it has none, or is animated.
+pub fn edited_model(model: &Arc<Model>, e: &Entity) -> Arc<Model> {
+    if model.nodes.is_empty() || model.rig.is_some() || !e.properties.iter().any(|(k, _)| k.starts_with(MESH_KEY)) {
+        return model.clone();
+    }
+    let moved = mesh_matrices(model, &mesh_edits(e));
+    let mut out = Model { parts: Vec::new(), ..(**model).clone() };
+    for part in &model.parts {
+        let m = match part.node {
+            Some(n) => moved.get(n).copied().flatten(),
+            None => Some(DMat4::IDENTITY),
+        };
+        let Some(m) = m else { continue };
+        let turn = DMat3::from_mat4(m).inverse().transpose();
+        let mut part = part.clone();
+        part.positions.iter_mut().for_each(|p| *p = m.transform_point3(DVec3::from_array(p.map(f64::from))).as_vec3().to_array());
+        part.normals.iter_mut().for_each(|n| *n = (turn * DVec3::from_array(n.map(f64::from))).normalize_or(DVec3::Z).as_vec3().to_array());
+        out.parts.push(part);
+    }
+    if let Some((min, max)) = bounds(&out.parts) {
+        (out.min, out.max) = (min, max);
+    }
+    Arc::new(out)
+}
+
+fn bounds(parts: &[ModelPart]) -> Option<(DVec3, DVec3)> {
+    let used = parts.iter().flat_map(|p| p.indices.iter().filter_map(|i| p.positions.get(*i as usize)));
+    let (min, max) = used.fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), p| {
+        let p = DVec3::from_array(p.map(f64::from));
+        (lo.min(p), hi.max(p))
+    });
+    (min.is_finite() && max.is_finite()).then_some((min, max))
 }
 
 /// A static mesh in map units and axes, relative to the entity's origin.
@@ -49,13 +116,16 @@ pub struct Model {
     /// The path it was loaded from, which names its textures for the renderer.
     pub name: String,
     pub parts: Vec<ModelPart>,
-    pub textures: Vec<Picture>,
+    /// Shared, so an edited copy of the model does not copy its pictures.
+    pub textures: Arc<Vec<Picture>>,
     pub min: DVec3,
     pub max: DVec3,
     /// The names of its named animations, in file order.
     pub animations: Vec<String>,
     /// What poses it for its animations; `None` when it has none it can play.
     pub rig: Option<Arc<Rig>>,
+    /// Its glTF nodes, parents first; empty for models that do not come from glTF.
+    pub nodes: Vec<ModelNode>,
 }
 
 impl Model {
@@ -81,8 +151,7 @@ pub fn entity_transform(e: &Entity) -> DMat4 {
         _ => [0.0, num("angle").first().copied().unwrap_or(0.0), 0.0],
     };
     let scale = ["scale", "modelscale"].iter().find_map(|k| num(k).first().copied()).filter(|s| *s > 0.0).unwrap_or(1.0);
-    let turn = DQuat::from_rotation_z(yaw.to_radians()) * DQuat::from_rotation_y(pitch.to_radians()) * DQuat::from_rotation_x(roll.to_radians());
-    DMat4::from_scale_rotation_translation(DVec3::splat(scale), turn, e.origin().unwrap_or_default())
+    DMat4::from_scale_rotation_translation(DVec3::splat(scale), hammer_turn(pitch, yaw, roll), e.origin().unwrap_or_default())
 }
 
 /// The world box of `model` placed by `at`.
@@ -161,23 +230,47 @@ impl<'a> Doc<'a> {
     /// Each node of the scene that has a mesh, and where it sits in map space: glTF (x, y, z) at
     /// map (x, -z, y) times `units_per_meter`.
     pub fn meshes(&self, units_per_meter: f64) -> Result<Vec<(usize, &json::Node, &json::Mesh, DMat4)>, String> {
-        let scene = self.scene().ok_or("no scene")?;
         let to_map = to_map(units_per_meter);
+        let walked = self.walk(units_per_meter)?;
+        Ok(walked
+            .into_iter()
+            .filter_map(|(index, _, at)| {
+                let node = self.root.get(json::Index::<json::Node>::new(index as u32))?;
+                let mesh = node.mesh.and_then(|m| self.root.get(m))?;
+                // A skinned mesh ignores its node's transform; without its joints it shows in its bind pose.
+                Some((index, node, mesh, if node.skin.is_some() { to_map } else { at }))
+            })
+            .collect())
+    }
+
+    /// Every node of the scene, parents first, with its parent's glTF index and where it sits in map space.
+    pub fn walk(&self, units_per_meter: f64) -> Result<Vec<(usize, Option<usize>, DMat4)>, String> {
+        let scene = self.scene().ok_or("no scene")?;
         let mut out = Vec::new();
         let mut left = MAX_NODES;
-        let mut stack: Vec<(json::Index<json::Node>, DMat4, usize)> = scene.nodes.iter().take(left).map(|n| (*n, to_map, 0)).collect();
-        while let Some((index, parent, depth)) = stack.pop() {
+        let mut stack: Vec<(json::Index<json::Node>, Option<usize>, DMat4, usize)> =
+            scene.nodes.iter().take(left).map(|n| (*n, None, to_map(units_per_meter), 0)).collect();
+        while let Some((index, parent, above, depth)) = stack.pop() {
             let Some(node) = self.root.get(index).filter(|_| depth < MAX_DEPTH) else { continue };
-            let at = parent * node_matrix(node);
+            let at = above * node_matrix(node);
             let children = node.children.as_deref().unwrap_or_default();
             let children = children.get(..left.min(children.len())).unwrap_or_default();
             left -= children.len();
-            stack.extend(children.iter().map(|c| (*c, at, depth + 1)));
-            let Some(mesh) = node.mesh.and_then(|m| self.root.get(m)) else { continue };
-            // A skinned mesh ignores its node's transform; without its joints it shows in its bind pose.
-            out.push((index.value(), node, mesh, if node.skin.is_some() { to_map } else { at }));
+            stack.extend(children.iter().map(|c| (*c, Some(index.value()), at, depth + 1)));
+            out.push((index.value(), parent, at));
         }
         Ok(out)
+    }
+
+    /// The names a prop's `mesh.` keys use for the nodes: each glTF name, or `#<index>` when a node has none or shares it.
+    pub fn node_names(&self) -> Vec<String> {
+        let name = |n: &json::Node| n.name.as_deref().map(str::trim).unwrap_or_default().to_string();
+        let mut count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for n in &self.root.nodes {
+            *count.entry(name(n)).or_default() += 1;
+        }
+        let unique = |n: &str| !n.is_empty() && count.get(n) == Some(&1);
+        self.root.nodes.iter().enumerate().map(|(i, n)| Some(name(n)).filter(|n| unique(n)).unwrap_or_else(|| format!("#{i}"))).collect()
     }
 
     pub fn scene(&self) -> Option<&json::Scene> {
@@ -281,17 +374,31 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
     let doc = Doc::parse(bytes, read)?;
     let mut model = Model { name: name.to_string(), ..Model::default() };
     let mut pictures: Vec<(Option<usize>, usize)> = Vec::new();
-    let mut texture_of = |image: Option<usize>, model: &mut Model| {
+    let mut textures: Vec<Picture> = Vec::new();
+    let mut texture_of = |image: Option<usize>| {
         if let Some((_, t)) = pictures.iter().find(|(i, _)| *i == image) {
             return *t;
         }
         let pic = image.and_then(|i| doc.picture(i, read)).unwrap_or(Picture { width: 1, height: 1, rgba: vec![255; 4] });
-        model.textures.push(pic);
-        pictures.push((image, model.textures.len() - 1));
-        model.textures.len() - 1
+        textures.push(pic);
+        pictures.push((image, textures.len() - 1));
+        textures.len() - 1
     };
     let mut triangles = 0usize;
     let mut sources: Option<Vec<Source>> = (!doc.root.animations.is_empty() || !doc.root.skins.is_empty()).then(Vec::new);
+    let walked = doc.walk(units_per_meter)?;
+    let slots: std::collections::HashMap<usize, usize> = walked.iter().enumerate().map(|(slot, (index, _, _))| (*index, slot)).collect();
+    let slot = |index: usize| slots.get(&index).copied();
+    let names = doc.node_names();
+    model.nodes = walked
+        .iter()
+        .map(|(index, parent, at)| ModelNode {
+            name: names.get(*index).cloned().unwrap_or_default(),
+            parent: parent.and_then(slot),
+            origin: at.transform_point3(DVec3::ZERO),
+            mesh: doc.root.nodes.get(*index).is_some_and(|n| n.mesh.is_some()),
+        })
+        .collect();
     for (node, mesh, at) in doc.meshes(units_per_meter)?.into_iter().map(|(i, _, m, at)| (i, m, at)) {
         let turn = at.inverse().transpose();
         for prim in &mesh.primitives {
@@ -318,7 +425,7 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
             let mut edges: Vec<[u32; 2]> = tris.iter().flat_map(|&[a, b, c]| [[a, b], [b, c], [c, a]]).map(|[a, b]| [a.min(b), a.max(b)]).collect();
             edges.sort_unstable();
             edges.dedup();
-            let texture = texture_of(image, &mut model);
+            let texture = texture_of(image);
             if let Some(sources) = &mut sources {
                 sources.push(Source::read(&doc, prim, node, &pos, &tris));
             }
@@ -334,9 +441,11 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
                 ),
                 indices: tris.into_iter().flatten().collect(),
                 edges,
+                node: slot(node),
             });
         }
     }
+    model.textures = Arc::new(textures);
     let rig = sources.and_then(|s| Rig::build(&doc, units_per_meter, s));
     // Skinned meshes stand where their joints put them, which may differ from their bind shape.
     if let Some(rest) = rig.as_ref().filter(|_| !doc.root.skins.is_empty()).and_then(Rig::rest_pose) {
@@ -344,14 +453,7 @@ pub fn load_gltf(name: &str, bytes: &[u8], read: &dyn Fn(&str) -> Option<Vec<u8>
             (part.positions, part.normals) = (positions, normals);
         }
     }
-    let used = model.parts.iter().flat_map(|p| p.indices.iter().filter_map(|i| p.positions.get(*i as usize)));
-    let (min, max) = used.fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), p| {
-        let p = DVec3::from_array(p.map(f64::from));
-        (lo.min(p), hi.max(p))
-    });
-    if model.parts.is_empty() || !min.is_finite() || !max.is_finite() {
-        return Err("no triangles".into());
-    }
+    let Some((min, max)) = bounds(&model.parts) else { return Err("no triangles".into()) };
     (model.min, model.max) = (min, max);
     model.animations = doc.root.animations.iter().filter_map(|a| a.name.clone()).collect();
     model.rig = rig.filter(|r| !r.clips.is_empty()).map(Arc::new);
@@ -454,6 +556,7 @@ pub fn mesh_model(name: &str, parts: Vec<MeshPart>, mut textures: Vec<Picture>) 
         edges.sort_unstable();
         edges.dedup();
         model.parts.push(ModelPart {
+            node: None,
             texture,
             color: [1.0; 4],
             normals: creased_normals(&p.positions, &tris),
@@ -463,7 +566,7 @@ pub fn mesh_model(name: &str, parts: Vec<MeshPart>, mut textures: Vec<Picture>) 
             edges,
         });
     }
-    model.textures = textures;
+    model.textures = Arc::new(textures);
     let used = model.parts.iter().flat_map(|p| p.indices.iter().filter_map(|i| p.positions.get(*i as usize)));
     let (min, max) = used.fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), p| {
         let p = DVec3::from_array(p.map(f64::from));
@@ -599,6 +702,30 @@ pub(crate) mod tests {
         let wide = format!(r#"{{"asset":{{"version":"2.0"}},"scenes":[{{"nodes":[0]}}],"nodes":[{{"children":[{}]}}]}}"#, vec!["0"; 2000].join(","));
         assert!(load_gltf("wide.gltf", wide.as_bytes(), &|_| None, 39.37).is_err(), "a node listing itself many times stays within the node cap");
         assert!(load_gltf("junk.gltf", b"{nope", &|_| None, 39.37).is_err());
+    }
+
+    #[test]
+    fn mesh_keys_move_turn_and_hide_meshes_with_their_children() {
+        let json = QUAD.replace(
+            r#""nodes":[{"mesh":0,"translation":[0,0,-2]}]"#,
+            r#""nodes":[{"name":"Base","mesh":0,"children":[1]},{"name":"Lid","mesh":0,"translation":[5,0,0]},{"name":"Lid"}]"#,
+        );
+        let model = Arc::new(load_gltf("box.glb", &glb(&json, &quad_bin()), &|_| None, 1.0).unwrap());
+        let names: Vec<(&str, Option<usize>)> = model.nodes.iter().map(|n| (n.name.as_str(), n.parent)).collect();
+        assert_eq!(names, [("Base", None), ("#1", Some(0))], "a shared name falls back to the node's index");
+        let edited = |keys: &[(&str, &str)]| {
+            let mut e = Entity::new("prop_static");
+            keys.iter().for_each(|(k, v)| e.set(*k, *v));
+            edited_model(&model, &e)
+        };
+        assert!(Arc::ptr_eq(&edited(&[]), &model), "a prop without mesh keys shares its model");
+        let up = edited(&[("mesh.Base.origin", "0 0 10")]);
+        assert!(up.min.abs_diff_eq(DVec3::new(0.0, 0.0, 10.0), 1e-6) && up.max.abs_diff_eq(DVec3::new(6.0, 0.0, 11.0), 1e-6), "{:?}", (up.min, up.max));
+        let turned = edited(&[("mesh.#1.angles", "0 90 0")]);
+        assert!(turned.max.abs_diff_eq(DVec3::new(5.0, 1.0, 1.0), 1e-6), "the lid turns about its own origin: {:?}", turned.max);
+        assert_eq!(edited(&[("mesh.#1.hidden", "1")]).parts.len(), 1);
+        let gone = edited(&[("mesh.Base.hidden", "1"), ("mesh.#1.origin", "50 0 0")]);
+        assert!(gone.parts.is_empty() && gone.max == model.max, "hiding a mesh hides the ones under it, and the prop keeps its box");
     }
 
     #[test]

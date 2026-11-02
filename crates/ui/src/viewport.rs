@@ -249,6 +249,11 @@ impl MapCraftApp {
     }
 
     pub(crate) fn selection_bounds(&self) -> Option<Aabb> {
+        if let Some(mesh) = &self.session.mesh
+            && let Some(b) = self.mesh_bounds(mesh.prop, &mesh.name)
+        {
+            return Some(b);
+        }
         self.session.selection.iter().filter_map(|id| self.node_bounds(*id)).reduce(|a, b| a.union(&b))
     }
 
@@ -1316,6 +1321,9 @@ impl MapCraftApp {
                 };
                 self.last_click = Some((index, pos));
                 self.session.click(hits.get(i).copied(), additive);
+                let prop = hits.get(i).copied().filter(|h| !additive && self.session.selection.len() == 1 && self.session.selection.contains(h));
+                self.picked_mesh = prop.filter(|h| self.editable_children(*h)).and_then(|h| Some((h, self.pick_mesh(h, origin, dir)?)));
+                self.sync_mesh_frame();
                 self.mark_changed();
             }
             Tool::Sculpt => match self.sculpt_hit(index, rect, pos) {

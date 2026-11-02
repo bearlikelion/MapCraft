@@ -72,6 +72,7 @@
 				</a></li>
 				
 			</ul>
+			<p class="get-notes"><a id="dl-notes" data-repo-path="/releases/latest">Release notes</a><span id="dl-age" hidden></span></p>
 		</div>
 	</div>
 	<p class="hero-credit"><code>boss_golden_reliquary</code>, a room from mFPS</p>
@@ -393,6 +394,19 @@
 		.then((latest) => {
 			if (!latest || !latest.tag_name) return;
 			document.getElementById("dl-tag").textContent = latest.tag_name;
+			if (latest.html_url) document.getElementById("dl-notes").href = latest.html_url;
+			const secs = (Date.parse(latest.published_at) - Date.now()) / 1000;
+			if (Number.isFinite(secs)) {
+				const units = [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]];
+				const [unit, size] = units.find(([, n]) => Math.abs(secs) >= n) || ["minute", 60];
+				const age = document.getElementById("dl-age");
+				const when = document.createElement("time");
+				when.dateTime = latest.published_at;
+				when.title = new Date(latest.published_at).toLocaleString();
+				when.textContent = new Intl.RelativeTimeFormat("en", { numeric: "auto" }).format(Math.round(secs / size), unit);
+				age.replaceChildren("Released ", when);
+				age.hidden = false;
+			}
 			for (const a of document.querySelectorAll(".dl-btn[data-asset]")) {
 				const asset = (latest.assets || []).find((x) => x.name === a.dataset.asset);
 				a.href = asset ? asset.browser_download_url : latest.html_url;

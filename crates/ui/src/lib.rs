@@ -16,6 +16,7 @@ mod inspect;
 mod keys;
 mod material_inspector;
 mod measure;
+mod mesh_children;
 mod models;
 mod new_asset;
 mod panels;

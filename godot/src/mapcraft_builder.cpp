@@ -14,6 +14,10 @@
 #include <godot_cpp/classes/environment.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/gltf_document.hpp>
+#include <godot_cpp/classes/gltf_node.hpp>
+#include <godot_cpp/classes/importer_mesh.hpp>
+#include <godot_cpp/classes/importer_mesh_instance3d.hpp>
+#include <godot_cpp/classes/skin.hpp>
 #include <godot_cpp/classes/gltf_state.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
@@ -409,20 +413,21 @@ bool own(Node *p_node, Node *p_owner, bool p_instanced = false) {
 	return (p_instanced && claimed) || inside;
 }
 
-// Gives every mesh in a model a static body shaped as one convex hull per mesh, or as its exact triangles.
-void add_model_collision(Node3D *p_model, const String &p_mode, const Dictionary &p_config) {
-	if (p_mode == "none") {
-		return;
-	}
-	const bool trimesh = p_mode == "trimesh";
-	if (!trimesh && p_mode != "convex") {
-		UtilityFunctions::push_warning("MapCraft: unsupported collision ", p_mode, "; using convex");
-	}
+// Gives every mesh in a model a static body shaped as one convex hull per mesh, or as its exact triangles; p_modes overrides p_mode per mesh.
+void add_model_collision(Node3D *p_model, const String &p_mode, const Dictionary &p_config, const HashMap<Node *, String> &p_modes) {
 	TypedArray<Node> meshes = p_model->find_children("*", "MeshInstance3D", true, false);
 	for (int64_t i = 0; i < meshes.size(); i++) {
 		MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(meshes[i]);
 		if (mesh == nullptr || mesh->get_mesh().is_null()) {
 			continue;
+		}
+		const String mode = p_modes.has(mesh) ? p_modes[mesh] : p_mode;
+		if (mode == "none") {
+			continue;
+		}
+		const bool trimesh = mode == "trimesh";
+		if (!trimesh && mode != "convex") {
+			UtilityFunctions::push_warning("MapCraft: unsupported collision ", mode, "; using convex");
 		}
 		const int64_t before = mesh->get_child_count();
 		if (trimesh) {
@@ -448,6 +453,190 @@ void add_model_collision(Node3D *p_model, const String &p_mode, const Dictionary
 	}
 }
 
+// One mesh's changes from a prop's mesh.<name>.origin, .angles, .scale, .hidden and .collision keys.
+struct MeshEdit {
+	Vector3 origin;
+	Vector3 angles;
+	double scale = 1.0;
+	bool hidden = false;
+	String collision;
+};
+
+bool has_mesh_keys(const Dictionary &p_properties) {
+	Array keys = p_properties.keys();
+	for (int64_t i = 0; i < keys.size(); i++) {
+		if (String(keys[i]).begins_with("mesh.")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+HashMap<String, MeshEdit> mesh_edits(const Dictionary &p_properties) {
+	HashMap<String, MeshEdit> out;
+	Array keys = p_properties.keys();
+	for (int64_t i = 0; i < keys.size(); i++) {
+		const String key = keys[i];
+		const int64_t dot = key.rfind(".");
+		if (!key.begins_with("mesh.") || dot <= 5) {
+			continue;
+		}
+		const String name = key.substr(5, dot - 5);
+		const String field = key.substr(dot + 1);
+		const String value = String(p_properties[key]).strip_edges();
+		if (!out.has(name)) {
+			out[name] = MeshEdit();
+		}
+		MeshEdit &edit = out[name];
+		Vector3 v;
+		if (field == "origin" && parse_vec3(value, v)) {
+			edit.origin = v;
+		} else if (field == "angles" && parse_vec3(value, v)) {
+			edit.angles = v;
+		} else if (field == "scale" && value.is_valid_float() && value.to_float() > 0.0) {
+			edit.scale = value.to_float();
+		} else if (field == "hidden") {
+			edit.hidden = value != "" && value != "0" && value != "false";
+		} else if (field == "collision" && !value.is_empty()) {
+			edit.collision = value.to_lower();
+		}
+	}
+	return out;
+}
+
+// Matches MapCraft's model loader: a node's glTF name, or #<index> when it has none or shares it.
+Vector<String> gltf_node_names(const Ref<GLTFState> &p_state) {
+	TypedArray<GLTFNode> nodes = p_state->get_nodes();
+	Vector<String> names;
+	HashMap<String, int64_t> count;
+	for (int64_t i = 0; i < nodes.size(); i++) {
+		Ref<GLTFNode> node = nodes[i];
+		const String name = node.is_valid() ? node->get_original_name().strip_edges() : String();
+		names.push_back(name);
+		count[name] = count.has(name) ? count[name] + 1 : 1;
+	}
+	for (int64_t i = 0; i < names.size(); i++) {
+		if (names[i].is_empty() || count[names[i]] > 1) {
+			names.set(i, "#" + itos(i));
+		}
+	}
+	return names;
+}
+
+Transform3D in_model(Node *p_node, const Node *p_root) {
+	Transform3D at;
+	for (Node *n = p_node; n != nullptr && n != p_root; n = n->get_parent()) {
+		if (Node3D *spatial = Object::cast_to<Node3D>(n)) {
+			at = spatial->get_transform() * at;
+		}
+	}
+	return at;
+}
+
+// Moves and frees a generated glTF scene's nodes by a prop's mesh keys; r_modes gets each mesh's own collision.
+void edit_meshes(const Ref<GLTFState> &p_state, Node3D *p_root, const Dictionary &p_properties, double p_scale, HashMap<Node *, String> &r_modes) {
+	const HashMap<String, MeshEdit> edits = mesh_edits(p_properties);
+	const Vector<String> names = gltf_node_names(p_state);
+	TypedArray<GLTFNode> nodes = p_state->get_nodes();
+	const int64_t count = nodes.size();
+	Vector<Node *> scene_nodes;
+	Vector<Transform3D> rest;
+	Vector<Transform3D> moved;
+	Vector<int> state;
+	for (int64_t i = 0; i < count; i++) {
+		// GLTFState's own scene nodes may be freed stand-ins, but the nodes that replace them keep their unique names.
+		Ref<GLTFNode> gltf = nodes[i];
+		const String name = gltf.is_valid() ? gltf->get_name() : String();
+		Node *found = name.is_empty() ? nullptr : (String(p_root->get_name()) == name ? p_root : p_root->find_child(name, true, false));
+		scene_nodes.push_back(found);
+		rest.push_back(in_model(scene_nodes[i], p_root));
+		moved.push_back(Transform3D());
+		state.push_back(0);
+	}
+	// 0 unresolved, 1 placed, 2 hidden; a pass per depth resolves parents before children.
+	for (int pass = 0; pass < 64; pass++) {
+		bool left = false;
+		for (int64_t i = 0; i < count; i++) {
+			if (state[i] != 0) {
+				continue;
+			}
+			Ref<GLTFNode> node = nodes[i];
+			const int64_t parent = node.is_valid() ? node->get_parent() : -1;
+			if (parent >= 0 && parent < count && state[parent] == 0) {
+				left = true;
+				continue;
+			}
+			const bool parent_hidden = parent >= 0 && parent < count && state[parent] == 2;
+			Transform3D above = parent >= 0 && parent < count ? moved[parent] : Transform3D();
+			if (!edits.has(names[i])) {
+				moved.set(i, above);
+				state.set(i, parent_hidden ? 2 : 1);
+				continue;
+			}
+			const MeshEdit &edit = edits[names[i]];
+			if (!edit.collision.is_empty()) {
+				r_modes[scene_nodes[i]] = edit.collision;
+			}
+			const Vector3 pivot = rest[i].origin;
+			Basis turn = godot_basis(map_angles(edit.angles));
+			turn.scale(Vector3(edit.scale, edit.scale, edit.scale));
+			const Vector3 offset = TO_GODOT.xform(edit.origin) * p_scale;
+			moved.set(i, above * Transform3D(Basis(), pivot + offset) * Transform3D(turn, Vector3()) * Transform3D(Basis(), -pivot));
+			state.set(i, parent_hidden || edit.hidden ? 2 : 1);
+		}
+		if (!left) {
+			break;
+		}
+	}
+	for (int64_t i = 0; i < count; i++) {
+		Node3D *spatial = Object::cast_to<Node3D>(scene_nodes[i]);
+		if (spatial == nullptr || spatial == p_root || state[i] != 1) {
+			continue;
+		}
+		Node *parent = spatial->get_parent();
+		const int64_t j = parent != nullptr ? scene_nodes.find(parent) : -1;
+		const Transform3D above = j >= 0 && j < count ? moved[j] * rest[j] : in_model(parent, p_root);
+		spatial->set_transform(above.affine_inverse() * moved[i] * rest[i]);
+	}
+	for (int64_t i = 0; i < count; i++) {
+		Ref<GLTFNode> node = nodes[i];
+		const int64_t parent = node.is_valid() ? node->get_parent() : -1;
+		// A freed node's pointer may still be in the list, so it is only compared, never touched.
+		Node *scene = scene_nodes[i];
+		const bool top = parent < 0 || parent >= count || state[parent] != 2;
+		if (state[i] == 2 && top && scene != nullptr && scene != p_root && scene->get_parent() != nullptr) {
+			r_modes.erase(scene);
+			scene->get_parent()->remove_child(scene);
+			memdelete(scene);
+		}
+	}
+}
+
+// In the editor glTF leaves ImporterMeshInstance3D nodes, which neither draw nor collide.
+void convert_importer_meshes(Node *p_root) {
+	TypedArray<Node> found = p_root->find_children("*", "ImporterMeshInstance3D", true, false);
+	for (int64_t i = 0; i < found.size(); i++) {
+		ImporterMeshInstance3D *source = Object::cast_to<ImporterMeshInstance3D>(found[i]);
+		if (source == nullptr || source == p_root) {
+			continue;
+		}
+		MeshInstance3D *mesh = memnew(MeshInstance3D);
+		mesh->set_name(source->get_name());
+		mesh->set_transform(source->get_transform());
+		mesh->set_visible(source->is_visible());
+		Ref<ImporterMesh> imported = source->get_mesh();
+		if (imported.is_valid()) {
+			mesh->set_mesh(imported->get_mesh());
+		}
+		mesh->set_skin(source->get_skin());
+		mesh->set_skeleton_path(source->get_skeleton_path());
+		Node *owner = source->get_owner();
+		source->replace_by(mesh, true);
+		mesh->set_owner(owner);
+		memdelete(source);
+	}
+}
+
 // An empty base path leaves glTF nothing outside these bytes to read.
 Node3D *load_glb(const PackedByteArray &p_bytes) {
 	Ref<GLTFDocument> document;
@@ -462,6 +651,9 @@ Node3D *load_glb(const PackedByteArray &p_bytes) {
 	Node3D *node = Object::cast_to<Node3D>(scene);
 	if (node == nullptr && scene != nullptr) {
 		memdelete(scene);
+	}
+	if (node != nullptr) {
+		convert_importer_meshes(node);
 	}
 	return node;
 }
@@ -540,6 +732,7 @@ class Builder {
 	Ref<Material> material(const String &p_name, Vector2 &r_size);
 	Ref<Material> pack_material(const String &p_name, const PackedByteArray &p_bytes, const String &p_problem);
 	bool pack_model(const String &p_path, Node3D *&r_node);
+	Node3D *edited_model(const String &p_path, bool p_packed, const Dictionary &p_properties, HashMap<Node *, String> &r_modes);
 	Ref<Material> variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size);
 	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
 	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
@@ -752,6 +945,40 @@ bool Builder::pack_model(const String &p_path, Node3D *&r_node) {
 	Node3D *model = models[stem];
 	r_node = model != nullptr ? Object::cast_to<Node3D>(model->duplicate()) : nullptr;
 	return true;
+}
+
+// Loads a model's glTF afresh, keeping which node each glTF node became, and applies the prop's mesh keys; null for animated models.
+Node3D *Builder::edited_model(const String &p_path, bool p_packed, const Dictionary &p_properties, HashMap<Node *, String> &r_modes) {
+	Ref<GLTFDocument> document;
+	document.instantiate();
+	Ref<GLTFState> state;
+	state.instantiate();
+	state->set_handle_binary_image(GLTFState::HANDLE_BINARY_EMBED_AS_UNCOMPRESSED);
+	Error loaded = FAILED;
+	if (p_packed) {
+		PackedByteArray bytes;
+		String problem;
+		const String stem = ("models/" + p_path.trim_prefix("res://").get_basename()).to_lower();
+		if (pack.find(stem, bytes, problem) && problem.is_empty()) {
+			loaded = document->append_from_buffer(bytes, "", state);
+		}
+	} else {
+		loaded = document->append_from_file(p_path, state);
+	}
+	if (loaded != OK || state->get_animations().size() > 0) {
+		return nullptr;
+	}
+	Node *scene = document->generate_scene(state);
+	Node3D *root = Object::cast_to<Node3D>(scene);
+	if (root == nullptr) {
+		if (scene != nullptr) {
+			memdelete(scene);
+		}
+		return nullptr;
+	}
+	convert_importer_meshes(root);
+	edit_meshes(state, root, p_properties, scale, r_modes);
+	return root;
 }
 
 Ref<Material> Builder::variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size) {
@@ -1232,6 +1459,14 @@ void Builder::add_entity(const Dictionary &p_entity) {
 		if (scene.is_valid()) {
 			node = Object::cast_to<Node3D>(scene->instantiate());
 		}
+		HashMap<Node *, String> mesh_modes;
+		if (node != nullptr && kind == "model" && has_mesh_keys(properties)) {
+			Node3D *edited = edited_model(path, packed, properties, mesh_modes);
+			if (edited != nullptr) {
+				memdelete(node);
+				node = edited;
+			}
+		}
 		if (node == nullptr) {
 			UtilityFunctions::push_warning("MapCraft: ", classname, " has no usable scene ", path, "; using a Node3D");
 		}
@@ -1240,7 +1475,7 @@ void Builder::add_entity(const Dictionary &p_entity) {
 			autoplay(node, animation, String(properties.get("animation_loop", "")).strip_edges().to_lower());
 		}
 		if (node != nullptr && kind == "model") {
-			add_model_collision(node, String(properties.get("collision", "convex")).strip_edges().to_lower(), config);
+			add_model_collision(node, String(properties.get("collision", "convex")).strip_edges().to_lower(), config, mesh_modes);
 		}
 	}
 	if (node == nullptr) {

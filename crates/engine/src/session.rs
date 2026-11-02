@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mapcraft_geom::DVec3;
+use mapcraft_geom::{DMat4, DVec3};
 use mapcraft_map::{BlendRole, Changes, FaceId, Map, NodeId, NodeKind, ROOT, TexDefaults};
 use serde_json::Value;
 
@@ -42,6 +42,17 @@ struct Transaction {
     coalesce: Option<String>,
 }
 
+/// One mesh of a prop's model, which its `mesh.<name>.` keys place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshFrame {
+    pub prop: NodeId,
+    pub name: String,
+    /// From the model space the mesh's edit applies in to the world: the prop's placement times its parent meshes' changes.
+    pub frame: DMat4,
+    /// The mesh's own origin in model space, which it turns and scales about.
+    pub pivot: DVec3,
+}
+
 pub struct Session {
     pub map: Map,
     pub path: Option<PathBuf>,
@@ -76,6 +87,8 @@ pub struct Session {
     pub notice: Option<String>,
     /// Stretched generator groups the last transform touched, for the editor to fold into their parameters with [`Session::refit`].
     pub stretched: BTreeSet<NodeId>,
+    /// The mesh of the one selected prop that transforms move instead of the prop, which the editor sets from the prop's model.
+    pub mesh: Option<MeshFrame>,
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
     next_serial: u64,
@@ -112,6 +125,7 @@ impl Session {
             heightmap: None,
             notice: None,
             stretched: BTreeSet::new(),
+            mesh: None,
             undo: Vec::new(),
             redo: Vec::new(),
             next_serial: 1,

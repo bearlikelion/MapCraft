@@ -89,7 +89,7 @@ fn pictures_come_from_the_cache_until_the_model_changes() {
 }
 
 #[test]
-fn a_dropped_glb_is_copied_beside_the_map_and_placed_as_a_prop() {
+fn a_dropped_glb_is_copied_to_the_sdk_custom_folder_and_placed_as_a_prop() {
     let (settings, project, maps) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let map = maps.path().join("drop.mcmap");
     let world = r#"{"format":"mapcraft.map","schema_version":2,"sdk":"surfsup","map":{"root":{"id":1,"type":"world","classname":"worldspawn"}}}"#;
@@ -114,7 +114,8 @@ fn a_dropped_glb_is_copied_beside_the_map_and_placed_as_a_prop() {
     h.state_mut().drop_file_for_test(BOX.into());
     h.run_steps(1);
     assert_eq!(props(&mut h), ["models/box.glb"], "{}", h.state().status_for_test());
-    assert!(maps.path().join("drop/models/box.glb").exists());
+    assert!(settings.path().join("data/custom/surfsup/models/box.glb").exists());
+    assert!(!maps.path().join("drop").exists(), "nothing is written beside the map");
     h.state_mut().drop_file_for_test(BOX.into());
     assert_eq!(props(&mut h).len(), 2, "dropping the same file again reuses its copy: {}", h.state().status_for_test());
     h.state_mut().session_for_test().undo();

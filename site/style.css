@@ -367,6 +367,7 @@ kbd {
 .dl-btn.primary { border-color: var(--orange); background: var(--orange); color: var(--on-orange); }
 .dl-btn.primary small { color: color-mix(in srgb, var(--on-orange) 84%, transparent); }
 .dl-btn.primary:hover { background: var(--orange-hi); }
+.get-notes { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
 
 /* Homepage sections */
 

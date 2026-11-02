@@ -35,7 +35,7 @@ It lists every material of the map's SDK, including the [texture folders](sdks-a
 
 To shorten a long list, open **Folders** under the search box.
 It lists the SDK's top-level material folders, or the folders its plugin puts materials in, such as one per WAD file on the Quake SDK.
-Your own materials, from the folder beside the map and the texture folders you added, sit together in a **Custom** folder at the top, so you can click it to see only them or untick it to hide them.
+Your own materials, from the SDK's custom folder and the texture folders you added, sit together in a **Custom** folder at the top, so you can click it to see only them or untick it to hide them.
 Untick a folder to hide its materials, or click **Hide all** and tick the ones you want.
 The choice is saved per SDK, so it holds for every map on that SDK.
 Faces already using a hidden material still draw.
@@ -49,7 +49,9 @@ Faces already using a hidden material still draw.
 
 ## The Material inspector
 
-PBR materials, the ones **File > Add Material…** makes from a set of pictures, keep their settings in a small `materials/<name>.json` file in a custom asset folder, such as the one beside the saved map.
+PBR materials, the ones **File > Add Material…** makes from a set of pictures, keep their settings in a small `materials/<name>.json` file in the SDK's custom folder.
+That folder is `custom/<sdk id>` in MapCraft's data folder (`%LOCALAPPDATA%\mapcraft\custom\surfsup` on Windows, `~/.local/share/mapcraft/custom/surfsup` on Linux), so every map made with the SDK can use what you added once, and each map's `.mcpck` packs only the ones it uses.
+Each picture goes into the slot its name ends with, such as `_albedo`, `_normal` or `_heightmap`, and a packed `_orm` or `_arm` picture is split into roughness (its green) and metallic (its blue).
 The Material inspector edits those settings after the import, and the views show each change as you drag.
 
 1. Right click the material in the Materials panel and choose **Inspect Material**.

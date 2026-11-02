@@ -122,12 +122,14 @@ impl MapCraftApp {
         }
     }
 
-    /// File > Import: glTF, then one entry per importer of the loaded plugins.
+    /// File > Import: one entry per importer of the loaded plugins, hidden when there are none.
     pub(crate) fn import_menu(&mut self, ui: &mut egui::Ui) {
         let importers: Vec<(String, mapcraft_plugin_host::ImporterSpec)> =
             self.project.plugins.iter().flat_map(|p| p.manifest.importers.iter().map(|i| (p.manifest.id.clone(), i.clone()))).collect();
+        if importers.is_empty() {
+            return;
+        }
         ui.menu_button((crate::icons::slot(Some("file_arrow_down")), "Import"), |ui| {
-            self.action_button(ui, "file.import_gltf", "glTF (.glb, .gltf)…", true);
             for (plugin, importer) in importers {
                 if ui.add(crate::icons::button(None, format!("{}…", importer.label))).clicked() {
                     self.import_file(&plugin, &importer);
@@ -181,13 +183,6 @@ impl MapCraftApp {
         match bytes.and_then(|b| self.write_export(&path, &b)) {
             Ok(()) => self.status = format!("Exported {}", path.display()),
             Err(e) => self.status = e,
-        }
-    }
-
-    /// File > Import > glTF.
-    pub(crate) fn import_gltf_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("glTF", &["glb", "gltf"]).pick_file() {
-            self.import_gltf(&path);
         }
     }
 

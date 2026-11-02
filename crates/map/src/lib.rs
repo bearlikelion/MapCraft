@@ -10,6 +10,7 @@ pub mod disp;
 mod entity;
 pub mod link;
 mod map;
+pub mod mesh_edit;
 pub mod mirror;
 mod node;
 

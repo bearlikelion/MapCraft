@@ -121,10 +121,12 @@ impl crate::app::MapCraftApp {
         self.show_material(&name, &material, saved);
     }
 
-    /// Draws `material` in the views without reloading the project.
+    /// Draws `material` in the views without reloading the project or its pictures.
     fn show_material(&mut self, name: &str, material: &Material, saved: bool) {
         self.project.set_descriptor_values(name, material);
-        if let Some(gpu) = &mut self.gpu {
+        if let Some(gpu) = &mut self.gpu
+            && !gpu.renderer.set_material_values(name, crate::project::surface_values(material))
+        {
             gpu.renderer.forget_material(name);
         }
         if saved {

@@ -223,8 +223,8 @@ impl MapCraftApp {
         }
     }
 
-    /// The tree's rows; with `shown`, only those nodes, all unfolded.
-    fn scene_rows(&self, shown: Option<&BTreeSet<NodeId>>) -> Vec<(NodeId, usize)> {
+    /// The tree's rows, with the model node of an editable prop's mesh rows; with `shown`, only those nodes, all unfolded.
+    fn scene_rows(&self, shown: Option<&BTreeSet<NodeId>>) -> Vec<(NodeId, usize, Option<usize>)> {
         let mut rows = Vec::new();
         let mut stack = vec![(ROOT, 0usize)];
         while let Some((id, depth)) = stack.pop() {
@@ -232,7 +232,19 @@ impl MapCraftApp {
             if shown.is_some_and(|s| !s.contains(&id)) {
                 continue;
             }
-            rows.push((id, depth));
+            rows.push((id, depth, None));
+            if shown.is_none()
+                && self.expanded.contains(&id)
+                && self.editable_children(id)
+                && let Some((_, model)) = self.prop_model(id)
+            {
+                let mut depths: Vec<usize> = Vec::with_capacity(model.nodes.len());
+                for (i, node) in model.nodes.iter().enumerate() {
+                    let d = node.parent.and_then(|p| depths.get(p)).map_or(depth + 1, |d| d + 1);
+                    depths.push(d);
+                    rows.push((id, d.min(64), Some(i)));
+                }
+            }
             if (shown.is_some() || self.expanded.contains(&id)) && depth < 64 {
                 stack.extend(n.children.iter().rev().map(|c| (*c, depth + 1)));
             }
@@ -240,11 +252,100 @@ impl MapCraftApp {
         rows
     }
 
+    /// The picked mesh's changes, edited in place of its prop's keys.
+    fn mesh_inspector(&mut self, ui: &mut egui::Ui, id: NodeId, name: &str) {
+        if !self.section(ui, &Section { key: "mesh.transform", title: "Mesh", ..Default::default() }) {
+            return;
+        }
+        let before = self.mesh_edit(id, name);
+        let mut edit = before.clone();
+        let prop_collision = self.session.map.get(id).and_then(|n| n.kind.entity()?.get("collision").map(str::to_string)).unwrap_or_else(|| "convex".into());
+        crate::inspect::weak(ui, name).on_hover_text("Its glTF node; the prop keeps this mesh's changes in its mesh. keys");
+        egui::Grid::new("mesh-inspector").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Origin").on_hover_text("Offset from where the model puts it, in the prop's axes");
+            ui.horizontal(|ui| {
+                for v in [&mut edit.origin.x, &mut edit.origin.y, &mut edit.origin.z] {
+                    ui.add(egui::DragValue::new(v).speed(1.0).max_decimals(3));
+                }
+            });
+            ui.end_row();
+            ui.label("Angles").on_hover_text("Pitch, yaw and roll about its own origin");
+            ui.horizontal(|ui| {
+                for v in &mut edit.angles {
+                    ui.add(egui::DragValue::new(v).speed(1.0).max_decimals(3).suffix("°"));
+                }
+            });
+            ui.end_row();
+            ui.label("Scale");
+            ui.add(egui::DragValue::new(&mut edit.scale).speed(0.01).range(0.001..=1000.0).max_decimals(4));
+            ui.end_row();
+            ui.label("Visible").on_hover_text("A hidden mesh, and every mesh under it, is neither drawn nor collided with");
+            let mut visible = !edit.hidden;
+            ui.checkbox(&mut visible, "");
+            edit.hidden = !visible;
+            ui.end_row();
+            ui.label("Collision");
+            let inherit = format!("Prop's ({prop_collision})");
+            let current = edit.collision.clone().unwrap_or_else(|| inherit.clone());
+            egui::ComboBox::from_id_salt("mesh-collision").selected_text(current).show_ui(ui, |ui| {
+                ui.selectable_value(&mut edit.collision, None, inherit);
+                for (value, label) in [("none", "None"), ("convex", "Convex"), ("trimesh", "Trimesh")] {
+                    ui.selectable_value(&mut edit.collision, Some(value.to_string()), label);
+                }
+            });
+            ui.end_row();
+        });
+        if ui.button("Reset Transform").on_hover_text("Put the mesh back where the model has it").clicked() {
+            edit = mapcraft_map::mesh_edit::MeshEdit { hidden: edit.hidden, collision: edit.collision.clone(), ..Default::default() };
+        }
+        if edit != before {
+            let dragging = ui.input(|i| i.pointer.any_down());
+            self.set_mesh_edit(id, name, &edit, dragging.then_some("mesh-inspector"));
+        }
+    }
+
+    /// A row for mesh `node` of editable prop `id`; returns the mesh's name and whether its eye was clicked rather than the row.
+    fn mesh_row(&self, ui: &mut egui::Ui, id: NodeId, node: usize, depth: usize) -> Option<(NodeId, String, bool)> {
+        let (e, model) = self.prop_model(id)?;
+        let mesh = model.nodes.get(node)?;
+        let edits = mapcraft_map::mesh_edit::mesh_edits(&e);
+        let hidden = std::iter::successors(Some(node), |i| model.nodes.get(*i)?.parent)
+            .any(|i| model.nodes.get(i).and_then(|n| edits.get(&n.name)).is_some_and(|ed| ed.hidden));
+        let selected = self.picked_mesh.as_ref().is_some_and(|(p, n)| *p == id && *n == mesh.name);
+        let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, mesh.name.clone()));
+        let painter = ui.painter_at(row);
+        if selected {
+            painter.rect_filled(row, 3.0, crate::chrome::ACCENT_DIM);
+        } else if resp.hovered() {
+            painter.rect_filled(row, 3.0, crate::chrome::WIDGET);
+        }
+        let icon = Rect::from_min_size(egui::pos2(row.left() + 18.0 + depth as f32 * 14.0, row.top()), egui::vec2(16.0, ROW));
+        let weak = if hidden { crate::chrome::TEXT_WEAK.gamma_multiply(0.6) } else { crate::chrome::TEXT_WEAK };
+        icons::paint(ui, if mesh.mesh { "cube" } else { "folder" }, icon, icons::SIZE, weak);
+        let eye = Rect::from_min_size(egui::pos2(row.right() - 24.0, row.top()), egui::vec2(20.0, ROW));
+        let r = ui.interact(eye, ui.id().with(("mesh-eye", id.0, node)), egui::Sense::click());
+        icons::paint(ui, if hidden { "eye_closed" } else { "eye" }, eye, 14.0, if r.hovered() { crate::chrome::TEXT } else { weak });
+        let text = Rect::from_min_max(egui::pos2(icon.right() + 4.0, row.top()), egui::pos2(eye.left() - 2.0, row.bottom()));
+        let color = if hidden { crate::chrome::TEXT_WEAK.gamma_multiply(0.7) } else { crate::chrome::TEXT };
+        ui.painter_at(text).text(
+            egui::pos2(text.left(), text.center().y),
+            egui::Align2::LEFT_CENTER,
+            &mesh.name,
+            egui::TextStyle::Body.resolve(ui.style()),
+            color,
+        );
+        if r.on_hover_text(if hidden { "Show, with collision" } else { "Hide, with its collision" }).clicked() {
+            return Some((id, mesh.name.clone(), true));
+        }
+        resp.clicked().then(|| (id, mesh.name.clone(), false))
+    }
+
     /// The selected nodes without those inside another selected node, in tree order.
-    fn dragged_selection(&self, rows: &[(NodeId, usize)]) -> Vec<NodeId> {
+    fn dragged_selection(&self, rows: &[(NodeId, usize, Option<usize>)]) -> Vec<NodeId> {
         let sel = &self.session.selection;
         let mut ids: Vec<NodeId> = sel.iter().copied().filter(|id| *id != ROOT && !self.session.map.ancestors(*id).iter().any(|a| sel.contains(a))).collect();
-        ids.sort_by_key(|id| rows.iter().position(|(r, _)| r == id).unwrap_or(usize::MAX));
+        ids.sort_by_key(|id| rows.iter().position(|(r, _, _)| r == id).unwrap_or(usize::MAX));
         ids
     }
 
@@ -349,8 +450,9 @@ impl MapCraftApp {
             ui.label(RichText::new("Nothing matches").color(crate::chrome::TEXT_WEAK));
         }
         let mut action: Option<(NodeId, &'static str)> = None;
+        let mut mesh_action: Option<(NodeId, String, bool)> = None;
         if enter {
-            let matches: Vec<NodeId> = rows.iter().map(|(id, _)| *id).filter(|id| found.contains_key(id)).collect();
+            let matches: Vec<NodeId> = rows.iter().filter(|r| r.2.is_none()).map(|(id, _, _)| *id).filter(|id| found.contains_key(id)).collect();
             if let Some(i) = self.tree_search.next.checked_rem(matches.len())
                 && let Some(id) = matches.get(i)
             {
@@ -363,7 +465,7 @@ impl MapCraftApp {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let mut scroll = egui::ScrollArea::vertical().auto_shrink(false);
         let (offset, height) = self.tree_view;
-        if reveal && let Some(i) = rows.iter().position(|(id, _)| self.session.selection.contains(id)) {
+        if reveal && let Some(i) = rows.iter().position(|(id, _, _)| self.session.selection.contains(id)) {
             let y = i as f32 * ROW;
             if y < offset || y + ROW > offset + height {
                 scroll = scroll.vertical_scroll_offset((y - height / 3.0).max(0.0));
@@ -371,7 +473,13 @@ impl MapCraftApp {
         }
         ui.spacing_mut().item_spacing.y = 0.0;
         let out = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
-            for &(id, depth) in rows.get(range).unwrap_or_default() {
+            for &(id, depth, mesh) in rows.get(range).unwrap_or_default() {
+                if let Some(node) = mesh {
+                    if let Some(picked) = self.mesh_row(ui, id, node, depth) {
+                        mesh_action = Some(picked);
+                    }
+                    continue;
+                }
                 let Some(n) = self.session.map.get(id) else { continue };
                 let hit = found.get(&id);
                 let label = hit.cloned().unwrap_or_else(|| n.kind.label());
@@ -386,13 +494,14 @@ impl MapCraftApp {
                 }
 
                 let chevron = Rect::from_min_size(egui::pos2(row.left() + 2.0 + depth as f32 * 14.0, row.top()), egui::vec2(16.0, ROW));
+                let meshes = shown.is_none() && n.children.is_empty() && self.editable_children(id) && self.prop_model(id).is_some();
                 let unfolded = match &shown {
                     Some(s) => n.children.iter().any(|c| s.contains(c)),
-                    None => self.expanded.contains(&id) && !n.children.is_empty(),
+                    None => self.expanded.contains(&id) && (!n.children.is_empty() || meshes),
                 };
                 if shown.is_some() && unfolded {
                     crate::chrome::chevron(&painter, chevron, crate::chrome::TEXT_WEAK, true);
-                } else if shown.is_none() && !n.children.is_empty() {
+                } else if shown.is_none() && (!n.children.is_empty() || meshes) {
                     let r = ui.interact(chevron, ui.id().with(("tree-chevron", id.0)), egui::Sense::click());
                     let c = if r.hovered() { crate::chrome::TEXT } else { crate::chrome::TEXT_WEAK };
                     crate::chrome::chevron(&painter, chevron, c, unfolded);
@@ -466,6 +575,12 @@ impl MapCraftApp {
                     {
                         action = Some((id, "activate"));
                     }
+                    if self.prop_model(id).is_some() {
+                        let mut on = self.editable_children(id);
+                        if ui.checkbox(&mut on, "Editable Children").on_hover_text("List the model's meshes here to move, hide or collide each one").clicked() {
+                            action = Some((id, "editable"));
+                        }
+                    }
                     if id != ROOT && ui.add(icons::button(Some("trash_can"), "Delete")).clicked() {
                         action = Some((id, "delete"));
                     }
@@ -486,12 +601,24 @@ impl MapCraftApp {
                 }
             }
         }
+        if let Some((id, name, eye)) = mesh_action {
+            if eye {
+                let mut edit = self.mesh_edit(id, &name);
+                edit.hidden = !edit.hidden;
+                self.set_mesh_edit(id, &name, &edit, None);
+            } else {
+                self.select_mesh(id, &name);
+                self.mark_changed();
+            }
+            return;
+        }
         let Some((id, what)) = action else { return };
         match what {
+            "editable" => self.toggle_editable_children(id),
             "toggle" => {
                 let open = !self.expanded.contains(&id);
                 let ids = if ui.input(|i| i.modifiers.shift) { self.session.map.subtree(id) } else { vec![id] };
-                for n in ids.into_iter().filter(|n| self.session.map.get(*n).is_some_and(|x| !x.children.is_empty())) {
+                for n in ids.into_iter().filter(|n| *n == id || self.session.map.get(*n).is_some_and(|x| !x.children.is_empty())) {
                     if open {
                         self.expanded.insert(n);
                     } else {
@@ -1279,6 +1406,12 @@ impl MapCraftApp {
     }
 
     fn entities_body(&mut self, ui: &mut egui::Ui, ids: &[NodeId]) {
+        if let Some((prop, name)) = self.picked_mesh.clone()
+            && ids == [prop]
+        {
+            self.mesh_inspector(ui, prop, &name);
+            return;
+        }
         let ents: Vec<(NodeId, Entity)> = ids.iter().filter_map(|id| Some((*id, self.session.map.get(*id)?.kind.entity()?.clone()))).collect();
         let Some((first, original)) = ents.first().cloned() else { return };
         let Some(node) = self.session.map.get(first) else { return };
@@ -1296,6 +1429,7 @@ impl MapCraftApp {
                 || (angles && k.eq_ignore_ascii_case("angles"))
                 || (named && k.eq_ignore_ascii_case("targetname"))
                 || (animations.is_some() && (k.eq_ignore_ascii_case(ANIMATION_KEY) || k.eq_ignore_ascii_case(ANIMATION_LOOP_KEY)))
+                || k.starts_with(mapcraft_map::mesh_edit::MESH_KEY)
         };
         let targets = self.target_names();
         let mut edits = EntityEdits::default();

@@ -5,8 +5,8 @@ It works with every SDK, so you can block out a level in Blender and finish it h
 
 ## Import
 
-**File > Import > glTF** brings in a `.glb` or `.gltf` file as brushes in a new group named after the file.
-You can also drag a `.gltf` file onto the MapCraft window; a dropped `.glb` is placed as a prop instead when the SDK has a prop class (see [Models](entities.md#models)).
+Drag a `.gltf` file onto the MapCraft window to bring it in as brushes in a new group named after the file.
+A dropped `.glb` comes in as brushes too when the SDK has no prop class; otherwise it is placed as a prop, as **File > Add Model** adds it (see [Models](entities.md#models)).
 One **Undo** takes the whole import back.
 
 - Each mesh object that is convex, such as a box, a ramp or a wedge, becomes one brush.

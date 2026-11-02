@@ -87,7 +87,6 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("file.save", "Save", "Ctrl+S"),
     ("file.save_as", "Save As", "Ctrl+Shift+S"),
     ("file.revert", "Revert", ""),
-    ("file.import_gltf", "Import glTF", ""),
     ("file.export_gltf", "Export glTF", ""),
     ("tools.shader_editor", "Shader Editor", ""),
     ("tools.shader_graph", "Shader Material: Graph", ""),

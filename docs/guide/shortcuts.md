@@ -69,7 +69,6 @@ The tables are generated from the editor's code, so they match the version this 
 | Save | `Ctrl+S` |
 | Save As | `Ctrl+Shift+S` |
 | Revert | *none* |
-| Import glTF | *none* |
 | Export glTF | *none* |
 | Reload Assets | `F5` |
 | SDK Settings | `Ctrl+Shift+Comma` |

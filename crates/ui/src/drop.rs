@@ -65,7 +65,7 @@ impl MapCraftApp {
         }
     }
 
-    /// Copies a dropped `.glb` beside the map and places it as a prop under the pointer, or imports it as brushes when the SDK has no prop class.
+    /// Copies a dropped `.glb` into the custom folder and places it as a prop under the pointer, or imports it as brushes when the SDK has no prop class.
     fn drop_model(&mut self, path: &Path) {
         let Some(class) = self.project.models.class.clone() else {
             self.import_gltf(path);
