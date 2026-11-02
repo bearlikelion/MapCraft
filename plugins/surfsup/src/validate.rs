@@ -88,11 +88,12 @@ pub fn check(map: &MapData) -> Vec<Issue> {
     }
 
     let main_start = of("zone_start").find(|e| e.course() == 0);
-    if main_start.is_none() {
-        out.push(issue(Severity::Error, "There is no zone_start on course 0, so the run timer never starts.".into(), None));
+    // SurfsUp's starting_platform and finish_line carry their own start and finish zones for the main course.
+    if main_start.is_none() && of("starting_platform").next().is_none() {
+        out.push(issue(Severity::Error, "There is no zone_start or starting_platform on course 0, so the run timer never starts.".into(), None));
     }
-    if !of("zone_finish").any(|e| e.course() == 0) {
-        out.push(issue(Severity::Error, "There is no zone_finish on course 0, so the run timer never stops.".into(), None));
+    if !of("zone_finish").any(|e| e.course() == 0) && of("finish_line").next().is_none() {
+        out.push(issue(Severity::Error, "There is no zone_finish or finish_line on course 0, so the run timer never stops.".into(), None));
     }
 
     for e in ents.iter().filter(|e| TIMED_ZONES.contains(&e.class.as_str())) {
@@ -206,8 +207,8 @@ mod tests {
         let found = messages(&map);
         for expected in [
             "no info_player_start",
-            "no zone_start on course 0",
-            "no zone_finish on course 0",
+            "no zone_start or starting_platform on course 0",
+            "no zone_finish or finish_line on course 0",
             "has no brush",
             "only 128 units tall",
             "sends players to nowhere",
@@ -217,6 +218,16 @@ mod tests {
         }
         let errors = check(&map).iter().filter(|i| matches!(i.severity, Severity::Error)).count();
         assert_eq!(errors, 6);
+    }
+
+    #[test]
+    fn the_platforms_bring_their_own_zones() {
+        let mut m = Builder::default();
+        m.entity("info_player_start", &[("origin", "256 256 16")], None);
+        m.entity("starting_platform", &[("origin", "256 256 0")], None);
+        m.entity("finish_line", &[("origin", "4096 0 0")], None);
+        let map = m.map();
+        assert!(check(&map).is_empty(), "{:?}", messages(&map));
     }
 
     #[test]

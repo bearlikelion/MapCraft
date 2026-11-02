@@ -110,16 +110,16 @@ jobs:
     runs-on: [self-hosted, build]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: godot-macos-*
           path: godot/addons/mapcraft/bin/macos
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: godot-linux
           path: godot/addons/mapcraft/bin/linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: godot-windows
           path: godot/addons/mapcraft/bin/windows
@@ -136,7 +136,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: '{appimage,windows,macos,godot-addon}'
