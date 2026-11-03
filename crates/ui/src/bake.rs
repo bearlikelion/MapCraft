@@ -161,8 +161,7 @@ impl MapCraftApp {
         self.bake.print = Some(print);
         let names: std::collections::BTreeSet<String> =
             map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
-        let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        let sizes: std::collections::HashMap<String, mapcraft_geom::DVec2> = names.iter().map(|n| (n.clone(), crate::uv::texture_size(renderer, n))).collect();
+        let sizes = self.texture_sizes(names.iter().cloned());
         let surfaces: std::collections::HashMap<String, mapcraft_light::Surface> = names.into_iter().map(|n| (n.clone(), self.surface(&n))).collect();
         let see_through = self.session.see_through.clone();
         let mut settings = self.full_settings(&map);
@@ -437,19 +436,29 @@ impl MapCraftApp {
         if lightmap.fingerprint != mapcraft_light::bake_fingerprint(self.view_map(), &self.full_settings(self.view_map())) {
             return;
         }
-        let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        let map = self.view_map();
-        let sizes = map
-            .nodes()
-            .filter_map(|(_, n)| n.kind.brush())
-            .flat_map(|b| &b.faces)
-            .map(|f| (f.material.clone(), crate::uv::texture_size(renderer, &f.material)))
-            .collect();
-        let bake = native_parts(map, &lightmap, &sizes);
+        let names: Vec<String> = self.view_map().nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
+        let sizes = self.texture_sizes(names.into_iter());
+        let bake = native_parts(self.view_map(), &lightmap, &sizes);
         (self.bake.print, self.bake.shown_print, self.bake.lighting_stale) = (Some(print), Some(print), false);
         self.bake.shown = Some(brush_print(self.view_map()));
         self.bake.baked = Some(Vec::new());
         self.show_bake(Some(&bake));
+    }
+
+    /// Texel sizes of `names`, uploading them first so a bake made before the scene loads them is not mapped at 64.
+    fn texture_sizes(&mut self, names: impl Iterator<Item = String>) -> std::collections::HashMap<String, mapcraft_geom::DVec2> {
+        let names: std::collections::BTreeSet<String> = names.collect();
+        if let Some(gpu) = &mut self.gpu {
+            self.project.upload_materials(&mut gpu.renderer, names.iter().map(String::as_str));
+        }
+        let renderer = self.gpu.as_ref().map(|g| &g.renderer);
+        names
+            .into_iter()
+            .map(|n| {
+                let size = crate::uv::texture_size(renderer, &n);
+                (n, size)
+            })
+            .collect()
     }
 
     /// Whether to warn that the lighting is out of date: automatic bakes are off and nothing is baking.
