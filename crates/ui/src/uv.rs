@@ -208,6 +208,13 @@ fn contains(poly: &[DVec2], p: DVec2) -> bool {
     inside
 }
 
+/// Arrow keys as a move in texels, `step` per press; Up moves up the view.
+fn uv_nudge(i: &egui::InputState, step: f64) -> DVec2 {
+    use egui::Key;
+    let n = |k: Key| i.num_presses(k) as f64;
+    DVec2::new(n(Key::ArrowRight) - n(Key::ArrowLeft), n(Key::ArrowDown) - n(Key::ArrowUp)) * step
+}
+
 fn island_color(island: usize) -> Color32 {
     egui::ecolor::Hsva::new((island as f32 * 0.618_034 + 0.52).fract(), 0.65, 1.0, 1.0).into()
 }
@@ -563,6 +570,19 @@ impl MapCraftApp {
                 self.pick_uv_faces(faces.iter().filter(inside).map(|f| f.pick).collect(), additive, false);
             }
         }
+        if response.contains_pointer() && !ctx.egui_wants_keyboard_input() {
+            let step = if ctx.input(|i| i.modifiers.shift) { 1.0 } else { mapcraft_render::grid_step(1.0, cam.zoom) };
+            let d = ctx.input(|i| uv_nudge(i, step));
+            if d != DVec2::ZERO
+                && let Some((_, size)) = self.uv_reference()
+            {
+                let renderer = self.gpu.as_ref().map(|g| &g.renderer);
+                match self.session.transform_uvs("Move UVs", DAffine2::from_translation(d), size, &|name| texture_size(renderer, name), Some("uv-nudge")) {
+                    Ok(()) => self.mark_changed(),
+                    Err(e) => self.status = e.to_string(),
+                }
+            }
+        }
         response.context_menu(|ui| {
             for id in ["uv.unwrap", "uv.project_from_view", "uv.cube_projection", "uv.reset"] {
                 if let Some(c) = mapcraft_engine::find(id) {
@@ -603,6 +623,14 @@ mod tests {
         assert!(scaled.transform_point2(m.pivot).abs_diff_eq(m.pivot, 1e-9));
         assert!(contains(&[DVec2::ZERO, DVec2::new(4.0, 0.0), DVec2::new(0.0, 4.0)], DVec2::ONE));
         assert!(!contains(&[DVec2::ZERO, DVec2::new(4.0, 0.0), DVec2::new(0.0, 4.0)], DVec2::splat(3.0)));
+    }
+
+    #[test]
+    fn arrows_nudge_by_the_step() {
+        let key = |key: egui::Key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let mut i = egui::InputState::default();
+        i.events = vec![key(egui::Key::ArrowRight), key(egui::Key::ArrowUp), key(egui::Key::ArrowUp)];
+        assert_eq!(uv_nudge(&i, 2.0), DVec2::new(2.0, -4.0), "Up moves up the view, where V shrinks");
     }
 
     #[test]

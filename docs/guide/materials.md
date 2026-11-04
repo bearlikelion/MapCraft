@@ -62,7 +62,9 @@ The Material inspector edits those settings after the import, and the views show
    A value the file cannot hold is refused with a message in red, and the file keeps its last good values.
 4. Click **Revert Material** (the curved arrow) at the top to go back to the values it had when you opened it, or the cross to close the inspector.
 
-The texture rows show which picture fills each slot; hover one for its full name.
+The texture rows pick which picture fills each slot from the pictures in the custom folder's `textures/`, or **None** to leave the slot empty.
+When the current material is a PBR material, the Materials panel shows the same settings in its **Material** section, under the buttons, so you can edit it without opening the inspector.
+Other materials show **Lit maps** there instead, which only change how the Lit view shades them.
 Plain pictures have no settings to edit: the inspector's button only appears for PBR materials, and the right click entry says so in the status bar.
 
 ## Applying a material
@@ -231,6 +233,7 @@ Picks are shared with the Face tool: pick here or in the 3D view, and both show 
 | Double click or `F` (**Fit UV View**) | Fit the picked faces in the view |
 | Click a face | Pick only that face; Ctrl+click or Shift+click adds or removes it |
 | Drag a picked face | Move the picked faces' textures; dragging another face picks it first, Ctrl or Shift adds it to the picks |
+| Arrow keys | Nudge the picked faces' textures one step of the texel grid, which is one texel when zoomed in; Shift nudges one texel |
 | Drag a corner handle | Scale the textures about the opposite corner; hold Shift to keep their aspect |
 | Drag an edge handle | Scale the textures along one axis about the opposite edge |
 | Drag the round handle | Rotate the textures about the middle of the box |
@@ -239,7 +242,7 @@ Picks are shared with the Face tool: pick here or in the 3D view, and both show 
 
 While dragging a face or handle, hold `Ctrl` to snap a move to whole texels, a rotation to 15 degrees and a scale to tenths.
 Press `Escape` or right click before letting go to put everything back.
-Each drag is one undo step.
+Each drag is one undo step, and so is a run of arrow key nudges.
 
 ![The UV editor in the Top view's place, showing a ramp's faces laid out over the metal walkway texture](img/materials-uv-editor.webp)
 

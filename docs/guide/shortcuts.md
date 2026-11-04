@@ -309,6 +309,7 @@ These cannot be rebound.
 | Move the picked faces' UVs | `Drag a picked face in a UV editor` |
 | Scale UVs; Shift keeps a corner's aspect | `Drag a square handle in a UV editor` |
 | Rotate UVs | `Drag the round handle in a UV editor` |
+| Nudge the picked faces' UVs one grid step, or one texel with Shift | `Arrow keys over a UV editor` |
 | Change a bevel's segments while sizing it | `Scroll` |
 | Apply a bevel being sized | `Click, Enter` |
 | Cancel a bevel being sized | `Escape, Right Click` |

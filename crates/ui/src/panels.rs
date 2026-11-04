@@ -982,6 +982,9 @@ impl MapCraftApp {
     /// The picked material's Lit view maps and values, which the mapper can change for this SDK.
     fn lit_maps_editor(&mut self, ui: &mut egui::Ui) {
         let name = self.session.tex.material.clone();
+        if self.pbr_material_editor(ui, &name) {
+            return;
+        }
         let Some(id) = self.project.id().map(str::to_string) else { return };
         let Some(base) = self.project.material(&name).cloned() else { return };
         let beside_name = || Some(self.project.vfs.roots().first()?.join(name.rsplit_once('/').map_or("", |(f, _)| f)));
@@ -999,18 +1002,22 @@ impl MapCraftApp {
                 for ((label, slot), now) in ["Normal", "Roughness", "Metallic", "Occlusion"].into_iter().zip(slots).zip(found) {
                     ui.label(label);
                     let text = now.as_deref().map_or("None", |p| p.rsplit('/').next().unwrap_or(p));
-                    egui::ComboBox::from_id_salt(("lit-map", label)).selected_text(text).width(180.0).show_ui(ui, |ui| {
+                    search_combo(ui, ("lit-map", label), 180.0, text, |ui, query| {
                         if ui.selectable_label(slot.is_none(), "Found automatically").clicked() {
                             *slot = None;
+                            return true;
                         }
                         if ui.selectable_label(slot.as_deref() == Some(""), "None").clicked() {
                             *slot = Some(String::new());
+                            return true;
                         }
                         for (rel, file) in folder_images(&folder, &roots, &extensions) {
-                            if ui.selectable_label(now.as_deref() == Some(rel.as_str()), file).clicked() {
+                            if file.to_lowercase().contains(query) && ui.selectable_label(now.as_deref() == Some(rel.as_str()), file).clicked() {
                                 *slot = Some(rel);
+                                return true;
                             }
                         }
+                        false
                     });
                     ui.end_row();
                 }
@@ -1046,6 +1053,32 @@ impl MapCraftApp {
             gpu.renderer.forget_materials();
         }
         self.scene_dirty = true;
+    }
+
+    /// The picked PBR material's settings, as File > Add Material offers them; false when it is not one.
+    fn pbr_material_editor(&mut self, ui: &mut egui::Ui, name: &str) -> bool {
+        let Some(path) = self.project.descriptor_file(name) else {
+            self.browser_material = None;
+            return false;
+        };
+        if self.browser_material.as_ref().is_none_or(|m| m.name != name) {
+            let Some(descriptor) = self.project.find_material(name).and_then(|m| m.descriptor) else { return false };
+            self.browser_material = Some(crate::material_inspector::MaterialInspector::new(name, path, descriptor));
+        }
+        let mut shown = None;
+        egui::CollapsingHeader::new("Material").id_salt("pbr-material").show(ui, |ui| {
+            ui.label(RichText::new(format!("{name}'s settings, saved to its file when you let go")).small().color(TEXT_WEAK));
+            if let Some(editor) = &mut self.browser_material {
+                let edit = editor.ui(ui);
+                if edit.changed || edit.saved {
+                    shown = Some((editor.material.clone(), edit.saved));
+                }
+            }
+        });
+        if let Some((material, saved)) = shown {
+            self.show_material(name, &material, saved);
+        }
+        true
     }
 
     /// The current SDK's material folders as a tree of checkboxes, saved per SDK.
@@ -3031,6 +3064,36 @@ pub(crate) fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str) -> 
     let glass = Rect::from_center_size(r.rect.right_center() - egui::vec2(11.0, 0.0), egui::Vec2::splat(14.0));
     icons::paint(ui, "magnifying_glass", glass, 14.0, crate::chrome::TEXT_WEAK);
     r
+}
+
+/// A combo box whose popup opens with a focused search field; `contents` gets the lowercase query and returns true once it picks something.
+pub(crate) fn search_combo(
+    ui: &mut egui::Ui,
+    id_salt: impl egui::AsIdSalt,
+    width: f32,
+    selected: impl Into<egui::WidgetText>,
+    contents: impl FnOnce(&mut egui::Ui, &str) -> bool,
+) {
+    let id = ui.make_persistent_id(&id_salt).with("search");
+    let combo = egui::ComboBox::from_id_salt(&id_salt).width(width).height(f32::INFINITY).selected_text(selected);
+    let shown = combo.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_ui(ui, |ui| {
+        let stored = ui.data(|d| d.get_temp::<String>(id));
+        let opened = stored.is_none();
+        let mut text = stored.unwrap_or_default();
+        ui.spacing_mut().text_edit_width = ui.available_width();
+        let r = search_field(ui, &mut text, "Search");
+        if opened {
+            r.request_focus();
+        }
+        let query = text.to_lowercase();
+        ui.data_mut(|d| d.insert_temp(id, text));
+        if egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| contents(ui, &query)).inner {
+            ui.close();
+        }
+    });
+    if shown.inner.is_none() {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
 }
 
 /// The scene tree label of a node matching the lowercase `query`, naming the material a brush was found by.

@@ -387,7 +387,7 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 38] = [
+            const FIXED: [(&str, &str); 39] = [
                 ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
                 ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
@@ -414,6 +414,7 @@ impl MapCraftApp {
                 ("Move the picked faces' UVs", "Drag a picked face in a UV editor"),
                 ("Scale UVs; Shift keeps a corner's aspect", "Drag a square handle in a UV editor"),
                 ("Rotate UVs", "Drag the round handle in a UV editor"),
+                ("Nudge the picked faces' UVs one grid step, or one texel with Shift", "Arrow keys over a UV editor"),
                 ("Change a bevel's segments while sizing it", "Scroll"),
                 ("Apply a bevel being sized", "Click, Enter"),
                 ("Cancel a bevel being sized", "Escape, Right Click"),

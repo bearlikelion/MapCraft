@@ -55,7 +55,7 @@ Most tool keys sit on the left hand side of the keyboard, so you can switch tool
 | `Delete` | Deletes the selection; in the Clip tool it takes back the last clip point, and in the Vertex tool it deletes the picked corners |
 | `Ctrl+A`, `Ctrl+Shift+A` | Selects everything, or nothing |
 | `Alt+1`, `Alt+2`, `Alt+3` | Makes clicks pick whole groups, objects, or single brushes |
-| Arrow keys | Nudge the selection one grid step in the 2D view under the pointer; `Shift` nudges one unit and `Ctrl` nudges a copy |
+| Arrow keys | Nudge the selection one grid step in the 2D view under the pointer; `Shift` nudges one unit and `Ctrl` nudges a copy; over a UV editor they nudge the picked faces' UVs |
 | `Ctrl` + drag | Moves a copy of the selection |
 | `Alt` + drag | Moves the selection up and down in the 3D view |
 | `End` | Drops the selection onto the floor below it |

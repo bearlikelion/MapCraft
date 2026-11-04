@@ -15,6 +15,8 @@ pub(crate) struct MaterialInspector {
     /// The last values written or refused, so a failed write is not retried every frame.
     tried: Material,
     pub(crate) status: String,
+    /// Pictures in the custom folder's `textures/` a slot can use, as (asset path, file name).
+    choices: Vec<(String, String)>,
 }
 
 /// What drawing the inspector did.
@@ -28,7 +30,8 @@ pub(crate) struct Edit {
 
 impl MaterialInspector {
     pub(crate) fn new(name: &str, path: PathBuf, material: Material) -> Self {
-        Self { name: name.into(), path, opened: material.clone(), tried: material.clone(), material, status: String::new() }
+        let choices = path.parent().and_then(std::path::Path::parent).map(texture_choices).unwrap_or_default();
+        Self { name: name.into(), path, opened: material.clone(), tried: material.clone(), material, status: String::new(), choices }
     }
 
     /// Changed since it was opened.
@@ -79,8 +82,19 @@ impl MaterialInspector {
                 ("Height texture", TextureSlot::Height),
             ] {
                 ui.label(label);
-                let name = m.textures.get(&slot).map_or("None", |t| t.rsplit('/').next().unwrap_or(t));
-                crate::inspect::weak(ui, name).on_hover_text(m.textures.get(&slot).map_or("", String::as_str));
+                let name = m.textures.get(&slot).map_or("None", |t| t.rsplit('/').next().unwrap_or(t)).to_string();
+                let mut chosen = m.textures.get(&slot).cloned();
+                crate::panels::search_combo(ui, ("material-texture", label), 180.0, name, |ui, query| {
+                    let mut picked = ui.selectable_value(&mut chosen, None, "None").clicked();
+                    for (path, file) in self.choices.iter().filter(|(_, f)| f.to_lowercase().contains(query)) {
+                        picked |= ui.selectable_value(&mut chosen, Some(path.clone()), file).clicked();
+                    }
+                    picked
+                });
+                match chosen {
+                    Some(t) => m.textures.insert(slot, t),
+                    None => m.textures.remove(&slot),
+                };
                 ui.end_row();
             }
         });
@@ -95,6 +109,22 @@ impl MaterialInspector {
         }
         out
     }
+}
+
+/// The pictures under `root/textures`, sorted, as (asset path, file name).
+fn texture_choices(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = std::fs::read_dir(root.join("textures"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().into_owned();
+            let ext = file.rsplit_once('.')?.1.to_ascii_lowercase();
+            ["png", "jpg", "jpeg"].contains(&ext.as_str()).then(|| (format!("textures/{file}"), file))
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 impl crate::app::MapCraftApp {
@@ -122,7 +152,17 @@ impl crate::app::MapCraftApp {
     }
 
     /// Draws `material` in the views without reloading the project or its pictures.
-    fn show_material(&mut self, name: &str, material: &Material, saved: bool) {
+    pub(crate) fn show_material(&mut self, name: &str, material: &Material, saved: bool) {
+        let loaded = self.project.find_material(name).and_then(|m| m.descriptor).map(|d| d.textures);
+        if saved && loaded.is_some_and(|t| t != material.textures) {
+            self.reload_asset_folder();
+            if let Some(gpu) = &mut self.gpu {
+                gpu.renderer.forget_material(name);
+            }
+            self.thumbs.forget(name);
+            self.scene_dirty = true;
+            return;
+        }
         self.project.set_descriptor_values(name, material);
         if let Some(gpu) = &mut self.gpu
             && !gpu.renderer.set_material_values(name, crate::project::surface_values(material))

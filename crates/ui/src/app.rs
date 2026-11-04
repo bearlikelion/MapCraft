@@ -107,6 +107,8 @@ pub(crate) struct Pointfile {
 pub struct MapCraftApp {
     pub(crate) shader_editor: crate::shader_editor::ShaderEditor,
     pub(crate) material_inspector: Option<crate::material_inspector::MaterialInspector>,
+    /// The Materials panel's editor for the picked material when it is a PBR material.
+    pub(crate) browser_material: Option<crate::material_inspector::MaterialInspector>,
     environment_warnings: Vec<String>,
     shader_quit_dialog: bool,
     shader_quit_approved: bool,
@@ -301,6 +303,7 @@ impl MapCraftApp {
         let mut app = Self {
             shader_editor: Default::default(),
             material_inspector: None,
+            browser_material: None,
             environment_warnings: Vec::new(),
             shader_quit_dialog: false,
             shader_quit_approved: false,

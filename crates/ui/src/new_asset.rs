@@ -274,11 +274,12 @@ impl MapCraftApp {
                     ui.label(label);
                     let current = new.slots.get(&slot).and_then(|&i| names.get(i)).map_or("None", String::as_str);
                     let mut chosen = new.slots.get(&slot).copied();
-                    egui::ComboBox::from_id_salt(("new-asset-slot", label)).width(260.0).selected_text(current).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, None, "None");
-                        for (i, name) in names.iter().enumerate() {
-                            ui.selectable_value(&mut chosen, Some(i), name);
+                    crate::panels::search_combo(ui, ("new-asset-slot", label), 260.0, current, |ui, query| {
+                        let mut picked = ui.selectable_value(&mut chosen, None, "None").clicked();
+                        for (i, name) in names.iter().enumerate().filter(|(_, n)| n.to_lowercase().contains(query)) {
+                            picked |= ui.selectable_value(&mut chosen, Some(i), name).clicked();
                         }
+                        picked
                     });
                     match chosen {
                         Some(i) => new.slots.insert(slot, i),
@@ -329,7 +330,7 @@ impl MapCraftApp {
     }
 
     /// Loads the SDK again so assets just written show, keeping the brush material.
-    fn reload_asset_folder(&mut self) {
+    pub(crate) fn reload_asset_folder(&mut self) {
         let tex = self.session.tex.clone();
         self.load_project(self.session.sdk.clone());
         self.session.tex = tex;
