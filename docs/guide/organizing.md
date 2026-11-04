@@ -10,7 +10,7 @@ The **Groups**, **Objects** and **Solids** buttons on the top bar (a group frame
 
 | Mode | Key | A click selects |
 |---|---|---|
-| **Groups** | `Alt+1` | The outermost group around what you click, else its entity, else the brush |
+| **Groups** | `Alt+1` | The one part you click; double-click it to select its whole group, else its brush entity |
 | **Objects** | `Alt+2` | The entity or loose brush, ignoring groups |
 | **Solids** | `Alt+3` | The one brush |
 
@@ -21,7 +21,7 @@ The **Groups**, **Objects** and **Solids** buttons on the top bar (a group frame
 - `Ctrl+Shift+A` selects nothing.
 - The modes are also under **Edit > Selection Mode**.
 
-![Two copies of the scene tree side by side: in Groups mode a click selects the whole Ramp 3 group, in Solids mode it selects one brush inside it](img/organizing-modes.webp "Left: Groups selects the whole ramp. Right: Solids selects one brush.")
+![Two copies of the scene tree side by side: in Groups mode a double click selects the whole Ramp 3 group, in Solids mode a click selects one brush inside it](img/organizing-modes.webp "Left: Groups selects the whole ramp. Right: Solids selects one brush.")
 
 > [!NOTE]
 > `Ctrl+A` leaves out hidden, tagged off, out of cordon and locked objects, and everything inside a hidden or locked layer or group.

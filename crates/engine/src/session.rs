@@ -10,7 +10,7 @@ use crate::EngineError;
 /// What a click selects (Hammer's selection modes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectMode {
-    /// The outermost group around the hit, else its entity, else the brush.
+    /// The hit itself; a double click reaches its outermost group, else its entity (TrenchBroom).
     #[default]
     Groups,
     /// The brush's entity, else the brush; groups are ignored.
@@ -26,11 +26,17 @@ pub fn pick_target(map: &Map, hit: NodeId, mode: SelectMode) -> NodeId {
     match mode {
         SelectMode::Solids => hit,
         SelectMode::Objects => entity.unwrap_or(hit),
-        SelectMode::Groups => {
-            let group = ancestors.iter().rev().find(|a| map.get(**a).is_some_and(|n| matches!(n.kind, NodeKind::Group(_))));
-            group.copied().or(entity).unwrap_or(hit)
-        }
+        SelectMode::Groups => hit,
     }
+}
+
+/// What a double click on `id` selects: its outermost group, else its entity.
+pub fn whole_object(map: &Map, id: NodeId) -> Option<NodeId> {
+    let ancestors = map.ancestors(id);
+    let is = |a: &&NodeId, group: bool| {
+        map.get(**a).is_some_and(|n| if group { matches!(n.kind, NodeKind::Group(_)) } else { matches!(n.kind, NodeKind::Entity(_)) })
+    };
+    ancestors.iter().rev().find(|a| is(a, true)).or(ancestors.first().filter(|a| is(a, false))).copied()
 }
 
 struct Transaction {
@@ -419,11 +425,14 @@ mod tests {
         let b = e.insert(ent, cube()).unwrap();
         let c = e.finish();
         s.apply("Build", c);
-        assert_eq!(pick_target(&s.map, b, SelectMode::Groups), g);
+        assert_eq!(pick_target(&s.map, b, SelectMode::Groups), b);
         assert_eq!(pick_target(&s.map, b, SelectMode::Objects), ent);
         assert_eq!(pick_target(&s.map, b, SelectMode::Solids), b);
+        assert_eq!(whole_object(&s.map, b), Some(g));
+        assert_eq!(whole_object(&s.map, ent), Some(g));
+        assert_eq!(whole_object(&s.map, g), None);
         s.click(Some(b), false);
-        assert_eq!(s.selection, BTreeSet::from([g]));
+        assert_eq!(s.selection, BTreeSet::from([b]));
         s.click(Some(b), true);
         assert!(s.selection.is_empty());
         s.select_all();

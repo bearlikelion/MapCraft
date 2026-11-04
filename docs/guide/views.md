@@ -41,6 +41,13 @@ If you like working in one big view, as in TrenchBroom, turn on **View > One Vie
 `Space` then steps to the next view (3D, Top, Front, Side), and the status bar names the one shown.
 To bring back all four, press `Shift+Space` again, or click **Restore** in the header, where Maximize was.
 
+### Two view layout
+
+**View > Two View Layout** puts the 3D view on the left and one 2D view on the right, as TrenchBroom's two pane layout does.
+`Space` turns the 2D view to the next of Top, Front and Side, each keeping its own zoom and position.
+Drag the line between them to resize.
+`Shift+Space` switches to one view and back to two.
+
 ## Go to Origin
 
 **View > Go to Origin** (`Shift+Home`) frames the map's origin (0, 0, 0) in every view.

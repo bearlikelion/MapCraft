@@ -195,6 +195,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Frame All | `Home` |
 | Go to Origin | `Shift+Home` |
 | One View Layout | `Shift+Space` |
+| Two View Layout | *none* |
 | Focus Selection | `F` |
 | Find Entities | `Ctrl+F` |
 | Snap to Grid | `Shift+W` |

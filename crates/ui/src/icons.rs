@@ -178,6 +178,7 @@ pub(crate) fn action_icon(id: &str) -> Option<&'static str> {
         "view.origin" => "house",
         "view.maximize" => "expand",
         "view.single" => "window",
+        "view.two" => "windows",
         "view.find_entities" | "panel.scene_search" => "magnifying_glass",
         "panel.scene" => "node_graph_root",
         "panel.tags" => "tag",

@@ -74,6 +74,8 @@ pub struct ViewPrefs {
     pub apply_on_click: bool,
     /// One view fills the window and Space shows the next one, as in TrenchBroom.
     pub single_view: bool,
+    /// The 3D view beside one 2D view, and Space turns the 2D view to the next of Top, Front and Side, as in TrenchBroom.
+    pub two_view: bool,
     /// A face drag sweeps the face out square to it instead of moving its plane.
     pub extrude_along_normal: bool,
     /// Tint faces by steepness: walkable, surfable, wall or ceiling.
@@ -105,6 +107,7 @@ impl Default for ViewPrefs {
             link_zoom: true,
             apply_on_click: true,
             single_view: false,
+            two_view: false,
             extrude_along_normal: false,
             slope_colors: false,
             slope_walkable: 45.573,

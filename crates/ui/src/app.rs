@@ -118,6 +118,8 @@ pub struct MapCraftApp {
     pub(crate) panes: [Pane; 4],
     pub(crate) split: Vec2,
     pub(crate) maximized: Option<usize>,
+    /// The 2D pane the two view layout shows beside the 3D one.
+    pub(crate) side_pane: usize,
     /// Where the pointer last was, for placing a file dropped on a view.
     pub(crate) pointer: Option<egui::Pos2>,
     pub(crate) tool: Tool,
@@ -310,6 +312,7 @@ impl MapCraftApp {
             panes: [pane(View::Perspective), pane(View::Top), pane(View::Front), pane(View::Side)],
             split: Vec2::splat(0.5),
             maximized: None,
+            side_pane: 1,
             pointer: None,
             tool: Tool::Select,
             shape: mapcraft_engine::Shape::Block,
@@ -1220,6 +1223,10 @@ impl MapCraftApp {
                 self.maximized = Some(next);
                 self.status = format!("Showing {}; Space shows the next view", self.panes.get(next).map_or("", |p| p.camera.view.label()));
             }
+            "view.maximize" if self.prefs.get().view.two_view && self.maximized.is_none() => {
+                self.side_pane = self.side_pane % 3 + 1;
+                self.status = format!("Showing {}; Space shows the next view", self.panes.get(self.side_pane).map_or("", |p| p.camera.view.label()));
+            }
             "view.maximize" => {
                 self.maximized = if self.maximized.is_some() { None } else { self.hovered_pane };
             }
@@ -1227,6 +1234,14 @@ impl MapCraftApp {
                 let on = !self.prefs.get().view.single_view;
                 self.prefs.update(|p| p.view.single_view = on);
                 self.maximized = on.then(|| self.hovered_pane.unwrap_or(0));
+            }
+            "view.two" => {
+                let on = !self.prefs.get().view.two_view || self.prefs.get().view.single_view;
+                self.prefs.update(|p| {
+                    p.view.two_view = on;
+                    p.view.single_view &= !on;
+                });
+                self.maximized = None;
             }
             "view.origin" => self.frame_bounds(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0))),
             "prefab.make_local" => self.make_local(),
@@ -1544,6 +1559,7 @@ impl MapCraftApp {
                         self.action_button(ui, "view.origin", "Go to Origin", true);
                         self.action_button(ui, "view.maximize", if view.single_view { "Next View" } else { "Maximize View Under Pointer" }, true);
                         self.action_toggle(ui, "view.single", "One View Layout", view.single_view);
+                        self.action_toggle(ui, "view.two", "Two View Layout", view.two_view && !view.single_view);
                         self.action_button(ui, "view.find_entities", "Find Entities", true);
                         self.action_button(ui, "panel.scene_search", "Search Scene", true);
                         ui.menu_button((crate::icons::slot(None), "Panels"), |ui| {
@@ -2138,6 +2154,20 @@ impl MapCraftApp {
         }
         let gap = 4.0;
         let split = Pos2::new(full.left() + full.width() * self.split.x, full.top() + full.height() * self.split.y);
+        if self.prefs.get().view.two_view {
+            self.pane_ui(ui, 0, Rect::from_min_max(full.min, Pos2::new(split.x - gap / 2.0, full.bottom())));
+            self.pane_ui(ui, self.side_pane, Rect::from_min_max(Pos2::new(split.x + gap / 2.0, full.top()), full.max));
+            let v = ui.interact(Rect::from_x_y_ranges(split.x - gap..=split.x + gap, full.y_range()), ui.id().with("split-x"), egui::Sense::drag());
+            if v.dragged()
+                && let Some(p) = ui.ctx().pointer_interact_pos()
+            {
+                self.split.x = ((p.x - full.left()) / full.width()).clamp(0.1, 0.9);
+            }
+            if v.hovered() || v.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            return;
+        }
         let rects = [
             Rect::from_min_max(full.min, split - Vec2::splat(gap / 2.0)),
             Rect::from_min_max(Pos2::new(split.x + gap / 2.0, full.top()), Pos2::new(full.right(), split.y - gap / 2.0)),
@@ -2318,6 +2348,23 @@ pub(crate) fn prefab_loader(cache: &mut HashMap<String, Option<Map>>, doc: Optio
 }
 
 impl eframe::App for MapCraftApp {
+    /// Releases held mouse buttons when the window loses focus, since Alt+Tab can swallow the release and leave a drag or fly stuck.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if !raw_input.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))) {
+            return;
+        }
+        let (pos, down) = ctx.input(|i| {
+            let down: Vec<egui::PointerButton> = [egui::PointerButton::Primary, egui::PointerButton::Secondary, egui::PointerButton::Middle]
+                .into_iter()
+                .filter(|b| i.pointer.button_down(*b))
+                .collect();
+            (i.pointer.latest_pos().unwrap_or_default(), down)
+        });
+        for button in down {
+            raw_input.events.push(egui::Event::PointerButton { pos, button, pressed: false, modifiers: egui::Modifiers::NONE });
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && (self.session.is_dirty() || self.shader_editor.has_unsaved()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

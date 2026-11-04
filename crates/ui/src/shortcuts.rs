@@ -138,6 +138,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("view.frame_all", "Frame All", "Home"),
     ("view.origin", "Go to Origin", "Shift+Home"),
     ("view.single", "One View Layout", "Shift+Space"),
+    ("view.two", "Two View Layout", ""),
     ("view.frame_selection", "Focus Selection", "F"),
     ("view.find_entities", "Find Entities", "Ctrl+F"),
     ("panel.scene", "Scene Panel", "Ctrl+1"),

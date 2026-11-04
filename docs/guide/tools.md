@@ -94,7 +94,7 @@ In the 3D view, drag an object to move the selection, with no handles.
 - Alt+drag moves the selection straight up and down.
   Press or let go of Alt partway through to switch, and the selection stays where it is.
 - Shift does the same as Alt once the drag has started, for desktops that move windows on Alt+drag.
-- Dragging an object that is not selected selects it and moves it.
+- Dragging anywhere off the selection draws a new block there, as the [Block](#drawing-in-the-3d-view) tool does; click an object first to move it.
   Dragging over the selection moves it even when another object is nearer, so an object picked by clicking again drags from the same spot.
 - Ctrl+drag moves a copy and leaves the original.
 - With **Snap** on, the selection's corner nearest the grab point lands on the grid.

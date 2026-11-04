@@ -1202,6 +1202,8 @@ impl MapCraftApp {
             let mods = ctx.input(|i| i.modifiers);
             if mods.shift && !cam.is_2d() && matches!(self.tool, Tool::Select | Tool::Move) {
                 self.pick_face_at(index, rect, p);
+            } else if response.double_clicked() && matches!(self.tool, Tool::Select | Tool::Move) && self.select_whole_object() {
+                self.mark_changed();
             } else {
                 self.click(index, rect, p, mods.command || (mods.shift && self.tool != Tool::Sculpt));
             }
@@ -1343,6 +1345,18 @@ impl MapCraftApp {
         self.session.face_selection = BTreeSet::from([(id, face)]);
         self.session.active_face = Some((id, face));
         self.mark_changed();
+    }
+
+    /// Swaps a lone selected node for the group or entity it belongs to; false when there is none.
+    fn select_whole_object(&mut self) -> bool {
+        if self.session.select_mode != mapcraft_engine::SelectMode::Groups {
+            return false;
+        }
+        let mut ids = self.session.selection.iter();
+        let (Some(id), None) = (ids.next(), ids.next()) else { return false };
+        let Some(whole) = mapcraft_engine::whole_object(&self.session.map, *id) else { return false };
+        self.session.selection = BTreeSet::from([whole]);
+        true
     }
 
     fn click(&mut self, index: usize, rect: Rect, pos: Pos2, additive: bool) {
@@ -1535,6 +1549,10 @@ impl MapCraftApp {
                 let selected = self.moving_nodes();
                 // The selection under the pointer drags even when something else is nearer the camera.
                 let grabbed = hits.iter().find(|(id, _)| selected.contains(id)).copied();
+                if self.tool == Tool::Select && !cam.is_2d() && grabbed.is_none() {
+                    self.begin_block_3d(index, rect, pos);
+                    return;
+                }
                 match grabbed.or(hits.first().copied()) {
                     Some((first, t)) => {
                         if grabbed.is_none() {

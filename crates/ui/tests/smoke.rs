@@ -50,6 +50,18 @@ fn block_tool_undo_and_entities() {
     assert_eq!(h.state().node_count_for_test(), 3, "clicking with the entity tool places an entity");
 }
 
+#[test]
+fn select_drag_off_the_selection_in_3d_draws_a_block() {
+    use mapcraft_geom::DVec3;
+    let (mut h, _settings) = editor();
+    let a = h.state().screen_for_test(0, DVec3::new(0.0, 0.0, 0.0));
+    let b = h.state().screen_for_test(0, DVec3::new(128.0, 128.0, 0.0));
+    drag(&mut h, a, b);
+    assert_eq!(h.state().node_count_for_test(), 2, "dragging on the ground with Select draws a brush");
+    drag(&mut h, b, a);
+    assert_eq!(h.state().node_count_for_test(), 2, "dragging the new, selected brush moves it");
+}
+
 fn editor() -> (Harness<'static, MapCraftApp>, tempfile::TempDir) {
     let settings = tempfile::tempdir().unwrap();
     let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
@@ -107,6 +119,51 @@ fn space_maximizes_the_hovered_view() {
     h.key_press(egui::Key::Space);
     h.run_steps(2);
     assert_eq!(h.state().maximized_for_test(), None, "Space again brings back four views");
+}
+
+#[test]
+fn space_turns_the_two_view_layouts_2d_side() {
+    let (mut h, _settings) = editor();
+    h.state_mut().run_command_for_test("view.two");
+    h.hover_at(Pos2::new(1000.0, 400.0));
+    h.run_steps(2);
+    for view in ["Front", "Side", "Top"] {
+        h.key_press(egui::Key::Space);
+        h.run_steps(2);
+        assert!(h.state().status_for_test().starts_with(&format!("Showing {view}")), "{}", h.state().status_for_test());
+        assert_eq!(h.state().maximized_for_test(), None, "both views stay");
+    }
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Space);
+    h.run_steps(2);
+    assert!(h.state().maximized_for_test().is_some(), "Shift+Space shows one view");
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Space);
+    h.run_steps(2);
+    h.key_press(egui::Key::Space);
+    h.run_steps(2);
+    assert!(h.state().status_for_test().starts_with("Showing Front"), "Shift+Space again returns to two views");
+}
+
+#[test]
+fn losing_focus_lets_go_of_held_buttons() {
+    let (mut h, _settings) = editor();
+    let at = Pos2::new(500.0, 300.0);
+    h.hover_at(at);
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert!(h.ctx.input(|i| i.pointer.secondary_down()));
+    let mut raw = egui::RawInput { events: vec![Event::WindowFocused(false)], ..Default::default() };
+    let ctx = h.ctx.clone();
+    eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
+    assert!(
+        raw.events.iter().any(|e| matches!(e, Event::PointerButton { button: PointerButton::Secondary, pressed: false, .. })),
+        "Alt+Tab mid fly lets go of the button"
+    );
+    for e in raw.events {
+        h.event(e);
+    }
+    h.run_steps(2);
+    assert!(!h.ctx.input(|i| i.pointer.any_down()));
 }
 
 #[test]
@@ -776,7 +833,9 @@ fn mirror_groups_show_and_pick_their_copies() {
     h.state_mut().run_command_for_test("edit.select_none");
     let copy = h.state().screen_for_test(top, DVec3::new(64.0, 32.0, 0.0));
     click(&mut h, copy);
-    assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([group]), "clicking the copy selects its mirror group");
+    assert_eq!(h.state_mut().session_for_test().selection, std::collections::BTreeSet::from([original]), "clicking the copy selects the brush it copies");
+    h.state_mut().session_for_test().selection = std::collections::BTreeSet::from([group]);
+    h.run_steps(2);
     h.get_by_label("Make real");
     let carry = |h: &mut Harness<MapCraftApp>| match &h.state_mut().session_for_test().map.get(group).unwrap().kind {
         mapcraft_map::NodeKind::Group(g) => g.mirror.unwrap().texture_lock,
@@ -1122,6 +1181,31 @@ fn clip_points_come_off_one_at_a_time_and_tilt_from_another_view() {
 }
 
 #[test]
+fn a_click_picks_a_part_and_a_double_click_its_whole_group() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let settings = tempfile::tempdir().unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let brush = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(-128.0, 0.0, 0.0), DVec3::new(0.0, 64.0, 64.0))).unwrap();
+    h.state_mut().run_command_for_test("tools.mirror");
+    h.run_steps(2);
+    let group = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    h.state_mut().run_command_for_test("edit.select_none");
+    let at = h.state().screen_for_test(1, DVec3::new(-64.0, 32.0, 0.0));
+    h.hover_at(at);
+    h.run_steps(1);
+    let mut selected = Vec::new();
+    for _ in 0..2 {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        selected.push(h.state_mut().session_for_test().selection.clone());
+    }
+    assert_eq!(selected, [std::collections::BTreeSet::from([brush]), std::collections::BTreeSet::from([group])]);
+}
+
+#[test]
 fn double_clicking_a_face_clips_along_it() {
     use mapcraft_geom::{Aabb, DVec3};
     let settings = tempfile::tempdir().unwrap();
@@ -1373,10 +1457,10 @@ fn the_3d_view_drags_the_selection_across_and_alt_drags_it_up() {
     h.event(Event::ModifiersChanged(Modifiers::NONE));
     assert_eq!(bounds(&mut h, id).min, DVec3::new(144.0, 0.0, 48.0), "then lifts it");
 
-    h.state_mut().session_for_test().selection.clear();
+    h.state_mut().session_for_test().selection = std::collections::BTreeSet::from([id]);
     let (from, to) = (h.state().screen_for_test(0, DVec3::new(176.0, 32.0, 112.0)), h.state().screen_for_test(0, DVec3::new(176.0, 132.0, 112.0)));
     drag_with(&mut h, from, to, Modifiers::COMMAND);
-    assert_eq!(h.state().node_count_for_test(), 3, "Ctrl+drag on an unselected brush picks it and moves a copy");
+    assert_eq!(h.state().node_count_for_test(), 3, "Ctrl+drag on the selection moves a copy");
     assert_eq!(bounds(&mut h, id).min, DVec3::new(144.0, 0.0, 48.0), "leaving the original");
     let copy = *h.state_mut().session_for_test().selection.iter().next().unwrap();
     assert_eq!(bounds(&mut h, copy).min, DVec3::new(144.0, 96.0, 48.0));

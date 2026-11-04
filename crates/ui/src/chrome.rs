@@ -319,7 +319,7 @@ impl MapCraftApp {
 
             use mapcraft_engine::SelectMode as M;
             let modes = [
-                (M::Groups, icons::select_mode_icon(M::Groups), "Groups", "Clicks select whole groups"),
+                (M::Groups, icons::select_mode_icon(M::Groups), "Groups", "Clicks select one part, double clicks the whole group or entity"),
                 (M::Objects, icons::select_mode_icon(M::Objects), "Objects", "Clicks select entities and loose brushes, ignoring groups"),
                 (M::Solids, icons::select_mode_icon(M::Solids), "Solids", "Clicks select single brushes"),
             ];
