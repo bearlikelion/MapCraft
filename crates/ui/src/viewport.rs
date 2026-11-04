@@ -1387,12 +1387,8 @@ impl MapCraftApp {
             Tool::Select | Tool::Move | Tool::Extrude | Tool::Rotate | Tool::Scale | Tool::Block | Tool::Vertex => {
                 // Clicking the same spot again steps to the next object behind (drill select).
                 let mut targets = BTreeSet::new();
-                let hits: Vec<NodeId> = self
-                    .view_hits(index, rect, origin, dir)
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .filter(|id| targets.insert(self.session.pick(*id)))
-                    .collect();
+                let hits: Vec<NodeId> =
+                    self.view_hits(index, rect, origin, dir).into_iter().map(|(id, _)| id).filter(|id| targets.insert(self.session.pick(*id))).collect();
                 let again = self.last_click.is_some_and(|(v, p)| v == index && p.distance(pos) < 4.0);
                 let current = hits.iter().position(|h| {
                     let t = self.session.pick(*h);

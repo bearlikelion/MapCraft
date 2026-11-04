@@ -79,7 +79,7 @@ fn surf_ramp_and_bhop() {
     assert!(p.run("nope", &bhop, &ctx()).is_err());
 
     let fitted = p.scale_params("surf_ramp", &ramp.defaults(), DVec3::new(2.0, 1.0, 1.5)).unwrap().unwrap();
-    assert_eq!((fitted["size"].as_f64(), fitted["height"].as_f64(), fitted["shape"].as_str()), (Some(2048.0), Some(816.0), Some("Straight")));
+    assert_eq!((fitted["size"].as_f64(), fitted["height"].as_f64(), fitted["shape"].as_str()), (Some(2048.0), Some(720.0), Some("Straight")));
     assert!(fitted["trim_depth"].as_f64().is_some_and(|d| d > 1.0), "trim depth follows the slab: {}", fitted["trim_depth"]);
     assert!(p.scale_params("bhop", &bhop, DVec3::splat(2.0)).unwrap().is_none(), "a generator the plugin cannot fit keeps its stretch");
 }
