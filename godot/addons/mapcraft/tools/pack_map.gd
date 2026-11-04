@@ -31,6 +31,14 @@ static func pack(map_path: String, internal_path: String, pck_path: String) -> S
 	if packer.pck_start(pck_path) != OK:
 		return "could not start %s" % pck_path
 	packer.add_file(internal_path, ProjectSettings.globalize_path(built))
+	# Baked lighting is the .mclight's own import, which the scene refers to
+	for dependency: String in ResourceLoader.get_dependencies(map_path):
+		var path: String = dependency.get_slice("::", dependency.get_slice_count("::") - 1)
+		var config: ConfigFile = ConfigFile.new()
+		if path.get_extension() == "mclight" and config.load(path + ".import") == OK:
+			var imported: String = config.get_value("remap", "path", "")
+			packer.add_file(path + ".import", ProjectSettings.globalize_path(path + ".import"))
+			packer.add_file(imported, ProjectSettings.globalize_path(imported))
 	if packer.flush() != OK:
 		return "could not write %s" % pck_path
 	print("pack_map: wrote %s" % pck_path)

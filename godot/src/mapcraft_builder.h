@@ -20,6 +20,8 @@ struct MapCraftBuildOptions {
 	bool trimesh_collision = false;
 	bool own_nodes = true;
 	String source_path;
+	// Imports take a .mcmap's baked lighting from its .mclight's own import, which keeps the texels without a GPU.
+	bool imported_lighting = false;
 	// Prefab maps this build sits inside, outermost first, and the prefab copies the whole map has left.
 	PackedStringArray prefabs_above;
 	std::shared_ptr<int> prefab_budget;
@@ -32,6 +34,9 @@ Error mapcraft_build(const Dictionary &p_doc, Node3D *p_root, const MapCraftBuil
 // Reads a .mcmap, or the map inside a self-contained .mcpck.
 Error mapcraft_read_map(const String &p_path, Dictionary &r_doc, String &r_error);
 Error mapcraft_build_file(const String &p_path, Node3D *p_root, const MapCraftBuildOptions &p_options, String &r_error);
+
+// Writes a .mclight's texels as a CompressedTexture2DArray (.ctexarray) file.
+Error mapcraft_save_lighting(const String &p_source, const String &p_path, String &r_error);
 
 Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraftBuildOptions &p_options, Ref<PackedScene> &r_scene, String &r_error);
 

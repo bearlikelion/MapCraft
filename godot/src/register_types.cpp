@@ -22,6 +22,7 @@ static void initialize_mapcraft(ModuleInitializationLevel p_level) {
 		ResourceLoader::get_singleton()->add_resource_format_loader(loader);
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(MapCraftImportPlugin);
+		GDREGISTER_CLASS(MapCraftLightingImportPlugin);
 		GDREGISTER_CLASS(MapCraftEditorPlugin);
 		EditorPlugins::add_by_type<MapCraftEditorPlugin>();
 	}

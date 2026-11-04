@@ -78,7 +78,7 @@ int32_t MapCraftImportPlugin::_get_import_order() const {
 
 // Bump when imported scenes change, so projects reimport maps made by an older build.
 int32_t MapCraftImportPlugin::_get_format_version() const {
-	return 8;
+	return 9;
 }
 
 Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,
@@ -96,6 +96,7 @@ Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p
 	options.collision = p_options.get("collision", true);
 	options.trimesh_collision = p_options.get("trimesh_collision", false);
 	options.source_path = p_source_file;
+	options.imported_lighting = true;
 	String map_path = p_options.get("entity_map", "");
 	if (!map_path.is_empty()) {
 		options.entity_map = ResourceLoader::get_singleton()->load(map_path);
@@ -111,13 +112,78 @@ Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p
 	return ResourceSaver::get_singleton()->save(scene, p_save_path + String(".") + _get_save_extension());
 }
 
+String MapCraftLightingImportPlugin::_get_importer_name() const {
+	return "mapcraft.lighting";
+}
+
+String MapCraftLightingImportPlugin::_get_visible_name() const {
+	return "MapCraft Baked Lighting";
+}
+
+PackedStringArray MapCraftLightingImportPlugin::_get_recognized_extensions() const {
+	PackedStringArray out;
+	out.push_back("mclight");
+	return out;
+}
+
+String MapCraftLightingImportPlugin::_get_save_extension() const {
+	return "ctexarray";
+}
+
+String MapCraftLightingImportPlugin::_get_resource_type() const {
+	return "CompressedTexture2DArray";
+}
+
+int32_t MapCraftLightingImportPlugin::_get_preset_count() const {
+	return 1;
+}
+
+String MapCraftLightingImportPlugin::_get_preset_name(int32_t p_preset_index) const {
+	return "Default";
+}
+
+TypedArray<Dictionary> MapCraftLightingImportPlugin::_get_import_options(const String &p_path, int32_t p_preset_index) const {
+	return TypedArray<Dictionary>();
+}
+
+bool MapCraftLightingImportPlugin::_get_option_visibility(const String &p_path, const StringName &p_option_name, const Dictionary &p_options) const {
+	return true;
+}
+
+float MapCraftLightingImportPlugin::_get_priority() const {
+	return 1.0;
+}
+
+// Before maps, which load it.
+int32_t MapCraftLightingImportPlugin::_get_import_order() const {
+	return IMPORT_ORDER_DEFAULT;
+}
+
+int32_t MapCraftLightingImportPlugin::_get_format_version() const {
+	return 1;
+}
+
+Error MapCraftLightingImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,
+		const TypedArray<String> &p_platform_variants, const TypedArray<String> &p_gen_files) const {
+	String error;
+	Error err = mapcraft_save_lighting(p_source_file, p_save_path + String(".") + _get_save_extension(), error);
+	if (err != OK) {
+		ERR_PRINT(String("MapCraft: ") + p_source_file + String(" ") + error);
+	}
+	return err;
+}
+
 void MapCraftEditorPlugin::_notification(int p_what) {
 	if (p_what == NOTIFICATION_ENTER_TREE) {
+		lighting_importer.instantiate();
+		add_import_plugin(lighting_importer);
 		importer.instantiate();
 		add_import_plugin(importer);
 	} else if (p_what == NOTIFICATION_EXIT_TREE && importer.is_valid()) {
 		remove_import_plugin(importer);
 		importer.unref();
+		remove_import_plugin(lighting_importer);
+		lighting_importer.unref();
 	}
 }
 

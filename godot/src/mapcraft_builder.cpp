@@ -702,6 +702,7 @@ struct Lighting {
 		float uv[8] = {};
 	};
 	HashMap<uint64_t, Face> faces;
+	TypedArray<Image> layers;
 	Ref<Texture2DArray> texture;
 
 	static uint64_t key(uint64_t p_node, uint32_t p_face) {
@@ -753,7 +754,6 @@ struct Lighting {
 			r_error = "has texels that do not decompress";
 			return ERR_FILE_CORRUPT;
 		}
-		TypedArray<Image> layers;
 		for (int64_t i = 0; i < slices * 4; i++) {
 			Ref<Image> image = Image::create_from_data(int32_t(size), int32_t(size), false, Image::FORMAT_RGBE9995, texels.slice(i * layer, (i + 1) * layer));
 			if (image.is_null()) {
@@ -789,6 +789,7 @@ class Builder {
 	MapCraftPack pack;
 	String pack_path;
 	Lighting lighting;
+	String lighting_file;
 	bool lit = false;
 	// Mesh instances drawn with the baked lighting, and the atlas slice each samples.
 	Vector<std::pair<MeshInstance3D *, int>> lightmap_users;
@@ -1485,6 +1486,7 @@ void Builder::load_lighting() {
 			return;
 		}
 		bytes = FileAccess::get_file_as_bytes(from);
+		lighting_file = from;
 	}
 	String error;
 	if (lighting.parse(bytes, error) != OK) {
@@ -1505,8 +1507,17 @@ void Builder::add_lightmap() {
 	data->set_uses_spherical_harmonics(true);
 	// The L1 bands are stored divided by L0 the way Godot 4.4's baker packs them; this internal flag says so.
 	data->set("_uses_packed_directional", true);
+	Ref<TextureLayered> texture = lighting.texture;
+	if (options.imported_lighting && !lighting_file.is_empty()) {
+		Ref<TextureLayered> imported = ResourceLoader::get_singleton()->load(lighting_file, "TextureLayered");
+		if (imported.is_valid()) {
+			texture = imported;
+		} else {
+			UtilityFunctions::push_warning("MapCraft: ", lighting_file, " is not imported, so its lighting keeps texels only when imported with a GPU");
+		}
+	}
 	TypedArray<TextureLayered> textures;
-	textures.push_back(lighting.texture);
+	textures.push_back(texture);
 	data->set_lightmap_textures(textures);
 	AABB bounds;
 	bool first = true;
@@ -2033,6 +2044,35 @@ Error mapcraft_build(const Dictionary &p_doc, Node3D *p_root, const MapCraftBuil
 	ERR_FAIL_NULL_V(p_root, ERR_INVALID_PARAMETER);
 	Builder builder(p_root, p_options);
 	return builder.build(p_doc, r_error);
+}
+
+Error mapcraft_save_lighting(const String &p_source, const String &p_path, String &r_error) {
+	Lighting lighting;
+	Error err = lighting.parse(FileAccess::get_file_as_bytes(p_source), r_error);
+	if (err != OK) {
+		return err;
+	}
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::WRITE);
+	if (f.is_null()) {
+		r_error = "cannot be written to " + p_path;
+		return ERR_FILE_CANT_WRITE;
+	}
+	// Godot's layered texture header: version, layers, 2D array, then unused fields.
+	f->store_buffer(String("GSTL").to_ascii_buffer());
+	const uint32_t header[] = { 1, uint32_t(lighting.layers.size()), 0, 0, 0, 0, 0, 0 };
+	for (uint32_t value : header) {
+		f->store_32(value);
+	}
+	for (int64_t i = 0; i < lighting.layers.size(); i++) {
+		const Ref<Image> image = lighting.layers[i];
+		f->store_32(0); // Raw image data, no mipmaps.
+		f->store_16(uint16_t(image->get_width()));
+		f->store_16(uint16_t(image->get_height()));
+		f->store_32(0);
+		f->store_32(uint32_t(image->get_format()));
+		f->store_buffer(image->get_data());
+	}
+	return OK;
 }
 
 Error mapcraft_pack(const Dictionary &p_doc, const String &p_name, const MapCraftBuildOptions &p_options, Ref<PackedScene> &r_scene, String &r_error) {
