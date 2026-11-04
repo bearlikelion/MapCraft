@@ -2366,6 +2366,7 @@ impl eframe::App for MapCraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.session.click_groups = self.prefs.get().view.click_selects_group;
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && (self.session.is_dirty() || self.shader_editor.has_unsaved()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.shader_editor.has_unsaved() && !self.shader_quit_approved {

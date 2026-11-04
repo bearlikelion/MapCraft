@@ -75,7 +75,7 @@ These settings shape it:
 | **Style** | **Wedge** is a solid ramp; **Thin** is a slab under the surf face |
 | **Surf side** | The side players surf: Left, Right, Both, or Inside for a trough of two ramps facing each other |
 | **Width**, **Height** | The size of the cross-section |
-| **Tip** | A base under a wedge's low edge, so the face never thins to a knife edge players can slip through |
+| **Tip** | A slab under a wedge, below the surf face, so the face never thins to a knife edge players can slip through |
 | **Thickness** | How thick a thin ramp's slab is |
 | **Ridge** | A flat top on the peak, or the floor of an Inside trough |
 | **Bank** | Leans a curve into its turn |
@@ -111,13 +111,13 @@ Keep **Trim depth** small: players surf on the ramp underneath, so their feet si
 
 A face is surfable when it is steeper than 45.573 degrees.
 Anything flatter is floor that players can walk on.
-The default ramp is 544 tall and 384 wide with a 64 tip, about 51 degrees.
+The default ramp is 480 tall and 384 wide with a 64 tip under it, about 51 degrees.
 
 If a ramp comes out too flat, the Output panel (`Ctrl+5`) says so.
 Make it taller or narrower to steepen it.
 
 > [!NOTE]
-> The angle is `atan((height - tip) / width)`.
+> The angle is `atan(height / width)`; the tip sits under the ramp and does not change it.
 > [Surf mapping](../surf-mapping.md) has the geometry behind it.
 
 ## Smooth curves

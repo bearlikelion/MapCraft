@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use mapcraft_engine::{FacePick, FaceTransfer, pick_target};
+use mapcraft_engine::{FacePick, FaceTransfer};
 use mapcraft_geom::{Aabb, DMat4, DQuat, DVec2, DVec3, snap};
 use mapcraft_map::{FaceId, Group, Mirror, NodeId, NodeKind};
 use mapcraft_render::{LineVertex, SELECTED_EDGE, box_lines};
@@ -1202,7 +1202,7 @@ impl MapCraftApp {
             let mods = ctx.input(|i| i.modifiers);
             if mods.shift && !cam.is_2d() && matches!(self.tool, Tool::Select | Tool::Move) {
                 self.pick_face_at(index, rect, p);
-            } else if response.double_clicked() && matches!(self.tool, Tool::Select | Tool::Move) && self.select_whole_object() {
+            } else if response.double_clicked() && matches!(self.tool, Tool::Select | Tool::Move) && self.double_click_select(index, rect, p) {
                 self.mark_changed();
             } else {
                 self.click(index, rect, p, mods.command || (mods.shift && self.tool != Tool::Sculpt));
@@ -1347,15 +1347,22 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    /// Swaps a lone selected node for the group or entity it belongs to; false when there is none.
-    fn select_whole_object(&mut self) -> bool {
+    /// Swaps a lone selected node for the group or entity it belongs to, or with click_groups for the part under the pointer; false when there is none.
+    fn double_click_select(&mut self, index: usize, rect: Rect, pos: Pos2) -> bool {
         if self.session.select_mode != mapcraft_engine::SelectMode::Groups {
             return false;
         }
         let mut ids = self.session.selection.iter();
         let (Some(id), None) = (ids.next(), ids.next()) else { return false };
-        let Some(whole) = mapcraft_engine::whole_object(&self.session.map, *id) else { return false };
-        self.session.selection = BTreeSet::from([whole]);
+        let pick = if self.session.click_groups {
+            let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return false };
+            let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+            self.view_hits(index, rect, origin, dir).first().map(|(h, _)| *h).filter(|h| h != id)
+        } else {
+            mapcraft_engine::whole_object(&self.session.map, *id)
+        };
+        let Some(pick) = pick else { return false };
+        self.session.selection = BTreeSet::from([pick]);
         true
     }
 
@@ -1384,11 +1391,11 @@ impl MapCraftApp {
                     .view_hits(index, rect, origin, dir)
                     .into_iter()
                     .map(|(id, _)| id)
-                    .filter(|id| targets.insert(pick_target(&self.session.map, *id, self.session.select_mode)))
+                    .filter(|id| targets.insert(self.session.pick(*id)))
                     .collect();
                 let again = self.last_click.is_some_and(|(v, p)| v == index && p.distance(pos) < 4.0);
                 let current = hits.iter().position(|h| {
-                    let t = pick_target(&self.session.map, *h, self.session.select_mode);
+                    let t = self.session.pick(*h);
                     self.session.selection.len() == 1 && self.session.selection.contains(&t)
                 });
                 let i = match current {
@@ -1556,7 +1563,7 @@ impl MapCraftApp {
                 match grabbed.or(hits.first().copied()) {
                     Some((first, t)) => {
                         if grabbed.is_none() {
-                            self.session.selection = BTreeSet::from([pick_target(&self.session.map, first, self.session.select_mode)]);
+                            self.session.selection = BTreeSet::from([self.session.pick(first)]);
                             self.mark_changed();
                         }
                         let start = if cam.is_2d() { cam.plane_point(dvec(pos - rect.min), size) } else { origin + dir * t };
@@ -1803,7 +1810,7 @@ impl MapCraftApp {
                     let (bh0, bh1) = (bb.min.dot(r).min(bb.max.dot(r)), bb.min.dot(r).max(bb.max.dot(r)));
                     let (bv0, bv1) = (bb.min.dot(u).min(bb.max.dot(u)), bb.min.dot(u).max(bb.max.dot(u)));
                     if bh0 >= h0 && bh1 <= h1 && bv0 >= v0 && bv1 <= v1 {
-                        picked.insert(pick_target(&self.session.map, self.owner(id), self.session.select_mode));
+                        picked.insert(self.session.pick(self.owner(id)));
                     }
                 }
                 self.session.selection = picked;

@@ -103,7 +103,7 @@ fn ramp_command() -> CommandSpec {
             choice("surf", "Surf side", "Which side faces the player; Inside makes a trough", &["Left", "Right", "Both", "Inside"], "Left"),
             number("width", "Width", "Width of the cross-section", 1.0, 8192.0, d.width),
             number("height", "Height", "Height of the peak", 1.0, 8192.0, d.height),
-            number("tip", "Tip", "Height of the surf face's low edge on a wedge", 0.0, 8192.0, d.tip),
+            number("tip", "Tip", "Height of a slab under a wedge, below the surf face", 0.0, 8192.0, d.tip),
             number("thickness", "Thickness", "Slab thickness of a thin ramp", 1.0, 1024.0, d.thickness),
             number("drop", "Drop", "Height the ramp loses over its length", -65536.0, 65536.0, d.drop),
             number("ridge", "Ridge", "Width of a flat top on the peak, or of an Inside ramp's floor", 0.0, 2048.0, d.ridge),
@@ -207,7 +207,7 @@ fn ramp_settings(p: &Params) -> ramp::Ramp {
         style: pick(&["Wedge", "Thin"], &[Style::Wedge, Style::Thin], p.text("style")),
         surf: pick(&["Left", "Right", "Both", "Inside"], &[Surf::Left, Surf::Right, Surf::Both, Surf::Inside], p.text("surf")),
         width: p.num("width", 384.0),
-        height: p.num("height", 544.0),
+        height: p.num("height", 480.0),
         tip: p.num("tip", 64.0),
         thickness: p.num("thickness", 64.0),
         drop: p.num("drop", 0.0),
@@ -223,10 +223,10 @@ fn ramp_settings(p: &Params) -> ramp::Ramp {
 }
 
 fn surf_ramp(p: &Params) -> Result<Output, String> {
-    use ramp::{Shape, Style};
+    use ramp::Shape;
     let r = ramp_settings(p);
     // Every surf face spans the full width horizontally, whichever side it is on.
-    let face = ramp::slope_angle(r.width, r.height, if r.style == Style::Thin { 0.0 } else { r.tip });
+    let face = ramp::slope_angle(r.width, r.height);
     if face < ramp::SURF_MIN_ANGLE {
         host::log(&format!("The surf face is {face:.1} degrees; under {} degrees is walkable floor, not surfable.", ramp::SURF_MIN_ANGLE));
     }

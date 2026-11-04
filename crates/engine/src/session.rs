@@ -10,7 +10,7 @@ use crate::EngineError;
 /// What a click selects (Hammer's selection modes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SelectMode {
-    /// The hit itself; a double click reaches its outermost group, else its entity (TrenchBroom).
+    /// The hit itself, a double click its outermost group, else its entity (TrenchBroom); [`Session::click_groups`] swaps the two.
     #[default]
     Groups,
     /// The brush's entity, else the brush; groups are ignored.
@@ -72,6 +72,8 @@ pub struct Session {
     /// Where the 3D view looks, for Project from View.
     pub view_dir: DVec3,
     pub select_mode: SelectMode,
+    /// In Groups mode a click picks the whole group or entity and a double click the part.
+    pub click_groups: bool,
     /// Material and scale given to new faces (Hammer's current texture).
     pub tex: TexDefaults,
     pub texture_lock: bool,
@@ -119,6 +121,7 @@ impl Session {
             active_face: None,
             view_dir: DVec3::new(1.0, 1.0, -0.5),
             select_mode: SelectMode::default(),
+            click_groups: false,
             tex: TexDefaults::default(),
             texture_lock: true,
             grid: 16.0,
@@ -309,8 +312,16 @@ impl Session {
     }
 
     /// Selects the nodes a click on `hit` reaches in the current mode; `additive` toggles instead of replacing.
+    /// What a click on `hit` selects.
+    pub fn pick(&self, hit: NodeId) -> NodeId {
+        match self.select_mode {
+            SelectMode::Groups if self.click_groups => whole_object(&self.map, hit).unwrap_or(hit),
+            mode => pick_target(&self.map, hit, mode),
+        }
+    }
+
     pub fn click(&mut self, hit: Option<NodeId>, additive: bool) {
-        let target = hit.filter(|h| self.map.editable_nodes().contains(h)).map(|h| pick_target(&self.map, h, self.select_mode));
+        let target = hit.filter(|h| self.map.editable_nodes().contains(h)).map(|h| self.pick(h));
         if !additive {
             self.selection.clear();
         }
@@ -435,6 +446,10 @@ mod tests {
         assert_eq!(s.selection, BTreeSet::from([b]));
         s.click(Some(b), true);
         assert!(s.selection.is_empty());
+        s.click_groups = true;
+        s.click(Some(b), false);
+        assert_eq!(s.selection, BTreeSet::from([g]));
+        s.click_groups = false;
         s.select_all();
         assert_eq!(s.selection, BTreeSet::from([g]));
     }

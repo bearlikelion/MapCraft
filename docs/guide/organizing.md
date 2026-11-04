@@ -10,7 +10,7 @@ The **Groups**, **Objects** and **Solids** buttons on the top bar (a group frame
 
 | Mode | Key | A click selects |
 |---|---|---|
-| **Groups** | `Alt+1` | The one part you click; double-click it to select its whole group, else its brush entity |
+| **Groups** | `Alt+1` | The one part you click; double-click it to select its whole group, else its brush entity. **Preferences > Selection** swaps the two, so a click selects the group and a double click the part |
 | **Objects** | `Alt+2` | The entity or loose brush, ignoring groups |
 | **Solids** | `Alt+3` | The one brush |
 

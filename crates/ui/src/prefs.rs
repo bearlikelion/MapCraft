@@ -72,6 +72,8 @@ pub struct ViewPrefs {
     pub link_zoom: bool,
     /// Clicking a material in the browser applies it to the selected brushes or picked faces.
     pub apply_on_click: bool,
+    /// In Groups mode a click selects the whole group or entity and a double click the part under the pointer.
+    pub click_selects_group: bool,
     /// One view fills the window and Space shows the next one, as in TrenchBroom.
     pub single_view: bool,
     /// The 3D view beside one 2D view, and Space turns the 2D view to the next of Top, Front and Side, as in TrenchBroom.
@@ -106,6 +108,7 @@ impl Default for ViewPrefs {
             snap_vertices: true,
             link_zoom: true,
             apply_on_click: true,
+            click_selects_group: false,
             single_view: false,
             two_view: false,
             extrude_along_normal: false,

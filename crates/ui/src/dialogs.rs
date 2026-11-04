@@ -654,6 +654,9 @@ impl MapCraftApp {
                 ui.label("Materials");
                 ui.checkbox(&mut prefs.view.apply_on_click, "Clicking a material applies it to the selection");
                 ui.end_row();
+                ui.label("Selection");
+                ui.checkbox(&mut prefs.view.click_selects_group, "A click selects the whole group, a double click one brush");
+                ui.end_row();
                 ui.label("Shortcuts");
                 egui::ComboBox::from_id_salt("keymap").selected_text(prefs.keymap.label()).show_ui(ui, |ui| {
                     for p in Preset::ALL {

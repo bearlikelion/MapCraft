@@ -39,12 +39,13 @@ pub(crate) fn label(painter: &egui::Painter, at: Pos2, align: Align2, text: Stri
 }
 
 impl MapCraftApp {
-    /// The box whose size is shown: a block being drawn, the selection being resized or extruded, or the selection the select tools outline.
+    /// The box whose size is shown: a block being drawn, the selection being resized or extruded (only the new brushes when an extrude makes them), or the selection the select tools outline.
     pub(crate) fn measured_box(&self) -> Option<Aabb> {
         match &self.drag {
             Drag::Block { start, end, .. } => Some(self.block_box(*start, *end)),
             Drag::Resize { applied, .. } | Drag::Scale { applied, .. } => Some(*applied),
-            Drag::Extrude { created, .. } => created.iter().filter_map(|id| self.node_bounds(*id)).chain(self.selection_bounds()).reduce(|a, b| a.union(&b)),
+            Drag::Extrude { created, .. } if !created.is_empty() => created.iter().filter_map(|id| self.node_bounds(*id)).reduce(|a, b| a.union(&b)),
+            Drag::Extrude { .. } => self.selection_bounds(),
             _ => {
                 self.block_3d_box().or_else(|| self.selection_bounds().filter(|_| matches!(self.tool, Tool::Select | Tool::Move | Tool::Rotate | Tool::Scale)))
             }
