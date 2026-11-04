@@ -260,14 +260,18 @@ fn surfsup_imports_a_real_pack() {
     let host = Host::new().unwrap();
     let Some(mut p) = load(&host, "surfsup", Vfs::default()) else { return };
     let imported = p.import("pck", "real.pck", &std::fs::read(path).unwrap(), &ctx()).unwrap();
+    // The world's keys come in on a `worldspawn` entity, which the editor folds into the world.
+    fn world_keys(f: &Fragment) -> bool {
+        matches!(&f.kind, NodeKind::Entity(x) if x.classname == "worldspawn")
+    }
     fn count(nodes: &[Fragment]) -> (usize, usize) {
-        nodes.iter().fold((0, 0), |(b, e), f| {
+        nodes.iter().filter(|f| !world_keys(f)).fold((0, 0), |(b, e), f| {
             let (cb, ce) = count(&f.children);
             (b + cb + usize::from(matches!(f.kind, NodeKind::Brush(_))), e + ce + usize::from(matches!(f.kind, NodeKind::Entity(_))))
         })
     }
     fn insert(e: &mut mapcraft_map::Edit<'_>, parent: NodeId, nodes: Vec<Fragment>) {
-        for f in nodes {
+        for f in nodes.into_iter().filter(|f| !world_keys(f)) {
             let id = e.insert(parent, f.kind).unwrap();
             insert(e, id, f.children);
         }
@@ -394,14 +398,18 @@ fn vmf_round_trip_and_game_materials() {
     let shrunk = materials.iter().filter_map(|m| Some((m.pixels.as_ref()?.width, m.size?[0]))).filter(|(w, full)| full > w).count();
     assert!(shrunk > 0, "previews smaller than their texture say how big the texture is");
 
+    // The world's keys come in on a `worldspawn` entity, which the editor folds into the world.
+    fn world_keys(f: &Fragment) -> bool {
+        matches!(&f.kind, NodeKind::Entity(x) if x.classname == "worldspawn")
+    }
     fn count(nodes: &[Fragment]) -> (usize, usize) {
-        nodes.iter().fold((0, 0), |(b, e), f| {
+        nodes.iter().filter(|f| !world_keys(f)).fold((0, 0), |(b, e), f| {
             let (cb, ce) = count(&f.children);
             (b + cb + usize::from(matches!(f.kind, NodeKind::Brush(_))), e + ce + usize::from(matches!(f.kind, NodeKind::Entity(_))))
         })
     }
     fn insert(e: &mut mapcraft_map::Edit<'_>, parent: NodeId, nodes: Vec<Fragment>) {
-        for f in nodes {
+        for f in nodes.into_iter().filter(|f| !world_keys(f)) {
             let id = e.insert(parent, f.kind).unwrap();
             insert(e, id, f.children);
         }
