@@ -473,6 +473,23 @@ impl MapCraftApp {
         }
         ui.spacing_mut().item_spacing.y = 0.0;
         let out = scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
+            let view = ui.clip_rect();
+            let pointer = pointer.filter(|p| view.contains(*p));
+            if !self.tree_drag.is_empty()
+                && let Some(p) = pointer
+            {
+                // egui's ScrollArea ignores the wheel while anything is dragged.
+                let wheel = ui.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta.y));
+                let edge = ROW * 1.5;
+                let near = ((view.top() + edge - p.y).max(0.0) - (p.y - view.bottom() + edge).max(0.0)) / edge;
+                let auto = near.clamp(-1.0, 1.0) * 600.0 * ui.input(|i| i.stable_dt);
+                if wheel != 0.0 || auto != 0.0 {
+                    ui.scroll_with_delta_animation(egui::vec2(0.0, wheel + auto), egui::style::ScrollAnimation::none());
+                }
+                if auto != 0.0 {
+                    ui.ctx().request_repaint();
+                }
+            }
             for &(id, depth, mesh) in rows.get(range).unwrap_or_default() {
                 if let Some(node) = mesh {
                     if let Some(picked) = self.mesh_row(ui, id, node, depth) {

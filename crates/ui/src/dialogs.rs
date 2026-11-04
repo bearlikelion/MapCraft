@@ -387,7 +387,7 @@ impl MapCraftApp {
                 edit = ui.button("Edit in Preferences").clicked();
             });
             let needle = self.dialogs.shortcut_filter.to_lowercase();
-            const FIXED: [(&str, &str); 39] = [
+            const FIXED: [(&str, &str); 41] = [
                 ("Copy, or copy the active face in the Face tool", "Ctrl+C"),
                 ("Cut", "Ctrl+X"),
                 ("Paste, or paste a face on the picked faces in the Face tool", "Ctrl+V"),
@@ -429,6 +429,8 @@ impl MapCraftApp {
                 ("Nudge a copy of the selection, leaving the original", "Ctrl+Arrow keys"),
                 ("Move a copy of the selection, leaving the original", "Ctrl+Drag"),
                 ("Pick a face from the Select or Move tool", "Shift+Click in the 3D view"),
+                ("Select the loop of edges through an edge in the Vertex tool's edge mode", "Double-click the edge"),
+                ("Select the loop of faces through a face in the Face tool, across its edge nearest the pointer", "Double-click the face"),
                 ("Orbit the 3D camera around the point under the pointer", "Alt+Right Drag"),
             ];
             let bound = crate::shortcuts::actions().filter_map(|(id, label)| Some((label, crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts)?)));

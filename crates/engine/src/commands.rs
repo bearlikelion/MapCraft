@@ -141,6 +141,14 @@ const COMMANDS: &[CommandSpec] = &[
         },
     },
     CommandSpec {
+        id: "face.select_loop",
+        label: "Select Face Loop",
+        menu: "Edit/Select Face Loop",
+        shortcut: None,
+        enabled: has_faces,
+        run: Session::select_active_face_loop,
+    },
+    CommandSpec {
         id: "edit.select_brushes_by_material",
         label: "Select Brushes by Material",
         menu: "Edit/Select by Material/Brushes Using Current Material",

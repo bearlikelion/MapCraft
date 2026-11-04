@@ -273,8 +273,39 @@ impl MapCraftApp {
             "vertex.bevel" => self.begin_bevel(),
             "vertex.delete" => self.delete_selected(),
             "vertex.origin_to_corners" => self.origin_to_corners(),
+            "vertex.select_loop" => {
+                let seeds = self.vertex.selected.clone();
+                if self.add_edge_loops(&seeds) == 0 {
+                    self.status = "Select an edge in edge mode first".into();
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Adds the loop through the edge handle under a double click; false when there is none.
+    pub(crate) fn vertex_loop_at(&mut self, index: usize, rect: Rect, pos: Pos2) -> bool {
+        let hits = self.components_at(&self.components(), index, rect, pos);
+        self.add_edge_loops(&hits) > 0
+    }
+
+    /// Adds the ring of edges across quads through each of `seeds` that is an edge; returns how many seeds were edges.
+    fn add_edge_loops(&mut self, seeds: &[Component]) -> usize {
+        let mut count = 0;
+        for s in seeds.iter().filter(|c| c.kind == HandleKind::Edge) {
+            let (&[a, b], Some(Ok(solid))) = (s.corners.as_slice(), self.session.map.get(s.brush).and_then(|n| n.kind.brush()).map(|b| b.solid())) else {
+                continue;
+            };
+            let faces: Vec<Vec<DVec3>> = solid.faces.into_iter().flatten().map(|w| w.0).collect();
+            for (p, q) in mapcraft_geom::edge_ring(&faces, a, b).0 {
+                let c = Component { brush: s.brush, kind: HandleKind::Edge, at: (p + q) / 2.0, corners: vec![p, q] };
+                if !self.vertex.selected.iter().any(|x| x.same(&c)) {
+                    self.vertex.selected.push(c);
+                }
+            }
+            count += 1;
+        }
+        count
     }
 
     /// Deletes the selected corners, or the corners of the selected edges, or dissolves the

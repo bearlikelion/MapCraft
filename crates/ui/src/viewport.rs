@@ -786,7 +786,7 @@ impl MapCraftApp {
         }
     }
 
-    /// The box a block drag makes: the dragged rectangle, with the depth of the last box made.
+    /// The box a block drag makes: the dragged rectangle, with the depth of the last selected brushes.
     pub(crate) fn block_box(&self, start: DVec3, end: DVec3) -> Aabb {
         let mut b = Aabb::new(start, end);
         for axis in 0..3 {
@@ -1166,6 +1166,7 @@ impl MapCraftApp {
             self.end_drag(index, rect, p);
         }
         let alt = ctx.input(|i| i.modifiers.alt);
+        let mut looped = false;
         let painting = self.tool == Tool::Sculpt && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
         let primary = response.clicked_by(egui::PointerButton::Primary);
         let transfer = self.transfer_mode(ctx.input(|i| i.modifiers)).filter(|_| primary && !cam.is_2d());
@@ -1206,9 +1207,10 @@ impl MapCraftApp {
                 self.mark_changed();
             } else {
                 self.click(index, rect, p, mods.command || (mods.shift && self.tool != Tool::Sculpt));
+                looped = response.double_clicked() && self.loop_click(index, rect, p);
             }
         }
-        if response.double_clicked() && cam.is_2d() {
+        if response.double_clicked() && cam.is_2d() && !looped {
             self.frame_selection();
         } else if response.double_clicked()
             && self.tool == Tool::Clip
@@ -1333,6 +1335,23 @@ impl MapCraftApp {
             done.insert((id, face));
         }
         self.mark_changed();
+    }
+
+    /// Adds the loop through the edge handle or face under a double click; false when there is none.
+    fn loop_click(&mut self, index: usize, rect: Rect, pos: Pos2) -> bool {
+        let looped = match self.tool {
+            Tool::Vertex if self.vertex.mode == crate::vertex::HandleKind::Edge => self.vertex_loop_at(index, rect, pos),
+            Tool::Face => {
+                let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return false };
+                let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
+                self.pick_face(origin, dir, false).is_some_and(|(id, face, t)| self.session.select_face_loop((id, face), origin + dir * t) > 0)
+            }
+            _ => false,
+        };
+        if looped {
+            self.mark_changed();
+        }
+        looped
     }
 
     /// Picks the face under the pointer in the Face tool, as Shift+click does from Select or Move.

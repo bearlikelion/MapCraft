@@ -150,7 +150,10 @@ pub struct MapCraftApp {
     /// The scene tree's scroll offset and visible height last frame.
     pub(crate) tree_view: (f32, f32),
     pub(crate) tree_search: crate::panels::TreeSearch,
+    /// The bounds of the last selected brushes, which give blocks drawn in 2D their depth.
     pub(crate) last_box: Aabb,
+    /// The selection and undo step `last_box` was last taken from.
+    last_box_from: (BTreeSet<mapcraft_map::NodeId>, u64),
     pub(crate) clip_points: Vec<DVec3>,
     pub(crate) clip_keep: mapcraft_engine::ClipKeep,
     /// The user picked a side to keep, so later cuts keep it instead of the bigger part.
@@ -339,6 +342,7 @@ impl MapCraftApp {
             tree_view: (0.0, 0.0),
             tree_search: crate::panels::TreeSearch::default(),
             last_box: Aabb::new(DVec3::ZERO, DVec3::splat(64.0)),
+            last_box_from: (BTreeSet::new(), 0),
             clip_points: Vec::new(),
             clip_keep: mapcraft_engine::ClipKeep::Both,
             clip_keep_chosen: false,
@@ -654,6 +658,20 @@ impl MapCraftApp {
         for pane in &mut self.panes {
             let size = pane.rect.size();
             frame_camera(&mut pane.camera, &b, f64::from(size.x.min(size.y)));
+        }
+    }
+
+    /// Keeps `last_box` on the selected brushes, holding it when nothing with brushes is selected.
+    fn track_last_box(&mut self) {
+        let key = (self.session.selection.clone(), self.session.current_serial());
+        if key == self.last_box_from {
+            return;
+        }
+        self.last_box_from = key;
+        let map = &self.session.map;
+        let picked = self.session.selected_brushes().into_iter().filter_map(|id| map.get(id)?.kind.brush()?.bounds().ok());
+        if let Some(b) = picked.reduce(|a, b| a.union(&b)) {
+            self.last_box = b;
         }
     }
 
@@ -1025,6 +1043,8 @@ impl MapCraftApp {
         let unfocused = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))));
         if matches!(self.drag, Drag::Extrude { .. }) && (escape || unfocused) {
             self.cancel_extrude();
+        } else if escape && !self.tree_drag.is_empty() {
+            self.tree_drag.clear();
         } else if escape && !ctx.egui_wants_keyboard_input() {
             if self.tool == Tool::Clip && !self.clip_points.is_empty() {
                 self.pop_clip_point();
@@ -2406,6 +2426,7 @@ impl eframe::App for MapCraftApp {
             self.session.view_dir = if p.camera.is_2d() { -p.camera.view.axes().2 } else { p.camera.forward() };
         }
         self.handle_shortcuts(&ctx);
+        self.track_last_box();
         self.fit_stretched();
         self.uv_hovered = None;
         if self.scene_dirty {

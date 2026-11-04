@@ -62,6 +62,30 @@ fn select_drag_off_the_selection_in_3d_draws_a_block() {
     assert_eq!(h.state().node_count_for_test(), 2, "dragging the new, selected brush moves it");
 }
 
+#[test]
+fn blocks_in_2d_take_the_depth_of_the_last_selected_brushes() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let tall = s.create_brush(Aabb::new(DVec3::new(0.0, 0.0, 16.0), DVec3::new(64.0, 64.0, 200.0))).unwrap();
+    let low = s.create_brush(Aabb::new(DVec3::new(0.0, 0.0, -40.0), DVec3::new(64.0, 64.0, 0.0))).unwrap();
+    s.selection = [tall, low].into();
+    h.run_steps(2);
+    h.state_mut().session_for_test().selection.clear();
+    h.run_steps(2);
+    h.get_by_label("Block").click();
+    h.run_steps(2);
+    let top = 1;
+    let a = h.state().screen_for_test(top, DVec3::new(256.0, 256.0, 0.0));
+    let b = h.state().screen_for_test(top, DVec3::new(384.0, 384.0, 0.0));
+    drag(&mut h, a, b);
+    let s = h.state_mut().session_for_test();
+    let made = s.selected_brushes();
+    assert_eq!(made.len(), 1, "the drag makes a brush");
+    let bb = s.map.get(made[0]).and_then(|n| n.kind.brush()).unwrap().bounds().unwrap();
+    assert_eq!((bb.min.z, bb.max.z), (-40.0, 200.0), "depth spans both brushes selected before");
+}
+
 fn editor() -> (Harness<'static, MapCraftApp>, tempfile::TempDir) {
     let settings = tempfile::tempdir().unwrap();
     let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
@@ -450,6 +474,59 @@ fn scene_tree_rows_drag_to_reorder() {
     let world = h.state_mut().session_for_test().map.get(mapcraft_map::ROOT).unwrap().children.clone();
     let order: Vec<_> = world.iter().filter(|c| ids.contains(c)).copied().collect();
     assert_eq!(order, [ids[1], ids[2], ids[0]], "dropping on the lower edge of the last row puts the brush after it");
+}
+
+#[test]
+fn scene_tree_scrolls_with_the_wheel_while_dragging_and_escape_cancels() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let s = h.state_mut().session_for_test();
+    let ids: Vec<_> =
+        (0..200).map(|i| s.create_brush(Aabb::new(DVec3::splat(f64::from(i) * 64.0), DVec3::splat(f64::from(i) * 64.0 + 32.0))).unwrap()).collect();
+    s.selection.clear();
+    h.run_steps(3);
+    let rows = |h: &Harness<MapCraftApp>| -> Vec<egui::Rect> { h.get_all_by_label("Brush").map(|n| n.rect()).filter(|r| r.right() < 320.0).collect() };
+    let order = |h: &mut Harness<MapCraftApp>| -> Vec<_> {
+        let world = h.state_mut().session_for_test().map.get(mapcraft_map::ROOT).unwrap().children.clone();
+        world.into_iter().filter(|c| ids.contains(c)).collect()
+    };
+    let visible = rows(&h).len();
+    let (first, middle) = (rows(&h)[0].center(), rows(&h)[visible / 2].center());
+    let press = |h: &mut Harness<MapCraftApp>, pressed: bool, at: Pos2| {
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    };
+
+    h.hover_at(first);
+    h.run_steps(1);
+    press(&mut h, true, first);
+    h.hover_at(middle);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    press(&mut h, false, middle);
+    assert_eq!(order(&mut h), ids, "Escape cancels the drag");
+
+    h.hover_at(first);
+    h.run_steps(1);
+    press(&mut h, true, first);
+    h.hover_at(middle);
+    h.run_steps(2);
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -2000.0),
+        modifiers: Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    h.run_steps(30);
+    let target = rows(&h).into_iter().min_by(|a, b| (a.center().y - middle.y).abs().total_cmp(&(b.center().y - middle.y).abs())).unwrap();
+    let at = egui::pos2(target.center().x, target.bottom() - 2.0);
+    h.hover_at(at);
+    h.run_steps(1);
+    press(&mut h, false, at);
+    h.run_steps(1);
+    let moved = order(&mut h).iter().position(|id| *id == ids[0]).unwrap();
+    assert!(moved > visible, "the wheel scrolled the tree mid drag, so the brush lands far below the first screen ({moved} of {visible})");
 }
 
 #[test]

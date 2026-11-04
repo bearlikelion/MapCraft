@@ -1580,4 +1580,37 @@ mod tests {
         r.render(&target, &camera, RenderMode::Textured, None, &[]);
         assert_ne!(&r.read_rgba(&target).unwrap()[(2 * 4 + 2) * 4..(2 * 4 + 2) * 4 + 3], pixel, "only the Lit view shows the bake");
     }
+
+    #[test]
+    fn a_bake_keeps_the_normal_map() {
+        let Ok(adapter) = pollster::block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let mut r = Renderer::new(&device, &queue);
+        let quad = BakePart {
+            material: "m".into(),
+            lightmap: Some(0),
+            positions: vec![[-1000.0, -1000.0, 0.0], [1000.0, -1000.0, 0.0], [1000.0, 1000.0, 0.0], [-1000.0, 1000.0, 0.0]],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        };
+        let quarter: u32 = 256 | 256 << 9 | 256 << 18 | 14 << 27;
+        let lightmap = Picture { width: 1, height: 1, rgba: quarter.to_le_bytes().to_vec() };
+        r.set_bake(Some(&Bake { parts: vec![quad], lightmaps: vec![lightmap], linear: true }));
+        let target = r.target([4, 4]);
+        let camera = Camera { position: DVec3::new(0.0, 0.0, 100.0), pitch: -89.0, ..Camera::new(View::Perspective) };
+        let mut shade = |normal: [u8; 4]| {
+            r.upload_material("m", 1, 1, &[200; 4]);
+            assert!(r.set_material_maps("m", (1, 1, &normal), (1, 1, &[255, 255, 0, 255])));
+            r.render(&target, &camera, RenderMode::Lit, None, &[]);
+            r.read_rgba(&target).unwrap()[(2 * 4 + 2) * 4..(2 * 4 + 2) * 4 + 3].to_vec()
+        };
+        let flat = shade([128, 128, 255, 255]);
+        let toward_key_sun = shade([180, 56, 220, 255]);
+        let away = shade([76, 200, 220, 255]);
+        assert!(toward_key_sun[0] > flat[0] && flat[0] > away[0], "the normal map shades the baked face: {away:?} {flat:?} {toward_key_sun:?}");
+    }
 }

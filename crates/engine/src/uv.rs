@@ -95,6 +95,42 @@ impl Session {
         self.active_face.filter(|a| self.face_selection.contains(a)).or_else(|| self.face_selection.first().copied())
     }
 
+    /// Adds the loop of faces through `pick` that crosses its edge nearest `near` and runs on
+    /// through quads, as Blender's face loop; returns how many faces it holds.
+    pub fn select_face_loop(&mut self, pick: FacePick, near: DVec3) -> usize {
+        let polys: Vec<(FacePick, Vec<DVec3>)> = face_polygons(&self.map, &BTreeSet::from([pick.0])).into_iter().map(|(p, _, w)| (p, w)).collect();
+        let Some((_, w)) = polys.iter().find(|(p, _)| *p == pick) else { return 0 };
+        let gap = |a: DVec3, b: DVec3| {
+            let t = ((near - a).dot(b - a) / (b - a).length_squared().max(1e-12)).clamp(0.0, 1.0);
+            near.distance(a + (b - a) * t)
+        };
+        let Some((a, b)) = w.iter().zip(w.iter().cycle().skip(1)).map(|(a, b)| (*a, *b)).min_by(|x, y| gap(x.0, x.1).total_cmp(&gap(y.0, y.1))) else {
+            return 0;
+        };
+        let faces: Vec<Vec<DVec3>> = polys.iter().map(|(_, w)| w.clone()).collect();
+        let ring: BTreeSet<FacePick> =
+            mapcraft_geom::edge_ring(&faces, a, b).1.into_iter().filter_map(|i| polys.get(i).map(|(p, _)| *p)).chain([pick]).collect();
+        let count = ring.len();
+        self.face_selection.extend(ring);
+        self.active_face = Some(pick);
+        count
+    }
+
+    /// Selects the loop through the active face and a picked face beside it.
+    pub fn select_active_face_loop(&mut self) -> Result<(), EngineError> {
+        let active = self.active_pick().ok_or(EngineError::Refused("pick a face first"))?;
+        let polys = face_polygons(&self.map, &BTreeSet::from([active.0]));
+        let shared = |w: &[DVec3], o: &[DVec3]| {
+            w.iter().zip(w.iter().cycle().skip(1)).find(|(a, b)| mapcraft_geom::edge_index(o, **a, **b).is_some()).map(|(a, b)| (*a + *b) / 2.0)
+        };
+        let mine = polys.iter().find(|(p, ..)| *p == active).map(|(_, _, w)| w);
+        let near = mine
+            .and_then(|w| polys.iter().filter(|(p, ..)| *p != active && self.face_selection.contains(p)).find_map(|(_, _, o)| shared(w, o)))
+            .ok_or(EngineError::Refused("pick a face beside the active face on the same brush to set the loop's direction"))?;
+        self.select_face_loop(active, near);
+        Ok(())
+    }
+
     fn picked_face(&self, (id, face): FacePick) -> Option<&Face> {
         self.map.get(id)?.kind.brush()?.faces.iter().find(|f| f.id == face)
     }
@@ -396,5 +432,20 @@ mod tests {
         s.transfer_face(top, &BTreeSet::from([side]), FaceTransfer::Projected, None).unwrap();
         let p = face(&s, side);
         assert!(p.texel(DVec3::new(64.0, 8.0, 0.0)).abs_diff_eq(p.texel(DVec3::new(64.0, 8.0, 64.0)), 1e-9), "projected, the texture stretches down the side");
+    }
+
+    #[test]
+    fn face_loop_runs_around_the_box_across_the_nearest_edge() {
+        let mut s = Session::default();
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 96.0, 128.0))).unwrap();
+        let front = picks(&s, a, |n| n.y < -0.5).into_iter().next().unwrap();
+        assert_eq!(s.select_face_loop(front, DVec3::new(2.0, 0.0, 64.0)), 4);
+        assert_eq!(s.face_selection, picks(&s, a, |n| n.z.abs() < 0.5), "the walls");
+        s.face_selection = BTreeSet::from([front]);
+        assert!(matches!(crate::execute(&mut s, "face.select_loop"), Err(EngineError::Refused(_))));
+        s.face_selection.extend(picks(&s, a, |n| n.z > 0.5));
+        s.active_face = Some(front);
+        crate::execute(&mut s, "face.select_loop").unwrap();
+        assert_eq!(s.face_selection, picks(&s, a, |n| n.x.abs() < 0.5), "front, top, back and bottom");
     }
 }

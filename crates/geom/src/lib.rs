@@ -7,6 +7,7 @@ pub mod curve;
 mod hull;
 pub mod noise;
 mod plane;
+mod ring;
 mod solid;
 mod winding;
 
@@ -14,6 +15,7 @@ pub use aabb::Aabb;
 pub use glam::{DAffine2, DMat2, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4, EulerRot};
 pub use hull::convex_hull;
 pub use plane::{Plane, Side};
+pub use ring::{edge_index, edge_ring};
 pub use solid::{Solid, SolidError, ray_hit};
 pub use winding::Winding;
 

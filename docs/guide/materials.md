@@ -111,6 +111,15 @@ In the Face tool with a face picked, Alt+click [transfers](#transferring-a-face)
 
 ![Alt+clicking the side of a ramp makes MetalWalkway011 the current material on the top bar](img/materials-pick.webp)
 
+## Picking a loop of faces
+
+To texture a band of faces in one go, such as the walls around a room brush, double-click one of them in the Face tool.
+MapCraft picks the loop of faces that runs across the edge nearest the pointer, so double-click near a side edge for the walls, or near the top edge for the front, top, back and bottom.
+The loop goes on through four-sided faces and stops at a face with more or fewer sides, which it leaves out, or when it comes back around.
+It stays on one brush.
+
+**Edit > Select Face Loop** does the same from the active face toward a picked face beside it, so pick two neighboring faces and run it from the menu or command search (`F3`).
+
 ## Copying and pasting faces
 
 When one face looks right, you can copy its look onto others.

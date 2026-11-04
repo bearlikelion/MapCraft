@@ -49,6 +49,7 @@ impl MapCraftApp {
         ui.label(RichText::new(format!("{} faces", self.session.face_selection.len())).color(TEXT_WEAK));
         self.menu_item(ui, "tools.apply_material", "Apply Current Material");
         self.menu_item(ui, "tools.clear_material", "Clear Material");
+        self.menu_item(ui, "face.select_loop", "Select Face Loop");
         if ui.add(icons::button(Some("ActionCopy"), "Copy Face").shortcut_text("Ctrl+C")).clicked() {
             self.copy_face();
         }
@@ -67,6 +68,9 @@ impl MapCraftApp {
             self.menu_item(ui, "vertex.mode_edge", "Edge");
             self.menu_item(ui, "vertex.mode_face", "Face");
         });
+        if self.vertex.mode == crate::vertex::HandleKind::Edge {
+            self.menu_item(ui, "vertex.select_loop", "Select Edge Loop");
+        }
         self.menu_item(ui, "vertex.merge", "Merge at Center");
         self.menu_item(ui, "vertex.bevel", "Bevel Edges");
         let delete = if self.vertex.mode == crate::vertex::HandleKind::Face { "Dissolve Faces" } else { "Delete Vertices" };

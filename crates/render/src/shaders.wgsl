@@ -300,6 +300,31 @@ fn env_brdf(f0: vec3<f32>, rough: f32, nv: f32) -> vec3<f32> {
     return f0 * (a * -1.04 + r.z) + (a * 1.04 + r.w);
 }
 
+// The direction toward a light from `world`, and its falloff in w.
+fn light_reach(l: Light, world: vec3<f32>) -> vec4<f32> {
+    var dir = l.pos.xyz;
+    var atten = 1.0;
+    if l.pos.w > 0.0 {
+        let d = max(distance(l.pos.xyz, world), 1.0);
+        dir = (l.pos.xyz - world) / d;
+        let r = l.spot.w;
+        switch i32(l.color.w) {
+            case 0: { atten = max(1.0 - d / r, 0.0); }
+            case 1: { atten = r / d; }
+            case 2: { atten = r * r / (d * d); }
+            case 5: { atten = r * r / ((d + r) * (d + r)); }
+            default: {}
+        }
+        if l.cone.w <= 0.0 {
+            atten = min(atten, 1.0);
+        }
+        if any(l.spot.xyz != vec3<f32>(0.0)) {
+            atten *= smoothstep(l.cone.x, l.cone.y, dot(-dir, l.spot.xyz));
+        }
+    }
+    return vec4<f32>(dir, atten);
+}
+
 @fragment
 fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
     if culled(i) {
@@ -333,26 +358,9 @@ fn fs_lit(i: MeshOut) -> @location(0) vec4<f32> {
     for (var k = 0u; k < u32(globals.ambient.w); k++) {
         let l = globals.lights[k];
         let quake = l.cone.w > 0.0;
-        var dir = l.pos.xyz;
-        var atten = 1.0;
-        if l.pos.w > 0.0 {
-            let d = max(distance(l.pos.xyz, i.world), 1.0);
-            dir = (l.pos.xyz - i.world) / d;
-            let r = l.spot.w;
-            switch i32(l.color.w) {
-                case 0: { atten = max(1.0 - d / r, 0.0); }
-                case 1: { atten = r / d; }
-                case 2: { atten = r * r / (d * d); }
-                case 5: { atten = r * r / ((d + r) * (d + r)); }
-                default: {}
-            }
-            if !quake {
-                atten = min(atten, 1.0);
-            }
-            if any(l.spot.xyz != vec3<f32>(0.0)) {
-                atten *= smoothstep(l.cone.x, l.cone.y, dot(-dir, l.spot.xyz));
-            }
-        }
+        let reach = light_reach(l, i.world);
+        let dir = reach.xyz;
+        let atten = reach.w;
         let nl = dot(n, dir);
         if nl <= 0.0 {
             continue;
@@ -480,10 +488,51 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 
 // Quake engines multiply in sRGB at twice the lightmap, clamp, and cut fence textures where alpha is low.
+struct BakedSurface {
+    orm: vec3<f32>,
+    face: vec3<f32>,
+    n: vec3<f32>,
+    // How much brighter the live lights find the normal map than the flat face the bake lit.
+    relief: f32,
+};
+
+// Baked faces carry no normals or tangents, so the frame comes from screen derivatives.
+fn baked_surface(i: BakedOut) -> BakedSurface {
+    var s: BakedSurface;
+    let maps = adjusted(Maps(textureSample(orm_map, samp, i.uv).rgb, textureSample(normal_map, samp, i.uv).xyz * 2.0 - 1.0), material.surface);
+    s.orm = maps.orm;
+    let dx = dpdx(i.world);
+    let dy = dpdy(i.world);
+    let raw = normalize(cross(dx, dy));
+    let g = select(raw, -raw, dot(raw, globals.eye.xyz - i.world) < 0.0);
+    let ux = dpdx(i.uv);
+    let uy = dpdy(i.uv);
+    let across_y = cross(dy, raw);
+    let across_x = cross(raw, dx);
+    let t = across_y * ux.x + across_x * uy.x;
+    let b = across_y * ux.y + across_x * uy.y;
+    let scale = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+    // The picture's v grows down while its green points up.
+    s.n = normalize(t * scale * maps.bump.x - b * scale * maps.bump.y + g * max(maps.bump.z, 0.0));
+    s.face = g;
+    var level = 0.0;
+    var bumped = 0.0;
+    for (var k = 0u; k < u32(globals.ambient.w); k++) {
+        let l = globals.lights[k];
+        let reach = light_reach(l, i.world);
+        let power = luma(l.color.rgb) * reach.w;
+        level += power * max(dot(g, reach.xyz), 0.0);
+        bumped += power * max(dot(s.n, reach.xyz), 0.0);
+    }
+    s.relief = select(1.0, clamp(bumped / level, 0.0, 2.0), level > 1e-4);
+    return s;
+}
+
 @fragment
 fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * material.tint;
-    let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb * 2.0;
+    let s = baked_surface(i);
+    let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb * 2.0 * s.relief;
     if c.a < 0.5 {
         discard;
     }
@@ -491,16 +540,22 @@ fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
     return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
 }
 
-// MapCraft's baker stores linear light the way Godot applies it: the albedo times the lightmap.
+// MapCraft's baker stores linear light the way Godot applies it: the albedo times the lightmap, occluded, plus the sky's reflection.
 @fragment
 fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * material.tint;
+    let s = baked_surface(i);
     if c.a < 0.5 {
         discard;
     }
-    let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb;
+    let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb * s.relief;
+    let v = normalize(globals.eye.xyz - i.world);
+    let rough = clamp(s.orm.g, 0.05, 1.0);
+    let f0 = mix(vec3<f32>(0.04), c.rgb, s.orm.b);
+    let r = normalize(mix(reflect(-v, s.n), s.n, rough * rough));
+    let shine = env_brdf(f0, rough, max(dot(s.n, v), 1e-4)) * hemisphere(r);
     let emitted = (textureSample(emission_map, samp, i.uv).rgb + material.emission.rgb) * material.emission.a;
-    return vec4<f32>(environment_color(c.rgb * light + emitted, i.world), 1.0);
+    return vec4<f32>(environment_color((c.rgb * (1.0 - s.orm.b) * light + shine) * s.orm.r + emitted, i.world), 1.0);
 }
 
 @fragment

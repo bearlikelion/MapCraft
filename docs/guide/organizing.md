@@ -138,6 +138,8 @@ Drag a row and drop it:
 
 A line or outline shows where it will land.
 Dragging a selected row moves the whole selection, and each move is one undo step.
+While dragging, the mouse wheel scrolls the tree, and holding the pointer near its top or bottom edge scrolls it too.
+`Esc`, or releasing outside the tree, cancels the drag.
 
 ![Dragging Ramp 1 onto the Hazards layer: an orange outline around Hazards shows it will land inside](img/organizing-drag.webp)
 

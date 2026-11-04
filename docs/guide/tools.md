@@ -33,8 +33,8 @@ What it holds depends on what is selected:
 
 - **Objects selected:** Duplicate, Duplicate Linked and Delete, Apply Current Material and Clear Material, then Hollow, Carve, the **Boolean** submenu, Merge and Clip, then the **Brush Type**, **Transform** (which holds Drop to Floor and Randomize too), **UV**, **Organize** and **Curves** submenus, then Focus, Hide, Isolate and Lock.
   A linked copy adds its linked copy commands.
-- **Faces picked in the Face tool:** Apply Current Material, Clear Material, Copy Face, Paste Face, the **UV** submenu, Sweep Along Path and Spin.
-- **In the Vertex tool:** the select modes, Merge at Center, Bevel Edges and Delete Vertices (Dissolve Faces in face mode) come first, with Set Origin to Selected Corners when a brush entity is selected.
+- **Faces picked in the Face tool:** Apply Current Material, Clear Material, Select Face Loop, Copy Face, Paste Face, the **UV** submenu, Sweep Along Path and Spin.
+- **In the Vertex tool:** the select modes, Select Edge Loop in edge mode, Merge at Center, Bevel Edges and Delete Vertices (Dissolve Faces in face mode) come first, with Set Origin to Selected Corners when a brush entity is selected.
 - **Nothing selected:** **Add** (every Block shape and generator, Entity and Path), Select All, Show All, Unlock All, Frame All and Go to Origin.
 
 Each entry shows its shortcut, and entries that cannot run are grayed out.
@@ -228,12 +228,14 @@ The options show on the top bar next to the shapes.
 ### Drawing in a 2D view
 
 Drag a rectangle.
-Its depth matches the last block you drew; the first block is 64 units deep.
+Its depth spans the brushes you last selected, even after you deselect them; with several selected it spans them all.
+A new block counts as selected, so blocks drawn one after another share a depth.
+Before anything is selected, a block is 64 units deep.
 
 ### Drawing in the 3D view
 
 1. Press on a face to start on that face, or on empty ground to start at height 0.
-2. Drag to size the base; the block rises as far as the last block you drew.
+2. Drag to size the base; the block rises as tall as the brushes you last selected are on that axis.
 3. Hold `Shift` or `Alt` while dragging to set the height instead; let go to size the base again.
 4. Release the mouse button to make the block.
 
@@ -333,6 +335,11 @@ Switching mode keeps what the selected corners still fully cover, so two selecte
 - Drag a box from empty space to select every handle inside; hold `Shift` to add or `Ctrl` to take away.
 - Click away from the handles to select brushes as usual.
 
+In edge mode, double-click an edge to select its loop, as Blender's edge ring: from the edge, the loop crosses each four-sided face beside it to the opposite edge, and carries on until it meets a face with more or fewer sides or comes back around.
+On a box that is the four edges running the same way; on a cylinder, double-click a side edge for every side edge.
+Shift+double-click or Ctrl+double-click adds the loop to what is selected, and **Select Edge Loop** in the right click menu grows every selected edge into its loop.
+The loop stays on one brush.
+
 In a 2D view, a click takes everything stacked under the pointer, such as a corner and the corners hidden behind it.
 In the 3D view it takes the nearest handle, plus the same corner of other selected brushes.
 Each brush keeps its own selection, which follows the brush through edits.
@@ -401,6 +408,8 @@ Faces hidden between touching brushes, such as the joins between ramp pieces, ar
   Shift+click in the Select or Move tool does the same and switches here.
 - Ctrl+click or Shift+click adds a face, or takes it out.
 - Click empty space to pick nothing.
+- Double-click a face to pick its loop: the faces around the brush across the face's edge nearest the pointer, through four-sided faces, such as the four walls of a box.
+  Shift+double-click or Ctrl+double-click adds the loop to the picks.
 
 Picked faces keep their real color, outlined, so you can judge their materials.
 The inspector shows the face panel: see [Materials](materials.md#the-face-panel) for texturing and [Terrain](displacements.md) for displacements.

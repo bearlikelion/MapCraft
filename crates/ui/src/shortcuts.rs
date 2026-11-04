@@ -187,6 +187,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("vertex.bevel", "Bevel Edges", "Ctrl+B"),
     ("vertex.delete", "Delete Vertices or Dissolve Faces", "Delete"),
     ("vertex.origin_to_corners", "Set Origin to Selected Corners", ""),
+    ("vertex.select_loop", "Select Edge Loop", ""),
     ("uv.grab", "UV Grab", "G"),
     ("uv.rotate", "UV Rotate", "R"),
     ("uv.scale", "UV Scale", "S"),

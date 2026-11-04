@@ -262,6 +262,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Bevel Edges | `Ctrl+B` |
 | Delete Vertices or Dissolve Faces | `Delete` |
 | Set Origin to Selected Corners | *none* |
+| Select Edge Loop | *none* |
 
 ### Other
 
@@ -274,6 +275,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Sculpt: Noise | `5` |
 | Sculpt: Paint | `6` |
 | Sculpt: Blur | `7` |
+| Select Face Loop | *none* |
 | Blend Current Material | *none* |
 | Remove Blend Material | *none* |
 | Fill Blend | *none* |
@@ -324,6 +326,8 @@ These cannot be rebound.
 | Nudge a copy of the selection, leaving the original | `Ctrl+Arrow keys` |
 | Move a copy of the selection, leaving the original | `Ctrl+Drag` |
 | Pick a face from the Select or Move tool | `Shift+Click in the 3D view` |
+| Select the loop of edges through an edge in the Vertex tool's edge mode | `Double-click the edge` |
+| Select the loop of faces through a face in the Face tool, across its edge nearest the pointer | `Double-click the face` |
 | Orbit the 3D camera around the point under the pointer | `Alt+Right Drag` |
 
 ### Hammer and TrenchBroom presets

@@ -190,7 +190,7 @@ impl MapCraftApp {
                 "Click two points, or drag a line, in any view; in the 3D view the cut runs straight into the face; double-click a face to cut along it".into()
             }
             Tool::Vertex => format!(
-                "Click or box select corners, edges or faces ({} {} {}), Shift adds; drag to move them, Shift or Alt drags up and down in the 3D view; {} merges, {} bevels, {} deletes",
+                "Click or box select corners, edges or faces ({} {} {}), Shift adds, double-click an edge for its loop; drag to move them, Shift or Alt drags up and down in the 3D view; {} merges, {} bevels, {} deletes",
                 self.chord("vertex.mode_vertex"),
                 self.chord("vertex.mode_edge"),
                 self.chord("vertex.mode_face"),
@@ -202,7 +202,7 @@ impl MapCraftApp {
                 "Drag on a displacement to paint the current material, or to soften blend edges with Blur; Ctrl paints the face's own material back, Alt+click picks the material under the pointer".into()
             }
             Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
-            Tool::Face if self.session.active_pick().is_none() => "Click faces in the 3D view; Alt+click picks a material, Alt+right click applies it".into(),
+            Tool::Face if self.session.active_pick().is_none() => "Click faces in the 3D view, double-click for a loop of faces; Alt+click picks a material, Alt+right click applies it".into(),
             Tool::Face => {
                 "Alt+click, drag or double-click faces in the 3D view to give them the active face's material and alignment; Alt+Shift wraps it around corners, Ctrl+Alt takes the material only; Ctrl+C and Ctrl+V copy and paste a face".into()
             }
