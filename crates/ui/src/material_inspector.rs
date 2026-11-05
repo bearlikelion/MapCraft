@@ -128,7 +128,7 @@ fn texture_choices(root: &std::path::Path) -> Vec<(String, String)> {
 }
 
 impl crate::app::MapCraftApp {
-    /// Opens the Material inspector on `name`, a PBR descriptor in a custom asset folder.
+    /// Opens the Material inspector on `name`, a PBR descriptor in a custom asset folder, or New Material on a plain picture.
     pub(crate) fn inspect_material(&mut self, name: &str) {
         if self.material_inspector.as_ref().is_some_and(|i| i.name == name) {
             return;
@@ -137,7 +137,7 @@ impl crate::app::MapCraftApp {
         match found {
             Some((path, material)) => self.material_inspector = Some(MaterialInspector::new(name, path, material)),
             None if name.is_empty() => self.status = "Pick a material in the Materials panel first".into(),
-            None => self.status = format!("{name} is a plain picture, not a PBR material; File > Add Material makes one from its pictures"),
+            None => self.make_pbr(name),
         }
     }
 

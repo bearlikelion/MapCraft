@@ -1170,9 +1170,12 @@ impl MapCraftApp {
         let painting = self.tool == Tool::Sculpt && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur);
         let primary = response.clicked_by(egui::PointerButton::Primary);
         let transfer = self.transfer_mode(ctx.input(|i| i.modifiers)).filter(|_| primary && !cam.is_2d());
+        let hammer = self.hammer_transfer(ctx.input(|i| i.modifiers)).filter(|_| !cam.is_2d());
         if let (Some((from, mode)), Some(p)) = (transfer, primary_pos) {
             // egui counts a quick double click soon after a click elsewhere as a triple click.
             self.transfer_click(index, rect, p, from, mode, response.double_clicked() || response.triple_clicked());
+        } else if let (Some((from, mode)), Some(p), true) = (hammer, hover, response.clicked_by(egui::PointerButton::Secondary)) {
+            self.transfer_click(index, rect, p, from, mode, false);
         } else if alt && (!cam.is_2d() || (painting && primary)) && (primary || response.clicked_by(egui::PointerButton::Secondary)) {
             if let Some(p) = primary_pos.or(hover) {
                 let (origin, dir) = cam.ray(dvec(p - rect.min), size);
@@ -1219,7 +1222,7 @@ impl MapCraftApp {
             self.clip_to_face(index, rect, p);
         }
         // Alt+right click applies materials and right click cancels a bevel being sized.
-        if !alt && self.vertex.bevel.is_none() {
+        if !alt && self.vertex.bevel.is_none() && hammer.is_none() {
             response.context_menu(|ui| self.viewport_menu(ui, index));
         }
     }
@@ -1293,6 +1296,19 @@ impl MapCraftApp {
             FaceTransfer::Rotated
         } else {
             FaceTransfer::Projected
+        };
+        Some((from, mode))
+    }
+
+    /// What a right click in the Face tool's 3D view carries from the active face, as in Hammer.
+    fn hammer_transfer(&self, mods: egui::Modifiers) -> Option<(FacePick, FaceTransfer)> {
+        let from = self.session.active_pick().filter(|_| !mods.alt && self.tool == Tool::Face)?;
+        let mode = if mods.command {
+            FaceTransfer::Material
+        } else if mods.shift {
+            FaceTransfer::Projected
+        } else {
+            FaceTransfer::Rotated
         };
         Some((from, mode))
     }

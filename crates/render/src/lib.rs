@@ -149,6 +149,7 @@ struct Batch {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BakePart {
     pub material: String,
+    pub anti_tile: AntiTile,
     /// Index into [`Bake::lightmaps`]; none draws the material unlit, as Quake draws its liquids.
     pub lightmap: Option<usize>,
     pub positions: Vec<[f32; 3]>,
@@ -177,6 +178,7 @@ struct BakedVertex {
 
 struct BakedBatch {
     material: String,
+    anti_tile: AntiTile,
     lightmap: Option<usize>,
     buffer: wgpu::Buffer,
     count: u32,
@@ -219,9 +221,8 @@ pub struct Renderer {
     sky_face_pipeline: wgpu::RenderPipeline,
     lightmap_layout: wgpu::BindGroupLayout,
     lightmap_sampler: wgpu::Sampler,
-    baked_pipeline: wgpu::RenderPipeline,
-    baked_unlit_pipeline: wgpu::RenderPipeline,
-    baked_linear_pipeline: wgpu::RenderPipeline,
+    /// Baked face pipelines by fragment entry point and anti-tiling; a variant the device rejected is missing.
+    baked_pipelines: HashMap<(&'static str, AntiTile), wgpu::RenderPipeline>,
     baked_sky_pipeline: wgpu::RenderPipeline,
     bake: Vec<BakedBatch>,
     bake_linear: bool,
@@ -263,6 +264,10 @@ pub struct Renderer {
     /// The playing models' posed triangles, which 3D views draw.
     posed: Vec<Batch>,
     clock: f64,
+}
+
+fn lighter(anti_tile: AntiTile) -> AntiTile {
+    if anti_tile == AntiTile::Hex { AntiTile::Macro } else { AntiTile::Off }
 }
 
 fn vertex_layout<'a>(stride: usize, attrs: &'a [wgpu::VertexAttribute]) -> wgpu::VertexBufferLayout<'a> {
@@ -374,21 +379,29 @@ impl Renderer {
         let mesh_buffers = [Some(vertex_layout(std::mem::size_of::<MeshVertex>(), &mesh_attrs))];
         let line_buffers = [Some(vertex_layout(std::mem::size_of::<LineVertex>(), &line_attrs))];
         let none = wgpu::DepthBiasState::default();
+        // wgpu panics on uncaptured errors, and a backend rejecting a variant reports Internal, not Validation.
+        let checked = |what: String, make: &dyn Fn() -> wgpu::RenderPipeline| {
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let p = make();
+            let internal = pollster::block_on(internal.pop());
+            match internal.or(pollster::block_on(validation.pop())) {
+                None => Some(p),
+                Some(e) => {
+                    log::warn!("{what} was rejected: {e}");
+                    None
+                }
+            }
+        };
         let mut pipelines = HashMap::new();
         for (lit, fs) in [(false, "fs_mesh"), (true, "fs_lit")] {
             for layers in [1u32, 2] {
                 for mode in [AntiTile::Off, AntiTile::Macro, AntiTile::Hex] {
-                    // wgpu panics on uncaptured errors, and a backend rejecting a variant reports Internal, not Validation.
-                    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
                     let constants = [("LAYERS", f64::from(layers)), ("ANTI_TILE", f64::from(mode as u32))];
-                    let p = pipeline(fs, &mesh_layout, "vs_mesh", fs, &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none, &constants);
-                    let internal = pollster::block_on(internal.pop());
-                    match internal.or(pollster::block_on(validation.pop())) {
-                        None => {
-                            pipelines.insert((lit, layers, mode), p);
-                        }
-                        Some(e) => log::warn!("the {fs} shader with {layers} layers and anti-tiling {mode:?} was rejected: {e}"),
+                    let make =
+                        || pipeline(fs, &mesh_layout, "vs_mesh", fs, &mesh_buffers, wgpu::PrimitiveTopology::TriangleList, (true, true), none, &constants);
+                    if let Some(p) = checked(format!("the {fs} shader with {layers} layers and anti-tiling {mode:?}"), &make) {
+                        pipelines.insert((lit, layers, mode), p);
                     }
                 }
             }
@@ -430,9 +443,16 @@ impl Renderer {
         let baked_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2];
         let baked_buffers = [Some(vertex_layout(std::mem::size_of::<BakedVertex>(), &baked_attrs))];
         let triangles = wgpu::PrimitiveTopology::TriangleList;
-        let baked_pipeline = pipeline("baked", &baked_layout, "vs_baked", "fs_baked", &baked_buffers, triangles, (true, true), none, &[]);
-        let baked_unlit_pipeline = pipeline("baked unlit", &plain_layout, "vs_baked", "fs_baked_unlit", &baked_buffers, triangles, (true, true), none, &[]);
-        let baked_linear_pipeline = pipeline("baked linear", &baked_layout, "vs_baked", "fs_baked_linear", &baked_buffers, triangles, (true, true), none, &[]);
+        let mut baked_pipelines = HashMap::new();
+        for (fs, layout) in [("fs_baked", &baked_layout), ("fs_baked_linear", &baked_layout), ("fs_baked_unlit", &plain_layout)] {
+            for mode in [AntiTile::Off, AntiTile::Macro, AntiTile::Hex] {
+                let constants = [("ANTI_TILE", f64::from(mode as u32))];
+                let make = || pipeline(fs, layout, "vs_baked", fs, &baked_buffers, triangles, (true, true), none, &constants);
+                if let Some(p) = checked(format!("the {fs} shader with anti-tiling {mode:?}"), &make) {
+                    baked_pipelines.insert((fs, mode), p);
+                }
+            }
+        }
         let baked_sky_pipeline = pipeline("baked sky", &plain_layout, "vs_baked", "fs_sky_face", &baked_buffers, triangles, (true, true), none, &[]);
         // Engines filter lightmaps smoothly between luxel centers.
         let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -473,9 +493,7 @@ impl Renderer {
             sky_face_pipeline,
             lightmap_layout,
             lightmap_sampler,
-            baked_pipeline,
-            baked_unlit_pipeline,
-            baked_linear_pipeline,
+            baked_pipelines,
             baked_sky_pipeline,
             bake: Vec::new(),
             bake_linear: false,
@@ -908,7 +926,7 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&verts),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-            self.bake.push(BakedBatch { material: part.material.clone(), lightmap, buffer, count: verts.len() as u32 });
+            self.bake.push(BakedBatch { material: part.material.clone(), anti_tile: part.anti_tile, lightmap, buffer, count: verts.len() as u32 });
         }
     }
 
@@ -980,16 +998,26 @@ impl Renderer {
     /// The variant a batch draws with, or the closest lighter one when the device rejected it.
     fn mesh_pipeline(&self, lit: bool, mode: RenderMode, key: &BatchKey) -> Option<&wgpu::RenderPipeline> {
         // Flat mode's albedo is white, so a second layer or variation would only mottle it gray.
-        let (layers, anti_tile) = match key.anti_tile {
-            _ if mode == RenderMode::Flat => (1, AntiTile::Off),
-            // Three blended taps of big nearest texels read as double images.
-            AntiTile::Hex if self.pixelated || [&key.material, &key.blend].iter().any(|n| self.materials.get(*n).is_some_and(|m| m.pixelated)) => {
-                (if key.blend.is_empty() { 1 } else { 2 }, AntiTile::Macro)
-            }
-            other => (if key.blend.is_empty() { 1 } else { 2 }, other),
+        let (layers, anti_tile) = if mode == RenderMode::Flat {
+            (1, AntiTile::Off)
+        } else {
+            (if key.blend.is_empty() { 1 } else { 2 }, self.drawn_anti_tile(key.anti_tile, [&key.material, &key.blend]))
         };
-        let lighter = if anti_tile == AntiTile::Hex { AntiTile::Macro } else { AntiTile::Off };
-        [(lit, layers, anti_tile), (lit, layers, lighter), (lit, layers, AntiTile::Off), (lit, 1, AntiTile::Off)].iter().find_map(|k| self.pipelines.get(k))
+        [(lit, layers, anti_tile), (lit, layers, lighter(anti_tile)), (lit, layers, AntiTile::Off), (lit, 1, AntiTile::Off)]
+            .iter()
+            .find_map(|k| self.pipelines.get(k))
+    }
+
+    /// The baked variant of `fs` a batch draws with, or the closest lighter one when the device rejected it.
+    fn baked_pipeline(&self, fs: &'static str, batch: &BakedBatch) -> Option<&wgpu::RenderPipeline> {
+        let anti_tile = self.drawn_anti_tile(batch.anti_tile, [&batch.material, ""]);
+        [anti_tile, lighter(anti_tile), AntiTile::Off].iter().find_map(|m| self.baked_pipelines.get(&(fs, *m)))
+    }
+
+    fn drawn_anti_tile(&self, anti_tile: AntiTile, materials: [&str; 2]) -> AntiTile {
+        // Three blended taps of big nearest texels read as double images.
+        let pixelated = self.pixelated || materials.iter().any(|n| self.materials.get(*n).is_some_and(|m| m.pixelated));
+        if anti_tile == AntiTile::Hex && pixelated { AntiTile::Macro } else { anti_tile }
     }
 
     /// Draws the scene into `target`; `grid` is the 2D grid spacing, `overlay` lines draw on top.
@@ -1129,12 +1157,14 @@ impl Renderer {
             draw_batches(&mut pass, false);
             for batch in self.bake.iter().filter(|_| baked) {
                 let lightmap = batch.lightmap.and_then(|l| self.lightmaps.get(l));
-                pass.set_pipeline(match lightmap {
-                    _ if self.skies.contains(&batch.material) => &self.baked_sky_pipeline,
-                    Some(_) if self.bake_linear => &self.baked_linear_pipeline,
-                    Some(_) => &self.baked_pipeline,
-                    None => &self.baked_unlit_pipeline,
-                });
+                let pipeline = match lightmap {
+                    _ if self.skies.contains(&batch.material) => Some(&self.baked_sky_pipeline),
+                    Some(_) if self.bake_linear => self.baked_pipeline("fs_baked_linear", batch),
+                    Some(_) => self.baked_pipeline("fs_baked", batch),
+                    None => self.baked_pipeline("fs_baked_unlit", batch),
+                };
+                let Some(pipeline) = pipeline else { continue };
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(1, self.materials.get(&batch.material).map_or(&self.missing, |m| &m.bind_group), &[]);
                 if let Some(l) = lightmap.filter(|_| !self.skies.contains(&batch.material)) {
                     pass.set_bind_group(2, l, &[]);
@@ -1569,6 +1599,7 @@ mod tests {
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             indices: vec![0, 1, 2, 0, 2, 3],
+            ..BakePart::default()
         };
         r.set_bake(Some(&Bake { parts: vec![quad], lightmaps: vec![Picture { width: 1, height: 1, rgba: vec![64, 128, 255, 255] }], linear: false }));
         let target = r.target([4, 4]);
@@ -1579,6 +1610,35 @@ mod tests {
         assert!(pixel.iter().all(|c| c.abs_diff(100) <= 1), "200, 100 and 50 lit by 64, 128 and 255 all come to 100: {pixel:?}");
         r.render(&target, &camera, RenderMode::Textured, None, &[]);
         assert_ne!(&r.read_rgba(&target).unwrap()[(2 * 4 + 2) * 4..(2 * 4 + 2) * 4 + 3], pixel, "only the Lit view shows the bake");
+    }
+
+    #[test]
+    fn a_bake_keeps_hex_tiling() {
+        let Ok(adapter) = pollster::block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let mut r = Renderer::new(&device, &queue);
+        let ramp: Vec<u8> = (0..16 * 16).flat_map(|i: u32| [(i % 16 * 16) as u8, (i / 16 * 16) as u8, 0, 255]).collect();
+        r.upload_material("m", 16, 16, &ramp);
+        let target = r.target([32, 32]);
+        let camera = Camera { position: DVec3::new(0.0, 0.0, 100.0), pitch: -89.0, ..Camera::new(View::Perspective) };
+        let mut shot = |anti_tile| {
+            let quad = BakePart {
+                material: "m".into(),
+                anti_tile,
+                lightmap: Some(0),
+                positions: vec![[-1000.0, -1000.0, 0.0], [1000.0, -1000.0, 0.0], [1000.0, 1000.0, 0.0], [-1000.0, 1000.0, 0.0]],
+                uvs: vec![[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]],
+                lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            };
+            r.set_bake(Some(&Bake { parts: vec![quad], lightmaps: vec![Picture { width: 1, height: 1, rgba: vec![128; 4] }], linear: false }));
+            r.render(&target, &camera, RenderMode::Lit, None, &[]);
+            r.read_rgba(&target).unwrap()
+        };
+        assert_ne!(shot(AntiTile::Off), shot(AntiTile::Hex), "hex tiling turns the baked repeats");
     }
 
     #[test]
@@ -1596,6 +1656,7 @@ mod tests {
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             lightmap_uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             indices: vec![0, 1, 2, 0, 2, 3],
+            ..BakePart::default()
         };
         let quarter: u32 = 256 | 256 << 9 | 256 << 18 | 14 << 27;
         let lightmap = Picture { width: 1, height: 1, rgba: quarter.to_le_bytes().to_vec() };

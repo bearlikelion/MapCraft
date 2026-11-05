@@ -532,7 +532,7 @@ impl MapCraftApp {
                 *slot
             });
             let positions = p.positions.iter().map(|v| v.as_vec3().to_array()).collect();
-            parts.push(BakePart { material, lightmap, positions, uvs: p.uvs, lightmap_uvs: p.lightmap_uvs, indices: p.indices });
+            parts.push(BakePart { material, lightmap, positions, uvs: p.uvs, lightmap_uvs: p.lightmap_uvs, indices: p.indices, ..BakePart::default() });
         }
         if parts.is_empty() {
             return Err(format!("{file} has no faces"));
@@ -544,8 +544,8 @@ impl MapCraftApp {
 /// The Lit view's picture of a native bake: every drawn face with its lightmap, and faces without one unlit.
 fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collections::HashMap<String, mapcraft_geom::DVec2>) -> Bake {
     let size = |m: &str| sizes.get(m).copied().unwrap_or(mapcraft_geom::DVec2::splat(64.0));
-    // Each part draws from one lightmap slice, so parts are kept per material and slice.
-    let mut parts: std::collections::BTreeMap<(String, Option<u32>), BakePart> = std::collections::BTreeMap::new();
+    // Each part draws from one lightmap slice with one anti-tiling, so parts are kept per material, slice and anti-tiling.
+    let mut parts: std::collections::BTreeMap<(String, Option<u32>, mapcraft_map::AntiTile), BakePart> = std::collections::BTreeMap::new();
     for (id, node) in map.nodes() {
         let Some(b) = node.kind.brush() else { continue };
         if b.has_displacement() || mapcraft_map::boolean::source_op(map, id).is_some() {
@@ -556,8 +556,9 @@ fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collectio
             let Some(w) = winding.as_ref().filter(|_| b.draws(face) && !face.material.is_empty()) else { continue };
             let entry = lm.face(id, index);
             let slice = entry.map(|e| e.slice);
-            let part = parts.entry((face.material.clone(), slice)).or_insert_with(|| BakePart {
+            let part = parts.entry((face.material.clone(), slice, face.anti_tile())).or_insert_with(|| BakePart {
                 material: face.material.clone(),
+                anti_tile: face.anti_tile(),
                 lightmap: slice.map(|s| s as usize),
                 ..BakePart::default()
             });

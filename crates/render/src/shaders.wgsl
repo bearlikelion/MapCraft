@@ -241,6 +241,13 @@ struct Albedo {
     hex_b: Hex,
 };
 
+fn varied(c: vec4<f32>, world: vec3<f32>) -> vec4<f32> {
+    if ANTI_TILE > 0u {
+        return vec4<f32>(c.rgb * macro_variation(world), c.a);
+    }
+    return c;
+}
+
 fn albedo(i: MeshOut) -> Albedo {
     var out: Albedo;
     let a = layer(tex, samp, i.uv);
@@ -252,10 +259,7 @@ fn albedo(i: MeshOut) -> Albedo {
         out.hex_b = b.hex;
         c = mix(c, b.color * material_b.tint, out.share);
     }
-    if ANTI_TILE > 0u {
-        c = vec4<f32>(c.rgb * macro_variation(i.world), c.a);
-    }
-    out.color = c * i.tint;
+    out.color = varied(c, i.world) * i.tint;
     return out;
 }
 
@@ -497,9 +501,9 @@ struct BakedSurface {
 };
 
 // Baked faces carry no normals or tangents, so the frame comes from screen derivatives.
-fn baked_surface(i: BakedOut) -> BakedSurface {
+fn baked_surface(i: BakedOut, h: Hex) -> BakedSurface {
     var s: BakedSurface;
-    let maps = adjusted(Maps(textureSample(orm_map, samp, i.uv).rgb, textureSample(normal_map, samp, i.uv).xyz * 2.0 - 1.0), material.surface);
+    let maps = adjusted(layer_maps(normal_map, orm_map, samp, i.uv, h), material.surface);
     s.orm = maps.orm;
     let dx = dpdx(i.world);
     let dy = dpdy(i.world);
@@ -530,21 +534,23 @@ fn baked_surface(i: BakedOut) -> BakedSurface {
 
 @fragment
 fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv) * material.tint;
-    let s = baked_surface(i);
+    let a = layer(tex, samp, i.uv);
+    let c = varied(a.color * material.tint, i.world);
+    let s = baked_surface(i, a.hex);
     let light = textureSample(lightmap_tex, lightmap_samp, i.lightmap).rgb * 2.0 * s.relief;
     if c.a < 0.5 {
         discard;
     }
-    let emitted = (textureSample(emission_map, samp, i.uv).rgb + material.emission.rgb) * material.emission.a;
+    let emitted = (layer(emission_map, samp, i.uv).color.rgb + material.emission.rgb) * material.emission.a;
     return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
 }
 
 // MapCraft's baker stores linear light the way Godot applies it: the albedo times the lightmap, occluded, plus the sky's reflection.
 @fragment
 fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv) * material.tint;
-    let s = baked_surface(i);
+    let a = layer(tex, samp, i.uv);
+    let c = varied(a.color * material.tint, i.world);
+    let s = baked_surface(i, a.hex);
     if c.a < 0.5 {
         discard;
     }
@@ -554,13 +560,13 @@ fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
     let f0 = mix(vec3<f32>(0.04), c.rgb, s.orm.b);
     let r = normalize(mix(reflect(-v, s.n), s.n, rough * rough));
     let shine = env_brdf(f0, rough, max(dot(s.n, v), 1e-4)) * hemisphere(r);
-    let emitted = (textureSample(emission_map, samp, i.uv).rgb + material.emission.rgb) * material.emission.a;
+    let emitted = (layer(emission_map, samp, i.uv).color.rgb + material.emission.rgb) * material.emission.a;
     return vec4<f32>(environment_color((c.rgb * (1.0 - s.orm.b) * light + shine) * s.orm.r + emitted, i.world), 1.0);
 }
 
 @fragment
 fn fs_baked_unlit(i: BakedOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(textureSample(tex, samp, i.uv).rgb * material.tint.rgb, 1.0);
+    return vec4<f32>(varied(layer(tex, samp, i.uv).color * material.tint, i.world).rgb, 1.0);
 }
 
 // Quake's sky on a face: the view direction flattened toward a dome picks the spot, and the near

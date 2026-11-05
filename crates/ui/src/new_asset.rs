@@ -143,13 +143,16 @@ fn model_path(name: &str) -> String {
     name.split(['/', '\\']).map(safe_name).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/")
 }
 
-/// Writes every file or none of them, never replacing one.
-fn write_all(files: &[(PathBuf, Vec<u8>)]) -> Result<(), String> {
+/// Writes every new file or none of them; an existing file is replaced atomically only when `replace` is set.
+fn write_all(files: &[(PathBuf, Vec<u8>)], replace: bool) -> Result<(), String> {
     use std::io::Write;
     let mut written: Vec<&Path> = Vec::new();
     let result = files.iter().try_for_each(|(path, bytes)| {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        if replace && path.exists() {
+            return craft_atomic::atomic_write(path, bytes).map_err(|e| format!("{}: {e}", path.display()));
         }
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         written.push(path);
@@ -163,13 +166,13 @@ fn write_all(files: &[(PathBuf, Vec<u8>)]) -> Result<(), String> {
     result
 }
 
-/// Writes `materials/<name>.json` under `root` with each picture copied to `textures/<name>_<slot>`.
-fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[(TextureSlot, &Path)]) -> Result<(), String> {
-    if name.is_empty() || safe_name(name) != name {
+/// Writes `materials/<name>.json` under `root` with each picture copied to `textures/<name>_<slot>`, updating one of that name when `replace` is set.
+fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[(TextureSlot, &Path)], replace: bool) -> Result<(), String> {
+    if name.is_empty() || name.split('/').any(|s| s.is_empty() || safe_name(s) != s) {
         return Err("Name the material with letters, digits, _ and - only".into());
     }
     let taken = ["json", "png", "jpg", "jpeg"].iter().any(|e| root.join(format!("materials/{name}.{e}")).exists());
-    if taken {
+    if taken && !replace {
         return Err(format!("A material named {name} already exists in {}", root.display()));
     }
     let mut files = Vec::new();
@@ -187,7 +190,7 @@ fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[
         let slot_name = SLOTS.iter().find(|(s, _)| s == slot).map_or("texture", |(_, l)| l).to_ascii_lowercase();
         let texture = format!("textures/{name}_{slot_name}.{ext}");
         let path = root.join(&texture);
-        if path.exists() {
+        if path.exists() && !replace {
             return Err(format!("{} already exists", path.display()));
         }
         material.textures.insert(*slot, texture);
@@ -195,7 +198,7 @@ fn create_material(root: &Path, name: &str, mut material: Material, pictures: &[
     }
     let json = material.to_json()?;
     files.push((root.join(format!("materials/{name}.json")), json));
-    write_all(&files)
+    write_all(&files, replace)
 }
 
 /// Copies a `.glb` to `models/<path>.glb` under `root`; returns the model path entities use.
@@ -216,7 +219,7 @@ fn create_model(root: &Path, path: &str, file: &Path) -> Result<String, String> 
     if dest.exists() {
         return Err(format!("{} already exists", dest.display()));
     }
-    write_all(&[(dest, bytes)])?;
+    write_all(&[(dest, bytes)], false)?;
     Ok(model)
 }
 
@@ -242,6 +245,15 @@ impl MapCraftApp {
         self.new_assets.picks.push(path);
     }
 
+    /// Opens New Material on a plain picture, named after it so the PBR material takes its place.
+    pub(crate) fn make_pbr(&mut self, name: &str) {
+        let files = self.project.find_material(name).and_then(|m| m.image).into_iter().collect();
+        let mut new = NewAsset::new(AssetKind::Material, files);
+        new.name = name.into();
+        self.new_assets.dialog = Some(new);
+        self.status = format!("{name} is a plain picture; Create in New Material makes it a PBR material of the same name");
+    }
+
     /// A dropped picture starts a new material, or joins the one being made.
     pub(crate) fn drop_picture(&mut self, path: PathBuf) {
         match &mut self.new_assets.dialog {
@@ -252,6 +264,7 @@ impl MapCraftApp {
 
     pub(crate) fn new_asset_dialog(&mut self, ctx: &egui::Context) {
         let Some(new) = &mut self.new_assets.dialog else { return };
+        let existing = self.project.material(&new.name).filter(|_| new.kind == AssetKind::Material).map(|m| m.descriptor.is_some());
         let (mut create, mut cancel, mut open) = (false, false, true);
         let title = if new.kind == AssetKind::Material { "New Material" } else { "New Model" };
         let window = egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
@@ -260,6 +273,12 @@ impl MapCraftApp {
                 ui.label("Name");
                 ui.add(egui::TextEdit::singleline(&mut new.name).desired_width(260.0));
                 ui.end_row();
+                if let Some(pbr) = existing {
+                    ui.label("");
+                    let note = if pbr { "Replaces the PBR material of this name" } else { "Takes the place of the plain picture of this name" };
+                    ui.label(RichText::new(note).color(crate::chrome::TEXT_WEAK));
+                    ui.end_row();
+                }
                 if new.kind == AssetKind::Model {
                     ui.label("File");
                     ui.label(new.files.first().and_then(|f| f.file_name()).map_or_else(String::new, |n| n.to_string_lossy().into_owned()));
@@ -363,10 +382,10 @@ impl MapCraftApp {
             }
         };
         let result = match new.kind {
-            AssetKind::Material if self.project.find_material(&new.name).is_some() => Err(format!("The SDK already has a material named {}", new.name)),
             AssetKind::Material => {
                 let pictures: Vec<(TextureSlot, &Path)> = new.slots.iter().filter_map(|(s, &i)| Some((*s, new.files.get(i)?.as_path()))).collect();
-                create_material(&root, &new.name, new.material.clone(), &pictures).map(|()| new.name.clone())
+                let replace = self.project.find_material(&new.name).is_some();
+                create_material(&root, &new.name, new.material.clone(), &pictures, replace).map(|()| new.name.clone())
             }
             AssetKind::Model => new.files.first().ok_or_else(|| "No model picked".to_string()).and_then(|f| create_model(&root, &model_path(&new.name), f)),
         };
@@ -382,6 +401,16 @@ impl MapCraftApp {
         self.reload_asset_folder();
         if kind == AssetKind::Material {
             self.session.tex.material = added.clone();
+            for open in [&mut self.material_inspector, &mut self.browser_material] {
+                if open.as_ref().is_some_and(|i| i.name == added) {
+                    *open = None;
+                }
+            }
+            if let Some(gpu) = &mut self.gpu {
+                gpu.renderer.forget_material(&added);
+            }
+            self.thumbs.forget(&added);
+            self.scene_dirty = true;
         }
         self.status = format!("Added {added} to {}", root.display());
         self.output.push(self.status.clone());
@@ -430,10 +459,10 @@ mod tests {
         let fake = src.path().join("fake.png");
         std::fs::write(&fake, b"not a picture").unwrap();
         let material = Material { roughness: 0.4, ..Material::default() };
-        create_material(root.path(), "stone", material.clone(), &[(TextureSlot::Albedo, &albedo)]).unwrap();
-        assert!(create_material(root.path(), "stone", material.clone(), &[]).is_err(), "an existing name is refused");
-        assert!(create_material(root.path(), "../up", material.clone(), &[]).is_err());
-        assert!(create_material(root.path(), "bad", material.clone(), &[(TextureSlot::Albedo, &fake)]).is_err());
+        create_material(root.path(), "stone", material.clone(), &[(TextureSlot::Albedo, &albedo)], false).unwrap();
+        assert!(create_material(root.path(), "stone", material.clone(), &[], false).is_err(), "an existing name is refused");
+        assert!(create_material(root.path(), "../up", material.clone(), &[], false).is_err());
+        assert!(create_material(root.path(), "bad", material.clone(), &[(TextureSlot::Albedo, &fake)], false).is_err());
         assert!(!root.path().join("materials/bad.json").exists());
 
         let vfs = mapcraft_sdk::Vfs::new(vec![root.path().into()]);
@@ -447,12 +476,33 @@ mod tests {
     }
 
     #[test]
+    fn a_material_is_updated_in_place_or_made_over_a_plain_picture() {
+        let src = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (albedo, normal) = (src.path().join("tiles_albedo.png"), src.path().join("tiles_normal.png"));
+        std::fs::write(&albedo, png()).unwrap();
+        std::fs::write(&normal, png()).unwrap();
+        create_material(root.path(), "tiles", Material::default(), &[(TextureSlot::Albedo, &albedo)], false).unwrap();
+        let updated = Material { roughness: 0.25, ..Material::default() };
+        create_material(root.path(), "tiles", updated, &[(TextureSlot::Albedo, &albedo), (TextureSlot::Normal, &normal)], true).unwrap();
+        let read = Material::read(&std::fs::read(root.path().join("materials/tiles.json")).unwrap()).unwrap();
+        assert_eq!(read.roughness, 0.25);
+        assert_eq!(read.textures.get(&TextureSlot::Normal).map(String::as_str), Some("textures/tiles_normal.png"));
+
+        let name = "Materials/Clean/Misc/cln_misc_tatami";
+        create_material(root.path(), name, Material::default(), &[(TextureSlot::Albedo, &albedo)], true).unwrap();
+        assert!(root.path().join(format!("materials/{name}.json")).exists());
+        assert!(root.path().join(format!("textures/{name}_albedo.png")).exists());
+        assert!(create_material(root.path(), "a/../b", Material::default(), &[], true).is_err());
+    }
+
+    #[test]
     fn an_orm_picture_splits_into_roughness_and_metallic() {
         let src = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         let orm = src.path().join("panel_orm.png");
         image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255])).save(&orm).unwrap();
-        create_material(root.path(), "panel", Material::default(), &[(TextureSlot::Roughness, &orm), (TextureSlot::Metallic, &orm)]).unwrap();
+        create_material(root.path(), "panel", Material::default(), &[(TextureSlot::Roughness, &orm), (TextureSlot::Metallic, &orm)], false).unwrap();
         let gray = |name: &str| image::open(root.path().join(format!("textures/panel_{name}.png"))).unwrap().to_luma8().get_pixel(0, 0).0[0];
         assert_eq!((gray("roughness"), gray("metallic")), (20, 30));
     }

@@ -204,7 +204,7 @@ impl MapCraftApp {
             Tool::Sculpt => "Drag on a displacement in any view; Ctrl swaps raise and lower; displaced faces picked with the Face tool limit it".into(),
             Tool::Face if self.session.active_pick().is_none() => "Click faces in the 3D view, double-click for a loop of faces; Alt+click picks a material, Alt+right click applies it".into(),
             Tool::Face => {
-                "Alt+click, drag or double-click faces in the 3D view to give them the active face's material and alignment; Alt+Shift wraps it around corners, Ctrl+Alt takes the material only; Ctrl+C and Ctrl+V copy and paste a face".into()
+                "Right click a face in the 3D view to give it the active face's material wrapped around the corner, Shift+right click projects it, Ctrl+right click takes the material only; Alt+click, drag or double-click does the same projected, Alt+Shift wraps; Ctrl+C and Ctrl+V copy and paste a face".into()
             }
             Tool::Path => format!(
                 "Click to add path points, drag to pull out handles; click the first point to close, Enter starts a new path; pick faces and {} sweeps them along it",

@@ -65,7 +65,8 @@ The Material inspector edits those settings after the import, and the views show
 The texture rows pick which picture fills each slot from the pictures in the custom folder's `textures/`, or **None** to leave the slot empty.
 When the current material is a PBR material, the Materials panel shows the same settings in its **Material** section, under the buttons, so you can edit it without opening the inspector.
 Other materials show **Lit maps** there instead, which only change how the Lit view shades them.
-Plain pictures have no settings to edit: the inspector's button only appears for PBR materials, and the right click entry says so in the status bar.
+Plain pictures have no settings to edit, so **Inspect Material** on one opens **New Material** with the picture as its albedo and the same name; **Create** makes a PBR material that takes the picture's place.
+**Add Material** with the name of an existing PBR material updates it with the new pictures and settings.
 
 ## Applying a material
 
