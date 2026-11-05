@@ -13,11 +13,11 @@ jobs:
   appimage:
     runs-on: [self-hosted, build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Version
         run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
       - run: packaging/linux-container.sh packaging/appimage.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: appimage
           path: dist/MapCraft-x86_64.AppImage
@@ -28,13 +28,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Version
         run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
       - run: packaging/windows-zip.sh x86_64-pc-windows-msvc
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/MapCraft-windows-x86_64.zip
@@ -42,7 +42,7 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -50,7 +50,7 @@ jobs:
       - name: Version
         run: if [[ "$GITHUB_REF" == refs/tags/v* ]]; then echo "MAPCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"; fi
       - run: packaging/macos-app.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: dist/MapCraft-macos.zip
@@ -66,16 +66,16 @@ jobs:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tools
         run: brew install ninja ccache
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/../ccache
           key: godot-macos-${{ matrix.target }}-${{ github.sha }}
           restore-keys: godot-macos-${{ matrix.target }}-
       - run: godot/build.sh macos ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: godot-macos-${{ matrix.target }}
           path: godot/addons/mapcraft/bin/macos
@@ -83,9 +83,9 @@ jobs:
   godot-linux:
     runs-on: [self-hosted, build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: packaging/linux-container.sh bash -c 'godot/build.sh linux template_debug && godot/build.sh linux template_release'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: godot-linux
           path: godot/addons/mapcraft/bin/linux
@@ -98,9 +98,9 @@ jobs:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: godot/build.sh windows template_debug && godot/build.sh windows template_release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: godot-windows
           path: godot/addons/mapcraft/bin/windows
@@ -109,7 +109,7 @@ jobs:
     needs: [godot-macos, godot-linux, godot-windows]
     runs-on: [self-hosted, build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: godot-macos-*
@@ -124,14 +124,14 @@ jobs:
           name: godot-windows
           path: godot/addons/mapcraft/bin/windows
       - run: packaging/godot-addon.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: godot-addon
           path: dist/MapCraft-godot-addon.zip
 
   release:
     needs: [appimage, windows, macos, godot-addon]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
