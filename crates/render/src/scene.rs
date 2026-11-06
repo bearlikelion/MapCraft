@@ -128,7 +128,7 @@ impl From<&str> for BatchKey {
 #[derive(Clone, Debug, Default)]
 pub struct SceneData {
     pub batches: BTreeMap<BatchKey, Vec<MeshVertex>>,
-    /// Point entity boxes and models by material, which a baked map leaves in place.
+    /// Point entity boxes, models and displacements by material, which a baked map leaves in place.
     pub points: BTreeMap<BatchKey, Vec<MeshVertex>>,
     pub edges: Vec<LineVertex>,
     /// Drawn over everything.
@@ -326,7 +326,11 @@ pub fn build_scene(
                         shader,
                         ..BatchKey::from(face.material.as_str())
                     };
-                    let verts = if tool { &mut scene.translucent } else { scene.batches.entry(key).or_default() };
+                    let verts = match (tool, b.has_displacement()) {
+                        (true, _) => &mut scene.translucent,
+                        (false, true) => scene.points.entry(key).or_default(),
+                        (false, false) => scene.batches.entry(key).or_default(),
+                    };
                     let edges = if selected || face_selected { &mut scene.selected_edges } else { &mut scene.edges };
                     let edge = if face_selected { PICKED_FACE_EDGE } else { edge };
                     if let (Some(grid), Some(d)) = (displaced.get(&index), &face.disp) {
@@ -790,10 +794,10 @@ mod tests {
         let size = |m: &str| (m != "tools/trigger").then_some(if m == "b" { [32, 16] } else { [64, 64] });
         let scene = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &size, &NoStyle, false, None);
         let pictured = build_scene(&map, &BTreeSet::new(), &BTreeSet::new(), &|_| Some([64, 64]), &NoStyle, false, None);
-        let trigger = &pictured.batches[&BatchKey::from("tools/trigger")];
+        let trigger = &pictured.points[&BatchKey::from("tools/trigger")];
         assert!(trigger.iter().all(|v| v.blend == 0.0 && v.tint[3] == PICTURED_TOOL_ALPHA), "a tool with a picture shows it, still ignoring blends");
 
-        let blended = &scene.batches[&BatchKey { blend: "b".into(), ..BatchKey::from("a") }];
+        let blended = &scene.points[&BatchKey { blend: "b".into(), ..BatchKey::from("a") }];
         assert_eq!(blended.len(), 8 * 3);
         let b = map.nodes().find_map(|(_, n)| n.kind.brush()).unwrap();
         let face = b.faces.iter().find(|f| f.disp.is_some()).unwrap();
@@ -802,9 +806,10 @@ mod tests {
             assert!((DVec2::from_array(v.blend_uv.map(f64::from)) - texel / DVec2::new(32.0, 16.0)).length() < 1e-4, "layer b tiles by its own size");
         }
         assert!(blended.iter().any(|v| v.blend == 1.0) && blended.iter().any(|v| v.blend == 0.0));
-        let own = &scene.batches[&BatchKey::from("a")];
+        let own = &scene.points[&BatchKey::from("a")];
         assert!(own.iter().any(|v| v.blend > 0.0) && own.iter().all(|v| v.blend_uv == [0.0; 2]), "its own material in other case stays one layer");
-        assert_eq!(scene.batches.len(), 2, "tool faces ignore both");
+        assert_eq!(scene.points.len(), 2, "tool faces ignore both");
+        assert!(scene.batches.is_empty(), "a bake leaves displacements in place");
         assert!(scene.translucent.iter().all(|v| v.blend == 0.0));
     }
 

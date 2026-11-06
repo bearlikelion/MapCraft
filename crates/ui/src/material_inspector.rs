@@ -17,6 +17,8 @@ pub(crate) struct MaterialInspector {
     pub(crate) status: String,
     /// Pictures in the custom folder's `textures/` a slot can use, as (asset path, file name).
     choices: Vec<(String, String)>,
+    /// The custom asset folder holding `materials/<name>.json`.
+    root: Option<PathBuf>,
 }
 
 /// What drawing the inspector did.
@@ -30,8 +32,9 @@ pub(crate) struct Edit {
 
 impl MaterialInspector {
     pub(crate) fn new(name: &str, path: PathBuf, material: Material) -> Self {
-        let choices = path.parent().and_then(std::path::Path::parent).map(texture_choices).unwrap_or_default();
-        Self { name: name.into(), path, opened: material.clone(), tried: material.clone(), material, status: String::new(), choices }
+        let root = path.ancestors().nth(name.split('/').count() + 1).map(std::path::Path::to_path_buf);
+        let choices = root.as_deref().map(texture_choices).unwrap_or_default();
+        Self { name: name.into(), path, opened: material.clone(), tried: material.clone(), material, status: String::new(), choices, root }
     }
 
     /// Changed since it was opened.
@@ -50,6 +53,23 @@ impl MaterialInspector {
         written.is_ok()
     }
 
+    /// Copies `file` to `textures/<material>_<slot>` in the custom folder and returns that asset path.
+    fn copy_picture(&mut self, slot: TextureSlot, file: &std::path::Path) -> Result<String, String> {
+        let root = self.root.clone().ok_or("The material is not in a custom asset folder")?;
+        let bytes = crate::assets::read_limited(file, mapcraft_format::pack::MAX_ENTRY_SIZE)?;
+        mapcraft_format::pack::validate_picture(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+        let stem = self.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = mapcraft_format::pack::material_entry(&stem, &bytes).and_then(|e| e.rsplit('.').next().map(str::to_string)).unwrap_or_else(|| "png".into());
+        let texture = format!("textures/{stem}_{}.{ext}", format!("{slot:?}").to_lowercase());
+        let dest = root.join(&texture);
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        craft_atomic::atomic_write(&dest, &bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
+        self.choices = texture_choices(&root);
+        Ok(texture)
+    }
+
     pub(crate) fn revert(&mut self) -> bool {
         self.material = self.opened.clone();
         self.save()
@@ -58,6 +78,7 @@ impl MaterialInspector {
     /// The descriptor's rows; edits save once the pointer is released.
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui) -> Edit {
         let before = self.material.clone();
+        let mut browse = None;
         let m = &mut self.material;
         egui::Grid::new("material-inspector").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label("Albedo tint").on_hover_text("Multiplies the albedo texture, or colors the surface without one");
@@ -85,6 +106,10 @@ impl MaterialInspector {
                 let name = m.textures.get(&slot).map_or("None", |t| t.rsplit('/').next().unwrap_or(t)).to_string();
                 let mut chosen = m.textures.get(&slot).cloned();
                 crate::panels::search_combo(ui, ("material-texture", label), 180.0, name, |ui, query| {
+                    if ui.selectable_label(false, "Browse...").on_hover_text("Pick a picture anywhere; it is copied beside this material").clicked() {
+                        browse = Some(slot);
+                        return true;
+                    }
                     let mut picked = ui.selectable_value(&mut chosen, None, "None").clicked();
                     for (path, file) in self.choices.iter().filter(|(_, f)| f.to_lowercase().contains(query)) {
                         picked |= ui.selectable_value(&mut chosen, Some(path.clone()), file).clicked();
@@ -98,6 +123,17 @@ impl MaterialInspector {
                 ui.end_row();
             }
         });
+        if let Some(slot) = browse
+            && let Some(file) = rfd::FileDialog::new().set_title("Picture for this material").add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+        {
+            match self.copy_picture(slot, &file) {
+                Ok(texture) => {
+                    self.material.textures.insert(slot, texture);
+                }
+                Err(e) => self.status = e,
+            }
+        }
+        let m = &mut self.material;
         m.version = m.needed_version();
         let mut out = Edit { changed: self.material != before, saved: false };
         if self.material != self.tried && !ui.input(|i| i.pointer.any_down()) {
@@ -241,6 +277,19 @@ mod tests {
         assert!(harness.state_mut().0.revert());
         assert!(!harness.state().0.changed());
         assert_eq!(Material::read(&std::fs::read(&path).unwrap()).unwrap().version, 1, "revert writes the plain descriptor again");
+    }
+
+    #[test]
+    fn browsed_pictures_are_copied_beside_nested_materials() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("materials/walls")).unwrap();
+        let path = dir.path().join("materials/walls/stone.json");
+        let mut inspector = MaterialInspector::new("walls/stone", path, Material::default());
+        let picked = dir.path().join("elsewhere.png");
+        image::RgbaImage::new(2, 2).save(&picked).unwrap();
+        assert_eq!(inspector.copy_picture(TextureSlot::Roughness, &picked).unwrap(), "textures/stone_roughness.png");
+        assert!(dir.path().join("textures/stone_roughness.png").is_file());
+        assert!(inspector.choices.iter().any(|(path, _)| path == "textures/stone_roughness.png"), "it shows in the dropdown at once");
     }
 
     #[test]

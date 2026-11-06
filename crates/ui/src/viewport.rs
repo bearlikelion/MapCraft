@@ -830,7 +830,7 @@ impl MapCraftApp {
         let (r, u, d) = cam.view.axes();
         let size = dvec(rect.size());
         let view = self.prefs.get().view.clone();
-        let g = self.view_grid(index);
+        let g = self.session.grid;
         let on_grid = |x: f64| (x / g).round() * g;
         let grid_point = view.snap_grid.then(|| r * on_grid(p.dot(r)) + u * on_grid(p.dot(u)) + d * p.dot(d));
         if view.snap_vertices
@@ -852,7 +852,7 @@ impl MapCraftApp {
         (grid_point.unwrap_or(p), false)
     }
 
-    /// The grid a view draws and snaps to: coarser than the grid size in a zoomed out 2D view.
+    /// The grid lines a view draws: coarser than the grid size in a zoomed out 2D view, which still snaps to the grid size.
     pub(crate) fn view_grid(&self, index: usize) -> f64 {
         match self.panes.get(index).map(|p| p.camera) {
             Some(cam) if cam.is_2d() => mapcraft_render::grid_step(self.session.grid, cam.zoom),
@@ -1636,7 +1636,7 @@ impl MapCraftApp {
         let vertical = mods.shift || mods.alt;
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let size = dvec(rect.size());
-        let g = self.view_grid(index);
+        let g = self.session.grid;
         let (r, u, _) = cam.view.axes();
         let cursor = cam.plane_point(dvec(pos - rect.min), size);
         let on_grid = self.prefs.get().view.snap_grid;

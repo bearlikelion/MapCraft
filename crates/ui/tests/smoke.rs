@@ -128,8 +128,15 @@ fn snapping_prefers_corners_then_grid() {
     let zoom = h.state().zooms_for_test()[top];
     let step = mapcraft_render::grid_step(16.0, zoom);
     assert!(step > 16.0, "zoomed out to {zoom}, the grid draws coarser");
-    let (p, _) = h.state_mut().snap_for_test(top, DVec3::new(step * 3.4, step * 0.6, 0.0));
-    assert_eq!((p.x, p.y), (step * 3.0, step), "a zoomed out view snaps to the lines it draws");
+    let (p, _) = h.state_mut().snap_for_test(top, DVec3::new(37.0, 21.0, 0.0));
+    assert_eq!((p.x, p.y), (32.0, 16.0), "a zoomed out view still snaps to the grid size");
+    let grid = h.state_mut().session_for_test().grid;
+    h.key_press(egui::Key::Minus);
+    h.run_steps(1);
+    assert_eq!(h.state_mut().session_for_test().grid, grid / 2.0, "minus halves the grid in every keymap");
+    h.key_press(egui::Key::Equals);
+    h.run_steps(1);
+    assert_eq!(h.state_mut().session_for_test().grid, grid, "equals, the unshifted plus, doubles it");
 }
 
 #[test]

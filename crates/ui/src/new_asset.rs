@@ -247,7 +247,7 @@ impl MapCraftApp {
 
     /// Opens New Material on a plain picture, named after it so the PBR material takes its place.
     pub(crate) fn make_pbr(&mut self, name: &str) {
-        let files = self.project.find_material(name).and_then(|m| m.image).into_iter().collect();
+        let files = self.project.material_files(name);
         let mut new = NewAsset::new(AssetKind::Material, files);
         new.name = name.into();
         self.new_assets.dialog = Some(new);

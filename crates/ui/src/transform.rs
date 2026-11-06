@@ -343,7 +343,7 @@ impl MapCraftApp {
         let Drag::Extrude { view, faces, normal, anchor, reference, start, paths, mode, created, offset } = self.drag.clone() else { return };
         let Some(p) = self.extrude_point(index, rect, pos, normal, anchor, reference) else { return };
         let snap = self.prefs.get().view.snap_grid;
-        let g = self.view_grid(index);
+        let g = self.session.grid;
         let raw = p - start;
         let moved = if mode == ExtrudeMode::Slide {
             // In a 2D view a slide moves freely in the view plane.
@@ -513,7 +513,7 @@ impl MapCraftApp {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let (origin, dir) = cam.ray(dvec(pos - rect.min), dvec(rect.size()));
         let Some(t) = closest_on_axis(bounds.center(), AXES[axis].0, origin, dir) else { return };
-        let g = self.view_grid(index);
+        let g = self.session.grid;
         let mut edge = if low { bounds.min[axis] } else { bounds.max[axis] } + (t - start);
         if self.prefs.get().view.snap_grid {
             edge = (edge / g).round() * g;

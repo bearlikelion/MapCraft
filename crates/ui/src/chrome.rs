@@ -603,8 +603,8 @@ impl MapCraftApp {
                 ui.label(RichText::new(format!("1:{:.2}", 1.0 / cam.zoom.max(1e-6))).color(TEXT_WEAK).monospace()).on_hover_text("Map units per pixel");
                 let step = self.view_grid(index);
                 if step > self.session.grid {
-                    let tip = format!("Zoomed out, this view draws and snaps to a {step} grid; zoom in for {}", self.session.grid);
-                    ui.label(RichText::new(format!("grid {step}")).color(ACCENT).monospace()).on_hover_text(tip);
+                    let tip = format!("Zoomed out, this view draws a line every {step} units; it still snaps to the {} grid", self.session.grid);
+                    ui.label(RichText::new(format!("lines {step}")).color(TEXT_WEAK).monospace()).on_hover_text(tip);
                 }
             }
             (None, None) => {

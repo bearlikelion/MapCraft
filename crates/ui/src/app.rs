@@ -1038,6 +1038,11 @@ impl MapCraftApp {
                 self.run_action(id);
             }
         }
+        for (key, id) in [(egui::Key::Minus, "view.grid_smaller"), (egui::Key::Equals, "view.grid_larger"), (egui::Key::Plus, "view.grid_larger")] {
+            if !flying && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                self.run_action(id);
+            }
+        }
         self.clipboard(ctx);
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         let unfocused = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))));

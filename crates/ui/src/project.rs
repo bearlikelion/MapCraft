@@ -458,6 +458,17 @@ impl Project {
         self.materials.binary_search_by(|m| m.name.as_str().cmp(name)).ok().and_then(|i| self.materials.get(i))
     }
 
+    /// The picture files behind `name`: its image, then its normal, roughness, metallic and emission maps.
+    pub fn material_files(&self, name: &str) -> Vec<PathBuf> {
+        let Some(m) = self.find_material(name) else { return Vec::new() };
+        let pbr = m.pbr.unwrap_or_else(plain_pbr);
+        let maps = [pbr.normal, pbr.roughness.map(|c| c.path), pbr.metallic.map(|c| c.path)];
+        let found = maps.into_iter().flatten().filter_map(|p| if Path::new(&p).is_absolute() { Some(PathBuf::from(p)) } else { self.vfs.find(&p) });
+        let mut files: Vec<PathBuf> = m.image.into_iter().chain(found).chain(m.emission).collect();
+        files.dedup();
+        files
+    }
+
     /// The material named `name`, or else an image of that name, since faces may name the images
     /// materials use, which are not listed.
     pub fn find_material(&self, name: &str) -> Option<Material> {
@@ -776,6 +787,16 @@ mod tests {
         project.load_descriptors();
         assert!(project.problems.iter().any(|p| p.contains("missing texture")));
         assert_eq!(project.find_material("stone").unwrap().color, Some([255, 0, 255]));
+    }
+
+    #[test]
+    fn material_files_bring_the_maps_the_lit_view_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, normal) = (dir.path().join("brick.jpg"), dir.path().join("brick_normal.jpg"));
+        let pbr = Pbr { normal: Some(normal.display().to_string()), ..plain_pbr() };
+        let mut p = Project::default();
+        p.materials.push(Material { name: "brick".into(), image: Some(image.clone()), pbr: Some(pbr), ..Material::default() });
+        assert_eq!(p.material_files("brick"), vec![image, normal]);
     }
 
     #[test]

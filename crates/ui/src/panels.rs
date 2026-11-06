@@ -900,27 +900,30 @@ impl MapCraftApp {
         search_field(ui, &mut self.material_filter, "Search materials");
         let hidden = self.project.id().and_then(|id| self.prefs.get().hidden_textures.get(id).cloned()).unwrap_or_default();
         let folders = if hidden.is_empty() { "Folders".to_string() } else { format!("Folders ({} hidden)", hidden.len()) };
-        egui::CollapsingHeader::new(folders).id_salt("material-folders").show(ui, |ui| self.texture_folder_toggles(ui));
         let any = !self.session.selection.is_empty() || !self.session.face_selection.is_empty();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(any, icons::button(Some("bucket_fill"), "Apply to selection")).clicked() {
-                self.run_command("tools.apply_material");
-            }
-            if ui
-                .add_enabled(any, icons::button(Some("eraser"), "Clear material"))
-                .on_hover_text("Take the material off the picked faces or the selected brushes")
-                .clicked()
-            {
-                self.run_command("tools.clear_material");
-            }
+        egui::ScrollArea::vertical().id_salt("material-tools").max_height(ui.available_height() * 0.6).auto_shrink([false, true]).show(ui, |ui| {
+            egui::CollapsingHeader::new(folders).id_salt("material-folders").show(ui, |ui| self.texture_folder_toggles(ui));
+            ui.horizontal(|ui| {
+                if ui.add_enabled(any, icons::button(Some("bucket_fill"), "Apply to selection")).clicked() {
+                    self.run_command("tools.apply_material");
+                }
+                if ui
+                    .add_enabled(any, icons::button(Some("eraser"), "Clear material"))
+                    .on_hover_text("Take the material off the picked faces or the selected brushes")
+                    .clicked()
+                {
+                    self.run_command("tools.clear_material");
+                }
+            });
+            self.lit_maps_editor(ui);
         });
-        self.lit_maps_editor(ui);
         let filter = self.material_filter.to_lowercase();
+        // A search looks in hidden folders too.
         let names: Vec<crate::project::Material> = self
             .project
             .materials
             .iter()
-            .filter(|m| !m.browse_folder().is_some_and(|f| in_hidden_folder(&f, &hidden)))
+            .filter(|m| !filter.is_empty() || !m.browse_folder().is_some_and(|f| in_hidden_folder(&f, &hidden)))
             .filter(|m| {
                 filter.is_empty()
                     || m.name.to_lowercase().contains(&filter)
@@ -2744,6 +2747,8 @@ impl MapCraftApp {
         }
         let tip = "Share of each side that eases down to Black height";
         changed |= num(ui, &prop("Edge falloff", "noise_falloff", tip), &mut n.edge_falloff, 0.0..=0.5, 0.005);
+        let tip = "Keeps the noise to a band as wide as Edge falloff around the edges and flattens the middle to Black height, to box a level in";
+        changed |= inspect::row(ui, &prop("Flat center", "noise_flat_center", tip), |ui| ui.checkbox(&mut n.flat_center, "")).changed;
         changed |= num(ui, &prop("Terraces", "noise_terraces", "Steps the heights climb in; 0 keeps them smooth"), &mut n.terraces, 0..=64, 0.05);
         let presets = HeightNoise::presets();
         let icons = ["wave", "mountains", "footsteps", "bullseye", "pyramid"];
@@ -3052,8 +3057,10 @@ pub(crate) fn folder_tree(ui: &mut egui::Ui, salt: &str, folders: &BTreeMap<Stri
                 } else {
                     ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
                 }
-                let mut shown = !hidden.contains(folder);
-                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this folder and all in it").changed() {
+                let inherited = folder.rsplit_once('/').is_some_and(|(p, _)| in_hidden_folder(p, hidden));
+                let mut shown = !inherited && !hidden.contains(folder);
+                let tip = if inherited { "Hidden with the folder it is in" } else { "Show or hide this folder and all in it" };
+                if ui.add_enabled(!inherited, egui::Checkbox::without_text(&mut shown)).on_hover_text(tip).on_disabled_hover_text(tip).changed() {
                     if shown {
                         hidden.remove(folder);
                     } else {

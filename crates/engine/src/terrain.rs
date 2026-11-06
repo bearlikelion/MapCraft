@@ -555,52 +555,75 @@ impl Session {
     }
 }
 
-/// The two in-plane axes of the targets' first face, and the low corner and size of their flat grids' bounds.
-fn layout(targets: &[Target]) -> Option<(usize, usize, DVec3, DVec3)> {
-    let axis = targets.first()?.normal.abs().max_position();
-    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
-    let (a, b) = if a < b { (a, b) } else { (b, a) };
-    let (mut lo, mut hi) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
-    for p in targets.iter().flat_map(|t| t.base.iter()) {
-        (lo, hi) = (lo.min(*p), hi.max(*p));
+/// Per target, the two in-plane axes of its facing and the low corner and size of the flat grids of all targets facing that way.
+fn layouts(targets: &[Target]) -> Vec<(usize, usize, DVec3, DVec3)> {
+    let facing = |t: &Target| {
+        let axis = t.normal.abs().max_position();
+        (axis, t.normal[axis] > 0.0)
+    };
+    let mut bounds: BTreeMap<(usize, bool), (DVec3, DVec3)> = BTreeMap::new();
+    for t in targets {
+        let b = bounds.entry(facing(t)).or_insert((DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY)));
+        for p in &t.base {
+            *b = (b.0.min(*p), b.1.max(*p));
+        }
     }
-    Some((a, b, lo, (hi - lo).max(DVec3::splat(1e-9))))
+    targets
+        .iter()
+        .map(|t| {
+            let (axis, up) = facing(t);
+            let (lo, hi) = bounds.get(&(axis, up)).copied().unwrap_or((DVec3::ZERO, DVec3::ONE));
+            let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+            let (a, b) = if a < b { (a, b) } else { (b, a) };
+            (a, b, lo, (hi - lo).max(DVec3::splat(1e-9)))
+        })
+        .collect()
 }
 
 /// Each target's flat grid sampled from a gray image stretched over them all, its top on their far side.
 fn image_samples(targets: &[Target], gray: &[f32], width: usize, height: usize) -> Result<Vec<Vec<f64>>, EngineError> {
-    let Some((a, b, lo, span)) = layout(targets).filter(|_| width >= 2 && height >= 2 && gray.len() >= width * height) else {
+    if targets.is_empty() || width < 2 || height < 2 || gray.len() < width * height {
         return Err(EngineError::Refused("pick displaced faces and a heightmap image"));
-    };
+    }
     let at = |x: usize, y: usize| f64::from(gray.get(y.min(height - 1) * width + x.min(width - 1)).copied().unwrap_or(0.0));
-    let sample = |p: &DVec3| {
+    let sample = |(a, b, lo, span): (usize, usize, DVec3, DVec3), p: &DVec3| {
         let u = (p[a] - lo[a]) / span[a] * (width - 1) as f64;
         let v = (1.0 - (p[b] - lo[b]) / span[b]) * (height - 1) as f64;
         let (x, y) = (u.floor().max(0.0) as usize, v.floor().max(0.0) as usize);
         let (fx, fy) = (u - x as f64, v - y as f64);
         (at(x, y) * (1.0 - fx) + at(x + 1, y) * fx) * (1.0 - fy) + (at(x, y + 1) * (1.0 - fx) + at(x + 1, y + 1) * fx) * fy
     };
-    Ok(targets.iter().map(|t| t.base.iter().map(sample).collect()).collect())
+    Ok(targets.iter().zip(layouts(targets)).map(|(t, l)| t.base.iter().map(|p| sample(l, p)).collect()).collect())
 }
 
 /// Each target's flat grid sampled from `noise` laid over them all, scaled to 0..1 as NoiseTexture2D normalizes, then terraced and eased at the edges.
 fn noise_samples(targets: &[Target], noise: &HeightNoise) -> Result<Vec<Vec<f64>>, EngineError> {
-    let (a, b, lo, span) = layout(targets).ok_or(EngineError::Refused("pick displaced faces"))?;
+    if targets.is_empty() {
+        return Err(EngineError::Refused("pick displaced faces"));
+    }
+    let layouts = layouts(targets);
     let at = noise.sampler();
-    let px = NOISE_PIXELS / span[a].max(span[b]);
-    let raw: Vec<Vec<f64>> = targets.iter().map(|t| t.base.iter().map(|p| at((p[a] - lo[a]) * px, (lo[b] + span[b] - p[b]) * px)).collect()).collect();
+    let raw: Vec<Vec<f64>> = targets
+        .iter()
+        .zip(&layouts)
+        .map(|(t, &(a, b, lo, span))| {
+            let px = NOISE_PIXELS / span[a].max(span[b]);
+            t.base.iter().map(|p| at((p[a] - lo[a]) * px, (lo[b] + span[b] - p[b]) * px)).collect()
+        })
+        .collect();
     let (min, max) = raw.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| (l.min(*v), h.max(*v)));
     let steps = f64::from(noise.terraces);
     let falloff = if noise.edge_falloff.is_finite() { noise.edge_falloff.clamp(0.0, 0.5) } else { 0.0 };
     let edge = |x: f64| ramp(0.0, falloff, x.min(1.0 - x));
-    let shape = |p: &DVec3, v: f64| {
+    let shape = |&(a, b, lo, span): &(usize, usize, DVec3, DVec3), p: &DVec3, v: f64| {
         let mut g = if max > min { (v - min) / (max - min) } else { 0.0 };
         if noise.terraces >= 2 {
             g = ((g * steps).floor() + ramp(0.5, 1.0, (g * steps).fract())) / steps;
         }
-        g * edge((p[a] - lo[a]) / span[a]) * edge((p[b] - lo[b]) / span[b])
+        let inner = edge((p[a] - lo[a]) / span[a]) * edge((p[b] - lo[b]) / span[b]);
+        g * if noise.flat_center { 1.0 - inner } else { inner }
     };
-    Ok(targets.iter().zip(raw).map(|(t, r)| t.base.iter().zip(r).map(|(p, v)| shape(p, v)).collect()).collect())
+    Ok(targets.iter().zip(&layouts).zip(raw).map(|((t, l), r)| t.base.iter().zip(r).map(|(p, v)| shape(l, p, v)).collect()).collect())
 }
 
 /// (target, vertex) lists of the vertices neighboring faces share.
@@ -762,6 +785,11 @@ mod tests {
         s.retune_heightmap(&HeightNoise { edge_falloff: 0.25, ..hills }, 0.0, 64.0, None).unwrap();
         let rim = ids.iter().flat_map(|id| grid(&s, *id)).filter(|p| p.x < 1e-6 || p.x > 128.0 - 1e-6 || p.y < 1e-6 || p.y > 64.0 - 1e-6);
         assert!(rim.into_iter().all(|p| p.z.abs() < 1e-9), "the edges ease down to black");
+        s.retune_heightmap(&HeightNoise { edge_falloff: 0.25, flat_center: true, ..hills }, 0.0, 64.0, None).unwrap();
+        let points = ids.iter().flat_map(|id| grid(&s, *id)).collect::<Vec<_>>();
+        let middle = points.iter().filter(|p| (p.x - 64.0).abs() < 1e-6 && (p.y - 32.0).abs() < 1e-6);
+        assert!(middle.into_iter().all(|p| p.z.abs() < 1e-9), "a flat center eases the middle down to black");
+        assert!(points.iter().any(|p| p.z > 1.0), "and keeps the noise around the edges");
         let wild = HeightNoise {
             seed: u32::MAX,
             frequency: f64::NAN,
@@ -781,6 +809,23 @@ mod tests {
                     s.apply_noise(&HeightNoise { kind, fractal, frequency, ..wild }, 0.0, 64.0).unwrap();
                     assert!(heights(&s).iter().all(|h| (0.0..=64.0).contains(h)), "{kind:?} {fractal:?} {frequency}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn noise_lies_flat_on_faces_of_every_facing() {
+        let mut s = Session::default();
+        let id = floor(&mut s, 0.0);
+        s.face_selection = s.map.get(id).unwrap().kind.brush().unwrap().faces.iter().map(|f| (id, f.id)).collect();
+        s.displace_faces(3).unwrap();
+        for (name, preset) in HeightNoise::presets() {
+            s.apply_noise(&preset, 0.0, 64.0).unwrap();
+            for f in s.map.get(id).unwrap().kind.brush().unwrap().faces.iter() {
+                let heights = &f.disp.as_ref().unwrap().heights;
+                let rows: BTreeSet<i64> = heights.chunks(9).map(|r| (r.iter().sum::<f64>() * 1e3) as i64).collect();
+                let cols: BTreeSet<i64> = (0..9).map(|c| (heights.iter().skip(c).step_by(9).sum::<f64>() * 1e3) as i64).collect();
+                assert!(rows.len() > 1 && cols.len() > 1, "{name} varies across both sides of every face, not in stripes");
             }
         }
     }

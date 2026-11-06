@@ -20,6 +20,8 @@ pub struct HeightNoise {
     pub weighted_strength: f64,
     /// Share of the area's width and depth over which each side eases down to black, up to 0.5.
     pub edge_falloff: f64,
+    /// Flips the falloff: the noise keeps to a band of that width around the edges and the middle eases down to black.
+    pub flat_center: bool,
     /// Steps the heights climb in; below 2 keeps them smooth.
     pub terraces: u32,
 }
@@ -37,6 +39,7 @@ impl Default for HeightNoise {
             gain: 0.5,
             weighted_strength: 0.0,
             edge_falloff: 0.0,
+            flat_center: false,
             terraces: 0,
         }
     }
