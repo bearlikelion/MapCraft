@@ -12,6 +12,7 @@ my-game/
   fgd/              entity definitions the manifest lists
   plugins/<id>.wasm one file per id in `plugins`
   samples/*.mcmap   example maps; the SDK Manager's Test button opens the first one
+  convert/<sdk>.toml rules for turning another SDK's maps into this one's (see Converting maps)
   logo.png          or logo.jpg, shown on the SDK's card; 460 by 215 pixels fits best
   README.md         what the SDK is for and how to set it up
 ```
@@ -120,6 +121,9 @@ An unknown variable, or a path the user has not set yet, stops the compile with 
 - `{ export = "id", to = "..." }` writes the map with the exporter `id` of one of the SDK's plugins, such as a Quake `.map` before `qbsp` runs. Prefabs and mirror copies are resolved first, and layers left out of exports and anything outside an active cordon are dropped.
 - `{ pack = "${map}", to = ".../${map_name}.mcpck" }` writes the map and the pictures and models it takes from the user's own folders as one self-contained [`.mcpck`](mcpck-format.md) at `to`; a map with no such assets is copied to `to` with a `.mcmap` extension instead.
   Either way the file of the other kind at that path is deleted, so the game never loads a stale copy.
+- `{ embed = "id", into = "..." }` puts the pictures of the materials the map takes from files, rather than from the game, into the file at `into` with the embedder `id` of one of the SDK's plugins.
+  The Counter-Strike: Source SDK's `bsp` embedder writes each one into the compiled `.bsp`'s pak lump as a `.vtf` and `.vmt`, so a map converted from SurfsUp shows its own textures in the game.
+  It runs in order with the other steps, after the tools that made the file.
 
 Export and pack steps run before all other steps, because plugins and the map's assets live in the editor; the other steps then run in order and the profile stops at the first failure.
 A profile with `os = "linux"`, `"windows"` or `"macos"` is listed only on that system, so an SDK can run a game's native tools on each.
@@ -133,6 +137,36 @@ The plugin whose `load-model` reads that file's type turns it into lightmapped p
 A Quake bake shows colored light that `light -bspxlit` writes into the `.bsp` itself, so it needs no `.lit` file; when both are there, the `.bsp`'s own colored light wins, since it always matches the compile.
 While a Lit view is open, MapCraft bakes again shortly after each edit; choosing the profile in the Run menu bakes at once.
 Until the new bake lands after a change to the brushes, the Lit view draws the brushes as they are now, with live lights, so a drag never shows the old shape.
+
+## Converting maps
+
+`convert/<source>.toml` tells MapCraft how a map made for the SDK `<source>` becomes this SDK's, such as `convert/cstrike.toml` in the SurfsUp SDK.
+File > Switch SDK… shows **Convert** beside an SDK that has rules for the map's current SDK; it rewrites the map's entities and materials as one undo step, then switches.
+An import whose plugin says its files use another SDK, such as a Source BSP or VMF (`cstrike`), is converted the same way as it comes in, as its own undo step.
+Classes without a rule are kept as they are, so Check for Problems lists what is left to do by hand.
+
+```toml
+[classes.trigger_teleport]
+to = "teleport_zone"                          # the class it becomes
+keys = { target = "next_stage" }              # keys renamed, old = new
+set = { kill_velocity = "1" }                 # keys set after renaming
+remove = ["landmark", "spawnflags"]           # keys removed
+
+[classes.info_player_terrorist]
+to = "info_player_start"
+single = true                                 # only the first entity that becomes this class is kept
+
+[classes.func_wall]
+world = true                                  # its brushes join the world and the entity goes
+
+[classes.func_buyzone]
+drop = true                                   # removed, brushes and all
+
+[materials]
+"tools/toolsplayerclip" = "tools/clip"        # face materials renamed
+```
+
+The SDK Manager's check reads every rule file, fails on one that does not parse, and warns about a `to` class the SDK's FGDs do not define.
 
 ## Where SDKs are found
 

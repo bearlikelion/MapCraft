@@ -45,6 +45,23 @@ func _initialize() -> void:
 
 
 # Clear pixels show through: cut out when each is fully on or off, blended otherwise.
+# The pack's pictures and models have no file of their own, so the editable scene carries them.
+func _check_editable_pack(pack: String) -> void:
+	var path: String = pack.get_basename() + ".tscn"
+	_expect(MapCraftMap.save_as_scene(pack, path) == OK, "a map pack saves as an editable scene")
+	var scene: PackedScene = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var root: Node = scene.instantiate() if scene != null else null
+	var world: Node = root.get_node_or_null("WorldMesh") if root != null else null
+	var material: StandardMaterial3D = _surface_material(world, "ramps-orange1") \
+			as StandardMaterial3D
+	_expect(material != null and material.albedo_texture != null, \
+			"the editable scene keeps the pack's pictures")
+	_expect(root != null and _crate_mesh(root) != null, \
+			"the editable scene keeps the pack's models")
+	if root != null:
+		root.free()
+
+
 func _check_see_through_pictures() -> void:
 	var expected: Dictionary[BaseMaterial3D.Transparency, float] = {
 		BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR: 0.0,
@@ -393,6 +410,7 @@ func _check_map_packs() -> void:
 	_expect(root != null and _crate_mesh(root) != null, "load() of a .mcpck builds its models")
 	if root != null:
 		root.free()
+	_check_editable_pack(DIR + "own.mcpck")
 
 	var map: MapCraftMap = MapCraftMap.new()
 	map.map_file = DIR + "own.mcpck"

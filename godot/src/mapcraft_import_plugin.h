@@ -1,5 +1,7 @@
 #pragma once
 
+#include <godot_cpp/classes/editor_context_menu_plugin.hpp>
+#include <godot_cpp/classes/editor_file_dialog.hpp>
 #include <godot_cpp/classes/editor_import_plugin.hpp>
 #include <godot_cpp/classes/editor_plugin.hpp>
 
@@ -53,11 +55,29 @@ public:
 			const TypedArray<String> &p_gen_files) const override;
 };
 
+// Offers Save as Editable Scene on maps and packs in the FileSystem dock.
+class MapCraftContextMenu : public EditorContextMenuPlugin {
+	GDCLASS(MapCraftContextMenu, EditorContextMenuPlugin)
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	Callable chosen;
+	void _popup_menu(const PackedStringArray &p_paths) override;
+};
+
 class MapCraftEditorPlugin : public EditorPlugin {
 	GDCLASS(MapCraftEditorPlugin, EditorPlugin)
 
 	Ref<MapCraftImportPlugin> importer;
 	Ref<MapCraftLightingImportPlugin> lighting_importer;
+	Ref<MapCraftContextMenu> context_menu;
+	EditorFileDialog *save_dialog = nullptr;
+	String saving;
+
+	void save_requested(const Array &p_paths);
+	void save_chosen(const String &p_path);
 
 protected:
 	static void _bind_methods() {}

@@ -372,7 +372,7 @@ pub fn import_gltf(
         if brushes > MAX_BRUSHES {
             return Err(format!("more than {MAX_BRUSHES} brushes"));
         }
-        let made: Vec<Fragment> = made.into_iter().map(|b| Fragment { kind: NodeKind::Brush(b), children: Vec::new() }).collect();
+        let made: Vec<Fragment> = made.into_iter().map(|b| Fragment { kind: NodeKind::Brush(b), children: Vec::new(), hidden: false }).collect();
         if made.len() > 1 {
             let label = node.name.clone().or_else(|| mesh.name.clone()).unwrap_or_else(|| format!("Mesh {}", k + 1));
             children.push(group(&label, made));
@@ -387,7 +387,7 @@ pub fn import_gltf(
 }
 
 fn group(name: &str, children: Vec<Fragment>) -> Fragment {
-    Fragment { kind: NodeKind::Group(Group { name: name.to_string(), ..Group::default() }), children }
+    Fragment { kind: NodeKind::Group(Group { name: name.to_string(), ..Group::default() }), children, hidden: false }
 }
 
 /// The name and size of glTF material `index`; its picture goes in `pictures` when `texture_size` does not know the name.

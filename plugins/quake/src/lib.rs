@@ -39,7 +39,7 @@ impl Guest for Quake {
             version: env!("CARGO_PKG_VERSION").into(),
             commands: Vec::new(),
             materials: true,
-            importers: vec![ImporterSpec { id: "map".into(), label: "Quake map".into(), extensions: vec!["map".into()] }],
+            importers: vec![ImporterSpec { id: "map".into(), label: "Quake map".into(), extensions: vec!["map".into()], sdk: Some("quake".into()) }],
             exporters: vec![ExporterSpec { id: "map".into(), label: "Quake map (Valve220)".into(), extensions: vec!["map".into()] }],
             validates: false,
             models: vec!["mdl".into(), "bsp".into()],

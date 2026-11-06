@@ -109,13 +109,15 @@ mod bindings {
 }
 
 /// The `wit/plugin.wit` package version plugins must import.
-pub const API: &str = "0.4.0";
+pub const API: &str = "0.5.0";
 
 use bindings::Plugin as Bindings;
 use bindings::mapcraft::plugin::{host, types};
 
 /// `resize.scale-params`, which only plugins built against the `scalable-plugin` world export.
 type ScaleParams = TypedFunc<(String, Vec<types::Param>, types::Vec3), (Option<Vec<types::Param>>,)>;
+/// `embed.embed-file`, which only plugins built against the `embedding-plugin` world export.
+type EmbedFile = TypedFunc<(String, Vec<u8>, Vec<(String, types::Image)>), (Result<Vec<u8>, String>,)>;
 
 /// Fuel for one call; roughly a few seconds of work.
 const FUEL: u64 = 20_000_000_000;
@@ -278,8 +280,17 @@ impl Host {
         let resize = instance.get_export_index(&mut store, None, &format!("mapcraft:plugin/resize@{API}"));
         let scale_params =
             resize.and_then(|r| instance.get_export_index(&mut store, Some(&r), "scale-params")).and_then(|f| instance.get_typed_func(&mut store, f).ok());
-        let manifest = convert::manifest(bindings.call_manifest(&mut store).map_err(wasm_err)?);
-        Ok(Plugin { manifest, store, bindings, scale_params, fuel: FUEL, broken: false })
+        let embed = instance.get_export_index(&mut store, None, &format!("mapcraft:plugin/embed@{API}"));
+        let export = |store: &mut Store<State>, name: &str| embed.and_then(|e| instance.get_export_index(&mut *store, Some(&e), name));
+        let embed_file: Option<EmbedFile> = export(&mut store, "embed-file").and_then(|f| instance.get_typed_func(&mut store, f).ok());
+        let embedders: Option<TypedFunc<(), (Vec<types::ExporterSpec>,)>> =
+            export(&mut store, "embedders").and_then(|f| instance.get_typed_func(&mut store, f).ok());
+        let mut manifest = convert::manifest(bindings.call_manifest(&mut store).map_err(wasm_err)?);
+        if let (Some(f), Some(_)) = (embedders, &embed_file) {
+            let (list,) = f.call(&mut store, ()).map_err(wasm_err)?;
+            manifest.embedders = list.into_iter().map(|e| ImporterSpec { id: e.id, label: e.label, extensions: e.extensions, sdk: None }).collect();
+        }
+        Ok(Plugin { manifest, store, bindings, scale_params, embed_file, fuel: FUEL, broken: false })
     }
 }
 
@@ -289,6 +300,7 @@ pub struct Plugin {
     store: Store<State>,
     bindings: Bindings,
     scale_params: Option<ScaleParams>,
+    embed_file: Option<EmbedFile>,
     fuel: u64,
     broken: bool,
 }
@@ -360,6 +372,26 @@ impl Plugin {
         match f.call(&mut self.store, (command.into(), current, types::Vec3 { x: scale.x, y: scale.y, z: scale.z })) {
             Ok((Some(list),)) => Ok(Some(convert::scaled_params(&spec, params, list))),
             Ok((None,)) => Ok(None),
+            Err(e) => Err(self.trapped(e)),
+        }
+    }
+
+    /// `data`, a file a compile step made, with `pictures` added by the plugin's embedder `embedder`.
+    pub fn embed(&mut self, embedder: &str, data: Vec<u8>, pictures: Vec<(String, Picture)>) -> Result<Vec<u8>, PluginError> {
+        let Some(f) = self.embed_file else { return Err(PluginError::UnknownCommand(self.manifest.id.clone(), embedder.into())) };
+        if !self.manifest.embedders.iter().any(|e| e.id == embedder) {
+            return Err(PluginError::UnknownCommand(self.manifest.id.clone(), embedder.into()));
+        }
+        let size = data.len() + pictures.iter().map(|(_, p)| p.rgba.len()).sum::<usize>();
+        // The plugin holds the file and every picture, and writes a bigger copy.
+        let cap = size.saturating_mul(3).saturating_add(IMPORT_HEADROOM).clamp(MEMORY, 4 << 30);
+        self.store.data_mut().limits = StoreLimitsBuilder::new().memory_size(cap).instances(16).build();
+        self.begin()?;
+        self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
+        let pictures = pictures.into_iter().map(|(name, p)| (name, types::Image { width: p.width, height: p.height, rgba: p.rgba })).collect();
+        let result = f.call(&mut self.store, (embedder.to_string(), data, pictures));
+        match result {
+            Ok((out,)) => out.map_err(|message| self.failed(message)),
             Err(e) => Err(self.trapped(e)),
         }
     }

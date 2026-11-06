@@ -662,6 +662,30 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 .pager span { color: var(--muted); font-size: 0.82rem; font-weight: 400; }
 .pager .next { grid-column: 2; text-align: right; }
 .doc-source { margin-top: 28px; font-size: 0.88rem; }
+
+/* Changelog: one card per release, its groups in columns, the releases in the sidebar. */
+.side-section.changelog .side-title::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--orange); }
+.side-section.changelog small { margin-left: auto; color: var(--muted); font: 500 0.78rem/1 var(--mono); }
+.side-section.changelog span { font-family: var(--mono); font-size: 0.9rem; }
+.side .changelog li a[aria-current] { background: color-mix(in srgb, var(--orange) 18%, transparent); font-weight: 700; }
+.release { margin-top: clamp(2rem, 4vw, 3rem); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.release:first-of-type::before { content: ""; display: block; height: 3px; background: var(--orange); }
+.release-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 4px 20px; padding: clamp(18px, 3vw, 28px) clamp(18px, 3vw, 32px); border-bottom: 1px solid var(--line); background: linear-gradient(180deg, color-mix(in srgb, var(--orange) 7%, var(--panel)), var(--panel)); }
+.release-meta { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--muted); font: 600 0.8rem/1.2 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.release-latest { padding: 3px 8px; border-radius: 999px; background: var(--orange); color: var(--on-orange); font-size: 0.7rem; letter-spacing: 0.08em; }
+.release-head h2 { grid-row: 2; margin: 0; font-size: clamp(1.8rem, 1.3rem + 2vw, 2.8rem); font-stretch: 125%; font-weight: 900; letter-spacing: -0.03em; }
+.release-head h2 a { color: var(--ink); text-decoration: none; }
+.release-head h2 a:hover { color: var(--link); }
+.release-link { grid-row: 1 / span 2; grid-column: 2; align-self: center; padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-size: 0.92rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.release-link:hover { border-color: var(--orange); }
+.release-body { columns: 2 24rem; column-gap: clamp(28px, 4vw, 56px); padding: clamp(14px, 2.5vw, 24px) clamp(18px, 3vw, 32px) clamp(18px, 3vw, 28px); }
+.change-group { break-inside: avoid; padding: 10px 0 6px; }
+.change-group h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 0.5em; color: var(--ink); font: 800 0.95rem/1.2 var(--display); font-stretch: 112%; letter-spacing: 0.05em; text-transform: uppercase; }
+.change-group h3::before { content: ""; flex: none; width: 4px; height: 1em; border-radius: 2px; background: var(--orange); }
+.change-group ul { margin: 0 0 0.6em; }
+.doc .change-group li { margin: 0.35em 0; color: var(--muted); font-size: 0.98rem; line-height: 1.55; }
+.change-group li strong { color: var(--link); }
+.change-group li code { color: var(--ink); }
 .doc-source a { color: var(--muted); }
 
 /* Narrower windows */
@@ -696,6 +720,10 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 @media (max-width: 640px) {
 	body { font-size: 16px; }
 	.top nav .opt { display: none; }
+	.top-inner { gap: 10px; }
+	.top nav { min-width: 0; gap: 10px; overflow-x: auto; font-size: 0.86rem; scrollbar-width: none; }
+	.top nav a { flex: none; }
+	.top nav a:last-child { display: none; }
 	.top .brand { font-size: 0; gap: 0; }
 	.search > kbd { display: none; }
 	/* The search folds to its icon and opens across the header while in use. */
@@ -709,6 +737,8 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 	.search-results { width: 100%; }
 	.pager { grid-template-columns: minmax(0, 1fr); }
 	.pager .next { grid-column: auto; }
+	.release-head { grid-template-columns: minmax(0, 1fr); }
+	.release-link { grid-row: auto; grid-column: auto; justify-self: start; margin-top: 8px; }
 	.dl-list { grid-template-columns: minmax(0, 1fr); }
 	.pin { width: 24px; height: 24px; border-width: 1.5px; font-size: 0.72rem; }
 	.panes { grid-template-columns: minmax(0, 1fr); }
@@ -718,6 +748,3 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 	.hero-credit { position: static; grid-row: 3; margin: -24px 0 20px; }
 }
 
-@media (max-width: 359px) {
-	.top nav a:last-child { display: none; }
-}

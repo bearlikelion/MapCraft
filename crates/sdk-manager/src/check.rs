@@ -169,6 +169,27 @@ pub fn check(dir: &Path, vars: &BTreeMap<String, String>, host: Option<&Host>) -
         }
     }
 
+    let rules = std::fs::read_dir(sdk.dir.join("convert")).into_iter().flatten().flatten().map(|e| e.path());
+    let mut rules: Vec<PathBuf> = rules.filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+    rules.sort();
+    for path in rules {
+        let source = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let what = format!("convert {source}");
+        out.push(match sdk.conversion_from(&source) {
+            None => item(Fail, what, format!("`{source}` is not an SDK id another SDK can have")),
+            Some(Err(e)) => item(Fail, what, e.to_string()),
+            Some(Ok(c)) => {
+                let unknown: BTreeSet<&str> =
+                    c.classes.values().filter_map(|r| r.to.as_deref()).filter(|to| !m.fgd.is_empty() && game.class(to).is_none()).collect();
+                if unknown.is_empty() {
+                    item(Pass, what, format!("{} class rules, {} material rules", c.classes.len(), c.materials.len()))
+                } else {
+                    item(Warn, what, format!("turns entities into classes this SDK does not define: {}", Vec::from_iter(unknown).join(", ")))
+                }
+            }
+        });
+    }
+
     let maps = samples(&sdk.dir);
     if maps.is_empty() {
         out.push(item(Warn, "samples", "no sample maps in samples/; add one so Test can open it"));
@@ -214,8 +235,16 @@ mod tests {
         assert!(levels(&items, "path project").iter().all(|(l, _)| *l == Level::Warn), "unset paths only warn");
         let sample = levels(&items, "sample surf_mapcraft");
         assert!(sample.iter().all(|(l, _)| *l != Level::Fail), "{sample:?}");
+        assert!(matches!(levels(&items, "convert cstrike").as_slice(), [(Level::Pass, _)]), "{items:#?}");
         assert_eq!(levels(&items, "plugin ").len(), 3, "plugins pass or fail depending on `cargo xtask plugins`, but are always checked");
         assert_ne!(worst(&items), Level::Pass, "SurfsUp asks for paths the test does not set");
+    }
+
+    #[test]
+    fn cstrike_reads_its_surfsup_rules() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks/cstrike");
+        let items = check(&dir, &BTreeMap::new(), None);
+        assert!(matches!(levels(&items, "convert surfsup").as_slice(), [(Level::Pass, _)]), "{items:#?}");
     }
 
     #[test]

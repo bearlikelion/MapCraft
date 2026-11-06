@@ -41,20 +41,24 @@ They are saved as PNG files in the `materials` folder of MapCraft's data folder 
 
 ### How the layer is sorted
 
-The layer holds a group for each kind of content, so you can find ramps, triggers and spawns at a glance.
+The layer follows the tree SurfsUp's SourceGD importer builds, so a map looks the same in MapCraft and in the game.
 Empty groups are left out.
 
 | Group | Holds |
 |---|---|
-| Ramps | World brushes with a surfable face: too steep to stand on, not a wall, at least 64 by 64 units |
-| World | The other world brushes |
-| Triggers | `trigger_` entities |
-| Spawns | `info_player_` entities |
-| Teleport destinations | `info_teleport_destination` |
-| Lights | `light` entities and `env_sun` |
+| World | World brushes with a face the game draws |
+| Skybox3D | Brushes and entities in the 3D skybox, the part of the map `sky_camera` sees |
+| BrushCollision | World brushes made only of tool materials, such as clips, nodraw and skybox walls; starts hidden |
+| LadderCollision | Ladder brushes; starts hidden |
+| SourceEntities | Triggers, brush entities, teleport destinations and every other entity |
 | Props | `prop_` entities, static props included |
-| Brush entities | `func_` entities |
-| Other | Everything else |
+| SourceEnvironment | Lights, `env_sun`, fog, tonemap and shadow controllers |
+
+Counter-Strike's spawns become one `info_player_start` at the top of the layer.
+It stands where SurfsUp spawns the player: the teleport destination named like the map's start (`td_mapstart`, `map_start`, `s1_start` and so on), or else the first spawn in the map.
+
+Faces of visible brushes that the game never draws are often `tools/toolsnodraw`, which walls off the inside of a compiled map.
+Turn off **View > Show Nodraw** to see past them.
 
 ## Limits
 
@@ -69,22 +73,25 @@ Empty groups are left out.
 ## Zone a CS:S surf map for SurfsUp
 
 Zones are the areas SurfsUp acts on, such as the start, the finish and stage teleports.
-These steps turn an imported Counter-Strike: Source surf map into one SurfsUp can run.
+Importing a `.bsp` while the map uses the SurfsUp SDK converts it to SurfsUp as it comes in, by the rules in the SDK's `convert/cstrike.toml` (see [SDK manifests](../sdk-format.md#converting-maps)):
 
-1. Import the `.bsp` as above, then save it as a `.mcmap`.
+- one `info_player_start` stands in for Counter-Strike's spawns;
+- `trigger_teleport` becomes `teleport_zone`, its `target` the zone's destination, and `info_teleport_destination` becomes `teleport_destination`;
+- `trigger_push` becomes `zone_booster` and `trigger_hurt` becomes `kill_box`;
+- `func_wall` and `func_brush` join the world, so they stay solid and visible;
+- buy zones, bomb targets and other Counter-Strike game modes are removed.
+
+The status line counts what changed; undo once to keep the map as it came.
+A map already open in the Counter-Strike: Source SDK converts the same way from **File > Switch SDK…** with **Convert** beside SurfsUp.
+
+What is left is done by hand:
+
+1. Save the map as a `.mcmap`.
 2. Switch to **Objects** (`Alt+2`) or **Solids** (`Alt+3`), since in Groups mode a click selects a whole import group.
-3. Run **Tools > Check for Problems** (`Alt+P`).
-   It lists every Counter-Strike class the SurfsUp SDK does not define.
-4. **Spawn:** select one of the spawns in the Spawns group and pick `info_player_start` in the inspector's class list, or place a new one with the Entity tool (`N`).
-   Delete the rest.
-5. **Start and finish:** click `zone_start` in the Entities tab, select the start platform and choose **Tools > Zone from Selection**.
+3. **Start and finish:** CS:S surf maps keep these in the server's timer, not in the map.
+   Click `zone_start` in the Entities tab, select the start platform and choose **Tools > Zone from Selection**.
    Do the same with `zone_finish`.
-6. **Stage teleports:** find them with **View > Find Entities** (`Ctrl+F`) and `trigger_teleport`.
-   For each one, pick `teleport_zone` in the class list, set **Destination** to the old `target` value, then delete the old `target` key.
-   Turn each `info_teleport_destination` into a `teleport_destination` the same way.
-7. **Solid geometry:** in Godot, brush entity classes SurfsUp does not know become invisible, non-solid areas.
-   Select geometry such as `func_brush` or `func_wall` and use **Tools > Move to World** (`Ctrl+Shift+W`), or pick `func_detail` as its class, so it stays solid and visible.
-8. Run Check for Problems again and fix what is left.
+4. Run **Tools > Check for Problems** (`Alt+P`) and fix what is left; it lists every class the SurfsUp SDK does not define.
 
 ![The class list at the top of the inspector, open on a SurfsUp zone, listing zone_start, zone_finish, kill_box, teleport_zone and the other brush classes](img/bsp-class.webp)
 

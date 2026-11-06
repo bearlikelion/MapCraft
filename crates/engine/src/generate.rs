@@ -100,7 +100,7 @@ mod tests {
 
     fn block(size: f64) -> Vec<Fragment> {
         let b = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::splat(size)), &TexDefaults::default());
-        vec![Fragment { kind: NodeKind::Brush(b), children: Vec::new() }]
+        vec![Fragment { kind: NodeKind::Brush(b), children: Vec::new(), hidden: false }]
     }
 
     fn bounds(s: &Session, group: NodeId) -> Aabb {
@@ -139,7 +139,7 @@ mod tests {
 
         let tall = Brush::cuboid(Aabb::new(DVec3::ZERO, DVec3::new(32.0, 64.0, 32.0)), &TexDefaults::default());
         let fitted = Generator { params: json!({"size": [32, 64, 32]}), stretch: None, ..stretched };
-        s.refit(group, fitted, vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new() }]).unwrap();
+        s.refit(group, fitted, vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new(), hidden: false }]).unwrap();
         assert!(near(bounds(&s, group), DVec3::new(-64.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)));
         s.undo();
         assert!(near(bounds(&s, group), DVec3::new(-32.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)), "one undo takes back the resize and its refit");
@@ -147,12 +147,12 @@ mod tests {
         s.redo();
 
         s.transform_selection(&wide, "Scale", None).unwrap();
-        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new() }], None).unwrap();
+        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall.clone()), children: Vec::new(), hidden: false }], None).unwrap();
         assert!(near(bounds(&s, group), DVec3::new(-128.0, 0.0, 0.0), DVec3::new(0.0, 32.0, 32.0)), "an edit keeps the resize");
 
         s.rotate_selection(DVec3::X, 90.0).unwrap();
         let turned = bounds(&s, group);
-        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall), children: Vec::new() }], None).unwrap();
+        s.regenerate(group, generator(&s, group), vec![Fragment { kind: NodeKind::Brush(tall), children: Vec::new(), hidden: false }], None).unwrap();
         assert!(near(bounds(&s, group), turned.min, turned.max), "and so does a tilt");
     }
 
@@ -169,7 +169,7 @@ mod tests {
         imported.set("message", "Theirs");
         imported.set("_sunlight", "300");
         let mut frags = block(32.0);
-        frags.push(Fragment { kind: NodeKind::Entity(imported), children: Vec::new() });
+        frags.push(Fragment { kind: NodeKind::Entity(imported), children: Vec::new(), hidden: false });
         let layer = s.import_layer("map", frags).unwrap();
         let world = s.map.get(mapcraft_map::ROOT).unwrap().kind.entity().unwrap();
         assert_eq!((world.get("message"), world.get("_sunlight")), (Some("Mine"), Some("300")));

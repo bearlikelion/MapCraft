@@ -781,6 +781,8 @@ class Builder {
 	HashMap<String, Ref<Material>> surface_materials;
 	HashMap<String, Ref<Material>> variants;
 	bool warned_missing_shaders = false;
+	// The layer or group being built and its brushes; trimesh triangles stay the root's so ramps meet without seams.
+	Node3D *parent = nullptr;
 	Surfaces world_surfaces;
 	Vector<Shape> world_hulls;
 	PackedVector3Array world_triangles;
@@ -829,6 +831,8 @@ class Builder {
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
 	void add_environment(const Dictionary &p_properties);
+	void add_container(const Dictionary &p_node, int p_depth);
+	void finish_brushes(Node3D *p_into, const String &p_mesh, const String &p_collision, bool p_root);
 	MeshInstance3D *make_mesh(Surfaces &p_surfaces, const Vector3 &p_offset);
 	void add_shapes(Node *p_parent, const Vector<Shape> &p_hulls, const Vector3 &p_offset);
 	void add(Node *p_parent, Node *p_child, bool p_readable_name);
@@ -1604,9 +1608,55 @@ void Builder::walk(const Dictionary &p_node, int p_depth) {
 	if (type == "layer" && bool(p_node.get("omit_from_export", false))) {
 		return;
 	}
+	if (type == "layer" || type == "group") {
+		add_container(p_node, p_depth);
+		return;
+	}
 	Array children = p_node.get("children", Array());
 	for (int i = 0; i < children.size(); i++) {
 		walk(children[i], p_depth + 1);
+	}
+}
+
+void Builder::add_container(const Dictionary &p_node, int p_depth) {
+	Node3D *node = memnew(Node3D);
+	String name = String(p_node.get("name", "")).validate_node_name();
+	node->set_name(name.is_empty() ? String(p_node.get("type", "")).capitalize() : name);
+	Node3D *outer = parent;
+	Surfaces surfaces = world_surfaces;
+	Vector<Shape> hulls = world_hulls;
+	world_surfaces.clear();
+	world_hulls.clear();
+	parent = node;
+	Array children = p_node.get("children", Array());
+	for (int i = 0; i < children.size(); i++) {
+		walk(children[i], p_depth + 1);
+	}
+	finish_brushes(node, "Mesh", "Collision", false);
+	parent = outer;
+	world_surfaces = surfaces;
+	world_hulls = hulls;
+	if (node->get_child_count() == 0) {
+		memdelete(node);
+		return;
+	}
+	add(parent, node, true);
+}
+
+void Builder::finish_brushes(Node3D *p_into, const String &p_mesh, const String &p_collision, bool p_root) {
+	if (!world_surfaces.is_empty()) {
+		MeshInstance3D *mesh = make_mesh(world_surfaces, Vector3());
+		mesh->set_name(p_mesh);
+		add(p_into, mesh, false);
+	}
+	if (p_root && !world_triangles.is_empty()) {
+		world_hulls.push_back(Shape{ world_triangles, true });
+	}
+	if (options.collision && !world_hulls.is_empty()) {
+		StaticBody3D *body = memnew(StaticBody3D);
+		body->set_name(p_collision);
+		add(p_into, body, false);
+		add_shapes(body, world_hulls, Vector3());
 	}
 }
 
@@ -1776,7 +1826,7 @@ void Builder::add_entity(const Dictionary &p_entity) {
 		node->set_meta(meta_name(meta_keys[i]), meta[meta_keys[i]]);
 	}
 
-	add(root, node, true);
+	add(bool(config.get("root", false)) ? root : parent, node, true);
 	if (options.on_entity) {
 		options.on_entity(node, classname, properties);
 	}
@@ -1825,7 +1875,7 @@ void Builder::add_prefab(const Dictionary &p_prefab) {
 		return;
 	}
 	instance->set_transform(Transform3D(godot_basis(map_angles(read_vec3(p_prefab.get("angles", Array())))), to_godot(origin)));
-	add(root, instance, true);
+	add(parent, instance, true);
 }
 
 void Builder::add_environment(const Dictionary &p_properties) {
@@ -1998,6 +2048,7 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 	if (options.prefabs_above.is_empty()) {
 		sky_shader = embedded_shader(world_node, Shader::MODE_SKY);
 	}
+	parent = root;
 	walk(world_node, 0);
 	if (!has_environment && options.prefabs_above.is_empty() && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
 		add_environment(Dictionary());
@@ -2019,22 +2070,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		has_environment = true;
 	}
 
-	if (!world_surfaces.is_empty()) {
-		MeshInstance3D *mesh = make_mesh(world_surfaces, Vector3());
-		mesh->set_name("WorldMesh");
-		add(root, mesh, false);
-	}
-	if (!world_triangles.is_empty()) {
-		world_hulls.push_back(Shape{ world_triangles, true });
-	}
+	finish_brushes(root, "WorldMesh", "WorldCollision", true);
 	if (lit && !lightmap_users.is_empty()) {
 		add_lightmap();
-	}
-	if (options.collision && !world_hulls.is_empty()) {
-		StaticBody3D *body = memnew(StaticBody3D);
-		body->set_name("WorldCollision");
-		add(root, body, false);
-		add_shapes(body, world_hulls, Vector3());
 	}
 	if (options.own_nodes) {
 		for (int i = 0; i < root->get_child_count(); i++) {

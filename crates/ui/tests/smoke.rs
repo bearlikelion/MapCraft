@@ -1209,6 +1209,7 @@ fn shift_scroll_while_flying_changes_the_fly_speed() {
     h.event(Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::SHIFT });
     h.run_steps(1);
     assert!(h.state().fly_speed_for_test() > before, "Shift and the wheel speed up the flight");
+    assert!(h.state().fly_speed_shown_for_test(), "the 3D view shows the new speed");
 }
 
 #[test]

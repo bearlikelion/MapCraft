@@ -1,4 +1,4 @@
-package mapcraft:plugin@0.4.0;
+package mapcraft:plugin@0.5.0;
 
 /// Plain data shared by the host and plugins. Lengths are map units (1 unit = 1 inch), Z is up.
 interface types {
@@ -65,6 +65,8 @@ interface types {
         label: string,
         /// Extensions without the dot, such as `bsp`.
         extensions: list<string>,
+        /// The SDK whose classes and materials the files use, such as `cstrike`; a map in another SDK with rules for it converts what comes in.
+        sdk: option<string>,
     }
 
     /// A file format `export-file` writes, offered under File > Export and in compile profiles.
@@ -171,6 +173,8 @@ interface types {
     /// Output the editor keeps together in a group named `name`.
     record group {
         name: string,
+        /// The group starts hidden, as collision-only geometry does.
+        hidden: bool,
         brushes: list<brush>,
         entities: list<entity>,
     }
@@ -392,4 +396,20 @@ interface resize {
 world scalable-plugin {
     include plugin;
     export resize;
+}
+
+/// Puts pictures into a file a compile step made, such as a game's compiled map, so the game draws materials it does not ship.
+interface embed {
+    use types.{exporter-spec, image};
+
+    /// The file types `embed-file` takes; a compile step's `embed` names one by id.
+    embedders: func() -> list<exporter-spec>;
+    /// `data` with each picture added as the game's material of that name.
+    embed-file: func(embedder: string, data: list<u8>, pictures: list<tuple<string, image>>) -> result<list<u8>, string>;
+}
+
+/// A plugin that also exports `embed`.
+world embedding-plugin {
+    include plugin;
+    export embed;
 }

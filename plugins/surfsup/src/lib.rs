@@ -336,7 +336,12 @@ impl Guest for SurfsUp {
             version: env!("CARGO_PKG_VERSION").into(),
             commands: vec![ramp_command(), bhop_command()],
             materials: false,
-            importers: vec![ImporterSpec { id: "pck".into(), label: "SurfsUp SDK map".into(), extensions: vec!["pck".into(), "tscn".into(), "scn".into()] }],
+            importers: vec![ImporterSpec {
+                id: "pck".into(),
+                label: "SurfsUp SDK map".into(),
+                extensions: vec!["pck".into(), "tscn".into(), "scn".into()],
+                sdk: Some("surfsup".into()),
+            }],
             exporters: Vec::new(),
             validates: true,
             models: Vec::new(),

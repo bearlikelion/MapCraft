@@ -378,6 +378,7 @@ pub const CLIPBOARD_FORMAT: &str = "mapcraft.clipboard";
 pub struct Fragment {
     pub kind: NodeKind,
     pub children: Vec<Fragment>,
+    pub hidden: bool,
 }
 
 /// The subtrees under `roots` as clipboard text.
@@ -395,7 +396,7 @@ pub fn fragment_from_str(text: &str) -> Result<Vec<Fragment>, FormatError> {
         nodes: Vec<FileNode>,
     }
     fn convert(f: FileNode) -> Fragment {
-        Fragment { kind: f.kind, children: f.sources.into_iter().chain(f.children.into_iter().filter(|c| !c.derived)).map(convert).collect() }
+        Fragment { kind: f.kind, children: f.sources.into_iter().chain(f.children.into_iter().filter(|c| !c.derived)).map(convert).collect(), hidden: false }
     }
     let clip: Clip = serde_json::from_str(text)?;
     if clip.format != CLIPBOARD_FORMAT {

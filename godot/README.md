@@ -17,6 +17,20 @@ Every `.mcmap` in the project imports as a scene, so you can instance, open or l
 The scene uses only Godot's built-in nodes, so the game needs neither this extension nor any script to load it.
 To change how a map imports, use the Import dock; the guide lists the [import options](../docs/guide/godot.md#import-options).
 
+### Edit a map in Godot
+
+Godot opens an imported map read-only, so there are two ways to keep changes made in the editor:
+
+- **Inherited scene:** double-click the map and pick **New Inherited**, or use **Scene > New Inherited Scene**.
+  Scripts, added nodes and changed properties, such as a light's energy, are saved in the new scene, and every export from MapCraft still comes through.
+  Godot does not let an inherited scene move or delete the map's own nodes.
+- **Editable scene:** right-click a `.mcmap` or `.mcpck` in the FileSystem dock and pick **Save as Editable Scene...**.
+  It writes a plain `.tscn` (or `.scn`) the project owns and opens it, so anything can be moved, deleted, scripted or relit.
+  Exporting from MapCraft does not change it; save it again to start over from the map.
+  A pack's pictures and models have no files of their own, so its editable scene carries them.
+
+From a script, `MapCraftMap.save_as_scene(map_path, scene_path)` does the same and returns an `Error`.
+
 ### Load at runtime
 
 For maps in user folders or downloads, with no import step:
@@ -29,7 +43,10 @@ For maps in user folders or downloads, with no import step:
 
 ## How maps become nodes
 
-- World brushes become one mesh, `WorldMesh`, with a surface per material, and one collision body, `WorldCollision`, with a shape per brush (or one triangle mesh with trimesh collision).
+- Layers and groups become `Node3D` nodes named after them, nested as they are in MapCraft, so the scene keeps the map's hierarchy.
+- Brushes outside any group become one mesh, `WorldMesh`, with a surface per material, and one collision body, `WorldCollision`, with a shape per brush.
+  A layer or group's own brushes become its `Mesh` and `Collision` children instead.
+- With trimesh collision, every world brush, grouped or not, collides as one triangle mesh in `WorldCollision`, so seams between ramp pieces in different groups cannot catch players.
 - Faces with `tools/` materials (`tools/nodraw`, `tools/skip`, `tools/trigger`) collide but are not drawn.
 - A brush with `tools/clip` on any face collides but draws none of its faces.
 - Point entities become `Marker3D` nodes at their origin, facing the way the entity faces.
@@ -79,6 +96,7 @@ Its `classes` maps a classname to a dictionary:
 | `visible` | `true` to draw a brush entity's brushes |
 | `collision_layer`, `collision_mask` | Physics layers for an `area` or `static` node, as bit masks |
 | `strings` | Keys whose values stay text even when they look like numbers or vectors |
+| `root` | `true` to put the node at the scene's root, even when the entity is inside a layer or group, for nodes a game looks up by path |
 
 Classes not listed use `point_default` or `solid_default`, `marker` and `area` by default.
 With `trimesh_collision` on, world brushes collide as one triangle mesh, so seams between ramp pieces cannot catch players.
@@ -98,7 +116,7 @@ MapCraft's Lit view previews this sky and sun from a `light_environment` with th
 
 The SurfsUp entity map gives SurfsUp v2 and v3 what their custom maps expect:
 
-- The player start becomes a root `SpawnPoint` marker.
+- The player start becomes a root `SpawnPoint` marker, wherever it sits in the map's layers and groups.
 - Zones become plain `Area3D` nodes tagged with `sdk_zone`: `StartZone`, `FinishZone`, kill boxes, splits, checkpoints, teleports, boosters, respawns and point teleports.
 - Zone keys arrive as metadata named and typed for the zone's script, which SurfsUp copies onto the script's properties.
 - Zones watch only collision layer 2, where SurfsUp keeps the player, so world brushes they touch never set them off.

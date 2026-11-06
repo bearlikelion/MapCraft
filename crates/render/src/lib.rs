@@ -248,6 +248,8 @@ pub struct Renderer {
     sky: Option<Sky>,
     /// Off, 3D views draw no sky behind the map and draw sky faces like other faces.
     pub show_sky: bool,
+    /// Off, 3D views skip `tools/toolsnodraw` faces.
+    pub show_nodraw: bool,
     weight_overlay: f32,
     shader: wgpu::ShaderModule,
     globals_only: wgpu::PipelineLayout,
@@ -509,6 +511,7 @@ impl Renderer {
             minlight: [0.0; 3],
             sky: None,
             show_sky: true,
+            show_nodraw: true,
             weight_overlay: 0.0,
             shader,
             globals_only: line_layout,
@@ -1126,6 +1129,9 @@ impl Renderer {
                 for batch in self.batches.iter().filter(|b| !(baked && b.brush)).chain(&self.posed) {
                     let material = batch.key.material.as_str();
                     if shaded.iter().any(|(b, _)| std::ptr::eq(*b, batch)) {
+                        continue;
+                    }
+                    if !self.show_nodraw && material.eq_ignore_ascii_case("tools/toolsnodraw") {
                         continue;
                     }
                     let sky = self.skies.contains(material);

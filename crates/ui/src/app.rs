@@ -87,6 +87,7 @@ impl Default for PaintBrush {
 
 /// Compile output lines kept to read problems from: the last ones, where compilers report failures.
 const MAX_COMPILE_LOG: usize = 50_000;
+const CHANGELOG_URL: &str = "https://mapcraft.site/changelog/";
 
 pub(crate) struct CompileJob {
     rx: mpsc::Receiver<String>,
@@ -232,6 +233,8 @@ pub struct MapCraftApp {
     last_compile: Option<usize>,
     /// Quit was asked for from a menu or shortcut.
     pub(crate) quit_requested: bool,
+    /// A link to open in the browser on the next frame.
+    open_url: Option<&'static str>,
     /// SDK paths were edited since the SDK last loaded.
     sdk_paths_changed: bool,
     /// FGD-driven property widgets; off shows raw key values (Hammer's SmartEdit).
@@ -269,6 +272,8 @@ pub struct MapCraftApp {
     pub(crate) pointfile: Option<Pointfile>,
     /// The view being orbited with Alt+right drag, and the point it turns about.
     pub(crate) orbit: Option<(usize, DVec3)>,
+    /// The view whose fly speed the wheel last changed, and when.
+    pub(crate) fly_speed_changed: Option<(usize, Instant)>,
     /// An autosave opened from the recovery dialog, deleted once the map is saved.
     pub(crate) recovered: Option<PathBuf>,
 }
@@ -393,6 +398,7 @@ impl MapCraftApp {
             vertex: crate::vertex::VertexState::default(),
             last_compile: None,
             quit_requested: false,
+            open_url: None,
             sdk_paths_changed: false,
             smart_edit: true,
             show_new_dialog: false,
@@ -421,6 +427,7 @@ impl MapCraftApp {
             control: None,
             pointfile: None,
             orbit: None,
+            fly_speed_changed: None,
             recovered: None,
         };
         app.session.grid = grid;
@@ -551,18 +558,75 @@ impl MapCraftApp {
         }
     }
 
-    /// None and every installed SDK, as selectable rows; clicking one switches the map to it.
+    /// The pictures the views draw for the materials the map's faces use, to keep when the map moves to another SDK.
+    fn carried_pictures(&self) -> Vec<mapcraft_plugin_host::ImportedMaterial> {
+        let used: BTreeSet<&str> =
+            self.session.map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.as_str())).collect();
+        used.into_iter()
+            .filter(|n| !n.is_empty() && !mapcraft_map::is_tool_material(n))
+            .filter_map(|name| {
+                let p = self.project.material_picture(name)?;
+                let size = self.project.find_material(name).and_then(|m| m.size);
+                Some(mapcraft_plugin_host::ImportedMaterial { name: name.to_string(), width: p.width, height: p.height, rgba: p.rgba, size })
+            })
+            .collect()
+    }
+
+    /// None and every installed SDK, as selectable rows; clicking one switches the map to it, and
+    /// Convert beside an SDK with rules for the map's current SDK also converts its content.
     pub(crate) fn sdk_choices(&mut self, ui: &mut egui::Ui) -> bool {
         let current = self.session.sdk.clone();
-        let mut pick = ui.selectable_label(current.is_none(), "None").clicked().then_some(None);
+        let mut pick = ui.selectable_label(current.is_none(), "None").clicked().then_some((None, None));
         for s in self.sdks.iter().filter_map(|i| i.sdk.as_ref().ok()) {
             let on = current.as_deref() == Some(s.manifest.id.as_str());
-            if ui.selectable_label(on, &s.manifest.name).on_hover_text(&s.manifest.description).clicked() {
-                pick = Some(Some(s.manifest.id.clone()));
-            }
+            let rules = current.as_deref().and_then(|from| s.conversion_from(from).map(|r| (from.to_string(), r)));
+            ui.horizontal(|ui| {
+                if ui.selectable_label(on, &s.manifest.name).on_hover_text(&s.manifest.description).clicked() {
+                    pick = Some((Some(s.manifest.id.clone()), None));
+                }
+                match rules {
+                    Some((from, Ok(r))) => {
+                        let tip = format!("Switch to {} and convert the map's entities and materials from {from}, as one undo step", s.manifest.name);
+                        if ui.small_button("Convert").on_hover_text(tip).clicked() {
+                            pick = Some((Some(s.manifest.id.clone()), Some(r)));
+                        }
+                    }
+                    Some((_, Err(e))) => {
+                        ui.label(egui::RichText::new("rules unreadable").color(crate::chrome::TEXT_WEAK)).on_hover_text(e.to_string());
+                    }
+                    None => {}
+                }
+            });
         }
-        let Some(sdk) = pick else { return false };
+        let Some((sdk, rules)) = pick else { return false };
+        let carried = if rules.is_some() { self.carried_pictures() } else { Vec::new() };
+        let converted = rules.map(|r| {
+            let name = self
+                .sdks
+                .iter()
+                .filter_map(|i| i.sdk.as_ref().ok())
+                .find(|s| Some(&s.manifest.id) == sdk.as_ref())
+                .map_or(String::new(), |s| s.manifest.name.clone());
+            self.session.convert(&r, &format!("Convert to {name}"), mapcraft_map::ROOT)
+        });
         self.switch_sdk(sdk);
+        let missing: Vec<_> = carried.into_iter().filter(|m| self.project.material(&m.name).is_none()).collect();
+        if let (Some(dir), false) = (self.material_cache(), missing.is_empty()) {
+            let kept = self.project.cache_materials(&dir, &missing);
+            self.output.push(format!("Kept {kept} material pictures the new SDK does not have in {}, so compiles can pack them", dir.display()));
+            self.scene_dirty = true;
+        }
+        match converted {
+            Some(Ok(done)) => {
+                self.mark_changed();
+                self.status = format!(
+                    "Converted the map: {} entities changed, {} merged into the world, {} removed, {} faces given new materials; Check for Problems lists what is left",
+                    done.entities, done.to_world, done.dropped, done.faces
+                );
+            }
+            Some(Err(e)) => self.status = format!("Switched the SDK but could not convert the map: {e}"),
+            None => {}
+        }
         true
     }
 
@@ -953,7 +1017,12 @@ impl MapCraftApp {
         self.snap_point(index, rect, p, &BTreeSet::new(), &[])
     }
 
-    /// Runs an action or engine command by id, as a menu item would.
+    /// Whether a 3D view shows the fly speed the wheel last set, for tests.
+    pub fn fly_speed_shown_for_test(&self) -> bool {
+        self.fly_speed_changed.is_some()
+    }
+
+    /// The fly speed, for tests.
     pub fn fly_speed_for_test(&self) -> f64 {
         self.prefs.get().view.fly_speed
     }
@@ -1246,6 +1315,9 @@ impl MapCraftApp {
             "view.sky" => {
                 self.prefs.update(|p| p.view.sky = !p.view.sky);
             }
+            "view.nodraw" => {
+                self.prefs.update(|p| p.view.nodraw = !p.view.nodraw);
+            }
             "view.maximize" if self.prefs.get().view.single_view => {
                 let next = self.maximized.map_or(0, |m| (m + 1) % self.panes.len().max(1));
                 self.maximized = Some(next);
@@ -1286,6 +1358,7 @@ impl MapCraftApp {
             "help.shortcuts" => self.dialogs.shortcuts = !self.dialogs.shortcuts,
             "help.about" => self.dialogs.about = true,
             "help.check_updates" => self.check_updates(true),
+            "help.changelog" => self.open_url = Some(CHANGELOG_URL),
             "file.publish_workshop" => self.open_workshop(),
             "tools.check_problems" => self.check_problems(),
             "layer.new" => {
@@ -1575,6 +1648,7 @@ impl MapCraftApp {
                         ui.separator();
                         let view = self.prefs.get().view.clone();
                         self.action_toggle(ui, "view.sky", "Show Sky", view.sky);
+                        self.action_toggle(ui, "view.nodraw", "Show Nodraw", view.nodraw);
                         self.action_toggle(ui, "view.link_zoom", "Link 2D Zoom", view.link_zoom);
                         self.action_toggle(ui, "view.colorize", "Color Brushes by Object", view.colorize);
                         self.action_toggle(ui, "view.slope", "Color by Slope", view.slope_colors);
@@ -1664,6 +1738,7 @@ impl MapCraftApp {
             ui.menu_button("Help", |ui| {
                 self.action_button(ui, "help.shortcuts", "Keyboard Shortcuts", true);
                 self.action_button(ui, "help.check_updates", "Check for Updates", true);
+                self.action_button(ui, "help.changelog", "Changelog", true);
                 ui.separator();
                 self.action_button(ui, "help.about", &format!("About {}", crate::BRAND), true);
             });
@@ -2047,14 +2122,46 @@ impl MapCraftApp {
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let (c, d) = (cancel.clone(), done.clone());
+        let ids: Vec<String> =
+            profile.steps.iter().filter_map(|s| if let mapcraft_sdk::Step::Embed { embed, .. } = s { Some(embed.clone()) } else { None }).collect();
+        let embedders: Vec<(String, Option<(PathBuf, mapcraft_sdk::Vfs)>)> = ids.into_iter().map(|id| (id.clone(), self.project.embedder(&id))).collect();
+        let pictures = if embedders.is_empty() { Vec::new() } else { self.project.embed_pictures(&self.session.map) };
+        let host = self.plugin_host.clone();
         std::thread::spawn(move || {
-            let result = mapcraft_sdk::run_profile(
+            let log = tx.clone();
+            let mut embed = |id: &str, into: &Path| -> Result<(), String> {
+                let Some((_, Some((plugin, vfs)))) = embedders.iter().find(|(e, _)| e == id) else {
+                    return Err(format!("no plugin of this SDK embeds `{id}`"));
+                };
+                let host = host.as_ref().ok_or("plugins could not start")?;
+                let mut plugin = host.load_file(plugin, vfs.clone()).map_err(|e| e.to_string())?;
+                let mut loaded = Vec::new();
+                for (name, file) in &pictures {
+                    match image::open(file) {
+                        Ok(img) => {
+                            let img = img.to_rgba8();
+                            loaded.push((name.clone(), mapcraft_plugin_host::Picture { width: img.width(), height: img.height(), rgba: img.into_raw() }));
+                        }
+                        Err(e) => {
+                            let _ = log.send(format!("cannot read {} for {name}: {e}", file.display()));
+                        }
+                    }
+                }
+                let count = loaded.len();
+                let data = std::fs::read(into).map_err(|e| e.to_string())?;
+                let out = plugin.embed(id, data, loaded).map_err(|e| e.to_string())?;
+                std::fs::write(into, out).map_err(|e| e.to_string())?;
+                let _ = log.send(format!("Embedded {count} materials"));
+                Ok(())
+            };
+            let result = mapcraft_sdk::run_profile_with(
                 &profile,
                 &vars,
                 &mut |line| {
                     let _ = tx.send(line.to_string());
                 },
                 &c,
+                &mut embed,
             );
             let _ = tx.send(match result {
                 Ok(()) => "== finished ==".to_string(),
@@ -2402,6 +2509,9 @@ impl eframe::App for MapCraftApp {
             } else {
                 self.pending = Some(Pending::Quit);
             }
+        }
+        if let Some(url) = self.open_url.take() {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
         }
         if self.quit_confirmed || std::mem::take(&mut self.quit_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

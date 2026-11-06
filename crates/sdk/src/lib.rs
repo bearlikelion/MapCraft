@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod compile;
+mod convert;
 mod vfs;
 
 use std::collections::BTreeMap;
@@ -11,7 +12,8 @@ use std::path::{Path, PathBuf};
 use mapcraft_fgd::GameData;
 use serde::Deserialize;
 
-pub use compile::{CompileError, CompileProfile, Step, builtin_vars, expand, run_profile};
+pub use compile::{CompileError, CompileProfile, Step, builtin_vars, expand, run_profile, run_profile_with};
+pub use convert::{ClassRule, Conversion};
 pub use vfs::Vfs;
 
 pub const MANIFEST: &str = "sdk.toml";

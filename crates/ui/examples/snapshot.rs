@@ -2,7 +2,7 @@
 //! `cargo run -p mapcraft-ui --example snapshot -- out.png [map.mcmap] [steps]`.
 //!
 //! Steps run in order: `--command <id>`, `--click <label>`, `--click-at x,y`, `--alt-click-at x,y`,
-//! `--drag x,y x,y`, `--hold x,y x,y` (`alt-`, `shift-` and `ctrl-` before `click-at`, `drag` or `hold` hold those keys, as in `--alt-shift-click-at`), `--hover x,y`, `--scroll <lines>`, `--key <name>` (or a chord such as `Ctrl+Shift+D`), `--type <text>`, `--select-all`, `--wait <ms>`,
+//! `--drag x,y x,y`, `--hold x,y x,y` (`alt-`, `shift-` and `ctrl-` before `click-at`, `drag` or `hold` hold those keys, as in `--alt-shift-click-at`, and `right-` before `drag` or `hold` uses the right button, so `--right-hold` flies the 3D view), `--hover x,y`, `--scroll <lines>`, `--key <name>` (or a chord such as `Ctrl+Shift+D`), `--type <text>`, `--select-all`, `--wait <ms>`,
 //! `--look x,y,z x,y,z` (points the 3D camera from the first point at the second); `--size WxH` sets the window size
 //! (1600x1000 by default) and `--scale <n>` its pixels per point; `--var name=value` sets an SDK path
 //! and `--registry <url|path>` replaces the SDK Manager's registries; `--settings <dir>` keeps the
@@ -28,8 +28,9 @@ fn modifiers(step: &str) -> Modifiers {
         .fold(Modifiers::NONE, |m, (_, x)| m | *x)
 }
 
-fn press(h: &Harness<MapCraftApp>, p: Pos2, pressed: bool, modifiers: Modifiers) {
-    h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers });
+fn press(h: &Harness<MapCraftApp>, p: Pos2, pressed: bool, modifiers: Modifiers, step: &str) {
+    let button = if step.contains("right-") { PointerButton::Secondary } else { PointerButton::Primary };
+    h.event(Event::PointerButton { pos: p, button, pressed, modifiers });
 }
 
 fn main() {
@@ -122,9 +123,9 @@ fn main() {
                 h.event(Event::ModifiersChanged(m));
                 h.hover_at(p);
                 h.run_steps(1);
-                press(&h, p, true, m);
+                press(&h, p, true, m, s);
                 h.run_steps(1);
-                press(&h, p, false, m);
+                press(&h, p, false, m, s);
                 h.run_steps(1);
                 h.event(Event::ModifiersChanged(Modifiers::NONE));
             }
@@ -143,14 +144,14 @@ fn main() {
                 h.event(Event::ModifiersChanged(m));
                 h.hover_at(a);
                 h.run_steps(1);
-                press(&h, a, true, m);
+                press(&h, a, true, m, s);
                 h.run_steps(1);
                 for i in 1..=8 {
                     h.hover_at(a + (b - a) * (i as f32 / 8.0));
                     h.run_steps(1);
                 }
                 if step.ends_with("drag") {
-                    press(&h, b, false, m);
+                    press(&h, b, false, m, s);
                     h.run_steps(1);
                     h.event(Event::ModifiersChanged(Modifiers::NONE));
                 }

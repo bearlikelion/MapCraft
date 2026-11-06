@@ -168,6 +168,8 @@ pub struct Project {
     pub problems: Vec<String>,
     /// Plugins that list materials, which `list_materials_later` reads.
     material_plugins: Vec<PathBuf>,
+    /// Embedder ids and the plugin files that export them, for compile steps that run off this thread.
+    embedders: Vec<(String, PathBuf)>,
     pub models: crate::models::Models,
     /// The mapper's Lit maps and values, by material name.
     pub lit: BTreeMap<String, LitMaps>,
@@ -317,6 +319,7 @@ impl Project {
                     self.problems.push(format!("{}: plugin `{}` is already loaded", path.display(), plugin.manifest.id));
                 }
                 Ok(plugin) => {
+                    self.embedders.extend(plugin.manifest.embedders.iter().map(|e| (e.id.clone(), path.clone())));
                     if plugin.manifest.materials {
                         self.material_plugins.push(path);
                     }
@@ -325,6 +328,21 @@ impl Project {
                 Err(e) => self.problems.push(format!("{}: {e}", path.display())),
             }
         }
+    }
+
+    /// The plugin file that embeds `id`, and what it may read.
+    pub fn embedder(&self, id: &str) -> Option<(PathBuf, Vfs)> {
+        self.embedders.iter().find(|(e, _)| e == id).map(|(_, path)| (path.clone(), self.readable()))
+    }
+
+    /// The picture files of the materials `map` uses that come from files rather than the game, which an embed step puts into the compiled map.
+    pub fn embed_pictures(&self, map: &mapcraft_map::Map) -> Vec<(String, PathBuf)> {
+        let used: std::collections::BTreeSet<&str> =
+            map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.as_str())).collect();
+        used.into_iter()
+            .filter(|n| !n.is_empty() && !mapcraft_map::is_tool_material(n))
+            .filter_map(|n| Some((n.to_string(), self.find_material(n)?.image?)))
+            .collect()
     }
 
     /// What plugins may read: the SDK's file roots, else its texture folders.

@@ -70,6 +70,9 @@ The tables are generated from the editor's code, so they match the version this 
 | Save As | `Ctrl+Shift+S` |
 | Revert | *none* |
 | Export glTF | *none* |
+| Export Custom Asset Pack | *none* |
+| Add Material | *none* |
+| Add Model | *none* |
 | Reload Assets | `F5` |
 | SDK Settings | `Ctrl+Shift+Comma` |
 | Switch SDK | *none* |
@@ -125,6 +128,9 @@ The tables are generated from the editor's code, so they match the version this 
 
 | Action | Shortcut |
 |---|---|
+| Shader Editor | *none* |
+| Shader Material: Graph | *none* |
+| Shader Material: Script | *none* |
 | Transform | `Ctrl+M` |
 | Array | `Ctrl+Shift+D` |
 | Randomize Transform | *none* |
@@ -190,7 +196,9 @@ The tables are generated from the editor's code, so they match the version this 
 | Wireframe | `Ctrl+Alt+3` |
 | Lit | `Ctrl+Alt+4` |
 | Show Sky | *none* |
+| Show Nodraw | *none* |
 | Color Brushes by Object | `Ctrl+Alt+C` |
+| Show FPS | *none* |
 | Color by Slope | `Ctrl+Alt+5` |
 | Frame All | `Home` |
 | Go to Origin | `Shift+Home` |
@@ -218,12 +226,15 @@ The tables are generated from the editor's code, so they match the version this 
 | Materials Panel | `Ctrl+3` |
 | Entities Panel | `Ctrl+4` |
 | Models Panel | `Ctrl+6` |
+| Shaders Panel | `Ctrl+7` |
 | Output Panel | `Ctrl+5` |
 
 ### Run
 
 | Action | Shortcut |
 |---|---|
+| Bake Lighting | *none* |
+| Automatic Light Bake | *none* |
 | Run Last Profile | `F9` |
 | Cancel Run | `Shift+F9` |
 | Load Leak Trail | *none* |
@@ -237,6 +248,8 @@ The tables are generated from the editor's code, so they match the version this 
 |---|---|
 | Keyboard Shortcuts | `F1` |
 | About MapCraft | *none* |
+| Check for Updates | *none* |
+| Changelog | *none* |
 
 ### UV editor
 
@@ -268,6 +281,8 @@ The tables are generated from the editor's code, so they match the version this 
 
 | Action | Shortcut |
 |---|---|
+| Inspect Material | *none* |
+| Revert Material | *none* |
 | Sculpt: Raise | `1` |
 | Sculpt: Lower | `2` |
 | Sculpt: Smooth | `3` |
@@ -276,6 +291,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Sculpt: Paint | `6` |
 | Sculpt: Blur | `7` |
 | Select Face Loop | *none* |
+| Add Shader | *none* |
+| Remove Shader | *none* |
 | Blend Current Material | *none* |
 | Remove Blend Material | *none* |
 | Fill Blend | *none* |

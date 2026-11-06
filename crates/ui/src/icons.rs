@@ -191,6 +191,7 @@ pub(crate) fn action_icon(id: &str) -> Option<&'static str> {
         "help.shortcuts" => "keyboard",
         "help.about" => "help",
         "help.check_updates" => "arrows_clockwise",
+        "help.changelog" => "list_unordered",
         _ => return None,
     })
 }

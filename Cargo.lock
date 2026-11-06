@@ -2624,6 +2624,7 @@ dependencies = [
  "mapcraft-geom",
  "mapcraft-light",
  "mapcraft-map",
+ "mapcraft-sdk",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

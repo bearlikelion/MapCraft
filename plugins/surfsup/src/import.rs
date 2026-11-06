@@ -788,7 +788,7 @@ impl<'a> Builder<'a> {
         let i = match self.group_index.get(name) {
             Some(i) => *i,
             None => {
-                self.groups.push(Group { name: name.to_string(), brushes: Vec::new(), entities: Vec::new() });
+                self.groups.push(Group { name: name.to_string(), hidden: false, brushes: Vec::new(), entities: Vec::new() });
                 self.group_index.insert(name.to_string(), self.groups.len() - 1);
                 self.groups.len() - 1
             }

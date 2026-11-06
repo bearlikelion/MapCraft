@@ -20,6 +20,8 @@ pub enum CompileError {
     Failed { program: String, status: String },
     #[error("copy {from} to {to}: {source}")]
     Copy { from: String, to: String, source: std::io::Error },
+    #[error("embed {into}: {message}")]
+    Embed { into: String, message: String },
     #[error("cancelled")]
     Cancelled,
 }
@@ -67,6 +69,11 @@ pub enum Step {
     Pack {
         pack: String,
         to: String,
+    },
+    /// Puts the map's custom pictures into a file an earlier step made, with a plugin's embedder such as `bsp`.
+    Embed {
+        embed: String,
+        into: String,
     },
 }
 
@@ -142,12 +149,23 @@ fn strip_ansi(line: &str) -> String {
 }
 
 /// Runs the steps in order, streaming tool output line by line; stops at the first failure or when
-/// `cancel` is set.
+/// `cancel` is set. An embed step fails, since only the editor has the pictures; see [`run_profile_with`].
 pub fn run_profile(
     profile: &CompileProfile,
     vars: &BTreeMap<String, String>,
     on_output: &mut dyn FnMut(&str),
     cancel: &AtomicBool,
+) -> Result<(), CompileError> {
+    run_profile_with(profile, vars, on_output, cancel, &mut |id, _| Err(format!("nothing here can embed `{id}`")))
+}
+
+/// [`run_profile`], with `embed` doing each embed step: the embedder's id and the file to change.
+pub fn run_profile_with(
+    profile: &CompileProfile,
+    vars: &BTreeMap<String, String>,
+    on_output: &mut dyn FnMut(&str),
+    cancel: &AtomicBool,
+    embed: &mut dyn FnMut(&str, &Path) -> Result<(), String>,
 ) -> Result<(), CompileError> {
     for step in &profile.steps {
         if cancel.load(Ordering::Relaxed) {
@@ -156,6 +174,11 @@ pub fn run_profile(
         match step {
             Step::Export { export, to } => on_output(&format!("> export {export} {}", expand(to, vars)?)),
             Step::Pack { pack, to } => on_output(&format!("> pack {} {}", expand(pack, vars)?, expand(to, vars)?)),
+            Step::Embed { embed: id, into } => {
+                let into = expand(into, vars)?;
+                on_output(&format!("> embed {id} {into}"));
+                embed(id, Path::new(&into)).map_err(|message| CompileError::Embed { into, message })?;
+            }
             Step::Copy { copy, to } => {
                 let (from, to) = (expand(copy, vars)?, expand(to, vars)?);
                 on_output(&format!("> copy {from} {to}"));
@@ -289,5 +312,14 @@ steps = [
         };
         assert!(matches!(run_profile(&missing, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Spawn { .. })));
         assert!(matches!(run_profile(&profile, &vars, &mut |_| {}, &AtomicBool::new(true)), Err(CompileError::Cancelled)));
+        let embedding: CompileProfile = toml::from_str("name = \"E\"\nsteps = [{ embed = \"bsp\", into = \"${dir}/a.bsp\" }]").unwrap();
+        let mut asked = Vec::new();
+        run_profile_with(&embedding, &vars, &mut |_| {}, &AtomicBool::new(false), &mut |id, into| {
+            asked.push((id.to_string(), into.to_path_buf()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(asked.len(), 1);
+        assert!(matches!(run_profile(&embedding, &vars, &mut |_| {}, &AtomicBool::new(false)), Err(CompileError::Embed { .. })));
     }
 }

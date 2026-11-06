@@ -9,13 +9,12 @@ use mapcraft_sdk::Vfs;
 use serde_json::json;
 
 fn built(id: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdks/surfsup/plugins").join(format!("{id}.wasm"));
-    if p.is_file() {
-        Some(p)
-    } else {
-        eprintln!("{} is not built; run `cargo xtask plugins`", p.display());
-        None
+    let sdks = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sdks");
+    let found = ["surfsup", "cstrike", "quake"].iter().map(|sdk| sdks.join(sdk).join("plugins").join(format!("{id}.wasm"))).find(|p| p.is_file());
+    if found.is_none() {
+        eprintln!("plugin {id} is not built; run `cargo xtask plugins`");
     }
+    found
 }
 
 fn load(host: &Host, id: &str, vfs: Vfs) -> Option<Plugin> {
@@ -167,7 +166,7 @@ fn plugins_for_the_old_api_ask_to_be_rebuilt() {
     old.extend(name);
     old.extend([5, 0]);
     let err = Host::new().unwrap().load(&old, Vfs::default()).err().unwrap().to_string();
-    assert_eq!(err, "built for plugin API 0.1.0; rebuild it against 0.4.0");
+    assert_eq!(err, "built for plugin API 0.1.0; rebuild it against 0.5.0");
 }
 
 /// Coplanar displaced faces from the VMF named by `MAPCRAFT_DISP_VMF` meet along nearly every shared edge, which swapped rows and columns would break; faces at an angle differ by the sideways offsets MapCraft drops.
@@ -243,11 +242,14 @@ fn bsp_import_groups_and_textures() {
             _ => None,
         })
         .collect();
-    assert!(groups.iter().any(|g| g == "Ramps") && groups.iter().any(|g| g == "World"), "{groups:?}");
+    assert!(groups.iter().any(|g| g == "World") && groups.iter().any(|g| g == "SourceEntities"), "{groups:?}");
+    let spawns = imported.nodes.iter().filter(|f| matches!(&f.kind, NodeKind::Entity(e) if e.classname.starts_with("info_player_"))).count();
+    assert_eq!(spawns, 1, "one spawn point");
+    assert!(imported.nodes.iter().all(|f| f.hidden == matches!(&f.kind, NodeKind::Group(g) if g.name.ends_with("Collision"))), "collision groups start hidden");
     assert!(imported.materials.len() >= 19, "every embedded texture comes back: {}", imported.materials.len());
     assert!(imported.materials.iter().all(|m| m.rgba.len() == (m.width * m.height * 4) as usize));
-    let ramp = imported.nodes.iter().find(|f| matches!(&f.kind, NodeKind::Group(g) if g.name == "Ramps")).unwrap();
-    let NodeKind::Brush(b) = &ramp.children[0].kind else { panic!("ramps hold brushes") };
+    let world = imported.nodes.iter().find(|f| matches!(&f.kind, NodeKind::Group(g) if g.name == "World")).unwrap();
+    let NodeKind::Brush(b) = &world.children[0].kind else { panic!("the world holds brushes") };
     assert!(b.faces.iter().any(|f| f.u.axis != mapcraft_geom::DVec3::X && f.u.axis != mapcraft_geom::DVec3::Y), "faces keep the map's texture axes");
 }
 
@@ -425,4 +427,27 @@ fn vmf_round_trip_and_game_materials() {
     eprintln!("{before:?} {:?}", p.take_log());
     assert_eq!(count(&again.nodes), before);
     assert!(before.0 > 7000 && before.1 == 4411, "{before:?}");
+}
+
+/// The Source plugin packs a picture into a compiled map's pak lump as a material the game reads.
+#[test]
+fn source_embeds_pictures_in_a_bsp() {
+    let host = Host::new().unwrap();
+    let Some(mut p) = load(&host, "source", Vfs::default()) else { return };
+    assert!(p.manifest.embedders.iter().any(|e| e.id == "bsp"));
+    let mut bsp = vec![0u8; 8 + 64 * 16 + 4];
+    bsp[..4].copy_from_slice(b"VBSP");
+    bsp[4] = 20;
+    let picture = mapcraft_plugin_host::Picture { width: 2, height: 2, rgba: [255, 128, 0, 255].repeat(4) };
+    let out = p.embed("bsp", bsp, vec![("Ramps-Orange1".into(), picture)]).unwrap();
+    let lump = 8 + 40 * 16;
+    let at = u32::from_le_bytes(out[lump..lump + 4].try_into().unwrap()) as usize;
+    let len = u32::from_le_bytes(out[lump + 4..lump + 8].try_into().unwrap()) as usize;
+    let zip = &out[at..at + len];
+    let has = |name: &str| zip.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(
+        has("materials/ramps-orange1.vmt") && has("materials/ramps-orange1.vtf") && has("\"$basetexture\" \"ramps-orange1\""),
+        "a VMT and VTF named as the face's material, in lower case"
+    );
+    assert!(p.embed("nope", vec![], vec![]).is_err());
 }

@@ -3,6 +3,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod bsp;
+mod byte_reader;
+mod entity;
+mod import;
+mod key_values;
+mod material;
+mod model;
+#[cfg(test)]
+mod tests;
+mod world;
 
 use mapcraft::plugin::host;
 use mapcraft::plugin::types::ImporterSpec;
@@ -31,7 +40,7 @@ impl Guest for SourceBsp {
             version: env!("CARGO_PKG_VERSION").into(),
             commands: Vec::new(),
             materials: false,
-            importers: vec![ImporterSpec { id: "bsp".into(), label: "Source BSP".into(), extensions: vec!["bsp".into()] }],
+            importers: vec![ImporterSpec { id: "bsp".into(), label: "Source BSP".into(), extensions: vec!["bsp".into()], sdk: Some("cstrike".into()) }],
             exporters: Vec::new(),
             validates: false,
             models: Vec::new(),
@@ -46,7 +55,7 @@ impl Guest for SourceBsp {
         if importer != "bsp" {
             return Err(format!("unknown importer {importer}"));
         }
-        let map = bsp::import(&data, &HostFiles).map_err(|e| format!("{name}: {e}"))?;
+        let map = import::import(&data, &HostFiles).map_err(|e| format!("{name}: {e}"))?;
         for warning in &map.warnings {
             host::log(&format!("{name}: {warning}"));
         }

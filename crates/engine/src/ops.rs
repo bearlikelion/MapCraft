@@ -229,6 +229,9 @@ pub(crate) fn insert_fragments(e: &mut Edit, parent: NodeId, frags: Vec<mapcraft
             None => frag.kind,
         };
         let id = e.insert(parent, kind)?;
+        if frag.hidden {
+            e.update(id, |h, _, _, _| *h = true)?;
+        }
         if root {
             roots.push(id);
         }

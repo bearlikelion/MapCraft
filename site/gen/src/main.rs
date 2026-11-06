@@ -1,5 +1,6 @@
 //! Builds the MapCraft website: copies `site/`, then renders the tutorial in `docs/tutorial/`, the
-//! guide in `docs/guide/`, the technical docs in `docs/` and `godot/README.md`.
+//! guide in `docs/guide/`, the technical docs in `docs/`, `godot/README.md` and the changelog from
+//! `patchnotes/`.
 //!
 //! `cargo run --manifest-path site/gen/Cargo.toml -- [--out DIR] [--sync]`
 //! writes to `target/site` by default; `--sync` also rewrites the shortcut table in
@@ -137,6 +138,7 @@ fn run() -> Result<()> {
         write(&out.join(&p.out), &render(p, &ctx))?;
     }
     write(&out.join("search-index.js"), &search_index(&pages))?;
+    write(&out.join("changelog/index.html"), &changelog(&releases(&root)?, &ctx))?;
     println!("site: {} pages in {}", pages.iter().filter(|p| !p.link_only).count(), out.display());
     Ok(())
 }
@@ -226,7 +228,107 @@ fn render(p: &Page, ctx: &Ctx) -> String {
         let at = body.find("</section>\n").map_or(0, |i| i + "</section>\n".len());
         body.insert_str(at, &list);
     }
-    layout(p, ctx, &body)
+    layout(p, ctx, &body, "")
+}
+
+struct Release {
+    version: String,
+    /// The tag's date as `YYYY-MM-DD`; `None` before the release is tagged.
+    date: Option<String>,
+    text: String,
+}
+
+/// Every `patchnotes/*.md`, newest version first, dated by its tag.
+fn releases(root: &Path) -> Result<Vec<Release>> {
+    let dir = root.join("patchnotes");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let tags = tag_dates(root);
+    let mut out = Vec::new();
+    for name in md_files(&dir)? {
+        let version = stem(&name).to_string();
+        let date = tags.iter().find(|(t, _)| *t == version).map(|(_, d)| d.clone());
+        out.push(Release { text: read(&dir.join(&name))?, version, date });
+    }
+    out.sort_by_key(|r| std::cmp::Reverse(version_key(&r.version)));
+    Ok(out)
+}
+
+fn version_key(v: &str) -> Vec<u64> {
+    v.trim_start_matches('v').split(['.', '-']).map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// (tag, `YYYY-MM-DD`) for every tag; empty when git or the tags are missing.
+fn tag_dates(root: &Path) -> Vec<(String, String)> {
+    let Ok(out) = std::process::Command::new("git").arg("-C").arg(root).args(["for-each-ref", "refs/tags", "--format=%(refname:short) %(creatordate:short)"]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(' ').map(|(t, d)| (t.to_string(), d.to_string()))).collect()
+}
+
+/// `2026-11-06` as `Nov 6, 2026`, or `Nov 6` without the year.
+fn short_date(iso: &str, year: bool) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = iso.split('-');
+    let (Some(y), Some(m), Some(d)) = (parts.next(), parts.next(), parts.next()) else { return iso.to_string() };
+    let month = m.parse::<usize>().ok().and_then(|m| MONTHS.get(m.wrapping_sub(1)));
+    match (month, d.parse::<u32>()) {
+        (Some(m), Ok(d)) if year => format!("{m} {d}, {y}"),
+        (Some(m), Ok(d)) => format!("{m} {d}"),
+        _ => iso.to_string(),
+    }
+}
+
+/// The changelog page: one card per release with its `##` headings as groups, and the releases in the sidebar.
+fn changelog(releases: &[Release], ctx: &Ctx) -> String {
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_GFM;
+    let mut body = String::from(
+        "<section class=\"intro l1\">\n<h1 id=\"changelog\">Changelog</h1>\n<div class=\"block-text\">\n<p>What changed in each MapCraft release, newest first.</p>\n</div>\n</section>\n",
+    );
+    let mut nav = String::from("<div class=\"side-section changelog\">\n<p class=\"side-title\">Releases</p>\n<ul>\n");
+    for (i, r) in releases.iter().enumerate() {
+        let id = esc(&r.version);
+        let when = r.date.as_deref().map_or_else(|| "Unreleased".to_string(), |d| short_date(d, false));
+        let _ = writeln!(nav, "<li><a href=\"#{id}\"><span>{id}</span><small>{when}</small></a></li>");
+        let date = r.date.as_deref().map_or_else(|| "<span>Unreleased</span>".to_string(), |d| format!("<time datetime=\"{}\">{}</time>", esc(d), short_date(d, true)));
+        let latest = if i == 0 && r.date.is_some() { "<span class=\"release-latest\">Latest</span>" } else { "" };
+        let _ = writeln!(
+            body,
+            "<article class=\"release\" id=\"{id}\">\n<header class=\"release-head\">\n<p class=\"release-meta\">{date}{latest}</p>\n<h2><a href=\"#{id}\">MapCraft {}</a></h2>",
+            esc(r.version.trim_start_matches('v'))
+        );
+        if r.date.is_some() {
+            let _ = writeln!(body, "<a class=\"release-link\" href=\"{}/releases/tag/{id}\">Downloads</a>", ctx.repo);
+        }
+        body.push_str("</header>\n<div class=\"release-body\">\n");
+        let mut groups: Vec<(String, String)> = Vec::new();
+        for line in r.text.lines() {
+            if let Some(h) = line.strip_prefix("## ") {
+                groups.push((h.trim().to_string(), String::new()));
+            } else if !line.starts_with("# ") {
+                if groups.is_empty() {
+                    groups.push((String::new(), String::new()));
+                }
+                if let Some((_, text)) = groups.last_mut() {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+            }
+        }
+        for (name, text) in groups.iter().filter(|(_, t)| !t.trim().is_empty()) {
+            body.push_str("<section class=\"change-group\">\n");
+            if !name.is_empty() {
+                let _ = writeln!(body, "<h3>{}</h3>", esc(name));
+            }
+            html::push_html(&mut body, Parser::new_ext(text, opts));
+            body.push_str("</section>\n");
+        }
+        body.push_str("</div>\n</article>\n");
+    }
+    nav.push_str("</ul>\n</div>\n");
+    let p = page("patchnotes".into(), "changelog/index.html".into(), "Changelog", String::new(), "# Changelog".into());
+    layout(&p, ctx, &body, &nav)
 }
 
 /// An editor icon as inline SVG, so it takes the link's color; empty when the page has none.
@@ -577,12 +679,13 @@ fn is_key(k: &str) -> bool {
     NAMED.contains(&k) || function || (k.len() == 1 && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
 }
 
-fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
+/// `own_nav` replaces the sidebar's page list.
+fn layout(p: &Page, ctx: &Ctx, body: &str, own_nav: &str) -> String {
     let base = up(&p.out);
     let repo = ctx.repo;
-    let mut nav = String::new();
+    let mut nav = own_nav.to_string();
     // Each section has its own sidebar; the header switches between them.
-    for section in SECTIONS.into_iter().filter(|s| *s == p.section) {
+    for section in SECTIONS.into_iter().filter(|s| *s == p.section && own_nav.is_empty()) {
         let class = section.to_lowercase();
         let note = if section == "Technical" { "<span class=\"side-note\">optional</span>" } else { "" };
         let _ = writeln!(nav, "<div class=\"side-section {class}\">\n<p class=\"side-title\">{section}{note}</p>");
@@ -608,9 +711,10 @@ fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
         nav.push_str("</div>\n");
     }
     let siblings: Vec<&Page> = ctx.pages.iter().filter(|q| q.section == p.section && !q.link_only).collect();
-    let side = if siblings.len() > 1 {
+    let side = if siblings.len() > 1 || !own_nav.is_empty() {
+        let summary = if own_nav.is_empty() { format!("{} pages", p.section) } else { "Releases".to_string() };
         format!(
-            "<nav class=\"side\" aria-label=\"{section}\">\n<details class=\"side-menu\" id=\"side-menu\">\n<summary>{section} pages</summary>\n{nav}</details>\n</nav>\n",
+            "<nav class=\"side\" aria-label=\"{section}\">\n<details class=\"side-menu\" id=\"side-menu\">\n<summary>{summary}</summary>\n{nav}</details>\n</nav>\n",
             section = p.section
         )
     } else {
@@ -660,6 +764,7 @@ fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
 			<a href="{base}tutorial/index.html"{tutorial}>Tutorial</a>
 			<a href="{base}guide/index.html"{guide}>Guide</a>
 			<a href="{base}technical/index.html"{technical}>Technical</a>
+			<a href="{base}changelog/index.html"{changelog}>Changelog</a>
 			<a href="{repo}">GitHub</a>
 		</nav>
 	</div>
@@ -682,7 +787,7 @@ fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
 <script src="{base}areas.js" defer></script>
 <script>
 	// Marks the section being read in the On this page column.
-	const tocLinks = [...document.querySelectorAll(".toc a")];
+	const tocLinks = [...document.querySelectorAll(".toc a, .side-section.changelog a")];
 	const heads = tocLinks.map((a) => document.getElementById(a.hash.slice(1))).filter(Boolean);
 	if (heads.length) {{
 		const mark = () => {{
@@ -704,6 +809,7 @@ fn layout(p: &Page, ctx: &Ctx, body: &str) -> String {
         tutorial = current("Tutorial"),
         guide = current("Guide"),
         technical = current("Technical"),
+        changelog = current("Changelog"),
     )
 }
 
@@ -925,6 +1031,23 @@ mod tests {
         assert!(t.contains("new") && !t.contains("old") && t.ends_with("b"));
         let card = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/card-views.webp");
         assert_eq!(webp_size(&card), Some((1280, 800)));
+    }
+
+    #[test]
+    fn changelog_cards_releases_newest_first() {
+        let rel = |v: &str, date: Option<&str>, text: &str| Release { version: v.into(), date: date.map(Into::into), text: text.into() };
+        let mut list = vec![rel("v0.4.9", Some("2026-11-06"), "# MapCraft Update\n\n## Maps\n\n- **New Feature:** Fog.\n"), rel("v0.4.10", None, "- Loose.\n")];
+        list.sort_by_key(|r| std::cmp::Reverse(version_key(&r.version)));
+        assert_eq!(list[0].version, "v0.4.10");
+        let pages = vec![];
+        let html = changelog(&list, &Ctx { root: Path::new("."), pages: &pages, repo: "https://github.com/o/r" });
+        assert!(html.find("id=\"v0.4.10\"").unwrap_or(usize::MAX) < html.find("id=\"v0.4.9\"").unwrap_or(0));
+        assert!(html.contains("<h3>Maps</h3>\n<ul>\n<li><strong>New Feature:</strong> Fog.</li>"));
+        assert!(html.contains("<time datetime=\"2026-11-06\">Nov 6, 2026</time>"));
+        assert!(html.contains("https://github.com/o/r/releases/tag/v0.4.9"));
+        assert!(!html.contains("MapCraft Update"));
+        assert!(!html.contains("release-latest"));
+        assert_eq!(short_date("2026-13-01", true), "2026-13-01");
     }
 
     #[test]

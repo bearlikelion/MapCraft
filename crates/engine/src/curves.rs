@@ -28,7 +28,7 @@ fn in_curve_group(map: &Map, id: NodeId) -> bool {
 
 fn fragment(e: &Edit, id: NodeId, depth: usize) -> Option<Fragment> {
     let n = e.node(id).filter(|_| depth < 64)?;
-    Some(Fragment { kind: n.kind.clone(), children: n.children.iter().filter_map(|c| fragment(e, *c, depth + 1)).collect() })
+    Some(Fragment { kind: n.kind.clone(), children: n.children.iter().filter_map(|c| fragment(e, *c, depth + 1)).collect(), hidden: false })
 }
 
 fn profiles(e: &Edit, faces: &[(NodeId, FaceId)]) -> Result<Vec<Profile>, EngineError> {
@@ -85,8 +85,9 @@ fn bound(e: &Edit, mut op: CurveOp) -> Result<CurveOp, EngineError> {
 
 /// What `op` builds from the sources as `e` sees them: nodes and the move that places them.
 fn build(e: &Edit, op: &CurveOp) -> Result<Vec<(DMat4, Vec<Fragment>)>, EngineError> {
-    let brushes =
-        |b: Vec<mapcraft_map::Brush>| vec![(DMat4::IDENTITY, b.into_iter().map(|b| Fragment { kind: NodeKind::Brush(b), children: Vec::new() }).collect())];
+    let brushes = |b: Vec<mapcraft_map::Brush>| {
+        vec![(DMat4::IDENTITY, b.into_iter().map(|b| Fragment { kind: NodeKind::Brush(b), children: Vec::new(), hidden: false }).collect())]
+    };
     // The bound sources go to the path's start as it is now, so the result follows the path.
     let place = |p: &Path, bind: &DMat4, c: DVec3| -> Result<DMat4, EngineError> {
         Ok(curve::start_frame(p).map_err(EngineError::Refused)? * *bind * DMat4::from_translation(-c))

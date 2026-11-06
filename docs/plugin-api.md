@@ -22,6 +22,7 @@ A plugin exports ten functions:
 | `compile-issues` | Reads the output of a compile that exported the map through it and returns problems for Check for Problems, such as a brush a compiler rejected |
 
 A plugin built against the `scalable-plugin` world also exports `resize.scale-params`, which lets its generators follow a resize (see [Generator groups](#generator-groups)).
+A plugin built against the `embedding-plugin` world also exports `embed`: `embedders` lists the file types it takes and `embed-file` returns a file a compile step made with pictures added, which an SDK's `embed` compile step calls (see [`sdk-format.md`](sdk-format.md#compile-steps)).
 
 It can call five host functions:
 
@@ -232,9 +233,11 @@ A Python plugin carries its own interpreter, so it is about 18 MB and takes a co
 
 ## Versioning
 
-The WIT package is `mapcraft:plugin@0.4.0`.
+The WIT package is `mapcraft:plugin@0.5.0`.
 Until 1.0 the API may change between releases, and a plugin built for another API version is not loaded and the Output panel asks for it to be rebuilt.
 Version 0.2.0 added face `attrs` and `disp` and material `uv-scale`, `pixelated` and `blend`, so a plugin built for 0.1, in an SDK or in the user's plugins folder, is not loaded and the Output panel asks for it to be rebuilt against 0.2.
 Version 0.3.0 added material `folder`, so a plugin built for 0.2 is not loaded until it is rebuilt against 0.3; a plugin that does not group its materials sets it to `none`.
 The `resize` interface and the `scalable-plugin` world are an optional part of 0.3.0: the editor uses `resize` when a plugin exports it, so plugins built against `plugin` load as before.
+The `embed` interface and the `embedding-plugin` world are an optional part of 0.5.0 in the same way.
 Version 0.4.0 added `list-models` and `compile-issues`, so a plugin built for 0.3 is not loaded until it is rebuilt against 0.4; a plugin with no packaged models or compile messages returns empty lists.
+Version 0.5.0 added group `hidden` and importer `sdk`, so a plugin built for 0.4 is not loaded until it is rebuilt against 0.5; a plugin whose groups all start visible sets `hidden` to `false`, and an importer whose files belong to no particular SDK sets `sdk` to `none`.

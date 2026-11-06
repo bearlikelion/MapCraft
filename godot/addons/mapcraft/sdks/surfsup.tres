@@ -23,7 +23,8 @@ classes = {
 "info_player_start": {
 "name": "SpawnPoint",
 "node": "marker",
-"properties": false
+"properties": false,
+"root": true
 },
 "kill_box": {
 "collision_layer": 0,

@@ -1,4 +1,4 @@
-//! Decodes one picture from a Valve texture (VTF): frame 0, face 0, the largest mip that fits.
+//! Decodes one picture from a Valve texture (VTF): frame 0, face 0, the largest mip that fits; and encodes a picture as one.
 
 const RGBA8888: u32 = 0;
 const ABGR8888: u32 = 1;
@@ -207,6 +207,89 @@ pub fn decode(vtf: &[u8], max: usize) -> Result<Picture, String> {
     Ok(shrink((w as u32, h as u32, rgba), w.max(h).div_ceil(max.max(1)).next_power_of_two()))
 }
 
+/// The largest side `encode` writes; Source's own limit.
+const MAX_SIDE: u32 = 4096;
+const EIGHTBITALPHA: u32 = 0x2000;
+
+/// `(w, h, rgba)` resampled to power-of-two sides no larger than [`MAX_SIDE`], bilinearly, as Source needs.
+fn power_of_two((w, h, rgba): Picture) -> Picture {
+    let side = |s: u32| {
+        let p = s.max(1).next_power_of_two().min(MAX_SIDE);
+        if p > s && p / 2 >= 1 && s - p / 2 < p - s { p / 2 } else { p }
+    };
+    let (nw, nh) = (side(w), side(h));
+    if (nw, nh) == (w, h) || w == 0 || h == 0 {
+        return (w, h, rgba);
+    }
+    let px = |x: u32, y: u32, c: usize| f64::from(rgba.get(((y.min(h - 1) * w + x.min(w - 1)) * 4) as usize + c).copied().unwrap_or(0));
+    let mut out = Vec::with_capacity((nw * nh * 4) as usize);
+    for y in 0..nh {
+        let fy = ((f64::from(y) + 0.5) * f64::from(h) / f64::from(nh) - 0.5).max(0.0);
+        let (y0, ty) = (fy.floor() as u32, fy.fract());
+        for x in 0..nw {
+            let fx = ((f64::from(x) + 0.5) * f64::from(w) / f64::from(nw) - 0.5).max(0.0);
+            let (x0, tx) = (fx.floor() as u32, fx.fract());
+            for c in 0..4 {
+                let top = px(x0, y0, c) * (1.0 - tx) + px(x0 + 1, y0, c) * tx;
+                let bottom = px(x0, y0 + 1, c) * (1.0 - tx) + px(x0 + 1, y0 + 1, c) * tx;
+                out.push((top * (1.0 - ty) + bottom * ty).round() as u8);
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
+/// Half the size, each texel the average of the four it covers.
+fn halve((w, h, rgba): &Picture) -> Picture {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let px = |x: u32, y: u32, c: usize| u32::from(rgba.get(((y.min(h - 1) * w + x.min(w - 1)) * 4) as usize + c).copied().unwrap_or(0));
+    let mut out = Vec::with_capacity((nw * nh * 4) as usize);
+    for y in 0..nh {
+        for x in 0..nw {
+            for c in 0..4 {
+                let (sx, sy) = (x * 2, y * 2);
+                out.push(((px(sx, sy, c) + px(sx + 1, sy, c) + px(sx, sy + 1, c) + px(sx + 1, sy + 1, c) + 2) / 4) as u8);
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
+/// A version 7.2 VTF holding the picture as uncompressed RGBA8888 with every mip, resized to power-of-two sides.
+pub fn encode(picture: Picture) -> Vec<u8> {
+    let first = power_of_two(picture);
+    let mut mips = vec![first];
+    while let Some(last) = mips.last().filter(|m| m.0 > 1 || m.1 > 1) {
+        let next = halve(last);
+        mips.push(next);
+    }
+    let (w, h, top) = &mips[0];
+    let alpha = top.as_chunks::<4>().0.iter().any(|p| p[3] < 255);
+    let pixels = (top.len() / 4).max(1) as f32;
+    let reflectivity = [0, 1, 2].map(|c| top.as_chunks::<4>().0.iter().map(|p| (f32::from(p[c]) / 255.0).powf(2.2)).sum::<f32>() / pixels);
+    let mut v = vec![0u8; 80];
+    v[..4].copy_from_slice(b"VTF\0");
+    v[4..8].copy_from_slice(&7u32.to_le_bytes());
+    v[8..12].copy_from_slice(&2u32.to_le_bytes());
+    v[12..16].copy_from_slice(&80u32.to_le_bytes());
+    v[16..18].copy_from_slice(&(*w as u16).to_le_bytes());
+    v[18..20].copy_from_slice(&(*h as u16).to_le_bytes());
+    v[20..24].copy_from_slice(&(if alpha { EIGHTBITALPHA } else { 0 }).to_le_bytes());
+    v[24..26].copy_from_slice(&1u16.to_le_bytes());
+    for (i, r) in reflectivity.iter().enumerate() {
+        v[32 + i * 4..36 + i * 4].copy_from_slice(&r.to_le_bytes());
+    }
+    v[48..52].copy_from_slice(&1f32.to_le_bytes());
+    v[52..56].copy_from_slice(&RGBA8888.to_le_bytes());
+    v[56] = mips.len() as u8;
+    v[57..61].copy_from_slice(&u32::MAX.to_le_bytes());
+    v[63..65].copy_from_slice(&1u16.to_le_bytes());
+    for (_, _, data) in mips.iter().rev() {
+        v.extend_from_slice(data);
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +324,18 @@ mod tests {
         assert_eq!((needed(&file[..80], 2), needed(&file[..80], 1024)), (Some(88), Some(120)));
         assert!(decode(&file[..90], 1024).is_err());
         assert!(decode(&vtf(2, 4, 4, 1, 4242, &[]), 1024).is_err());
+    }
+
+    #[test]
+    fn encodes_what_it_decodes() {
+        let rgba: Vec<u8> = (0..4 * 4 * 4).map(|i| (i * 13 % 256) as u8).collect();
+        let file = encode((4, 4, rgba.clone()));
+        assert_eq!(decode(&file, 1024).unwrap(), (4, 4, rgba), "the top mip is the picture as given");
+        assert_eq!(file[56], 3, "4x4, 2x2 and 1x1 mips");
+        assert_ne!(u32_at(&file, 20) & EIGHTBITALPHA, 0, "a picture with see-through texels says so");
+        let (w, h, _) = decode(&encode((3, 5, vec![200; 3 * 5 * 4])), 1024).unwrap();
+        assert_eq!((w, h), (4, 4), "sides become powers of two");
+        assert_eq!(u32_at(&encode((2, 2, vec![255; 16])), 20) & EIGHTBITALPHA, 0);
     }
 
     #[test]

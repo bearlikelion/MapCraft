@@ -372,6 +372,10 @@ impl MapCraftApp {
         let mut picked = false;
         egui::Window::new("Switch SDK").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             ui.label(egui::RichText::new("The map keeps its brushes and entities and is saved with the SDK picked.").color(crate::chrome::TEXT_WEAK));
+            ui.label(
+                egui::RichText::new("Convert also turns its entities and materials into that SDK's, when the SDK has rules for this one.")
+                    .color(crate::chrome::TEXT_WEAK),
+            );
             picked = self.sdk_choices(ui);
         });
         self.dialogs.switch_sdk = open && !picked;

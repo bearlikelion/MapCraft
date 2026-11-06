@@ -324,14 +324,34 @@ impl MapCraftApp {
             }
         }
         match self.session.import_layer(&name, imported.nodes) {
-            Ok(_) => {
+            Ok(layer) => {
                 self.status = format!("Imported {name}");
+                self.convert_import(importer, &name, layer);
                 self.mark_changed();
                 self.frame_all();
                 self.add_companion_folder(path);
                 self.assets_checked = false;
             }
             Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    /// Converts a just imported layer when the map's SDK has rules for the SDK the importer's files use.
+    fn convert_import(&mut self, importer: &mapcraft_plugin_host::ImporterSpec, name: &str, layer: mapcraft_map::NodeId) {
+        let (Some(from), Some(sdk)) = (importer.sdk.as_deref(), self.project.sdk.as_ref()) else { return };
+        let label = format!("Convert {name} to {}", sdk.manifest.name);
+        match sdk.conversion_from(from) {
+            Some(Ok(rules)) => match self.session.convert(&rules, &label, layer) {
+                Ok(done) => {
+                    self.status = format!(
+                        "Imported {name} and converted it to {}: {} entities changed, {} merged into the world, {} removed; undo once to keep it as it came",
+                        sdk.manifest.name, done.entities, done.to_world, done.dropped
+                    );
+                }
+                Err(e) => self.output.push(format!("Imported {name} but could not convert it: {e}")),
+            },
+            Some(Err(e)) => self.output.push(format!("Imported {name} as it came: {}'s rules for {from} do not load: {e}", sdk.manifest.name)),
+            None => {}
         }
     }
 

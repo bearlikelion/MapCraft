@@ -298,13 +298,13 @@ pub fn import(text: &str) -> Result<Import, String> {
         }
     }
 
-    let mut groups: Vec<Group> = names.iter().map(|(_, name)| Group { name: name.clone(), brushes: Vec::new(), entities: Vec::new() }).collect();
+    let mut groups: Vec<Group> = names.iter().map(|(_, name)| Group { name: name.clone(), hidden: false, brushes: Vec::new(), entities: Vec::new() }).collect();
     let index: HashMap<&str, usize> = names.iter().enumerate().rev().map(|(i, (id, _))| (*id, i)).collect();
     let tops: HashMap<&str, &str> = nested.iter().copied().collect();
     let mut hammer: HashMap<&str, usize> = HashMap::new();
     for (_, top) in &nested {
         hammer.entry(*top).or_insert_with(|| {
-            groups.push(Group { name: format!("Group {top}"), brushes: Vec::new(), entities: Vec::new() });
+            groups.push(Group { name: format!("Group {top}"), hidden: false, brushes: Vec::new(), entities: Vec::new() });
             groups.len() - 1
         });
     }

@@ -5,6 +5,7 @@
 mod boolean;
 mod commands;
 pub mod control;
+mod convert;
 mod curves;
 mod generate;
 mod issues;
@@ -21,6 +22,7 @@ mod uv;
 mod vertex;
 
 pub use commands::{CommandSpec, commands, execute, find};
+pub use convert::Converted;
 pub use generate::generator_transform;
 pub use issues::{Fix, Issue, LINK_KEYS, Severity, is_broken_link, is_unresolved, target_names, validate};
 pub use noise::{FractalType, HeightNoise, NoiseType};

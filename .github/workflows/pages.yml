@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - site/**
+      - patchnotes/**
       - docs/**
       - godot/README.md
       # The shortcut tables are generated from these.
@@ -12,6 +13,10 @@ on:
       - crates/ui/src/dialogs.rs
       - crates/engine/src/commands.rs
       - .github/workflows/pages.yml
+  # A release rebuilds the site from main so the changelog dates it by its tag.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -31,6 +36,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The changelog dates each release by its tag.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

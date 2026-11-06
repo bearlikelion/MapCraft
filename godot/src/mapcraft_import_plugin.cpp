@@ -1,12 +1,17 @@
 #include "mapcraft_import_plugin.h"
 
+#include <godot_cpp/classes/editor_file_system.hpp>
+#include <godot_cpp/classes/control.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/packed_scene.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include "mapcraft_builder.h"
+#include "mapcraft_map.h"
 
 namespace godot {
 
@@ -19,6 +24,11 @@ Dictionary option(const String &p_name, const Variant &p_default, PropertyHint p
 	d["property_hint"] = p_hint;
 	d["hint_string"] = p_hint_string;
 	return d;
+}
+
+bool is_map(const String &p_path) {
+	const String extension = p_path.get_extension().to_lower();
+	return extension == "mcmap" || extension == "mcpck";
 }
 
 } // namespace
@@ -78,7 +88,7 @@ int32_t MapCraftImportPlugin::_get_import_order() const {
 
 // Bump when imported scenes change, so projects reimport maps made by an older build.
 int32_t MapCraftImportPlugin::_get_format_version() const {
-	return 9;
+	return 10;
 }
 
 Error MapCraftImportPlugin::_import(const String &p_source_file, const String &p_save_path, const Dictionary &p_options,
@@ -173,17 +183,62 @@ Error MapCraftLightingImportPlugin::_import(const String &p_source_file, const S
 	return err;
 }
 
+void MapCraftContextMenu::_popup_menu(const PackedStringArray &p_paths) {
+	for (const String &path : p_paths) {
+		if (is_map(path)) {
+			add_context_menu_item("Save as Editable Scene...", chosen);
+			return;
+		}
+	}
+}
+
+void MapCraftEditorPlugin::save_requested(const Array &p_paths) {
+	for (int i = 0; i < p_paths.size(); i++) {
+		if (is_map(p_paths[i])) {
+			saving = p_paths[i];
+			save_dialog->set_current_path(saving.get_basename() + ".tscn");
+			save_dialog->popup_file_dialog();
+			return;
+		}
+	}
+}
+
+void MapCraftEditorPlugin::save_chosen(const String &p_path) {
+	const Error err = MapCraftMap::save_as_scene(saving, p_path);
+	if (err != OK) {
+		UtilityFunctions::push_error("MapCraft: could not save ", saving, " as ", p_path, " (", UtilityFunctions::error_string(err), ")");
+		return;
+	}
+	EditorInterface::get_singleton()->get_resource_filesystem()->update_file(p_path);
+	EditorInterface::get_singleton()->open_scene_from_path(p_path);
+}
+
 void MapCraftEditorPlugin::_notification(int p_what) {
 	if (p_what == NOTIFICATION_ENTER_TREE) {
 		lighting_importer.instantiate();
 		add_import_plugin(lighting_importer);
 		importer.instantiate();
 		add_import_plugin(importer);
+		save_dialog = memnew(EditorFileDialog);
+		save_dialog->set_title("Save Map as Editable Scene");
+		save_dialog->set_file_mode(EditorFileDialog::FILE_MODE_SAVE_FILE);
+		save_dialog->set_access(EditorFileDialog::ACCESS_RESOURCES);
+		save_dialog->add_filter("*.tscn", "Text Scene");
+		save_dialog->add_filter("*.scn", "Binary Scene");
+		save_dialog->connect("file_selected", callable_mp(this, &MapCraftEditorPlugin::save_chosen));
+		EditorInterface::get_singleton()->get_base_control()->add_child(save_dialog);
+		context_menu.instantiate();
+		context_menu->chosen = callable_mp(this, &MapCraftEditorPlugin::save_requested);
+		add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, context_menu);
 	} else if (p_what == NOTIFICATION_EXIT_TREE && importer.is_valid()) {
 		remove_import_plugin(importer);
 		importer.unref();
 		remove_import_plugin(lighting_importer);
 		lighting_importer.unref();
+		remove_context_menu_plugin(context_menu);
+		context_menu.unref();
+		save_dialog->queue_free();
+		save_dialog = nullptr;
 	}
 }
 

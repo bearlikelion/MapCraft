@@ -89,7 +89,7 @@ pub fn import(text: &str, files: &dyn Files) -> Result<Import, String> {
             let id = e.key("_tb_id").unwrap_or_default().to_string();
             let name = e.key("_tb_name").map_or_else(|| format!("{} {id}", if layer { "Layer" } else { "Group" }), str::to_string);
             let parent = if layer { None } else { parent_of(&e) };
-            let group = Group { name: String::new(), brushes: brushes(&mut e), entities: Vec::new() };
+            let group = Group { name: String::new(), hidden: false, brushes: brushes(&mut e), entities: Vec::new() };
             containers.push(Container { layer, id, name, parent, group });
         } else if classname.is_empty() {
             unnamed += 1;

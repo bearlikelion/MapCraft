@@ -38,6 +38,7 @@ func _initialize() -> void:
 	_check_untrusted_prefabs()
 	_check_paths_stay_in_project()
 	_check_pack(OS.get_cmdline_user_args())
+	_check_editable_scene(MAP)
 	for failure: String in _failures:
 		printerr("FAIL: ", failure)
 	print("mapcraft import test: %d failures" % _failures.size())
@@ -81,11 +82,14 @@ func _check_imported(root: Node3D) -> void:
 	_check_mesh_keys(root.get_node_or_null("lidded") as Node3D, root.get_node_or_null("emptied") as Node3D)
 
 	var mesh: MeshInstance3D = root.get_node_or_null("WorldMesh") as MeshInstance3D
-	_expect(mesh != null and mesh.mesh.get_surface_count() == 9, \
+	_expect(mesh != null and mesh.mesh.get_surface_count() == 8, \
 			"one surface per material, blend layer and anti-tiling mode")
-	if mesh != null:
+	var group: MeshInstance3D = root.get_node_or_null("Group/Mesh") as MeshInstance3D
+	_expect(group != null and root.get_node("Group").get_class() == "Node3D", \
+			"a group becomes a Node3D holding its brushes' mesh")
+	if mesh != null and group != null:
 		_check_checker_surface(mesh.mesh as ArrayMesh)
-		_check_anti_tiling(mesh.mesh as ArrayMesh)
+		_check_anti_tiling(mesh.mesh as ArrayMesh, group.mesh as ArrayMesh)
 		_check_blend(mesh.mesh as ArrayMesh)
 	var body: StaticBody3D = root.get_node_or_null("WorldCollision") as StaticBody3D
 	var holder: CollisionShape3D = null
@@ -168,8 +172,8 @@ func _check_checker_surface(mesh: ArrayMesh) -> void:
 
 
 # Anti-tiled faces draw through the addon's wrappers unless that would lose part of their look.
-func _check_anti_tiling(mesh: ArrayMesh) -> void:
-	var ramp: ShaderMaterial = _surface_material(mesh, "checker#macro") as ShaderMaterial
+func _check_anti_tiling(mesh: ArrayMesh, group: ArrayMesh) -> void:
+	var ramp: ShaderMaterial = _surface_material(group, "checker#macro") as ShaderMaterial
 	_expect(_wrapper(ramp) == "mapcraft_single_linear.gdshader", \
 			"an anti-tiled face draws through the linear wrapper")
 	if ramp != null:
@@ -319,8 +323,11 @@ func _check_runtime_build() -> void:
 	per_brush.entity_map.trimesh_collision = false
 	_expect(per_brush.build() == OK, "MapCraftMap builds with a convex shape per brush")
 	var brushes: StaticBody3D = per_brush.get_node_or_null("WorldCollision") as StaticBody3D
-	_expect(brushes != null and brushes.get_child_count() == 9, \
-			"walls, detail, wedge and terrain collide")
+	var grouped: StaticBody3D = per_brush.get_node_or_null("Group/Collision") as StaticBody3D
+	_expect(brushes != null and brushes.get_child_count() == 8, \
+			"walls, detail and terrain collide")
+	_expect(grouped != null and grouped.get_child_count() == 1, \
+			"the grouped wedge collides in its group")
 	_check_displacement(brushes)
 	per_brush.free()
 
@@ -511,6 +518,25 @@ func _write_text(path: String, text: String) -> void:
 	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
 	file.store_string(text)
 	file.close()
+
+
+func _check_editable_scene(map: String) -> void:
+	var path: String = "user://editable_test/%s.tscn" % map.get_file().get_basename()
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	_expect(MapCraftMap.save_as_scene(map, path) == OK, "%s saves as an editable scene" % map)
+	var scene: PackedScene = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var state: SceneState = scene.get_state() if scene != null else null
+	_expect(state != null and state.get_node_instance(0) == null \
+			and state.get_base_scene_state() == null, \
+			"%s's editable scene owns its root instead of instancing the map" % map)
+	var root: Node = scene.instantiate() if scene != null else null
+	_expect(root != null and root.get_node_or_null("SpawnPoint") is Marker3D \
+			and root.get_node_or_null("Group/Mesh") is MeshInstance3D, \
+			"%s's editable scene keeps the map's nodes and groups" % map)
+	if root != null:
+		root.free()
+	_expect(not FileAccess.get_file_as_string(path).contains(map.get_file()), \
+			"%s's editable scene does not refer back to the map" % map)
 
 
 func _surface_material(mesh: ArrayMesh, surface_name: String) -> Material:

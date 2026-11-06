@@ -40,6 +40,9 @@ public:
 
 	Error build();
 	void clear();
+
+	// Saves the scene a map builds as a scene file of its own, which the editor can change and save.
+	static Error save_as_scene(const String &p_map, const String &p_scene);
 };
 
 } // namespace godot

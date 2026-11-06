@@ -26,6 +26,8 @@ pub struct Manifest {
     pub validates: bool,
     /// Lowercase model file extensions the plugin reads.
     pub models: Vec<String>,
+    /// File types the plugin's `embed` puts pictures into, from plugins built against the `embedding-plugin` world.
+    pub embedders: Vec<ImporterSpec>,
 }
 
 /// A file format the plugin imports or exports.
@@ -34,6 +36,8 @@ pub struct ImporterSpec {
     pub id: String,
     pub label: String,
     pub extensions: Vec<String>,
+    /// For an importer, the SDK whose classes the files use.
+    pub sdk: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,10 +133,22 @@ pub(crate) fn manifest(m: t::Manifest) -> Manifest {
                 .collect(),
         })
         .collect();
-    let importers = m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
-    let exporters = m.exporters.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions }).collect();
+    let importers =
+        m.importers.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions, sdk: i.sdk.filter(|s| !s.is_empty()) }).collect();
+    let exporters = m.exporters.into_iter().map(|i| ImporterSpec { id: i.id, label: i.label, extensions: i.extensions, sdk: None }).collect();
     let models = m.models.into_iter().map(|e| e.trim_start_matches('.').to_ascii_lowercase()).filter(|e| !e.is_empty()).collect();
-    Manifest { id: m.id, name: m.name, version: m.version, commands, materials: m.materials, importers, exporters, validates: m.validates, models }
+    Manifest {
+        id: m.id,
+        name: m.name,
+        version: m.version,
+        commands,
+        materials: m.materials,
+        importers,
+        exporters,
+        validates: m.validates,
+        models,
+        embedders: Vec::new(),
+    }
 }
 
 /// Stored parameter values as the plugin expects them; missing or wrong values fall back to the
@@ -350,7 +366,7 @@ fn tex_axis(a: &t::TexAxis) -> Option<TexAxis> {
 }
 
 fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize, flat: &mut usize) -> Vec<Fragment> {
-    let leaf = |kind| Fragment { kind, children: Vec::new() };
+    let leaf = |kind| Fragment { kind, children: Vec::new(), hidden: false };
     let take = |n: &mut usize| {
         *n > 0 && {
             *n -= 1;
@@ -379,7 +395,7 @@ fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, bud
         ent.properties = e.properties;
         ent.connections = e.connections.into_iter().take(MAX_NODES).map(connection).collect();
         let children = e.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx, flat)).map(|b| leaf(NodeKind::Brush(b))).collect();
-        frags.push(Fragment { kind: NodeKind::Entity(ent), children });
+        frags.push(Fragment { kind: NodeKind::Entity(ent), children, hidden: false });
     }
     frags
 }
@@ -391,7 +407,7 @@ pub(crate) fn output(out: t::Output, ctx: &Context) -> (Vec<Fragment>, usize) {
     for g in out.groups {
         let children = contents(g.brushes, g.entities, ctx, &mut budget, &mut flat);
         if !children.is_empty() {
-            frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children });
+            frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children, hidden: g.hidden });
         }
     }
     (frags, flat)

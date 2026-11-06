@@ -1,5 +1,8 @@
 #include "mapcraft_map.h"
 
+#include <godot_cpp/classes/packed_scene.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
+#include <godot_cpp/classes/resource_saver.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -24,6 +27,7 @@ void MapCraftMap::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_build_on_ready"), &MapCraftMap::get_build_on_ready);
 	ClassDB::bind_method(D_METHOD("build"), &MapCraftMap::build);
 	ClassDB::bind_method(D_METHOD("clear"), &MapCraftMap::clear);
+	ClassDB::bind_static_method("MapCraftMap", D_METHOD("save_as_scene", "map", "scene"), &MapCraftMap::save_as_scene);
 
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "map_file", PROPERTY_HINT_FILE, "*.mcmap,*.mcpck"), "set_map_file", "get_map_file");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "entity_map", PROPERTY_HINT_RESOURCE_TYPE, "MapCraftEntityMap"), "set_entity_map", "get_entity_map");
@@ -125,6 +129,23 @@ Error MapCraftMap::build() {
 		UtilityFunctions::push_error("MapCraft: ", error);
 	}
 	return err;
+}
+
+Error MapCraftMap::save_as_scene(const String &p_map, const String &p_scene) {
+	Ref<PackedScene> scene = ResourceLoader::get_singleton()->load(p_map, "PackedScene", ResourceLoader::CACHE_MODE_IGNORE);
+	ERR_FAIL_COND_V_MSG(scene.is_null(), ERR_CANT_OPEN, "MapCraft: cannot load " + p_map + " as a scene");
+	Node *root = scene->instantiate(PackedScene::GEN_EDIT_STATE_MAIN);
+	ERR_FAIL_NULL_V_MSG(root, ERR_CANT_CREATE, "MapCraft: " + p_map + " has no root node");
+	// Without its source path the root is the new scene's own, not an instance of the map.
+	root->set_scene_file_path("");
+	Ref<PackedScene> owned;
+	owned.instantiate();
+	Error err = owned->pack(root);
+	memdelete(root);
+	if (err != OK) {
+		return err;
+	}
+	return ResourceSaver::get_singleton()->save(owned, p_scene);
 }
 
 } // namespace godot

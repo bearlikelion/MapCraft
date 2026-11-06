@@ -896,13 +896,14 @@ impl MapCraftApp {
         let overlay = self.overlay_lines(self.panes.get(index).is_some_and(|p| p.camera.is_2d()));
         let grid = self.view_grid(index);
         let mode = self.render_mode;
-        let sky = self.prefs.get().view.sky;
+        let (sky, nodraw) = (self.prefs.get().view.sky, self.prefs.get().view.nodraw);
         let weights = self.tool == Tool::Sculpt
             && matches!(self.sculpt.0, mapcraft_engine::SculptMode::Paint | mapcraft_engine::SculptMode::Blur)
             && self.paint.show_weights;
         if let (Some(gpu), Some(pane)) = (&mut self.gpu, self.panes.get_mut(index)) {
             pane.rect = rect;
             gpu.renderer.show_sky = sky;
+            gpu.renderer.show_nodraw = nodraw;
             if pane.target.as_ref().is_none_or(|t| t.size != px) {
                 let target = gpu.renderer.target(px);
                 let mut egui_renderer = gpu.state.renderer.write();
@@ -959,6 +960,33 @@ impl MapCraftApp {
         self.draw_clip_points(ui, index, rect);
         self.draw_snap_mark(ui, index, rect);
         self.draw_fps(ui, index, rect);
+        self.draw_fly_speed(ui, index, rect);
+    }
+
+    /// The fly speed, near the bottom of the 3D view the wheel just changed it in, fading after a moment.
+    fn draw_fly_speed(&self, ui: &egui::Ui, index: usize, rect: Rect) {
+        const SHOWN: f32 = 1.5;
+        let Some((_, at)) = self.fly_speed_changed.filter(|(v, _)| *v == index) else { return };
+        let age = at.elapsed().as_secs_f32();
+        if age > SHOWN {
+            return;
+        }
+        ui.ctx().request_repaint();
+        let alpha = ((SHOWN - age) / 0.4).clamp(0.0, 1.0);
+        let speed = self.prefs.get().view.fly_speed;
+        let painter = ui.painter_at(rect);
+        let text = Color32::WHITE.gamma_multiply(alpha);
+        let galley = painter.layout_no_wrap(format!("Fly speed {speed:.0} units/s"), egui::FontId::proportional(15.0), text);
+        let bar = egui::vec2(galley.size().x.max(160.0), 4.0);
+        let size = egui::vec2(bar.x, galley.size().y + 8.0 + bar.y);
+        let back = Rect::from_center_size(rect.center_bottom() - egui::vec2(0.0, 48.0 + size.y / 2.0), size).expand(8.0);
+        painter.rect_filled(back, 6.0, Color32::from_black_alpha((170.0 * alpha) as u8));
+        painter.galley(egui::pos2(back.center().x - galley.size().x / 2.0, back.min.y + 8.0), galley, text);
+        // The bar fills on a log scale across the 16 to 8192 range Preferences allows.
+        let fill = ((speed / 16.0).ln() / 512f64.ln()).clamp(0.0, 1.0) as f32;
+        let track = Rect::from_min_size(egui::pos2(back.min.x + 8.0, back.max.y - 8.0 - bar.y), bar);
+        painter.rect_filled(track, 2.0, Color32::from_white_alpha((50.0 * alpha) as u8));
+        painter.rect_filled(Rect::from_min_size(track.min, egui::vec2(bar.x * fill, bar.y)), 2.0, crate::chrome::ACCENT.gamma_multiply(alpha));
     }
 
     /// Frames per second over the last frames, and the time the last render of this view took on the CPU.
@@ -1997,6 +2025,7 @@ impl MapCraftApp {
             let speed = fly_speed_scrolled(speed, fly_scroll);
             self.prefs.update(|p| p.view.fly_speed = speed);
             self.status = format!("Fly speed {speed:.0} units/s");
+            self.fly_speed_changed = Some((index, std::time::Instant::now()));
         } else if scroll != 0.0 && response.hovered() {
             cam.position += cam.forward() * f64::from(scroll) * 2.0;
         }

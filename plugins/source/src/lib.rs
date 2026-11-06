@@ -1,8 +1,9 @@
-//! Valve Source support for MapCraft: imports and exports Hammer `.vmf` maps and lists the game's materials from its VPK packages.
+//! Valve Source support for MapCraft: imports and exports Hammer `.vmf` maps, lists the game's materials from its VPK packages, and packs custom materials into compiled maps.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod diagnose;
+mod pak;
 mod vmf;
 
 use std::collections::BTreeSet;
@@ -10,7 +11,7 @@ use std::collections::BTreeSet;
 use mapcraft::plugin::host;
 use mapcraft::plugin::types::{BlendRole, ExporterSpec, ImporterSpec};
 
-wit_bindgen::generate!({ path: "../../wit", world: "plugin" });
+wit_bindgen::generate!({ path: "../../wit", world: "embedding-plugin" });
 
 /// Folders whose materials never go on brushes: models, menu and HUD art, particles and sprites.
 const SKIPPED: &[&str] = &["models/", "vgui/", "hud/", "console/", "particle/", "sprites/", "overviews/"];
@@ -81,7 +82,7 @@ impl Guest for Source {
             version: env!("CARGO_PKG_VERSION").into(),
             commands: Vec::new(),
             materials: true,
-            importers: vec![ImporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
+            importers: vec![ImporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()], sdk: Some("cstrike".into()) }],
             exporters: vec![ExporterSpec { id: "vmf".into(), label: "Valve map (VMF)".into(), extensions: vec!["vmf".into()] }],
             validates: false,
             models: vec!["mdl".into()],
@@ -176,6 +177,28 @@ impl Guest for Source {
 
     fn compile_issues(map: MapData, log: Vec<String>) -> Vec<Issue> {
         diagnose::issues(&map, &log)
+    }
+}
+
+impl exports::mapcraft::plugin::embed::Guest for Source {
+    fn embedders() -> Vec<ExporterSpec> {
+        vec![ExporterSpec { id: "bsp".into(), label: "Compiled Source map".into(), extensions: vec!["bsp".into()] }]
+    }
+
+    fn embed_file(embedder: String, data: Vec<u8>, pictures: Vec<(String, mapcraft::plugin::types::Image)>) -> Result<Vec<u8>, String> {
+        if embedder != "bsp" {
+            return Err(format!("unknown embedder {embedder}"));
+        }
+        let mut files = Vec::with_capacity(pictures.len() * 2);
+        for (name, image) in pictures {
+            let name = name.to_ascii_lowercase().replace('\\', "/");
+            if name.is_empty() || name.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+                continue;
+            }
+            files.push((format!("materials/{name}.vmt"), pak::vmt(&name, pak::alpha_of(&image.rgba)).into_bytes()));
+            files.push((format!("materials/{name}.vtf"), valve::vtf::encode((image.width, image.height, image.rgba))));
+        }
+        pak::embed(&data, &files)
     }
 }
 
