@@ -43,7 +43,7 @@ const PACKED_WORDS: [&str; 2] = ["orm", "arm"];
 #[derive(Default)]
 pub(crate) struct NewAssets {
     dialog: Option<NewAsset>,
-    picks: Vec<PathBuf>,
+    pub(crate) picks: Vec<PathBuf>,
 }
 
 struct NewAsset {
@@ -248,6 +248,10 @@ impl MapCraftApp {
     /// Opens New Material on a plain picture, named after it so the PBR material takes its place.
     pub(crate) fn make_pbr(&mut self, name: &str) {
         let files = self.project.material_files(name);
+        if files.is_empty() && self.project.find_material(name).is_some() {
+            self.status = format!("{name} is drawn by the SDK's plugin, such as a Godot shader material, so it has no picture to make a PBR material from");
+            return;
+        }
         let mut new = NewAsset::new(AssetKind::Material, files);
         new.name = name.into();
         self.new_assets.dialog = Some(new);

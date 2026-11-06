@@ -548,12 +548,17 @@ fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collectio
     let mut parts: std::collections::BTreeMap<(String, Option<u32>, mapcraft_map::AntiTile), BakePart> = std::collections::BTreeMap::new();
     for (id, node) in map.nodes() {
         let Some(b) = node.kind.brush() else { continue };
-        if b.has_displacement() || mapcraft_map::boolean::source_op(map, id).is_some() {
+        if mapcraft_map::boolean::source_op(map, id).is_some() {
             continue;
         }
         let Ok(solid) = b.solid() else { continue };
+        let displaced: std::collections::BTreeMap<usize, Vec<mapcraft_geom::DVec3>> = b.displaced(&solid).into_iter().collect();
         for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
             let Some(w) = winding.as_ref().filter(|_| b.draws(face) && !face.material.is_empty()) else { continue };
+            // Blended displacements draw live, as the scene leaves them.
+            if b.has_displacement() && (!displaced.contains_key(&index) || face.blend_layer().is_some()) {
+                continue;
+            }
             let entry = lm.face(id, index);
             let slice = entry.map(|e| e.slice);
             let part = parts.entry((face.material.clone(), slice, face.anti_tile())).or_insert_with(|| BakePart {
@@ -564,13 +569,15 @@ fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collectio
             });
             let texture = size(&face.material);
             let first = part.positions.len() as u32;
-            for p in &w.0 {
+            let points = displaced.get(&index).unwrap_or(&w.0);
+            for p in points {
                 part.positions.push(p.as_vec3().to_array());
                 part.uvs.push(face.uv(*p, texture).as_vec2().to_array());
                 part.lightmap_uvs.push(entry.map_or([0.0; 2], |e| e.uv_at(p.to_array())));
             }
-            for k in 1..w.0.len().saturating_sub(1) as u32 {
-                part.indices.extend([first, first + k, first + k + 1]);
+            match (displaced.contains_key(&index), &face.disp) {
+                (true, Some(d)) => part.indices.extend(d.triangles().into_iter().flatten().map(|k| first + k as u32)),
+                _ => (1..w.0.len().saturating_sub(1) as u32).for_each(|k| part.indices.extend([first, first + k, first + k + 1])),
             }
         }
     }

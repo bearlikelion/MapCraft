@@ -138,3 +138,23 @@ fn an_untextured_zone_on_the_floor_casts_no_shadow() {
     let below = seen(&lm, &map, walls[0], DVec3::Z, DVec3::new(4.0, 4.0, 0.0));
     assert!((below - 1.0).abs() < 0.08, "under the light through the zone: {below}");
 }
+
+#[test]
+fn a_displaced_ridge_is_lightmapped_and_casts_a_shadow() {
+    let mut map = Map::new();
+    room(&mut map, DVec3::new(-512.0, -512.0, 0.0), DVec3::new(512.0, 512.0, 512.0));
+    let mut b = Brush::cuboid(Aabb::new(DVec3::new(-256.0, -256.0, 0.0), DVec3::new(256.0, 256.0, 16.0)), &tex());
+    let solid = b.solid().unwrap();
+    let top = b.faces.iter().position(|f| f.plane().unwrap().normal.z > 0.9).unwrap();
+    let corners = &solid.faces[top].as_ref().unwrap().0;
+    let mut d = mapcraft_map::Displacement::new(4, corners[0]);
+    d.heights = d.base(corners).unwrap().iter().map(|p| 128.0 * (1.0 - p.x.abs() / 32.0).max(0.0)).collect();
+    b.faces[top].disp = Some(d);
+    let floor = add(&mut map, NodeKind::Brush(b));
+    light(&mut map, DVec3::new(-256.0, 0.0, 64.0), &[("_light", "255 255 255 255")]);
+    let lm = run(&map, &direct_only());
+    let lit = seen(&lm, &map, floor, DVec3::Z, DVec3::new(-128.0, 0.0, 16.0));
+    let shaded = seen(&lm, &map, floor, DVec3::Z, DVec3::new(160.0, 0.0, 16.0));
+    assert!(lit > 0.05, "the side facing the light {lit}");
+    assert!(shaded < lit * 0.05, "behind the ridge {shaded} vs {lit}");
+}

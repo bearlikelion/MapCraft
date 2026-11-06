@@ -27,10 +27,65 @@ pub struct Chart {
     pub h: u32,
     /// The face polygon in chart coordinates.
     pub polygon: Vec<DVec2>,
+    /// The displaced surface over the face, when it is a displacement.
+    pub bumps: Option<Bumps>,
     /// Where the chart sits: atlas slice and corner.
     pub slice: u32,
     pub x: u32,
     pub y: u32,
+}
+
+/// A displacement's grid over its chart: heights rise along the face normal, so each chart point has one surface point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bumps {
+    /// The grid's corners in chart coordinates, in grid order.
+    pub corners: [DVec2; 4],
+    /// Points per grid side.
+    pub n: usize,
+    pub points: Vec<DVec3>,
+    pub normals: Vec<DVec3>,
+    /// The largest height off the face.
+    pub reach: f64,
+}
+
+impl Bumps {
+    /// The surface point and normal over chart point `c`, on the grid's triangles.
+    fn at(&self, c: DVec2) -> Option<(DVec3, DVec3)> {
+        let (u, v) = inverse_bilinear(self.corners, c)?;
+        let side = (self.n - 1) as f64;
+        let (x, y) = (u.clamp(0.0, 1.0) * side, v.clamp(0.0, 1.0) * side);
+        let (i, j) = ((x.floor() as usize).min(self.n - 2), (y.floor() as usize).min(self.n - 2));
+        let (fx, fy) = (x - i as f64, y - j as f64);
+        let (a, b, c, d) = (j * self.n + i, j * self.n + i + 1, (j + 1) * self.n + i + 1, (j + 1) * self.n + i);
+        // The same alternating diagonals as Displacement::triangles.
+        let weights = match ((i + j) % 2 == 0, fx >= fy, fx + fy <= 1.0) {
+            (true, true, _) => [(a, 1.0 - fx), (b, fx - fy), (c, fy)],
+            (true, false, _) => [(a, 1.0 - fy), (c, fx), (d, fy - fx)],
+            (false, _, true) => [(a, 1.0 - fx - fy), (b, fx), (d, fy)],
+            (false, _, false) => [(b, 1.0 - fy), (c, fx + fy - 1.0), (d, 1.0 - fx)],
+        };
+        let mix = |v: &[DVec3]| weights.iter().map(|(k, w)| v.get(*k).copied().unwrap_or_default() * *w).sum::<DVec3>();
+        Some((mix(&self.points), mix(&self.normals)))
+    }
+}
+
+/// Where `p` sits on the bilinear patch over `q` (`q[0]` to `q[1]` is u, `q[0]` to `q[3]` is v), as Inigo Quilez solves it.
+fn inverse_bilinear(q: [DVec2; 4], p: DVec2) -> Option<(f64, f64)> {
+    let (e, f, g, h) = (q[1] - q[0], q[3] - q[0], q[0] - q[1] + q[2] - q[3], p - q[0]);
+    let (k2, k1, k0) = (g.perp_dot(f), e.perp_dot(f) + h.perp_dot(g), h.perp_dot(e));
+    let u_for = |v: f64| {
+        let across = e + g * v;
+        (h - f * v).dot(across) / across.length_squared().max(1e-12)
+    };
+    if k2.abs() < 1e-9 {
+        let v = if k1.abs() < 1e-12 { return None } else { -k0 / k1 };
+        return Some((u_for(v), v));
+    }
+    let w = (k1 * k1 - 4.0 * k0 * k2).max(0.0).sqrt();
+    let near = |v: f64, u: f64| (u - u.clamp(0.0, 1.0)).abs() + (v - v.clamp(0.0, 1.0)).abs();
+    let (v1, v2) = ((-k1 - w) / (2.0 * k2), (-k1 + w) / (2.0 * k2));
+    let (u1, u2) = (u_for(v1), u_for(v2));
+    Some(if near(v1, u1) <= near(v2, u2) { (u1, v1) } else { (u2, v2) })
 }
 
 impl Chart {
@@ -49,10 +104,17 @@ impl Chart {
         (clamp(c.x, self.w), clamp(c.y, self.h))
     }
 
-    /// Where luxel (i, j) samples the light: its center, pulled onto the face when the center lies off it.
-    pub fn sample_point(&self, i: u32, j: u32) -> DVec3 {
-        let c = DVec2::new(f64::from(i) + 0.5, f64::from(j) + 0.5);
-        self.to_world(inside(&self.polygon, c))
+    /// Where luxel (i, j) samples the light and the way the surface faces there: its center, pulled onto the face when the center lies off it.
+    pub fn sample(&self, i: u32, j: u32) -> (DVec3, DVec3) {
+        self.surface_at(inside(&self.polygon, DVec2::new(f64::from(i) + 0.5, f64::from(j) + 0.5)))
+    }
+
+    /// The surface point and normal over chart point `c`: on the displacement when there is one, else on the face.
+    pub fn surface_at(&self, c: DVec2) -> (DVec3, DVec3) {
+        match self.bumps.as_ref().and_then(|b| b.at(c)) {
+            Some((p, n)) => (p, n.normalize_or(self.normal)),
+            None => (self.to_world(c), self.normal),
+        }
     }
 
     /// The 2 x 4 matrix taking a world point to its atlas UV in a slice of `size` luxels.
@@ -91,19 +153,23 @@ fn inside(polygon: &[DVec2], c: DVec2) -> DVec2 {
     nearest + toward.normalize_or_zero() * toward.length().min(0.05)
 }
 
-/// Charts for every drawn face of every brush, skipping faces in `skip` and the brushes of boolean groups.
+/// Charts for every drawn face of every brush, skipping faces in `skip`, boolean group brushes and a displaced brush's flat faces.
 /// Luxel size comes from a face's `lightmapscale`, else `luxel`.
 pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Chart> {
     let mut charts = Vec::new();
     for (id, node) in map.nodes() {
         let NodeKind::Brush(b) = &node.kind else { continue };
-        if mapcraft_map::boolean::source_op(map, id).is_some() || b.has_displacement() {
+        if mapcraft_map::boolean::source_op(map, id).is_some() {
             continue;
         }
         let Ok(solid) = b.solid() else { continue };
+        let displaced: std::collections::BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
         for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
             let (Some(w), Some(plane)) = (winding, face.plane()) else { continue };
             if !b.draws(face) || face.material.is_empty() || skip.contains(&(id, face.id)) || w.0.len() < 3 {
+                continue;
+            }
+            if b.has_displacement() && !displaced.contains_key(&index) {
                 continue;
             }
             let wanted =
@@ -122,6 +188,12 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
             let corner = min - DVec2::splat(scale);
             let origin = bu * corner.x + bv * corner.y + plane.normal * plane.dist;
             let polygon = flat.iter().map(|p| (*p - corner) / scale).collect();
+            let to_chart = |p: DVec3| (DVec2::new(p.dot(bu), p.dot(bv)) - corner) / scale;
+            let bumps = displaced.get(&index).zip(face.disp.as_ref()).and_then(|(points, d)| {
+                let corners = d.corners(&w.0)?.map(to_chart);
+                let reach = d.heights.iter().fold(0.0f64, |m, h| m.max(h.abs()));
+                Some(Bumps { corners, n: d.size(), normals: d.normals(points, plane.normal), points: points.clone(), reach })
+            });
             charts.push(Chart {
                 node: id,
                 face: index,
@@ -134,6 +206,7 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
                 w: size(extent.x),
                 h: size(extent.y),
                 polygon,
+                bumps,
                 slice: 0,
                 x: 0,
                 y: 0,
@@ -187,6 +260,7 @@ mod tests {
             w,
             h,
             polygon: Vec::new(),
+            bumps: None,
             slice: 0,
             x: 0,
             y: 0,

@@ -201,6 +201,7 @@ impl Fnv {
 pub fn bake_fingerprint(map: &Map, settings: &Settings) -> u64 {
     let mut h = Fnv(fingerprint(map));
     h.bytes(b"bands on Godot's axes");
+    h.bytes(b"displacements lightmapped");
     h.f64(settings.luxel);
     h.bytes(&settings.slice.to_le_bytes());
     h.bytes(&settings.bounces.to_le_bytes());

@@ -76,7 +76,8 @@ impl MaterialInspector {
     }
 
     /// The descriptor's rows; edits save once the pointer is released.
-    pub(crate) fn ui(&mut self, ui: &mut egui::Ui) -> Edit {
+    /// `picks` stand in for the file dialog, first come first used.
+    pub(crate) fn ui(&mut self, ui: &mut egui::Ui, picks: &mut Vec<PathBuf>) -> Edit {
         let before = self.material.clone();
         let mut browse = None;
         let m = &mut self.material;
@@ -124,7 +125,11 @@ impl MaterialInspector {
             }
         });
         if let Some(slot) = browse
-            && let Some(file) = rfd::FileDialog::new().set_title("Picture for this material").add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+            && let Some(file) = if picks.is_empty() {
+                rfd::FileDialog::new().set_title("Picture for this material").add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file()
+            } else {
+                Some(picks.remove(0))
+            }
         {
             match self.copy_picture(slot, &file) {
                 Ok(texture) => {
@@ -234,7 +239,7 @@ impl crate::app::MapCraftApp {
             return;
         }
         let Some(inspector) = &mut self.material_inspector else { return };
-        let edit = inspector.ui(ui);
+        let edit = inspector.ui(ui, &mut self.new_assets.picks);
         let changed = if inspector.changed() { "Changed since opened; Revert goes back" } else { "Edits save to the file when you let go" };
         ui.colored_label(crate::chrome::TEXT_WEAK, changed);
         ui.colored_label(crate::chrome::TEXT_WEAK, "Switch a view to Lit to see roughness, metallic, normals and emission.");
@@ -261,9 +266,10 @@ mod tests {
     #[test]
     fn edits_save_on_release_and_revert_restores_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut harness = Harness::builder()
-            .with_size(egui::vec2(500.0, 500.0))
-            .build_ui_state(|ui, (inspector, edits): &mut (MaterialInspector, Vec<Edit>)| edits.push(inspector.ui(ui)), (opened(dir.path()), Vec::new()));
+        let mut harness = Harness::builder().with_size(egui::vec2(500.0, 500.0)).build_ui_state(
+            |ui, (inspector, edits): &mut (MaterialInspector, Vec<Edit>)| edits.push(inspector.ui(ui, &mut Vec::new())),
+            (opened(dir.path()), Vec::new()),
+        );
         harness.run();
         harness.state_mut().0.material.normal_strength = 0.25;
         harness.state_mut().0.material.emission_energy = 3.0;

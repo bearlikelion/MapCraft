@@ -821,7 +821,7 @@ class Builder {
 	Node3D *edited_model(const String &p_path, bool p_packed, const Dictionary &p_properties, HashMap<Node *, String> &r_modes);
 	Ref<Material> variant(const String &p_a, const String &p_b, AntiTile p_mode, Vector2 &r_size);
 	bool add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<Shape> *p_hulls, bool p_world = false);
-	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles);
+	void add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles, uint64_t p_node, int p_index);
 	Ref<SurfaceTool> surface_for(Surfaces &p_surfaces, const String &p_key, const Ref<Material> &p_material);
 	Ref<ShaderMaterial> embedded_shader(const Dictionary &p_node, Shader::Mode p_mode);
 	void set_shader_params(const Ref<ShaderMaterial> &p_material, const Variant &p_params);
@@ -1242,7 +1242,7 @@ Ref<SurfaceTool> Builder::surface_for(Surfaces &p_surfaces, const String &p_key,
 	return p_surfaces[p_key];
 }
 
-void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles) {
+void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Surfaces *p_surfaces, PackedVector3Array &r_triangles, uint64_t p_node, int p_index) {
 	const int n = int(Math::round(Math::sqrt(double(p_grid.size()))));
 	if (n < 2 || n * n != p_grid.size()) {
 		return;
@@ -1278,7 +1278,9 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 	const String layer = blend_layer_of(name, disp);
 	Vector2 size;
 	const Ref<Material> mat = variant(name, layer, mode, size);
-	Ref<SurfaceTool> st = surface_for(*p_surfaces, surface_key(name, layer, mode), mat);
+	const Lighting::Face *baked = lit ? lighting.faces.getptr(Lighting::key(p_node, uint32_t(p_index))) : nullptr;
+	const String slice = baked != nullptr ? "#lm" + itos(baked->slice) : String();
+	Ref<SurfaceTool> st = surface_for(*p_surfaces, surface_key(name, layer, mode) + slice, mat);
 	Vector<float> weights;
 	// A blend that fell back draws the face's own material, which may read COLOR itself.
 	if (!layer.is_empty() && mat != materials[name]) {
@@ -1306,6 +1308,10 @@ void Builder::add_displacement(const Dictionary &p_face, const Array &p_grid, Su
 		st->set_uv(Vector2((m.dot(u_axis) / u_scale + u_offset) / size.x, (m.dot(v_axis) / v_scale + v_offset) / size.y));
 		if (!weights.is_empty()) {
 			st->set_color(Color(1, 1, 1, weights[k]));
+		}
+		if (baked != nullptr) {
+			const float *r = baked->uv;
+			st->set_uv2(Vector2(r[0] * m.x + r[1] * m.y + r[2] * m.z + r[3], r[4] * m.x + r[5] * m.y + r[6] * m.z + r[7]));
 		}
 		st->add_vertex(points[k]);
 	}
@@ -1351,7 +1357,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 		Array grid = face.get("disp_vertices", Array());
 		// A displaced brush is only its displaced faces, as Source compiles it.
 		if (displaced) {
-			add_displacement(face, grid, p_surfaces, triangles);
+			add_displacement(face, grid, p_surfaces, triangles, node_id, i);
 			continue;
 		}
 		if (polygon.size() < 3) {

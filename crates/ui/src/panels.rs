@@ -1014,8 +1014,13 @@ impl MapCraftApp {
         let shown = lit.apply(base.pbr.clone()).unwrap_or_else(crate::project::plain_pbr);
         let roots = self.project.vfs.roots().to_vec();
         let extensions = self.project.sdk.as_ref().map(|s| s.manifest.textures.extensions.clone()).unwrap_or_default();
+        let mut pbr = false;
         egui::CollapsingHeader::new("Lit maps").id_salt("lit-maps").show(ui, |ui| {
-            ui.label(RichText::new(format!("How the Lit view shades {name}")).small().color(TEXT_WEAK));
+            ui.label(RichText::new(format!("How the editor's Lit view shades {name}; the game keeps its own")).small().color(TEXT_WEAK));
+            let tip = "Every PBR setting in the inspector, saved as a custom material that ships in the map's .mcpck";
+            if ui.add(icons::button(Some("sliders"), "Make PBR material...")).on_hover_text(tip).clicked() {
+                pbr = true;
+            }
             egui::Grid::new("lit-map-grid").num_columns(2).show(ui, |ui| {
                 let found = [shown.normal.clone(), shown.roughness.map(|m| m.path), shown.metallic.map(|m| m.path), shown.ao.map(|m| m.path)];
                 let slots = [&mut lit.normal, &mut lit.roughness, &mut lit.metallic, &mut lit.ao];
@@ -1054,6 +1059,9 @@ impl MapCraftApp {
                 lit = crate::project::LitMaps::default();
             }
         });
+        if pbr {
+            self.make_pbr(&name);
+        }
         if lit == before {
             return;
         }
@@ -1089,7 +1097,7 @@ impl MapCraftApp {
         egui::CollapsingHeader::new("Material").id_salt("pbr-material").show(ui, |ui| {
             ui.label(RichText::new(format!("{name}'s settings, saved to its file when you let go")).small().color(TEXT_WEAK));
             if let Some(editor) = &mut self.browser_material {
-                let edit = editor.ui(ui);
+                let edit = editor.ui(ui, &mut self.new_assets.picks);
                 if edit.changed || edit.saved {
                     shown = Some((editor.material.clone(), edit.saved));
                 }

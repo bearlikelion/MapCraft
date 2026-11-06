@@ -15,7 +15,8 @@ func _initialize() -> void:
 	root["children"].append({
 		"id": 990, "type": "entity", "classname": "light_environment", "properties": [],
 	})
-	var brush: Dictionary = _first_brush(root)
+	var brush: Dictionary = _first_brush(root, false)
+	var displaced: Dictionary = _first_brush(root, true)
 	_write(MAP, JSON.stringify(doc).to_utf8_buffer())
 
 	var plain: MapCraftMap = _build()
@@ -52,6 +53,20 @@ func _initialize() -> void:
 			"the sun lights only what moves")
 	map.free()
 
+	_expect(not displaced.is_empty(), "the course has a displacement")
+	_write(LIGHTING, _lighting(int(displaced["id"]), (displaced["faces"] as Array).size()))
+	var bumpy: MapCraftMap = _build()
+	var bumpy_gi: LightmapGI = bumpy.get_node_or_null("BakedLighting") as LightmapGI
+	_expect(bumpy_gi != null and bumpy_gi.light_data.get_user_count() == 1, \
+			"a lightmapped displacement gets a mesh of its own")
+	if bumpy_gi != null and bumpy_gi.light_data.get_user_count() == 1:
+		var path: NodePath = bumpy_gi.light_data.get_user_path(0)
+		var mesh: Mesh = (bumpy_gi.get_node(path) as MeshInstance3D).mesh
+		for s: int in mesh.get_surface_count():
+			_expect(mesh.surface_get_format(s) & Mesh.ARRAY_FORMAT_TEX_UV2 != 0, \
+					"lightmapped displacements carry UV2")
+	bumpy.free()
+
 	_write(LIGHTING, "MCLM nonsense".to_utf8_buffer())
 	var damaged: MapCraftMap = _build()
 	_expect(damaged.get_node_or_null("BakedLighting") == null, \
@@ -64,12 +79,12 @@ func _initialize() -> void:
 	quit(1 if _failures > 0 else 0)
 
 
-func _first_brush(node: Dictionary) -> Dictionary:
-	# Displacements are not lightmapped yet.
-	if node.get("type") == "brush" and not JSON.stringify(node).contains("disp_vertices"):
+func _first_brush(node: Dictionary, displaced: bool) -> Dictionary:
+	if node.get("type") == "brush" \
+	and JSON.stringify(node).contains("disp_vertices") == displaced:
 		return node
 	for child: Dictionary in node.get("children", []):
-		var found: Dictionary = _first_brush(child)
+		var found: Dictionary = _first_brush(child, displaced)
 		if not found.is_empty():
 			return found
 	return {}

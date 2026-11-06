@@ -63,12 +63,22 @@ fn triangles(map: &Map, charts: &[Chart]) -> Vec<Triangle> {
             continue;
         }
         let Ok(solid) = b.solid() else { continue };
+        let displaced: std::collections::BTreeMap<usize, Vec<DVec3>> = b.displaced(&solid).into_iter().collect();
         for (index, (face, winding)) in b.faces.iter().zip(&solid.faces).enumerate() {
             let Some(w) = winding else { continue };
             if !casts_shadow(&face.material) {
                 continue;
             }
             let owner = owner.get(&(id, index)).copied().unwrap_or(NO_CHART);
+            if let (Some(points), Some(d)) = (displaced.get(&index), &face.disp) {
+                tris.extend(
+                    d.triangles().into_iter().filter_map(|[a, b, c]| Some(Triangle { a: *points.get(a)?, b: *points.get(b)?, c: *points.get(c)?, owner })),
+                );
+                continue;
+            }
+            if b.has_displacement() {
+                continue;
+            }
             for k in 1..w.0.len().saturating_sub(1) {
                 tris.push(Triangle { a: w.0[0], b: w.0[k], c: w.0[k + 1], owner });
             }
@@ -238,10 +248,11 @@ impl Scene<'_> {
             let light = match self.bvh.nearest(origin, dir, 1e9) {
                 Some((t, owner)) if owner != NO_CHART => {
                     let (Some(c), Some(lux)) = (self.charts.get(owner as usize), prev.get(owner as usize)) else { continue };
-                    if c.normal.dot(dir) >= 0.0 {
+                    let at = c.to_chart(origin + dir * t);
+                    if c.surface_at(at).1.dot(dir) >= 0.0 {
                         continue;
                     }
-                    let (i, j) = c.luxel(c.to_chart(origin + dir * t));
+                    let (i, j) = c.luxel(at);
                     lux.exitant.get((j * c.w + i) as usize).copied().unwrap_or_default()
                 }
                 Some(_) => continue,
@@ -323,7 +334,8 @@ pub fn bake(
         let mut out = Luxels { sh: Vec::with_capacity(n), exitant: Vec::with_capacity(n) };
         for j in 0..c.h {
             for i in 0..c.w {
-                let (sh, total) = scene.direct(c.sample_point(i, j), c.normal, &near, seed(ci, (j * c.w + i) as usize));
+                let (p, n) = c.sample(i, j);
+                let (sh, total) = scene.direct(p, n, &near, seed(ci, (j * c.w + i) as usize));
                 out.sh.push(sh);
                 out.exitant.push(total * reflect + emission);
             }
@@ -341,7 +353,8 @@ pub fn bake(
             for j in 0..c.h {
                 for i in 0..c.w {
                     let index = (j * c.w + i) as usize;
-                    let (sh, total) = scene.gather(c.sample_point(i, j), c.normal, &prev, pass == 0, seed(ci, index + 7919 * (pass as usize + 1)));
+                    let (p, n) = c.sample(i, j);
+                    let (sh, total) = scene.gather(p, n, &prev, pass == 0, seed(ci, index + 7919 * (pass as usize + 1)));
                     out.sh.push(sh);
                     out.exitant.push(total * albedo);
                 }
@@ -412,7 +425,8 @@ fn chart_distance(c: &Chart, p: DVec3) -> f64 {
     let local = c.to_chart(p);
     let clamped = local.clamp(DVec2::ZERO, DVec2::new(f64::from(c.w), f64::from(c.h)));
     let plane = (p - c.origin).dot(c.normal);
-    (((local - clamped) * c.scale).length_squared() + plane * plane).sqrt()
+    let reach = c.bumps.as_ref().map_or(0.0, |b| b.reach);
+    ((((local - clamped) * c.scale).length_squared() + plane * plane).sqrt() - reach).max(0.0)
 }
 
 /// The one value every luxel shares, when they all match closely enough to need a single luxel.
