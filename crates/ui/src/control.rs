@@ -247,6 +247,16 @@ impl MapCraftApp {
                 })
                 .collect()),
             "run_plugin" => self.run_plugin_tool(a),
+            "import" => {
+                let path = PathBuf::from(str_arg(a, "path").map_err(msg)?);
+                let (plugin, importer) = self.importer_for(&path).ok_or_else(|| format!("no loaded SDK plugin imports {}", path.display()))?;
+                let before = self.output.len();
+                self.import_path(&plugin, &importer, &path);
+                if !self.status.starts_with("Imported") {
+                    return Err(self.status.clone());
+                }
+                Ok(json!({"status": self.status, "log": self.output.get(before..), "info": self.info()}))
+            }
             "compile_profiles" => {
                 let sdk = self.project.sdk.as_ref().ok_or("the open map has no SDK loaded")?;
                 Ok(sdk.manifest.compile.iter().map(|p| json!(p.name)).collect())

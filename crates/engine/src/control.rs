@@ -837,6 +837,13 @@ A generator's output becomes a group, turned `yaw` degrees, that stays editable.
         run: needs_editor,
     },
     Tool {
+        name: "import",
+        description: "Editor only: imports a file, such as a Source .bsp, into a new layer with the SDK plugin that reads its extension, \
+converting it when the SDK has rules for it, and returns the import log.",
+        schema: || object(json!({"path": string()}), &["path"]),
+        run: needs_editor,
+    },
+    Tool {
         name: "compile_profiles",
         description: "Editor only: the SDK's compile and run profiles (Run menu).",
         schema: || object(json!({}), &[]),
