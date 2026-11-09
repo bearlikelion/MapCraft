@@ -8,6 +8,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use mapcraft_engine::{Session, control};
 use mapcraft_geom::{Aabb, DVec3};
+use mapcraft_plugin_host::{Context, Host, ImporterSpec};
 use mapcraft_render::{NoStyle, RenderMode, Renderer, Shot, Slope, build_scene, headless_renderer, named_views, render_sheet};
 use serde_json::{Value, json};
 
@@ -118,12 +119,59 @@ impl Server {
             None => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
                 let args = params.get("arguments").unwrap_or(&Value::Null);
-                if name == "screenshot" {
-                    return self.screenshot(args).unwrap_or_else(|e| control::text_result(Err(e)));
+                match name {
+                    "screenshot" => return self.screenshot(args).unwrap_or_else(|e| control::text_result(Err(e))),
+                    "import" => return control::text_result(self.import(args)),
+                    _ => {}
                 }
                 control::text_result(control::call(&mut self.session, name, args))
             }
         }
+    }
+
+    /// Reads a file into a new layer with the plugin of the held map's SDK that imports its extension; game files such as textures are not read.
+    fn import(&mut self, a: &Value) -> Result<Value, String> {
+        let path = PathBuf::from(control::str_arg(a, "path").map_err(|e| e.to_string())?);
+        let id = self.session.sdk.clone().ok_or("the map has no SDK; start one with new and `sdk`")?;
+        let data_dir = mapcraft_sdk_manager::data_dir();
+        let sdk = mapcraft_sdk_manager::installed(&mapcraft_sdk_manager::search_dirs(data_dir.as_deref(), &[]))
+            .into_iter()
+            .find_map(|i| i.sdk.ok().filter(|s| s.manifest.id == id))
+            .ok_or_else(|| format!("SDK `{id}` is not installed"))?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+        let host = match data_dir.as_deref() {
+            Some(d) => Host::with_cache(&d.join("plugin-cache")),
+            None => Host::new(),
+        }
+        .map_err(|e| e.to_string())?;
+        let vfs = sdk.plugin_vfs(&Default::default());
+        let mut problems = Vec::new();
+        for plugin_id in &sdk.manifest.plugins {
+            let file = sdk.dir.join("plugins").join(format!("{plugin_id}.wasm"));
+            let mut plugin = match host.load_file(&file, vfs.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    problems.push(format!("{}: {e}", file.display()));
+                    continue;
+                }
+            };
+            let reads = |i: &&ImporterSpec| i.extensions.iter().any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(ext));
+            let Some(importer) = plugin.manifest.importers.iter().find(reads).map(|i| i.id.clone()) else { continue };
+            let data = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let ctx = Context {
+                grid: self.session.grid,
+                material: self.session.tex.material.clone(),
+                scale: self.session.tex.scale,
+                game: sdk.manifest.name.clone(),
+            };
+            let imported = plugin.import(&importer, &name, &data, &ctx);
+            let log = plugin.take_log();
+            let layer = self.session.import_layer(&name, imported.map_err(|e| e.to_string())?.nodes).map_err(|e| e.to_string())?;
+            return Ok(json!({"status": format!("Imported {name}"), "layer": layer, "log": log, "info": control::info(&self.session)}));
+        }
+        problems.insert(0, format!("no plugin of SDK `{id}` imports .{ext} files"));
+        Err(problems.join("; "))
     }
 
     /// Renders the map held here offscreen in flat colors, with walkable and surfable slopes tinted as the editor's slope view does.

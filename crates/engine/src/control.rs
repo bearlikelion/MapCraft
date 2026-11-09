@@ -838,8 +838,8 @@ A generator's output becomes a group, turned `yaw` degrees, that stays editable.
     },
     Tool {
         name: "import",
-        description: "Editor only: imports a file, such as a Source .bsp, into a new layer with the SDK plugin that reads its extension, \
-converting it when the SDK has rules for it, and returns the import log.",
+        description: "Imports a file, such as a Source .bsp, into a new layer with the SDK plugin that reads its extension and returns the import log. \
+The editor also loads game textures and converts the import when the SDK has rules for it; without the editor the map needs an `sdk`.",
         schema: || object(json!({"path": string()}), &["path"]),
         run: needs_editor,
     },
