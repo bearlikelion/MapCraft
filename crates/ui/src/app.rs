@@ -2137,7 +2137,7 @@ impl MapCraftApp {
                 let mut plugin = host.load_file(plugin, vfs.clone()).map_err(|e| e.to_string())?;
                 let mut loaded = Vec::new();
                 for (name, file) in &pictures {
-                    match image::open(file) {
+                    match crate::project::open_picture(file) {
                         Ok(img) => {
                             let img = img.to_rgba8();
                             loaded.push((name.clone(), mapcraft_plugin_host::Picture { width: img.width(), height: img.height(), rgba: img.into_raw() }));

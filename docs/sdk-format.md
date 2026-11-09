@@ -78,7 +78,7 @@ steps = [
 | `fgd` | Entity definition files, merged in order; later classes replace earlier ones |
 | `triggers` | Trigger classes, `["trigger*"]` by default, where a name ending in `*` covers every class starting with the rest; brushes tied to one lose their materials and the 3D views draw them see-through in the class color |
 | `textures.roots` | Folders searched for materials, first match wins; texture folders the user adds in SDK Settings are searched after these |
-| `textures.extensions` | File types that count as materials |
+| `textures.extensions` | File types that count as materials: `png`, `jpg`, `jpeg`, `tga` and `bmp` by default; `ktx2` can be listed too, read when its blocks are BC1, BC3, BC5 or BC7 and it is not supercompressed |
 | `textures.default` | Material for new brushes |
 | `textures.scale` | Texture scale for new faces |
 | `textures.pixelated` | `true` magnifies textures without smoothing, as Quake and other early 3D games do; off by default |

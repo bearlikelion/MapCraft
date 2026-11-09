@@ -30,6 +30,7 @@ eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 image = { workspace = true }
+bcdec_rs = { workspace = true }
 rfd = { workspace = true }
 log = { workspace = true }
 

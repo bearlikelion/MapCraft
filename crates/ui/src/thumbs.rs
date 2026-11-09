@@ -29,7 +29,7 @@ fn decode(source: &Source, size: u32) -> Option<ColorImage> {
             crate::project::tint_picture(&mut image, *tint);
             image::DynamicImage::ImageRgba8(image)
         }
-        Source::File(path) => std::panic::catch_unwind(|| image::open(path)).ok()?.ok()?,
+        Source::File(path) => std::panic::catch_unwind(|| crate::project::open_picture(path)).ok()?.ok()?,
         Source::Pixels(p) => image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(p.width, p.height, p.rgba.clone())?),
     };
     let rgba = img.thumbnail(size, size).to_rgba8();

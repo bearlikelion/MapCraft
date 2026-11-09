@@ -14,6 +14,7 @@ mod drop;
 mod icons;
 mod inspect;
 mod keys;
+mod ktx2;
 mod material_inspector;
 mod measure;
 mod mesh_children;

@@ -511,7 +511,7 @@ impl Project {
         }
         let mut image = match (&m.image, m.color) {
             (Some(path), _) if m.descriptor.is_some() => bounded_picture(path).ok()?,
-            (Some(path), _) => image::open(path).ok()?.to_rgba8(),
+            (Some(path), _) => open_picture(path).ok()?.to_rgba8(),
             (None, Some(c)) => RgbaImage::from_raw(SWATCH, SWATCH, swatch(c))?,
             (None, None) => return None,
         };
@@ -694,6 +694,8 @@ pub(super) fn tint_picture(image: &mut RgbaImage, tint: [f32; 4]) {
     }
 }
 
+const MAX_KTX2: u64 = 256 << 20;
+
 fn bounded_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let mut bytes = Vec::new();
@@ -710,6 +712,14 @@ pub(super) fn bounded_picture(path: &Path) -> Result<RgbaImage, String> {
     image::load_from_memory(&bytes).map(|image| image.to_rgba8()).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Opens a picture file of any type materials come in.
+pub(super) fn open_picture(path: &Path) -> Result<image::DynamicImage, String> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ktx2")) {
+        return bounded_bytes(path, MAX_KTX2).and_then(|bytes| crate::ktx2::decode(&bytes)).map(image::DynamicImage::ImageRgba8);
+    }
+    image::open(path).map_err(|e| e.to_string())
+}
+
 /// Uploads one material's picture, file or color swatch; a material with none of them counts as done.
 fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool {
     let mut put = |w: u32, h: u32, rgba: &[u8]| {
@@ -724,8 +734,7 @@ fn upload(renderer: &mut Renderer, name: &str, m: &Material, sky: bool) -> bool 
         }
         return m.color.is_none_or(|c| renderer.upload_material(name, SWATCH, SWATCH, &swatch(c)));
     };
-    let decoded =
-        if m.descriptor.is_some() { bounded_picture(path).map(image::DynamicImage::ImageRgba8) } else { image::open(path).map_err(|e| e.to_string()) };
+    let decoded = if m.descriptor.is_some() { bounded_picture(path).map(image::DynamicImage::ImageRgba8) } else { open_picture(path) };
     match decoded {
         Ok(img) => {
             let rgba = img.to_rgba8();
