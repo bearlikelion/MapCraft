@@ -20,6 +20,9 @@ mapcraft-map = { workspace = true }
 mapcraft-sdk = { workspace = true }
 mapcraft-sdk-manager = { workspace = true }
 mapcraft-plugin-host = { workspace = true }
+mapcraft-render = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

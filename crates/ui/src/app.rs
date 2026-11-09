@@ -11,7 +11,7 @@ use egui::{Pos2, Rect, Vec2};
 use mapcraft_engine::{Issue, SelectMode, Session};
 use mapcraft_geom::{Aabb, DVec3};
 use mapcraft_map::{Map, NodeId, NodeKind};
-use mapcraft_render::{Camera, RenderMode, Renderer, Target, View, build_scene};
+use mapcraft_render::{Camera, RenderMode, Renderer, Target, View, build_scene, frame_camera};
 use mapcraft_sdk::Sdk;
 
 use crate::dialogs::Dialogs;
@@ -2391,20 +2391,6 @@ impl MapCraftApp {
     fn title(&self) -> String {
         let name = self.session.path.as_ref().and_then(|p| p.file_name()).map_or("Untitled".to_string(), |n| n.to_string_lossy().into_owned());
         format!("{}{name} - {}", if self.session.is_dirty() { "*" } else { "" }, crate::BRAND)
-    }
-}
-
-/// Centers `cam` on `b`; a 2D view zooms so the box fills `px`, in the units of its zoom.
-pub(crate) fn frame_camera(cam: &mut Camera, b: &Aabb, px: f64) {
-    let c = b.center();
-    if cam.is_2d() {
-        let (r, u, _) = cam.view.axes();
-        cam.center = mapcraft_geom::DVec2::new(c.dot(r), c.dot(u));
-        cam.zoom = (px.max(100.0) / (b.size().max_element().max(64.0) * 1.3)).clamp(1.0 / 256.0, 64.0);
-    } else {
-        // Backs off until the box's bounding sphere fits the field of view.
-        let radius = b.size().length().max(64.0) * 0.5;
-        cam.position = c - cam.forward() * radius / (cam.fov_y.to_radians() * 0.5).sin().max(0.1);
     }
 }
 

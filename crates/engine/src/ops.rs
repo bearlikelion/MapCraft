@@ -328,7 +328,7 @@ impl Session {
     }
 
     /// Bounds of `roots` and everything inside them, with point entities counted as their origin.
-    pub(crate) fn bounds_of(&self, roots: impl IntoIterator<Item = NodeId>) -> Option<Aabb> {
+    pub fn bounds_of(&self, roots: impl IntoIterator<Item = NodeId>) -> Option<Aabb> {
         let roots: Vec<NodeId> = roots.into_iter().collect();
         let linked = roots.iter().any(|r| self.map.subtree(*r).iter().any(|n| mapcraft_map::link::copy_of(&self.map, *n).is_some()));
         // Linked copies hold nothing real, so their bounds come from the expanded map.

@@ -9,6 +9,7 @@ mod gltf_map;
 mod godot_shader;
 mod model;
 mod scene;
+mod sheet;
 
 use std::collections::HashMap;
 
@@ -29,6 +30,7 @@ pub use scene::{
     BatchKey, EntityStyle, Light, LineVertex, MeshVertex, NoStyle, SELECTED_EDGE, SceneData, Sky, Slope, WORLD_EDGE, box_lines, build_scene, entity_bounds,
     is_tool_material,
 };
+pub use sheet::{Shot, frame_camera, headless_renderer, named_views, render_sheet};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

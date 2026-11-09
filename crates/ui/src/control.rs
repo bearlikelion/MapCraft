@@ -14,10 +14,10 @@ use mapcraft_fgd::{ClassKind, Io};
 use mapcraft_geom::{Aabb, DVec3};
 use mapcraft_map::{Generator, NodeId};
 use mapcraft_plugin_host::{ParamKind, ParamSpec};
-use mapcraft_render::{Camera, View};
+use mapcraft_render::{Shot, render_sheet};
 use serde_json::{Value, json};
 
-use crate::app::{MapCraftApp, frame_camera};
+use crate::app::MapCraftApp;
 
 /// How long a call waits for the editor; the UI drops calls older than this unanswered.
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -357,16 +357,9 @@ impl MapCraftApp {
 
     /// Renders the map offscreen into one PNG, as an MCP image result.
     fn render_views(&mut self, a: &Value) -> Result<Value, String> {
-        let views: &[View] = match a.get("view").and_then(Value::as_str).unwrap_or("all") {
-            "all" => &View::ALL,
-            "3d" => &[View::Perspective],
-            "top" => &[View::Top],
-            "front" => &[View::Front],
-            "side" => &[View::Side],
-            _ => return Err(msg(bad("view", "all, 3d, top, front or side"))),
-        };
+        let views = mapcraft_render::named_views(a.get("view").and_then(Value::as_str).unwrap_or("all"))
+            .ok_or_else(|| msg(bad("view", "all, 3d, top, front or side")))?;
         let size = |key: &str, default: u32| a.get(key).and_then(Value::as_u64).map_or(default, |n| u32::try_from(n.clamp(64, 2048)).unwrap_or(default));
-        let (w, h) = (size("width", 1024), size("height", 768));
         let focus = match a.get("focus") {
             Some(_) => self.bounds_of(&ids_arg(&self.session, a, "focus").map_err(msg)?),
             None => self.map_bounds(),
@@ -378,24 +371,9 @@ impl MapCraftApp {
             self.rebuild_scene();
         }
         let gpu = self.gpu.as_ref().ok_or("the editor has no GPU renderer")?;
-        let cols = if views.len() > 1 { 2 } else { 1 };
-        let (cw, ch) = (w / cols, h / cols);
-        let mut sheet = image::RgbaImage::new(cw * cols, ch * cols);
-        for (i, view) in (0u32..).zip(views) {
-            let mut cam = Camera::new(*view);
-            frame_camera(&mut cam, &b, f64::from(cw.min(ch)));
-            if let (View::Perspective, Some(eye)) = (view, eye) {
-                let d = look_at - eye;
-                cam.position = eye;
-                cam.yaw = d.y.atan2(d.x).to_degrees();
-                cam.pitch = d.z.atan2(d.truncate().length()).to_degrees();
-            }
-            let target = gpu.renderer.target([cw, ch]);
-            gpu.renderer.render(&target, &cam, self.render_mode, Some(self.session.grid), &[]);
-            let pixels = gpu.renderer.read_rgba(&target).ok_or("could not read the picture back from the GPU")?;
-            let img = image::RgbaImage::from_raw(cw, ch, pixels).ok_or("the GPU returned a picture of the wrong size")?;
-            image::imageops::replace(&mut sheet, &img, i64::from(i % cols * cw), i64::from(i / cols * ch));
-        }
+        let shot =
+            Shot { views, bounds: b, eye, look_at, size: [size("width", 1024), size("height", 768)], mode: self.render_mode, grid: Some(self.session.grid) };
+        let sheet = render_sheet(&gpu.renderer, &shot).ok_or("could not read the picture back from the GPU")?;
         let mut png = Vec::new();
         sheet.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(msg)?;
         let layout = views.iter().map(|v| v.label()).collect::<Vec<_>>().join(", ");

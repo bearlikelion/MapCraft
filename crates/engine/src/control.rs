@@ -785,8 +785,8 @@ In the editor it bakes in the background and shows the result in the Lit view: c
     },
     Tool {
         name: "screenshot",
-        description: "Editor only: renders the map to a PNG. `view` is all (the four views), 3d, top, front or side. \
-The 3D view frames `focus` (node ids, default the whole map) or looks from `eye` at `look_at`.",
+        description: "Renders the map to a PNG for review: in the editor as its views draw it, otherwise offscreen in flat colors with surfable slopes tinted. \
+`view` is all (the four views), 3d, top, front or side. The 3D view frames `focus` (node ids, default the whole map) or looks from `eye` at `look_at`.",
         schema: || {
             let view = json!({"type": "string", "enum": ["all", "3d", "top", "front", "side"]});
             let px = json!({"type": "integer", "minimum": 64, "maximum": 2048});

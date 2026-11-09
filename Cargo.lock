@@ -2601,6 +2601,8 @@ dependencies = [
 name = "mapcraft-cli"
 version = "0.5.0"
 dependencies = [
+ "base64 0.22.1",
+ "image",
  "mapcraft-engine",
  "mapcraft-fgd",
  "mapcraft-format",
@@ -2608,6 +2610,7 @@ dependencies = [
  "mapcraft-light",
  "mapcraft-map",
  "mapcraft-plugin-host",
+ "mapcraft-render",
  "mapcraft-sdk",
  "mapcraft-sdk-manager",
  "serde_json",

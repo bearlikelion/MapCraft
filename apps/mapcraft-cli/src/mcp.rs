@@ -5,7 +5,10 @@ use std::net::{Ipv4Addr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use base64::Engine as _;
 use mapcraft_engine::{Session, control};
+use mapcraft_geom::{Aabb, DVec3};
+use mapcraft_render::{NoStyle, RenderMode, Renderer, Shot, Slope, build_scene, headless_renderer, named_views, render_sheet};
 use serde_json::{Value, json};
 
 const PROTOCOL: &str = "2025-06-18";
@@ -18,7 +21,7 @@ Check your work with screenshot and validate. Use entity_classes and materials t
 Changes stay in memory until save; a map held here that is unsaved when the client disconnects is written beside itself as <name>.unsaved.mcmap.";
 
 pub fn run() -> Result<(), String> {
-    let mut server = Server { session: Session::default(), editor: None, find_editor: true };
+    let mut server = Server { session: Session::default(), editor: None, find_editor: true, renderer: None };
     let served = server.serve();
     let kept = keep_unsaved(&mut server.session);
     served.and(kept)
@@ -61,6 +64,7 @@ struct Server {
     session: Session,
     editor: Option<Editor>,
     find_editor: bool,
+    renderer: Option<Renderer>,
 }
 
 impl Server {
@@ -113,9 +117,44 @@ impl Server {
             }
             None => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                control::text_result(control::call(&mut self.session, name, params.get("arguments").unwrap_or(&Value::Null)))
+                let args = params.get("arguments").unwrap_or(&Value::Null);
+                if name == "screenshot" {
+                    return self.screenshot(args).unwrap_or_else(|e| control::text_result(Err(e)));
+                }
+                control::text_result(control::call(&mut self.session, name, args))
             }
         }
+    }
+
+    /// Renders the map held here offscreen in flat colors, with walkable and surfable slopes tinted as the editor's slope view does.
+    fn screenshot(&mut self, a: &Value) -> Result<Value, String> {
+        let views = named_views(a.get("view").and_then(Value::as_str).unwrap_or("all")).ok_or("`view` must be all, 3d, top, front or side")?;
+        let size = |key: &str, default: u32| a.get(key).and_then(Value::as_u64).map_or(default, |n| u32::try_from(n.clamp(64, 2048)).unwrap_or(default));
+        let roots = match a.get("focus") {
+            Some(_) => control::ids_arg(&self.session, a, "focus").map_err(|e| e.to_string())?,
+            None => self.session.map.nodes().map(|(id, _)| id).collect(),
+        };
+        let b = self.session.bounds_of(roots).unwrap_or(Aabb::new(DVec3::splat(-256.0), DVec3::splat(256.0)));
+        let eye = if a.get("eye").is_some() { Some(control::vec_arg(a, "eye").map_err(|e| e.to_string())?) } else { None };
+        let look_at = if a.get("look_at").is_some() { control::vec_arg(a, "look_at").map_err(|e| e.to_string())? } else { b.center() };
+        if self.renderer.is_none() {
+            self.renderer = headless_renderer();
+        }
+        let renderer = self.renderer.as_mut().ok_or("no GPU adapter to render with")?;
+        let (map, _) = mapcraft_map::mirror::expand(&self.session.map);
+        let slope = Slope { walkable: 45.573, surfable: 72.0 };
+        let scene = build_scene(&map, &Default::default(), &Default::default(), &|m| renderer.material_size(m), &NoStyle, true, Some(slope));
+        renderer.set_scene(&scene);
+        let shot = Shot { views, bounds: b, eye, look_at, size: [size("width", 1024), size("height", 768)], mode: RenderMode::Flat, grid: None };
+        let sheet = render_sheet(renderer, &shot).ok_or("could not read the picture back from the GPU")?;
+        let mut png = Vec::new();
+        sheet.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+        let layout = views.iter().map(|v| v.label()).collect::<Vec<_>>().join(", ");
+        let text = format!("{layout}, left to right then top to bottom; framed on {:?} to {:?}", b.min.to_array(), b.max.to_array());
+        Ok(json!({"content": [
+            {"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(png), "mimeType": "image/png"},
+            {"type": "text", "text": text},
+        ]}))
     }
 }
 
@@ -136,7 +175,7 @@ mod tests {
 
     #[test]
     fn protocol() {
-        let mut s = Server { session: Session::default(), editor: None, find_editor: false };
+        let mut s = Server { session: Session::default(), editor: None, find_editor: false, renderer: None };
         let mut ask = |msg: Value| s.handle(&msg);
         let init = ask(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})).unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
@@ -146,8 +185,20 @@ mod tests {
         let ok = ask(call("create_brush", json!({"min": [0, 0, 0], "max": [64, 64, 64]}))).unwrap();
         assert!(ok["result"]["isError"].is_null() && ok["id"] == "c");
         assert_eq!(ask(call("select", json!({"ids": [99]}))).unwrap()["result"]["isError"], true);
-        assert_eq!(ask(call("screenshot", json!({}))).unwrap()["result"]["isError"], true);
+        assert_eq!(ask(call("screenshot", json!({"view": "under"}))).unwrap()["result"]["isError"], true);
         assert_eq!(ask(json!({"jsonrpc": "2.0", "id": 3, "method": "resources/list"})).unwrap()["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn screenshots_render_without_the_editor() {
+        let mut s = Server { session: Session::default(), editor: None, find_editor: false, renderer: headless_renderer() };
+        if s.renderer.is_none() {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        }
+        s.call(&json!({"name": "create_brush", "arguments": {"min": [0, 0, 0], "max": [256, 256, 64]}}));
+        let shot = s.call(&json!({"name": "screenshot", "arguments": {"view": "top", "width": 128, "height": 128}}));
+        assert_eq!(shot["content"][0]["mimeType"], "image/png", "{shot}");
     }
 
     #[test]
@@ -165,7 +216,7 @@ mod tests {
             let call: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
             writeln!(out, "{}", json!({"content": [{"type": "text", "text": call["name"]}]})).unwrap();
         });
-        let mut s = Server { session: Session::default(), editor: Editor::connect_to(&file), find_editor: false };
+        let mut s = Server { session: Session::default(), editor: Editor::connect_to(&file), find_editor: false, renderer: None };
         let r = s.call(&json!({"name": "screenshot", "arguments": {}}));
         assert_eq!(r["content"][0]["text"], "screenshot");
         editor.join().unwrap();
