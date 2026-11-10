@@ -14,6 +14,9 @@ That writes `GameConfig.cfg` and your `.fgd` (the file that lists your entities)
 2. Under **Import from TrenchBroom / func_godot**, click **Browse…** and pick your Godot project folder, or your game's folder in TrenchBroom's games folder (`~/.TrenchBroom/games/<game>` on Linux, `%APPDATA%\TrenchBroom\games\<game>` on Windows).
 3. Click **Import SDK**.
 
+To start from a map instead, click **Open .map…** and pick any `.map` file inside the game or project.
+MapCraft imports the SDK from the folder around it, then opens the map on it when the current map is empty.
+
 ![The SDK Manager's Create tab with the Import from TrenchBroom / func_godot section and its Browse button highlighted](img/sdks-import-trenchbroom.webp)
 
 The new SDK opens in the **Installed** tab, and MapCraft runs its check.

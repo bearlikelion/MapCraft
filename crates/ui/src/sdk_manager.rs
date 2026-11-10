@@ -196,6 +196,8 @@ pub(crate) struct SdkManager {
     /// A TrenchBroom game folder or Godot project to import.
     import_folder: String,
     importing: Option<ImportJob>,
+    /// A `.map` picked for the import, opened on the new SDK once it exists.
+    import_map: Option<PathBuf>,
     /// The outcome of the last install, removal or creation, and whether it worked.
     note: Option<(bool, String)>,
 }
@@ -225,6 +227,7 @@ enum Act {
     NotNow,
     Create,
     BrowseImport,
+    BrowseImportMap,
     Import,
 }
 
@@ -550,10 +553,13 @@ impl MapCraftApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let label = ui.label("Folder");
-            ui.add(egui::TextEdit::singleline(&mut m.import_folder).hint_text("TrenchBroom game folder or Godot project").desired_width(360.0))
+            ui.add(egui::TextEdit::singleline(&mut m.import_folder).hint_text("TrenchBroom game folder, Godot project or .map file").desired_width(360.0))
                 .labelled_by(label.id);
             if ui.button("Browse…").clicked() {
                 acts.push(Act::BrowseImport);
+            }
+            if ui.button("Open .map…").clicked() {
+                acts.push(Act::BrowseImportMap);
             }
         });
         ui.horizontal(|ui| {
@@ -602,6 +608,11 @@ impl MapCraftApp {
                     self.sdk_manager.import_folder = dir.to_string_lossy().into_owned();
                 }
             }
+            Act::BrowseImportMap => {
+                if let Some(map) = rfd::FileDialog::new().add_filter("Quake map", &["map"]).pick_file() {
+                    self.sdk_manager.import_folder = map.to_string_lossy().into_owned();
+                }
+            }
             Act::Import => self.start_import(),
         }
     }
@@ -609,13 +620,38 @@ impl MapCraftApp {
     /// Reads the TrenchBroom game or Godot project and writes its SDK into the user SDK folder.
     fn start_import(&mut self) {
         let Some(sdks) = self.data_dir.as_deref().map(manager::user_dir) else { return };
-        let folder = PathBuf::from(self.sdk_manager.import_folder.trim());
+        let mut folder = PathBuf::from(self.sdk_manager.import_folder.trim());
+        self.sdk_manager.import_map = None;
+        if folder.is_file() {
+            let game = folder.ancestors().skip(1).take(8).find(|a| a.join("GameConfig.cfg").is_file() || a.join("project.godot").is_file());
+            let Some(game) = game.map(Path::to_path_buf) else {
+                self.sdk_manager.note = Some((false, format!("{} is not inside a TrenchBroom game folder or Godot project", folder.display())));
+                return;
+            };
+            self.sdk_manager.import_map = Some(std::mem::replace(&mut folder, game));
+        }
         let found: Vec<PathBuf> = self.sdks.iter().map(|i| i.dir.clone()).collect();
         self.sdk_manager.note = None;
         self.sdk_manager.importing = Some(Job::spawn(move || {
             let game = TrenchBroomImport::read(&folder).map_err(|e| e.to_string())?;
             game.write(&sdks.join(game.id()), &found).map_err(|e| e.to_string())
         }));
+    }
+
+    /// Starts a map on the new SDK and imports `map` into it; a map with work in it is left alone.
+    fn open_import_map(&mut self, id: &str, map: &Path) {
+        if self.session.path.is_some() || self.session.is_dirty() {
+            self.output.push(format!("Open a new map on {id}, then File > Import > Quake map to bring in {}", map.display()));
+            return;
+        }
+        self.new_now(Some(id.to_string()));
+        match self.importer_for(map) {
+            Some((plugin, importer)) => {
+                self.sdk_manager.open = false;
+                self.import_path(&plugin, &importer, map);
+            }
+            None => self.status = format!("The new SDK has no importer for {}", map.display()),
+        }
     }
 
     fn start_check(&mut self, dir: PathBuf) {
@@ -754,6 +790,9 @@ impl MapCraftApp {
                 self.sdk_manager.import_folder.clear();
                 self.sdk_manager.tab = Tab::Installed;
                 self.sdk_changed(&sdk.manifest.id);
+                if let Some(map) = self.sdk_manager.import_map.take() {
+                    self.open_import_map(&sdk.manifest.id, &map);
+                }
                 self.start_check(sdk.dir);
             }
             Some(Err(e)) => self.sdk_manager.note = Some((false, e)),
