@@ -480,7 +480,12 @@ impl Session {
             };
             let distance = shift.dot(plane.normal);
             let still = if mode == ExtrudeMode::Slide { shift.length() } else { distance.abs() } < 1e-9;
-            let parent = e.node(*id).and_then(|n| n.parent).unwrap_or(self.active_parent);
+            let mut parent = e.node(*id).and_then(|n| n.parent).unwrap_or(self.active_parent);
+            if self.extrude_top_level
+                && let Some(above) = e.node(parent).filter(|p| matches!(p.kind, NodeKind::Entity(_))).and_then(|p| p.parent)
+            {
+                parent = above;
+            }
             let tex = mapcraft_map::TexDefaults { material: face.material.clone(), scale: face.u.scale };
             let new = match mode {
                 ExtrudeMode::Stamp if distance < 1e-9 => return Err(EngineError::Refused("stamps go outward")),
@@ -705,6 +710,23 @@ impl Session {
                 e.set_kind(id, kind)?;
             }
         }
+        Ok(())
+    }
+
+    /// Rounds every corner of the selected brushes to whole units.
+    pub fn snap_vertices_to_integers(&mut self) -> Result<(), EngineError> {
+        let ids = self.selected_brushes();
+        if ids.is_empty() {
+            return Err(EngineError::NothingSelected);
+        }
+        let mut e = self.map.edit();
+        for id in ids {
+            let Some(b) = e.node(id).and_then(|n| n.kind.brush()).cloned() else { continue };
+            let verts: Vec<DVec3> = b.vertices()?.into_iter().map(|v| v.round()).collect();
+            e.set_kind(id, NodeKind::Brush(Brush::from_vertices(&verts, &b.faces, &self.tex)?.like(&b)))?;
+        }
+        let c = e.finish();
+        self.apply("Snap vertices to integers", c);
         Ok(())
     }
 
@@ -1505,6 +1527,17 @@ mod tests {
         s.set_brush_class(None, Vec::new()).unwrap();
         assert!(s.map.get(ill).is_none() && s.map.get(a).unwrap().parent == Some(ROOT), "back in the world");
         assert!(s.undo() && s.map.get(ill).is_some(), "each switch is one undo step");
+    }
+
+    #[test]
+    fn snapping_vertices_rounds_them_to_whole_units() {
+        let mut s = session();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::new(64.0, 64.0, 64.0))).unwrap();
+        s.selection = BTreeSet::from([b]);
+        s.move_vertices(&[(DVec3::new(64.0, 64.0, 64.0), DVec3::new(64.4, 63.6, 64.0))], None).unwrap();
+        s.snap_vertices_to_integers().unwrap();
+        let verts = s.map.get(b).unwrap().kind.brush().unwrap().vertices().unwrap();
+        assert!(verts.iter().all(|v| *v == v.round()));
     }
 
     #[test]

@@ -275,6 +275,25 @@ const COMMANDS: &[CommandSpec] = &[
         run: Session::snap_selection_to_grid,
     },
     CommandSpec {
+        id: "tools.snap_vertices_to_integers",
+        label: "Snap Vertices to Integers",
+        menu: "Tools/Snap Vertices to Integers",
+        shortcut: None,
+        enabled: has_selection,
+        run: Session::snap_vertices_to_integers,
+    },
+    CommandSpec {
+        id: "tools.toggle_extrude_top_level",
+        label: "Extrude to Top Level",
+        menu: "Tools/Extrude to Top Level",
+        shortcut: None,
+        enabled: always,
+        run: |s| {
+            s.extrude_top_level = !s.extrude_top_level;
+            Ok(())
+        },
+    },
+    CommandSpec {
         id: "tools.group",
         label: "Group",
         menu: "Tools/Group",

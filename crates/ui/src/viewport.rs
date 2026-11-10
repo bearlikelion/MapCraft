@@ -1166,6 +1166,9 @@ impl MapCraftApp {
             }
         } else {
             self.fly(ui, index, response);
+            if response.hovered() && !ctx.egui_wants_keyboard_input() {
+                self.nudge(ui, index);
+            }
         }
 
         let primary_pos = response.interact_pointer_pos();
@@ -1927,11 +1930,17 @@ impl MapCraftApp {
         self.mark_changed();
     }
 
-    /// Arrow keys move the selection a grid step; Shift moves it one unit and Ctrl moves a copy.
+    /// Arrow keys move the selection a grid step; Shift moves it one unit, Ctrl moves a copy and Alt in 3D makes up and down raise and lower it.
     fn nudge(&mut self, ui: &egui::Ui, index: usize) {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
-        let (r, u, _) = cam.view.axes();
         let mods = ui.input(|i| i.modifiers);
+        let (r, u) = if cam.is_2d() {
+            let (r, u, _) = cam.view.axes();
+            (r, u)
+        } else {
+            let (right, forward) = (nearest_axis(cam.right()), nearest_axis(cam.forward()));
+            (right, if mods.alt { DVec3::Z } else { forward })
+        };
         let g = if mods.shift { 1.0 } else { self.session.grid };
         let mut d = DVec3::ZERO;
         ui.input(|i| {
@@ -2041,6 +2050,11 @@ impl MapCraftApp {
 }
 
 /// The fly speed after scrolling while flying, as Godot's freelook does; the range matches Preferences.
+fn nearest_axis(v: DVec3) -> DVec3 {
+    let flat = DVec3::new(v.x, v.y, 0.0);
+    if flat.x.abs() >= flat.y.abs() { DVec3::X * flat.x.signum() } else { DVec3::Y * flat.y.signum() }
+}
+
 fn fly_speed_scrolled(speed: f64, scroll: f32) -> f64 {
     (speed * (f64::from(scroll) / 250.0).exp()).clamp(16.0, 8192.0)
 }

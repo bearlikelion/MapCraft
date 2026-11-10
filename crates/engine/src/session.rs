@@ -77,6 +77,7 @@ pub struct Session {
     /// Material and scale given to new faces (Hammer's current texture).
     pub tex: TexDefaults,
     pub texture_lock: bool,
+    pub extrude_top_level: bool,
     pub grid: f64,
     /// Where new nodes go: the world, a layer or a group.
     pub active_parent: NodeId,
@@ -124,6 +125,7 @@ impl Session {
             click_groups: false,
             tex: TexDefaults::default(),
             texture_lock: true,
+            extrude_top_level: false,
             grid: 16.0,
             active_parent: ROOT,
             default_solid_entity: "func_detail".into(),
