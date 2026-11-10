@@ -894,7 +894,7 @@ impl MapCraftApp {
         let ppp = ui.ctx().pixels_per_point();
         let px = [(rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32];
         let overlay = self.overlay_lines(self.panes.get(index).is_some_and(|p| p.camera.is_2d()));
-        let grid = self.view_grid(index);
+        let grid = (self.prefs.get().view.grid_3d || self.panes.get(index).is_some_and(|p| p.camera.is_2d())).then_some(self.view_grid(index));
         let mode = self.render_mode;
         let (sky, nodraw) = (self.prefs.get().view.sky, self.prefs.get().view.nodraw);
         let weights = self.tool == Tool::Sculpt
@@ -921,7 +921,7 @@ impl MapCraftApp {
                 // The target is in physical pixels, the camera's zoom in points.
                 let camera = mapcraft_render::Camera { zoom: pane.camera.zoom * f64::from(ppp), ..pane.camera };
                 let started = std::time::Instant::now();
-                gpu.renderer.render(t, &camera, mode, Some(grid), &overlay);
+                gpu.renderer.render(t, &camera, mode, grid, &overlay);
                 if self.render_ms.len() <= index {
                     self.render_ms.resize(index + 1, 0.0);
                 }

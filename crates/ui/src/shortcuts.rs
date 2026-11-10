@@ -134,6 +134,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("view.render_lit", "Lit", "Ctrl+Alt+4"),
     ("view.sky", "Show Sky", ""),
     ("view.nodraw", "Show Nodraw", ""),
+    ("view.grid_3d", "Show Grid in 3D", ""),
     ("view.colorize", "Color Brushes by Object", "Ctrl+Alt+C"),
     ("view.show_fps", "Show FPS", ""),
     ("view.slope", "Color by Slope", "Ctrl+Alt+5"),

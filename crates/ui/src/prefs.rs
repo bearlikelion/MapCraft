@@ -90,6 +90,8 @@ pub struct ViewPrefs {
     pub sky: bool,
     /// 3D views draw nodraw faces; off, the hidden sides of imported maps stop walling off their insides.
     pub nodraw: bool,
+    /// 3D views draw the grid on the Z = 0 plane.
+    pub grid_3d: bool,
     /// The corner of the views that shows each shortcut pressed; `None` hides them.
     pub show_keys: Option<crate::keys::Corner>,
     /// The 3D views show frames per second and how long their last frame took to draw.
@@ -119,6 +121,7 @@ impl Default for ViewPrefs {
             slope_surfable: 72.0,
             sky: true,
             nodraw: true,
+            grid_3d: false,
             show_keys: None,
             show_fps: false,
             auto_bake: true,

@@ -1025,7 +1025,7 @@ impl Renderer {
         if anti_tile == AntiTile::Hex && pixelated { AntiTile::Macro } else { anti_tile }
     }
 
-    /// Draws the scene into `target`; `grid` is the 2D grid spacing, `overlay` lines draw on top.
+    /// Draws the scene into `target`; `grid` is the grid spacing, `overlay` lines draw on top.
     pub fn render(&self, target: &Target, camera: &Camera, mode: RenderMode, grid: Option<f64>, overlay: &[LineVertex]) {
         let size = DVec2::new(f64::from(target.size[0]), f64::from(target.size[1]));
         let lit = mode == RenderMode::Lit;
@@ -1084,8 +1084,12 @@ impl Renderer {
         self.queue.write_buffer(&target.globals, 0, bytemuck::bytes_of(&globals));
 
         let mut extra = Vec::new();
-        if let (Some(g), true) = (grid, camera.is_2d()) {
-            grid_lines(&mut extra, camera, size, g);
+        if let Some(g) = grid {
+            if camera.is_2d() {
+                grid_lines(&mut extra, camera, size, g);
+            } else {
+                floor_lines(&mut extra, camera, g);
+            }
         }
         let grid_buf = (!extra.is_empty()).then(|| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1452,6 +1456,50 @@ pub fn grid_step(grid: f64, zoom: f64) -> f64 {
     step
 }
 
+// Linear colors; on screen the axes are a muted blue, 1024 unit lines dark brown, every eighth
+// line mid gray and the rest a dim gray.
+fn grid_color(c: f64, step: f64, mark_1024: bool, gain: f32) -> [f32; 4] {
+    let [r, g, b] = if c == 0.0 {
+        [0.013, 0.078, 0.157]
+    } else if mark_1024 && (c / 1024.0).fract() == 0.0 {
+        [0.058, 0.023, 0.007]
+    } else if (c / (step * 8.0)).fract() == 0.0 {
+        [0.045, 0.045, 0.045]
+    } else {
+        [0.02, 0.02, 0.02]
+    };
+    [r * gain, g * gain, b * gain, 1.0]
+}
+
+/// A 3D view's grid: the Z = 0 plane around the camera, coarser the higher the camera is.
+fn floor_lines(out: &mut Vec<LineVertex>, camera: &Camera, grid: f64) {
+    if !grid.is_finite() || grid <= 0.0 {
+        return;
+    }
+    let mut step = grid;
+    while step * 8.0 < camera.position.z.abs() && step < 4096.0 {
+        step *= 2.0;
+    }
+    let mark_1024 = step * 4.0 <= 1024.0;
+    let half = step * 32.0;
+    let center = (camera.position.truncate() / step).round() * step;
+    let (x0, x1, y0, y1) = (center.x - half, center.x + half, center.y - half, center.y + half);
+    let mut x = x0;
+    while x <= x1 {
+        let color = grid_color(x, step, mark_1024, 4.0);
+        out.push(LineVertex::new(DVec3::new(x, y0, 0.0), color));
+        out.push(LineVertex::new(DVec3::new(x, y1, 0.0), color));
+        x += step;
+    }
+    let mut y = y0;
+    while y <= y1 {
+        let color = grid_color(y, step, mark_1024, 4.0);
+        out.push(LineVertex::new(DVec3::new(x0, y, 0.0), color));
+        out.push(LineVertex::new(DVec3::new(x1, y, 0.0), color));
+        y += step;
+    }
+}
+
 fn grid_lines(out: &mut Vec<LineVertex>, camera: &Camera, size: DVec2, grid: f64) {
     if !grid.is_finite() || grid <= 0.0 {
         return;
@@ -1463,19 +1511,7 @@ fn grid_lines(out: &mut Vec<LineVertex>, camera: &Camera, size: DVec2, grid: f64
     let half = size / (2.0 * camera.zoom);
     let (h0, h1) = (camera.center.x - half.x, camera.center.x + half.x);
     let (v0, v1) = (camera.center.y - half.y, camera.center.y + half.y);
-    // Linear colors; on screen the axes are a muted blue, 1024 unit lines dark brown, every eighth
-    // line mid gray and the rest a dim gray.
-    let color = |c: f64| {
-        if c == 0.0 {
-            [0.013, 0.078, 0.157, 1.0]
-        } else if mark_1024 && (c / 1024.0).fract() == 0.0 {
-            [0.058, 0.023, 0.007, 1.0]
-        } else if (c / (step * 8.0)).fract() == 0.0 {
-            [0.045, 0.045, 0.045, 1.0]
-        } else {
-            [0.02, 0.02, 0.02, 1.0]
-        }
-    };
+    let color = |c: f64| grid_color(c, step, mark_1024, 1.0);
     let mut h = (h0 / step).floor() * step;
     while h <= h1 {
         out.push(LineVertex::new(r * h + u * v0, color(h)));

@@ -1315,6 +1315,9 @@ impl MapCraftApp {
             "view.sky" => {
                 self.prefs.update(|p| p.view.sky = !p.view.sky);
             }
+            "view.grid_3d" => {
+                self.prefs.update(|p| p.view.grid_3d = !p.view.grid_3d);
+            }
             "view.nodraw" => {
                 self.prefs.update(|p| p.view.nodraw = !p.view.nodraw);
             }
@@ -1649,6 +1652,7 @@ impl MapCraftApp {
                         let view = self.prefs.get().view.clone();
                         self.action_toggle(ui, "view.sky", "Show Sky", view.sky);
                         self.action_toggle(ui, "view.nodraw", "Show Nodraw", view.nodraw);
+                        self.action_toggle(ui, "view.grid_3d", "Show Grid in 3D", view.grid_3d);
                         self.action_toggle(ui, "view.link_zoom", "Link 2D Zoom", view.link_zoom);
                         self.action_toggle(ui, "view.colorize", "Color Brushes by Object", view.colorize);
                         self.action_toggle(ui, "view.slope", "Color by Slope", view.slope_colors);
