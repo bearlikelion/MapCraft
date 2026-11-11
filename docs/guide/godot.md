@@ -41,6 +41,7 @@ Check these first, or the game may not show your map the way MapCraft does.
 ## Maps as scenes
 
 This section is for people making their own Godot game.
+To get an SDK for it, turn on **Include Godot entities** in the SDK Manager's [Create tab](sdks-and-plugins.md#the-sdk-manager), then copy the new SDK's `godot/<id>.tres` into the project's `addons/mapcraft/sdks` folder, so the addon knows what each entity becomes.
 Every `.mcmap` file in a project imports as a scene that you can instance, open or load like a `.tscn`.
 The scene uses only Godot's built-in nodes, so your game needs neither the addon nor any script to load it.
 
@@ -102,7 +103,7 @@ Any other material draws as it is, without its blend or anti-tiling, and Godot's
 - `not found`, for a second material missing from the material root;
 - the material's class, such as `ShaderMaterial`;
 - a mode: `unshaded`, `per-vertex shading`, `cull mode`, `transparency`, `blend mode`, `depth draw`, `diffuse mode`, `specular mode`, `billboard`, `distance fade`, `proximity fade`, `grow` or `no texture repeat`;
-- a feature: `emission`, `rim`, `clearcoat`, `anisotropy`, `heightmap`, `subsurface scattering`, `transmittance`, `backlight`, `refraction` or `detail`;
+- a feature: `emission` (unless it gives off no light: black with no emission texture, or energy 0), `rim`, `clearcoat`, `anisotropy`, `heightmap`, `subsurface scattering`, `transmittance`, `backlight`, `refraction` or `detail`;
 - a flag: `triplanar`, `vertex color`, `forced sRGB`, `ambient occlusion on UV2`, `no depth test`, `no shadows`, `no ambient light`, `no fog`, `shadow to opacity`, `point size`, `fixed size`, `particle trails` or `MSDF`.
 
 The wrapper copies the material's albedo, UV scale and offset, roughness, metallic, specular, normal and ambient occlusion maps and next pass.

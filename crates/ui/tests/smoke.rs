@@ -976,9 +976,12 @@ fn sdk_manager_checks_and_creates_sdks() {
         h.get_by_label(field).type_text(text);
         h.run_steps(1);
     }
+    h.get_by_label("Include Godot entities").click();
+    h.run_steps(1);
     h.get_by_label("Create SDK").click();
     h.run_steps(3);
     assert!(settings.path().join("data/sdks/my-game/sdk.toml").is_file());
+    assert!(settings.path().join("data/sdks/my-game/godot/my-game.tres").is_file(), "the Godot template brings its entity map");
     let ids = h.state().sdk_ids_for_test();
     if cfg!(debug_assertions) {
         assert!(ids.iter().any(|id| id == "my-game"), "{ids:?}");
@@ -2066,7 +2069,7 @@ fn a_fresh_install_offers_sdks_and_opens_the_settings_of_the_one_installed() {
     let dir = tempfile::tempdir().unwrap();
     let registry = dir.path().join("registry");
     let src = registry.join("demo");
-    manager::create(&src, "demo", "Demo Game").unwrap();
+    manager::create(&src, "demo", "Demo Game", false).unwrap();
     image::RgbaImage::from_pixel(46, 21, image::Rgba([40, 140, 220, 255])).save(src.join("logo.png")).unwrap();
     let (_, entry) = manager::package(&src, &registry, None).unwrap();
     assert_eq!(entry.logo, "demo/logo.png");

@@ -193,6 +193,8 @@ pub(crate) struct SdkManager {
     queue: Vec<(String, Entry)>,
     new_id: String,
     new_name: String,
+    /// Start from the template for a Godot game.
+    new_godot: bool,
     /// A TrenchBroom game folder or Godot project to import.
     import_folder: String,
     importing: Option<ImportJob>,
@@ -528,6 +530,9 @@ impl MapCraftApp {
             ui.add(egui::TextEdit::singleline(&mut m.new_name).hint_text("My Game").desired_width(240.0)).labelled_by(label.id);
             ui.end_row();
         });
+        ui.checkbox(&mut m.new_godot, "Include Godot entities").on_hover_text(
+            "For a game made with Godot and the MapCraft addon: adds light_environment, light, light_spot, prop_static, func_detail and func_illusionary, lightmap baking, and the entity map the addon needs.",
+        );
         let id = m.new_id.trim();
         let valid = mapcraft_sdk::valid_id(id);
         let taken = valid && target.as_ref().is_some_and(|t| t.exists());
@@ -695,13 +700,15 @@ impl MapCraftApp {
         let id = self.sdk_manager.new_id.trim().to_string();
         let name = self.sdk_manager.new_name.trim().to_string();
         let dir = manager::user_dir(&data).join(&id);
-        self.sdk_manager.note = Some(match manager::create(&dir, &id, &name) {
+        let godot = self.sdk_manager.new_godot;
+        self.sdk_manager.note = Some(match manager::create(&dir, &id, &name, godot) {
             Ok(sdk) => {
                 self.rescan_sdks();
                 self.sdk_manager.tab = Tab::Installed;
                 self.sdk_manager.new_id.clear();
                 self.sdk_manager.new_name.clear();
-                (true, format!("Created {} in {}. Edit its sdk.toml and FGD, then Check it.", sdk.manifest.name, sdk.dir.display()))
+                let next = if godot { "Its README.md lists the Godot project setup." } else { "Edit its sdk.toml and FGD, then Check it." };
+                (true, format!("Created {} in {}. {next}", sdk.manifest.name, sdk.dir.display()))
             }
             Err(e) => (false, e.to_string()),
         });

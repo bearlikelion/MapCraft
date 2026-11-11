@@ -138,9 +138,9 @@ mapcraft-cli sdk check <dir|id> [--var name=value]... [--data <dir>]
 mapcraft-cli sdk install <id> [--registry <url|path>] [--data <dir>]
 mapcraft-cli sdk remove <id> [--data <dir>]
 mapcraft-cli sdk package <dir> [--out <dir>] [--url <base>]
-mapcraft-cli sdk new <dir> --id <id> --name <name>
+mapcraft-cli sdk new <dir> --id <id> --name <name> [--godot]
 ```
 
 `--data` replaces the user's data folder, which is how CI installs into a temporary one.
 `--url` prefixes the zip's file name in the printed `download`, for registries that host zips elsewhere.
-`sdk new` writes the same template the SDK Manager's Create tab uses.
+`sdk new` writes the same template the SDK Manager's Create tab uses, and `--godot` is its **Include Godot entities** option.

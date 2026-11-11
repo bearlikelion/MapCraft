@@ -1,0 +1,18 @@
+[gd_resource type="MapCraftEntityMap" format=3]
+
+[resource]
+classes = {
+"func_detail": {
+"node": "world"
+},
+"func_illusionary": {
+"node": "node",
+"visible": true
+},
+"light_environment": {
+"node": "environment"
+},
+"prop_static": {
+"node": "model"
+}
+}

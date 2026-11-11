@@ -11,7 +11,7 @@ pub const USAGE: &str = "  mapcraft-cli sdk list [--registry <url|path>] [--data
   mapcraft-cli sdk install <id> [--registry <url|path>] [--data <dir>]
   mapcraft-cli sdk remove <id> [--data <dir>]
   mapcraft-cli sdk package <dir> [--out <dir>] [--url <base>]
-  mapcraft-cli sdk new <dir> --id <id> --name <name>
+  mapcraft-cli sdk new <dir> --id <id> --name <name> [--godot]
   mapcraft-cli sdk import-trenchbroom <trenchbroom game folder|godot project> [--out <dir>] [--data <dir>]";
 
 #[derive(Default)]
@@ -24,6 +24,7 @@ struct Args {
     url: Option<String>,
     id: Option<String>,
     name: Option<String>,
+    godot: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -38,6 +39,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--url" => a.url = Some(value()?),
             "--id" => a.id = Some(value()?),
             "--name" => a.name = Some(value()?),
+            "--godot" => a.godot = true,
             "--var" => {
                 let kv = value()?;
                 let (k, v) = kv.split_once('=').ok_or("--var takes name=value")?;
@@ -126,7 +128,7 @@ pub fn run(args: &[String]) -> Result<bool, String> {
         }
         "new" => {
             let (id, name) = a.id.as_deref().zip(a.name.as_deref()).ok_or("sdk new needs --id and --name")?;
-            let sdk = manager::create(Path::new(first(&a)?), id, name).map_err(err)?;
+            let sdk = manager::create(Path::new(first(&a)?), id, name, a.godot).map_err(err)?;
             println!("created {} in {}", sdk.manifest.name, sdk.dir.display());
             Ok(true)
         }

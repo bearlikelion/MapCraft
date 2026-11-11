@@ -22,6 +22,15 @@ const TEMPLATE: [(&str, &str); 3] = [
     ("README.md", include_str!("../template/README.md")),
 ];
 
+/// The template for a Godot game: the entities the MapCraft addon builds and their entity map.
+const GODOT_TEMPLATE: [(&str, &str); 5] = [
+    ("sdk.toml", include_str!("../template/godot/sdk.toml")),
+    ("fgd/godot.fgd", include_str!("../template/godot/fgd/godot.fgd")),
+    ("fgd/entities.fgd", include_str!("../template/godot/fgd/entities.fgd")),
+    ("godot/{{id}}.tres", include_str!("../template/godot/godot/entity_map.tres")),
+    ("README.md", include_str!("../template/godot/README.md")),
+];
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -226,8 +235,8 @@ pub fn package(dir: &Path, out: &Path, base_url: Option<&str>) -> Result<(PathBu
     Ok((path, entry))
 }
 
-/// Writes a new SDK from the template into `dir`, which must not exist yet.
-pub fn create(dir: &Path, id: &str, name: &str) -> Result<Sdk, Error> {
+/// Writes a new SDK from the template, or the one for a Godot game, into `dir`, which must not exist yet.
+pub fn create(dir: &Path, id: &str, name: &str, godot: bool) -> Result<Sdk, Error> {
     let name = name.trim();
     if !valid_id(id) {
         return Err(Error::Invalid(format!("`{id}` is not a valid id: use lowercase letters, digits, '_' or '-'")));
@@ -240,8 +249,8 @@ pub fn create(dir: &Path, id: &str, name: &str) -> Result<Sdk, Error> {
     }
     let toml_name = name.replace('\\', "\\\\").replace('"', "\\\"");
     let write = || -> Result<(), Error> {
-        for (rel, text) in TEMPLATE {
-            let path = dir.join(rel);
+        for (rel, text) in if godot { GODOT_TEMPLATE.as_slice() } else { TEMPLATE.as_slice() } {
+            let path = dir.join(rel.replace("{{id}}", id));
             let text = text.replace("{{id}}", id).replace("{{name}}", if rel.ends_with(".toml") { &toml_name } else { name });
             path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text)).map_err(io_err(&path))?;
         }
@@ -304,11 +313,11 @@ mod tests {
     fn package_install_update_and_remove() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("src/demo");
-        let sdk = create(&src, "demo", "Demo \"Game\"").unwrap();
+        let sdk = create(&src, "demo", "Demo \"Game\"", false).unwrap();
         assert_eq!(sdk.manifest.name, "Demo \"Game\"");
         assert!(sdk.game_data(&Default::default()).unwrap().class("trigger_area").is_some());
-        assert!(create(&src, "demo", "Again").is_err(), "an existing folder is never overwritten");
-        assert!(create(&dir.path().join("x"), "Bad Id", "X").is_err());
+        assert!(create(&src, "demo", "Again", false).is_err(), "an existing folder is never overwritten");
+        assert!(create(&dir.path().join("x"), "Bad Id", "X", false).is_err());
         std::fs::write(src.join(".hidden"), "skip me").unwrap();
 
         let dist = dir.path().join("dist");

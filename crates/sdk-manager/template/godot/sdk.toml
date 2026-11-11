@@ -1,0 +1,49 @@
+# MapCraft SDK manifest: tells MapCraft how to edit maps for one game.
+# Every key is described in docs/sdk-format.md in the MapCraft repository.
+
+# The id is saved in every map made with this SDK, so pick it once and keep it.
+id = "{{id}}"
+name = "{{name}}"
+version = "0.1.0"
+description = "Edit maps for {{name}}."
+author = ""
+license = "MIT"
+homepage = ""
+
+# WebAssembly plugins this SDK needs, loaded from plugins/<id>.wasm.
+plugins = []
+
+# 39.37 units per meter makes one unit one inch; the addon's units_per_meter import option must match.
+units_per_meter = 39.37
+
+# Entity definitions, merged in order: the ones the MapCraft Godot addon builds, then the game's own.
+fgd = ["fgd/godot.fgd", "fgd/entities.fgd"]
+
+[textures]
+# The folder the addon's material_root import option names, res://Assets/Textures by default.
+roots = ["${project}/Assets/Textures"]
+extensions = ["png", "jpg", "jpeg", "tga"]
+scale = 1.0
+
+# The Models tab places the project's .glb and .gltf models as prop_static, by their path in the project.
+[models]
+roots = ["${project}"]
+class = "prop_static"
+
+# MapCraft bakes light and light_spot into a .mclight file the addon applies as lightmaps.
+[lightmaps]
+luxel = 64
+bounces = 1
+rays = 32
+
+# Each [paths.<name>] asks the user for a folder (or a program with kind = "file") once and
+# makes it available as ${name}.
+[paths.project]
+prompt = "Godot project folder (the one holding project.godot)"
+
+# Compile profiles appear in the Run menu; Godot imports the map in the project's maps folder as a scene.
+[[compile]]
+name = "Send to Godot project"
+steps = [
+    { pack = "${map}", to = "${project}/maps/${map_name}.mcpck" },
+]

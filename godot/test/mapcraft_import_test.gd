@@ -249,6 +249,7 @@ func _check_blend_fallbacks() -> void:
 		"shader": "",
 		"missing": "",
 		"nearest": "mapcraft_blend_linear.gdshader",
+		"dark_glow": "mapcraft_blend_linear.gdshader",
 	}
 	for layer: String in wrappers:
 		var copy: String = "user://blend_%s.mcmap" % layer
@@ -280,12 +281,13 @@ func _check_blend_fallbacks() -> void:
 				var shaded: ShaderMaterial = material as ShaderMaterial
 				_expect(_wrapper(shaded) == wrappers[layer] and colored, \
 						"a floor blending %s draws with its own filtering" % layer)
-				var hex: Variant = shaded.get_shader_parameter(&"hex_tiling") \
-						if shaded != null else null
-				var varied: Variant = shaded.get_shader_parameter(&"macro_amount") \
-						if shaded != null else null
-				_expect(hex is bool and not hex and _approx(varied, 0.15), \
-						"a blend with a pixel layer draws hex tiling as variation")
+				if layer == "nearest":
+					var hex: Variant = shaded.get_shader_parameter(&"hex_tiling") \
+							if shaded != null else null
+					var varied: Variant = shaded.get_shader_parameter(&"macro_amount") \
+							if shaded != null else null
+					_expect(hex is bool and not hex and _approx(varied, 0.15), \
+							"a blend with a pixel layer draws hex tiling as variation")
 		if root != null:
 			root.free()
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(copy))

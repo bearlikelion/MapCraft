@@ -299,8 +299,24 @@ steps = [{ run = "no-such-launcher-anywhere" }]
     fn template_has_no_failures() {
         let dir = tempfile::tempdir().unwrap();
         let sdk = dir.path().join("new");
-        crate::create(&sdk, "new-game", "New Game").unwrap();
+        crate::create(&sdk, "new-game", "New Game", false).unwrap();
         let items = check(&sdk, &BTreeMap::new(), None);
         assert!(items.iter().all(|i| i.level != Level::Fail), "{items:#?}");
+    }
+
+    #[test]
+    fn godot_template_has_the_addon_entities() {
+        let dir = tempfile::tempdir().unwrap();
+        let sdk = crate::create(&dir.path().join("new"), "new-game", "New Game", true).unwrap();
+        let items = check(&sdk.dir, &BTreeMap::new(), None);
+        assert!(items.iter().all(|i| i.level != Level::Fail), "{items:#?}");
+        let game = sdk.game_data(&Default::default()).unwrap();
+        for class in ["light_environment", "light", "light_spot", "prop_static", "func_detail", "func_illusionary", "info_player_start", "trigger_area"] {
+            assert!(game.class(class).is_some(), "{class}");
+        }
+        assert!(game.class("worldspawn").is_some_and(|w| w.properties.iter().any(|p| p.name == "_lightmap_scale")));
+        assert!(sdk.manifest.lightmaps.is_some() && sdk.manifest.models.class.as_deref() == Some("prop_static"));
+        let map = std::fs::read_to_string(sdk.dir.join("godot/new-game.tres")).unwrap();
+        assert!(map.contains("\"light_environment\"") && map.contains("\"node\": \"environment\""));
     }
 }

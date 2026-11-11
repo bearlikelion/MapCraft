@@ -1,0 +1,10 @@
+// Entity definitions for {{name}}.
+// Point classes sit at one spot; solid classes are built from brushes.
+// In Godot a point class becomes a Marker3D and a solid class an Area3D, with its keys as metadata,
+// unless godot/{{id}}.tres says otherwise.
+// `mapcraft-cli fgd entities.fgd` lists the classes and reports any syntax problems.
+
+@SolidClass base(Targetname) color(240 160 40) = trigger_area : "An invisible volume that reacts when something enters it."
+[
+	once(boolean) : "Only once" : 0
+]

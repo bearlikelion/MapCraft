@@ -22,6 +22,7 @@ The logo is optional, PNG or JPEG only, at most 1 MiB; there is no `sdk.toml` ke
 
 File > SDK Manager… lists every SDK MapCraft found, checks them, installs more from registries and makes new ones from a template.
 `mapcraft-cli sdk new <dir> --id <id> --name <name>` writes the same template.
+With **Include Godot entities** on, or `--godot`, the template is for a Godot game that loads maps with the [MapCraft addon](../godot/README.md): `fgd/godot.fgd` holds the entities the addon builds (`light_environment`, `light`, `light_spot`, `prop_static`, `func_detail`, `func_illusionary`, `info_player_start`), `sdk.toml` turns on lightmap baking and model placing, and `godot/<id>.tres` is the entity map to copy into the project's `addons/mapcraft/sdks` folder.
 `mapcraft-cli sdk import-trenchbroom <folder>` makes an SDK from a TrenchBroom game or a Godot project using func_godot, as described in [`trenchbroom-import.md`](trenchbroom-import.md).
 Publishing an SDK to a registry is described in [`sdk-registry.md`](sdk-registry.md).
 

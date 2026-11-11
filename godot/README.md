@@ -103,6 +103,7 @@ With `trimesh_collision` on, world brushes collide as one triangle mesh, so seam
 
 When an import does not name an entity map, the addon uses `res://addons/mapcraft/sdks/<sdk>.tres` for the map's SDK.
 `sdks/surfsup.tres` ships with the addon.
+An SDK made with **Include Godot entities** in MapCraft's SDK Manager has its own in `godot/<id>.tres`; copy it into `addons/mapcraft/sdks` and add your game's classes to it.
 
 ### Sky and sun
 

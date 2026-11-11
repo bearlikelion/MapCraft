@@ -272,6 +272,13 @@ String surface_key(const String &p_a, const String &p_b, AntiTile p_mode) {
 	return escape(p_a) + (p_b.is_empty() ? String() : String("|") + escape(p_b)) + anti_tile_suffix(p_mode);
 }
 
+// Godot adds the emission texture to the color, then scales both by the energy.
+bool emits(const StandardMaterial3D *p_material) {
+	const Color color = p_material->get_emission();
+	const bool lit = color.r > 0.0 || color.g > 0.0 || color.b > 0.0 || p_material->get_texture(BaseMaterial3D::TEXTURE_EMISSION).is_valid();
+	return lit && p_material->get_emission_energy_multiplier() > 0.0;
+}
+
 // Why the shader wrapper would drop part of a material's look, or empty when it would not.
 String wrap_refusal(const Ref<Material> &p_material) {
 	if (p_material.is_null()) {
@@ -328,6 +335,9 @@ String wrap_refusal(const Ref<Material> &p_material) {
 	for (int i = 0; i < BaseMaterial3D::FEATURE_MAX; i++) {
 		const BaseMaterial3D::Feature feature = BaseMaterial3D::Feature(i);
 		if (feature == BaseMaterial3D::FEATURE_NORMAL_MAPPING || feature == BaseMaterial3D::FEATURE_AMBIENT_OCCLUSION || !m->get_feature(feature)) {
+			continue;
+		}
+		if (feature == BaseMaterial3D::FEATURE_EMISSION && !emits(m)) {
 			continue;
 		}
 		for (const auto &known : FEATURE_NAMES) {

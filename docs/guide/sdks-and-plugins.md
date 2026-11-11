@@ -59,6 +59,7 @@ Each SDK shows as a card with its logo, version, description, author and size, a
 Once an SDK is installed, its **SDK Settings** open so you can point it at your game.
 If the open map is untitled, still empty and has no SDK, it starts over on the new SDK; any other map keeps its own, and **File > New Map** starts one on the new SDK.
 The **Create** tab starts a new SDK from a template, or [imports a TrenchBroom game made with func_godot](trenchbroom.md).
+For your own Godot game, turn on **Include Godot entities**: the SDK then starts with the sky and sun, baked lights, models and the other entities the [MapCraft addon](godot.md#maps-as-scenes) builds, and its README lists the setup in Godot.
 To host your own registry, see [SDK registries](../sdk-registry.md).
 
 ### The first launch
