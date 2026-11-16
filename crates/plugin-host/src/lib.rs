@@ -407,6 +407,8 @@ impl Plugin {
         self.store.data_mut().limits = StoreLimitsBuilder::new().memory_size(cap).instances(16).build();
         self.begin()?;
         self.store.set_fuel(IMPORT_FUEL.max(self.fuel)).map_err(wasm_err)?;
+        // A big import's brushes can pass wasmtime's default 128 MiB per call; the memory cap still bounds them.
+        self.store.set_hostcall_fuel(cap);
         match self.bindings.call_import_file(&mut self.store, importer, name, data, &wit_ctx) {
             Ok(Ok(mut out)) => {
                 let materials = convert::images(std::mem::take(&mut out.materials));

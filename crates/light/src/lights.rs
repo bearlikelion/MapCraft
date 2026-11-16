@@ -35,6 +35,8 @@ pub enum Falloff {
     Distances { c: f64, l: f64, q: f64, fade: f64, end: f64, hard: bool },
     /// Full brightness at the light, easing to nothing at `end`, as a light with only a range reads.
     Range { end: f64 },
+    /// EverQuest's `1 / (p + 20 p^2)` with `p = d / end`, capped at 1 and raised to 2.2 since the game adds light in gamma space, ending at `end`.
+    EverQuest { end: f64 },
 }
 
 impl Falloff {
@@ -46,6 +48,10 @@ impl Falloff {
             Falloff::Range { end } => {
                 let t = (d / end.max(1.0)).min(1.0);
                 (1.0 - t * t).powi(2)
+            }
+            Falloff::EverQuest { end } => {
+                let p = d / end.max(1.0);
+                if p >= 1.0 { 0.0 } else { (1.0 / (p + 20.0 * p * p)).min(1.0).powf(2.2) }
             }
             Falloff::Distances { c, l, q, fade, end, hard } => {
                 if d >= end {
@@ -219,7 +225,9 @@ pub fn entity(e: &Entity, warnings: &mut Vec<String>) -> Option<Light> {
     let color = color * brightness.max(0.0) / 255.0;
     let fifty = number(e, "_fifty_percent_distance").filter(|d| *d > 0.0);
     let range = number(e, "range").filter(|r| *r > 0.0).unwrap_or(0.0);
+    let everquest = e.get("_falloff") == Some("everquest");
     let (falloff, color) = match fifty {
+        _ if everquest && range > 0.0 => (Falloff::EverQuest { end: range }, color),
         Some(d50) => {
             let end = number(e, "_zero_percent_distance").filter(|d| *d > d50).unwrap_or(d50 * 4.0);
             // 1 / falloff runs through 1 at 0, 2 at d50 and 256 at the end, so half the light is left at d50.
@@ -254,7 +262,7 @@ pub fn entity(e: &Entity, warnings: &mut Vec<String>) -> Option<Light> {
         Kind::Point
     };
     // A range-only light already fades out at its range, so it needs no second fade.
-    let cutoff = Some(range).filter(|r| *r > 0.0 && !matches!(falloff, Falloff::Range { .. }));
+    let cutoff = Some(range).filter(|r| *r > 0.0 && !matches!(falloff, Falloff::Range { .. } | Falloff::EverQuest { .. }));
     let range = if range > 0.0 { range } else { reach(&falloff, color.max_element()) };
     let size = number(e, "size").unwrap_or(0.0).clamp(0.0, 4096.0);
     Some(Light { kind, pos, color, falloff, range, cutoff, size })
@@ -262,7 +270,7 @@ pub fn entity(e: &Entity, warnings: &mut Vec<String>) -> Option<Light> {
 
 /// The distance past which a light of peak `brightness` gives less than [`CUTOFF`].
 fn reach(falloff: &Falloff, brightness: f64) -> f64 {
-    if let Falloff::Distances { end, .. } | Falloff::Range { end } = falloff {
+    if let Falloff::Distances { end, .. } | Falloff::Range { end } | Falloff::EverQuest { end } = falloff {
         return *end;
     }
     let (mut lo, mut hi) = (1.0, MAX_RANGE);
@@ -294,6 +302,16 @@ mod tests {
         let l = light(&[("_light", "255 255 255 255")]);
         assert!((l.color.x * l.falloff.at(100.0) - 1.0).abs() < 1e-9);
         assert!((l.color.x * l.falloff.at(200.0) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn everquest_falloff_matches_the_zones_baked_light() {
+        let l = light(&[("_light", "255 255 255 255"), ("range", "40"), ("_falloff", "everquest")]);
+        assert!(l.cutoff.is_none());
+        assert!((l.attenuation(1.0) - 1.0).abs() < 1e-9);
+        // Half the range leaves 1 / 5.5 of the light in gamma space.
+        assert!((l.attenuation(20.0).powf(1.0 / 2.2) - 1.0 / 5.5).abs() < 1e-9);
+        assert_eq!(l.attenuation(40.0), 0.0);
     }
 
     #[test]

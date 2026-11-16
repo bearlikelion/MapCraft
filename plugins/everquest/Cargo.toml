@@ -1,0 +1,16 @@
+[package]
+name = "plugin-everquest"
+description = "EverQuest S3D zone importer and object models for MapCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { workspace = true }
+glam = { workspace = true }
+miniz_oxide = "0.9"
+valve = { path = "../valve" }

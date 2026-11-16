@@ -80,6 +80,17 @@ fn dxt5_alpha(block: &[u8]) -> [u8; 16] {
     std::array::from_fn(|i| table[((bits >> (3 * i)) & 7) as usize] as u8)
 }
 
+/// RGBA8 pixels of DXT1, DXT3 or DXT5 blocks (`kind` 1, 3 or 5), as DDS files hold them; `None` for another kind.
+pub fn dxt(data: &[u8], kind: u8, w: usize, h: usize) -> Option<Vec<u8>> {
+    let format = match kind {
+        1 => DXT1,
+        3 => DXT3,
+        5 => DXT5,
+        _ => return None,
+    };
+    Some(decode_dxt(data, format, w, h))
+}
+
 fn decode_dxt(data: &[u8], format: u32, w: usize, h: usize) -> Vec<u8> {
     let stride = if matches!(format, DXT3 | DXT5) { 16 } else { 8 };
     let mut out = vec![0u8; w * h * 4];

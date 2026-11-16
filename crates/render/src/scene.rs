@@ -510,10 +510,19 @@ fn read_light(e: &Entity, origin: DVec3) -> Option<Light> {
     // The light compiler stores half a Quake light's value, and engines show a lightmap of 128 as the texture itself.
     let color = if quake { light_color(&num("_color")) } else { light_color(&source).powf(2.2) } * brightness / 255.0;
     let wait = first("wait").filter(|w| *w > 0.0).unwrap_or(1.0);
-    let falloff = if quake { first("delay").map(f64::floor).filter(|d| [1.0, 2.0, 3.0, 5.0].contains(d)).unwrap_or(0.0) } else { 2.0 };
+    let everquest = !quake && e.get("_falloff") == Some("everquest") && first("range").is_some_and(|r| r > 0.0);
+    let falloff = if quake {
+        first("delay").map(f64::floor).filter(|d| [1.0, 2.0, 3.0, 5.0].contains(d)).unwrap_or(0.0)
+    } else if everquest {
+        6.0
+    } else {
+        2.0
+    };
     let angle_scale = if quake { first("_anglescale").or_else(|| first("_anglesense")).unwrap_or(0.5).clamp(0.0, 1.0) } else { 0.0 };
     // Quake's linear falloff ends at `light / wait`; its inverse falloffs reach 1 at 128 units, Source's at 100.
-    let distance = if !quake {
+    let distance = if everquest {
+        first("range").unwrap_or(1.0)
+    } else if !quake {
         100.0
     } else if falloff == 0.0 {
         brightness.abs() / wait

@@ -951,8 +951,8 @@ fn sdk_manager_checks_and_creates_sdks() {
     h.state_mut().run_command_for_test("file.sdk_manager");
     h.run_steps(2);
     assert!(h.state().sdk_ids_for_test().iter().any(|id| id == "surfsup"));
-    // The top bar's map Check comes first; the SDK card's is drawn after it.
-    h.get_all_by_label("Check").last().unwrap().click();
+    // The top bar's map Check comes first; the SDK card's is drawn after it, scrolled out of reach of a pointer.
+    h.get_all_by_label("Check").last().unwrap().click_accesskit();
     let mut items = None;
     for _ in 0..400 {
         h.run_steps(1);

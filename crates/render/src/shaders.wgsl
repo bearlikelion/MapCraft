@@ -317,6 +317,10 @@ fn light_reach(l: Light, world: vec3<f32>) -> vec4<f32> {
             case 1: { atten = r / d; }
             case 2: { atten = r * r / (d * d); }
             case 5: { atten = r * r / ((d + r) * (d + r)); }
+            case 6: {
+                let p = d / r;
+                atten = select(0.0, pow(min(1.0 / (p + 20.0 * p * p), 1.0), 2.2), p < 1.0);
+            }
             default: {}
         }
         if l.cone.w <= 0.0 {
