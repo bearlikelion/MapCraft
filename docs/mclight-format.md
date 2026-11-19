@@ -17,8 +17,8 @@ All numbers are little endian.
 | 4 | u32 | Slice count, at most 64 |
 | 4 | u32 | Face count, at most 4,000,000 |
 
-The fingerprint is FNV-1a over every brush's node id, face points, material and `lightmapscale`, and the key/values of worldspawn and every `light*` entity.
-The baker then adds the settings it baked at: luxel size, slice size, bounces, rays and sun samples.
+The fingerprint is FNV-1a over every brush's node id, face points, material, the light that material gives off and `lightmapscale`, and the key/values of worldspawn and every `light*` entity.
+The baker then adds the settings it baked at: luxel size, slice size, bounces, rays, sun samples, ray bias, extra samples, softening, bounce color and dirt.
 A map whose fingerprint differs, or one baked again at other settings, has changed since the bake.
 
 ## Face table

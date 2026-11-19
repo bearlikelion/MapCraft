@@ -80,6 +80,10 @@ The scene is rebuilt from the map whenever it changes; brush faces are batched b
 Every edit is a list of node changes (insert, remove, replace) applied by `engine::Session::apply` as one transaction.
 The transaction records the previous value of each touched node, so undo swaps them back.
 
+Undoing one step out of order (the History tab, Undo in Selection) never edits the stack: it applies a new step that puts back the fields that step changed.
+A later step that changed the same field of the same node is a conflict, and the undo is refused.
+Such a step remembers which step it took back, so the history can show that one as undone and redo it.
+
 ## Coordinates
 
 Map space is right-handed with Z up, 1 unit = 1 inch, 39.37 units per meter, matching Source, Quake and SurfsUp.

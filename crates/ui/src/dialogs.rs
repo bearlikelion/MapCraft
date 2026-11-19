@@ -639,6 +639,10 @@ impl MapCraftApp {
                 ui.label("Autosave every");
                 crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.autosave_minutes).range(0..=120).suffix(" min"));
                 ui.end_row();
+                ui.label("History steps");
+                crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.history_steps).range(1..=1000))
+                    .on_hover_text("How many of the latest edits the History panel lists to undo or redo one at a time");
+                ui.end_row();
                 ui.label("Keep backups");
                 crate::inspect::number(ui, egui::DragValue::new(&mut prefs.view.backups).range(0..=20))
                     .on_hover_text("Earlier versions kept in a backups folder beside the map each time it is saved");
@@ -735,13 +739,13 @@ impl MapCraftApp {
             ui.checkbox(&mut prefs.check_updates, "Check for MapCraft and SDK updates at launch");
             ui.separator();
             egui::CollapsingHeader::new("Key bindings").show(ui, |ui| {
-                ui.label("Type a chord such as Ctrl+Shift+K; clear it to unbind.");
+                ui.label("Type a chord such as Ctrl+Shift+K, or several with commas between; clear it to unbind.");
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     egui::Grid::new("keys").num_columns(3).striped(true).show(ui, |ui| {
                         for (id, label) in crate::shortcuts::actions() {
                             ui.label(label);
                             let mut text = crate::shortcuts::chord(id, prefs.keymap, &prefs.shortcuts).unwrap_or_default();
-                            let valid = text.is_empty() || crate::shortcuts::parse(&text).is_some();
+                            let valid = text.is_empty() || crate::shortcuts::parse_all(&text).is_some();
                             let edit = egui::TextEdit::singleline(&mut text).desired_width(140.0);
                             let r = ui.add(if valid { edit } else { edit.text_color(egui::Color32::LIGHT_RED) });
                             if r.changed() {

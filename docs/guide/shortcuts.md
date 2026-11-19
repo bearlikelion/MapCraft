@@ -27,6 +27,7 @@ When you know what you want but not where it lives, press `F3` (**Edit > Search 
 1. Open **Edit > Preferences** (`Ctrl+Comma`).
 2. Pick a preset under **Shortcuts**: MapCraft, Hammer or TrenchBroom.
 3. Open **Key bindings** and type a chord such as `Ctrl+Shift+K` next to an action, or clear it to unbind the action.
+   Put commas between chords to give an action more than one, such as `Ctrl+Shift+Z, Ctrl+Y`.
 
 To go back to the preset's key, click the circular arrow after the action's key (**Back to the preset's chord**).
 
@@ -86,7 +87,9 @@ The tables are generated from the editor's code, so they match the version this 
 | Search Commands | `F3` |
 | Preferences | `Ctrl+Comma` |
 | Undo | `Ctrl+Z` |
-| Redo | `Ctrl+Shift+Z` |
+| Redo | `Ctrl+Shift+Z, Ctrl+Y` |
+| Undo in Selection | `Ctrl+Alt+Z` |
+| Redo in Selection | `Ctrl+Alt+Shift+Z, Ctrl+Alt+Y` |
 | Delete | `Delete` |
 | Duplicate | `Ctrl+D` |
 | Duplicate Linked | `Alt+D` |
@@ -153,6 +156,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Hollow | `Ctrl+H` |
 | Zone from Selection | *none* |
 | Snap Selection to Grid | `Ctrl+B` |
+| Snap Vertices to Integers | *none* |
+| Extrude to Top Level | *none* |
 | Group | `Ctrl+G` |
 | Ungroup | `Ctrl+U` |
 | Make Mirror Group | `Ctrl+Shift+M` |
@@ -197,6 +202,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Lit | `Ctrl+Alt+4` |
 | Show Sky | *none* |
 | Show Nodraw | *none* |
+| Show Grid in 3D | *none* |
 | Color Brushes by Object | `Ctrl+Alt+C` |
 | Show FPS | *none* |
 | Color by Slope | `Ctrl+Alt+5` |
@@ -227,6 +233,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Entities Panel | `Ctrl+4` |
 | Models Panel | `Ctrl+6` |
 | Shaders Panel | `Ctrl+7` |
+| History Panel | `Ctrl+8` |
 | Output Panel | `Ctrl+5` |
 
 ### Run
@@ -293,6 +300,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Select Face Loop | *none* |
 | Add Shader | *none* |
 | Remove Shader | *none* |
+| Select Brushes With Same Shader | *none* |
 | Blend Current Material | *none* |
 | Remove Blend Material | *none* |
 | Fill Blend | *none* |

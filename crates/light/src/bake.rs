@@ -10,16 +10,16 @@ use mapcraft_map::{FaceId, Map, NodeId, NodeKind};
 use crate::bvh::{Bvh, Triangle};
 use crate::charts::{self, Chart};
 use crate::lights::{self, Kind, Light, Lights};
-use crate::{BakeError, FaceMap, Lightmap, Progress, Settings, Slice, Surface, rgbe};
-
-/// Rays start this far off the face, in map units, so they never hit the face they leave.
-const BIAS: f64 = 0.5;
+use crate::{BakeError, Dirt, FaceMap, Lightmap, Progress, Settings, Slice, Surface, rgbe};
 
 /// Light dimmer than this adds nothing worth a shadow ray.
 const DIM: f64 = 1.0 / 1024.0;
 
 /// Triangles of faces that cast shadows but hold no chart.
 const NO_CHART: u32 = u32::MAX;
+
+/// Moves a luxel's seed on for each of its sample points, so they aim their rays apart.
+const STEP: DVec2 = DVec2::new(0.618_034, 0.754_878);
 
 type Sh = [DVec3; 4];
 
@@ -29,6 +29,10 @@ struct Luxels {
     sh: Vec<Sh>,
     /// Light leaving each luxel toward others, for the next gather.
     exitant: Vec<DVec3>,
+    /// A bit for each of a luxel's sample points the direct pass found inside a solid, such as a floor's under a wall standing on it.
+    buried: Vec<u16>,
+    /// The share of its light dirt leaves each luxel; empty without dirt.
+    dirt: Vec<f32>,
 }
 
 /// What the workers share.
@@ -70,17 +74,21 @@ fn triangles(map: &Map, charts: &[Chart]) -> Vec<Triangle> {
                 continue;
             }
             let owner = owner.get(&(id, index)).copied().unwrap_or(NO_CHART);
+            let normal = face.plane().map(|p| p.normal);
+            // Wound counter-clockwise about the face's normal, so a ray can tell a solid's outside from its inside.
+            let wound = |a: DVec3, b: DVec3, c: DVec3| match normal {
+                Some(n) if (b - a).cross(c - a).dot(n) < 0.0 => Triangle { a, b: c, c: b, owner },
+                _ => Triangle { a, b, c, owner },
+            };
             if let (Some(points), Some(d)) = (displaced.get(&index), &face.disp) {
-                tris.extend(
-                    d.triangles().into_iter().filter_map(|[a, b, c]| Some(Triangle { a: *points.get(a)?, b: *points.get(b)?, c: *points.get(c)?, owner })),
-                );
+                tris.extend(d.triangles().into_iter().filter_map(|[a, b, c]| Some(wound(*points.get(a)?, *points.get(b)?, *points.get(c)?))));
                 continue;
             }
             if b.has_displacement() {
                 continue;
             }
             for k in 1..w.0.len().saturating_sub(1) {
-                tris.push(Triangle { a: w.0[0], b: w.0[k], c: w.0[k + 1], owner });
+                tris.push(wound(w.0[0], w.0[k], w.0[k + 1]));
             }
         }
     }
@@ -100,6 +108,26 @@ fn radical_inverse(mut i: u32) -> f64 {
 fn hammersley(i: u32, n: u32, seed: DVec2) -> DVec2 {
     let p = DVec2::new((f64::from(i) + 0.5) / f64::from(n.max(1)), radical_inverse(i)) + seed;
     p - p.floor()
+}
+
+/// The chart points luxel (i, j) samples: `side` squared of them, spread evenly over it.
+fn sub_points(i: u32, j: u32, side: u32) -> impl Iterator<Item = DVec2> {
+    let step = 1.0 / f64::from(side);
+    (0..side * side).map(move |s| DVec2::new(f64::from(i) + (f64::from(s % side) + 0.5) * step, f64::from(j) + (f64::from(s / side) + 0.5) * step))
+}
+
+/// Which of a luxel's `count` sample points ray `r` leaves from: spread evenly, and apart from where the ray aims.
+fn pick(r: u32, count: usize) -> usize {
+    ((u64::from(r.wrapping_mul(2_654_435_761)) * count as u64) >> 32) as usize
+}
+
+/// `s` bouncing its albedo's color only as far as `keep`, 0 to 1, at the same brightness.
+fn tinted(mut s: Surface, keep: f64) -> Surface {
+    if keep < 1.0 {
+        let gray = 0.2126 * s.albedo[0] + 0.7152 * s.albedo[1] + 0.0722 * s.albedo[2];
+        s.albedo = s.albedo.map(|v| gray + (v - gray) * keep as f32);
+    }
+    s
 }
 
 /// A hash of a luxel's place, as an offset on the unit square.
@@ -158,11 +186,18 @@ impl Scene<'_> {
         self.surfaces.get(chart).copied().unwrap_or_default()
     }
 
+    /// Whether the luxel at `p` facing `n` lies inside a solid, not merely on its side: every way up from it meets the back of a face first.
+    fn buried(&self, c: &Chart, p: DVec3, n: DVec3) -> bool {
+        let origin = p + n * self.settings.bias;
+        [c.bu, -c.bu, c.bv, -c.bv].iter().all(|t| self.bvh.inside(origin, (n + *t * 0.5).normalize_or(n)))
+    }
+
     /// Light from point, spot and sun lights reaching `p` on a face facing `n`.
     fn direct(&self, p: DVec3, n: DVec3, near: &[&Light], seed: DVec2) -> (Sh, DVec3) {
         let mut sh = [DVec3::ZERO; 4];
         let mut total = DVec3::ZERO;
-        let origin = p + n * BIAS;
+        let bias = self.settings.bias;
+        let origin = p + n * bias;
         for l in near {
             match &l.kind {
                 Kind::Sun { toward, spread } => {
@@ -189,7 +224,7 @@ impl Scene<'_> {
                     let samples = self.settings.sun_samples.max(1);
                     let spread = (l.size / 2.0 / d).min(1.0).asin();
                     let lit =
-                        (0..samples).filter(|s| !self.bvh.occluded(origin, cone(dir, spread, hammersley(*s, samples, seed)), d - l.size / 2.0 - BIAS)).count();
+                        (0..samples).filter(|s| !self.bvh.occluded(origin, cone(dir, spread, hammersley(*s, samples, seed)), d - l.size / 2.0 - bias)).count();
                     if lit == 0 {
                         continue;
                     }
@@ -204,7 +239,7 @@ impl Scene<'_> {
                         continue;
                     }
                     let Some((light, dir, ndl)) = self.arrival(l, n, to, d) else { continue };
-                    if self.bvh.occluded(origin, dir, d - BIAS) {
+                    if self.bvh.occluded(origin, dir, d - bias) {
                         continue;
                     }
                     add_direct(&mut sh, light, dir, ndl);
@@ -237,14 +272,15 @@ impl Scene<'_> {
         (light.max_element() >= DIM).then_some((light, dir, ndl))
     }
 
-    /// Light gathered over the hemisphere at `p`: what the previous pass left on faces the rays hit, plus the sky on the first pass.
-    fn gather(&self, p: DVec3, n: DVec3, prev: &[Luxels], sky: bool, seed: DVec2) -> (Sh, DVec3) {
+    /// Light gathered over the hemispheres at a luxel's sample `points`: what the previous pass left on faces the rays hit, plus the sky on the first pass.
+    fn gather(&self, points: &[(DVec3, DVec3)], prev: &[Luxels], sky: bool, seed: DVec2) -> (Sh, DVec3) {
         let rays = self.settings.rays.max(1);
         let mut sh = [DVec3::ZERO; 4];
         let mut total = DVec3::ZERO;
-        let origin = p + n * BIAS;
         for r in 0..rays {
-            let dir = cosine(n, hammersley(r, rays, seed));
+            let Some((p, n)) = points.get(pick(r, points.len())) else { continue };
+            let origin = *p + *n * self.settings.bias;
+            let dir = cosine(*n, hammersley(r, rays, seed));
             let light = match self.bvh.nearest(origin, dir, 1e9) {
                 Some((t, owner)) if owner != NO_CHART => {
                     let (Some(c), Some(lux)) = (self.charts.get(owner as usize), prev.get(owner as usize)) else { continue };
@@ -268,6 +304,22 @@ impl Scene<'_> {
         }
         let k = 1.0 / f64::from(rays);
         (sh.map(|c| c * k), total * k)
+    }
+
+    /// The share of its light dirt leaves a luxel sampled at `points`: less the nearer the faces crowding it.
+    fn dirt(&self, d: &Dirt, points: &[(DVec3, DVec3)], seed: DVec2) -> f32 {
+        let rays = self.settings.rays.max(1);
+        let spread = d.angle.to_radians();
+        let mut near = 0.0;
+        for r in 0..rays {
+            let Some((p, n)) = points.get(pick(r, points.len())) else { continue };
+            let dir = cone(*n, spread, hammersley(r, rays, seed));
+            if let Some((t, _)) = self.bvh.nearest(*p + *n * self.settings.bias, dir, d.depth) {
+                near += 1.0 - (t / d.depth).min(1.0);
+            }
+        }
+        let crowded = near / f64::from(rays);
+        (1.0 - (crowded.powf(d.gain) * d.scale).clamp(0.0, 1.0)) as f32
     }
 
     /// Runs `work` over every chart on all threads, in chart order.
@@ -316,14 +368,20 @@ pub fn bake(
 ) -> Result<(Lightmap, Vec<String>), BakeError> {
     let mut charts = charts::build(map, skip, settings.luxel);
     let (lights, warnings) = lights::read(map);
-    let surfaces = charts.iter().map(|c| surface(&c.material)).collect::<Vec<_>>();
+    let surfaces = charts.iter().map(|c| tinted(surface(&c.material), settings.bounce_color)).collect::<Vec<_>>();
     let emissive = surfaces.iter().any(|s| s.emission.iter().any(|v| *v > 0.0));
     let gathers = if settings.bounces > 0 { settings.bounces } else { u32::from(lights.sky.is_some() || emissive) };
     let luxels: u64 = charts.iter().map(|c| u64::from(c.w) * u64::from(c.h)).sum();
     progress.total.store(luxels * (1 + u64::from(gathers)), Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
     let scene = Scene { charts: &charts, surfaces, bvh: Bvh::new(triangles(map, &charts)), lights, settings, progress };
-    let fingerprint = crate::bake_fingerprint(map, settings);
+    let fingerprint = crate::bake_fingerprint(map, settings, surface);
+    let side = match settings.extra {
+        0 | 1 => 1,
+        2 | 3 => 2,
+        _ => 4,
+    };
+    let full = ((1u32 << (side * side)) - 1) as u16;
 
     let mut totals = scene.each_chart(|ci, c| {
         let near: Vec<&Light> = scene.lights.lights.iter().filter(|l| l.range.is_infinite() || chart_distance(c, l.pos) <= l.range).collect();
@@ -331,13 +389,35 @@ pub fn bake(
         let (albedo, emission) = (DVec3::from_array(s.albedo.map(f64::from)), DVec3::from_array(s.emission.map(f64::from)));
         let reflect = if settings.bounces > 0 { albedo } else { DVec3::ZERO };
         let n = (c.w * c.h) as usize;
-        let mut out = Luxels { sh: Vec::with_capacity(n), exitant: Vec::with_capacity(n) };
+        let mut out = Luxels { sh: Vec::with_capacity(n), exitant: Vec::with_capacity(n), buried: Vec::with_capacity(n), dirt: Vec::new() };
+        let mut open = Vec::with_capacity(16);
         for j in 0..c.h {
             for i in 0..c.w {
-                let (p, n) = c.sample(i, j);
-                let (sh, total) = scene.direct(p, n, &near, seed(ci, (j * c.w + i) as usize));
-                out.sh.push(sh);
-                out.exitant.push(total * reflect + emission);
+                let index = (j * c.w + i) as usize;
+                let mut mask = 0u16;
+                open.clear();
+                for (s, at) in sub_points(i, j, side).enumerate() {
+                    let (p, n) = c.sample_at(at);
+                    if scene.buried(c, p, n) {
+                        mask |= 1 << s;
+                    } else {
+                        open.push((p, n));
+                    }
+                }
+                let mut sh = [DVec3::ZERO; 4];
+                let mut total = DVec3::ZERO;
+                for (s, (p, n)) in open.iter().enumerate() {
+                    let (light, sum) = scene.direct(*p, *n, &near, seed(ci, index) + STEP * s as f64);
+                    (0..4).for_each(|k| sh[k] += light[k]);
+                    total += sum;
+                }
+                let k = 1.0 / open.len().max(1) as f64;
+                out.sh.push(sh.map(|v| v * k));
+                out.exitant.push(if open.is_empty() { DVec3::ZERO } else { total * k * reflect + emission });
+                out.buried.push(mask);
+                if let Some(d) = &settings.dirt {
+                    out.dirt.push(scene.dirt(d, &open, seed(ci, index + 15_485_863)));
+                }
             }
         }
         out
@@ -349,12 +429,17 @@ pub fn bake(
             let s = scene.surface(ci);
             let albedo = DVec3::from_array(s.albedo.map(f64::from));
             let n = (c.w * c.h) as usize;
-            let mut out = Luxels { sh: Vec::with_capacity(n), exitant: Vec::with_capacity(n) };
+            let mut out = Luxels { sh: Vec::with_capacity(n), exitant: Vec::with_capacity(n), buried: Vec::new(), dirt: Vec::new() };
+            let buried = totals.get(ci).map_or(&[][..], |t| t.buried.as_slice());
+            let mut open = Vec::with_capacity(16);
             for j in 0..c.h {
                 for i in 0..c.w {
                     let index = (j * c.w + i) as usize;
-                    let (p, n) = c.sample(i, j);
-                    let (sh, total) = scene.gather(p, n, &prev, pass == 0, seed(ci, index + 7919 * (pass as usize + 1)));
+                    let mask = buried.get(index).copied().unwrap_or(0);
+                    open.clear();
+                    open.extend(sub_points(i, j, side).enumerate().filter(|(s, _)| mask & (1 << s) == 0).map(|(_, at)| c.sample_at(at)));
+                    let (sh, total) =
+                        if open.is_empty() { Default::default() } else { scene.gather(&open, &prev, pass == 0, seed(ci, index + 7919 * (pass as usize + 1))) };
                     out.sh.push(sh);
                     out.exitant.push(total * albedo);
                 }
@@ -372,7 +457,16 @@ pub fn bake(
     }
 
     let min = scene.lights.minlight;
-    for t in &mut totals {
+    for (t, c) in totals.iter_mut().zip(&charts) {
+        for (sh, left) in t.sh.iter_mut().zip(&t.dirt) {
+            *sh = sh.map(|v| v * f64::from(*left));
+        }
+        let buried: Vec<bool> = t.buried.iter().map(|m| *m == full).collect();
+        mend(&mut t.sh, &buried, c.w as usize, c.h as usize);
+        soften(&mut t.sh, c.w as usize, c.h as usize, settings.soft.min(8) as usize);
+        if scene.lights.minlight_exclude.iter().any(|m| m.eq_ignore_ascii_case(&c.material)) {
+            continue;
+        }
         for sh in &mut t.sh {
             sh[0] = sh[0].max(min);
         }
@@ -418,6 +512,61 @@ pub fn bake(
         faces.push(FaceMap { node: c.node, face: c.face as u32, slice: c.slice, uv });
     }
     Ok((Lightmap { fingerprint, size, slices, faces }, warnings))
+}
+
+/// Gives each buried luxel the light of the luxels around it, nearest first, so filtering beside a brush that sits on the face reads no darkness from under it.
+fn mend(sh: &mut [Sh], buried: &[bool], w: usize, h: usize) {
+    let mut open = buried.to_vec();
+    if sh.len() != w * h || open.len() != w * h || !open.contains(&false) {
+        return;
+    }
+    loop {
+        let mut filled = Vec::new();
+        for at in (0..w * h).filter(|at| open[*at]) {
+            let (i, j) = (at % w, at / w);
+            let mut sum = [DVec3::ZERO; 4];
+            let mut count = 0.0;
+            for y in j.saturating_sub(1)..(j + 2).min(h) {
+                for x in i.saturating_sub(1)..(i + 2).min(w) {
+                    if !open[y * w + x] {
+                        (0..4).for_each(|k| sum[k] += sh[y * w + x][k]);
+                        count += 1.0;
+                    }
+                }
+            }
+            if count > 0.0 {
+                filled.push((at, sum.map(|v| v / count)));
+            }
+        }
+        if filled.is_empty() {
+            return;
+        }
+        for (at, light) in filled {
+            sh[at] = light;
+            open[at] = false;
+        }
+    }
+}
+
+/// Averages each luxel with those up to `n` away on every side, inside its chart.
+fn soften(sh: &mut [Sh], w: usize, h: usize, n: usize) {
+    if n == 0 || sh.len() != w * h {
+        return;
+    }
+    // Rows, then columns: (luxels along a line, the step between them, lines, the step between lines).
+    for (len, stride, lines, step) in [(w, 1, h, w), (h, w, w, 1)] {
+        let from = sh.to_vec();
+        for line in 0..lines {
+            for at in 0..len {
+                let (lo, hi) = (at.saturating_sub(n), (at + n + 1).min(len));
+                let mut sum = [DVec3::ZERO; 4];
+                for near in lo..hi {
+                    (0..4).for_each(|k| sum[k] += from[line * step + near * stride][k]);
+                }
+                sh[line * step + at * stride] = sum.map(|v| v / (hi - lo) as f64);
+            }
+        }
+    }
 }
 
 /// The closest distance from `p` to any point of the chart's rectangle.
@@ -475,6 +624,40 @@ mod tests {
         assert!(packed[3].x > 0.5, "Godot's x band, the map's x: {}", packed[3]);
         assert!(packed[1].x > 0.5, "Godot's y band is the map's up: {}", packed[1]);
         assert!((packed[2].x - 0.5).abs() < 1e-9, "Godot's z band, the map's -y: {}", packed[2]);
+    }
+
+    #[test]
+    fn buried_luxels_take_the_light_around_them() {
+        let lit = |v: f64| [DVec3::splat(v), DVec3::ZERO, DVec3::ZERO, DVec3::ZERO];
+        let mut sh = [lit(1.0), lit(0.0), lit(0.0), lit(0.0), lit(3.0)];
+        mend(&mut sh, &[false, true, true, true, false], 5, 1);
+        assert_eq!(sh.map(|s| s[0].x), [1.0, 1.0, 2.0, 3.0, 3.0]);
+        let mut all = [lit(0.0); 4];
+        mend(&mut all, &[true; 4], 2, 2);
+        assert_eq!(all, [lit(0.0); 4], "a face buried whole has no light to take");
+    }
+
+    #[test]
+    fn soften_averages_neighbors_inside_the_chart() {
+        let lit = |v: f64| [DVec3::splat(v), DVec3::ZERO, DVec3::ZERO, DVec3::ZERO];
+        let mut row = [lit(0.0), lit(0.0), lit(3.0), lit(0.0), lit(0.0)];
+        soften(&mut row, 5, 1, 1);
+        assert_eq!(row.map(|s| s[0].x), [0.0, 1.0, 1.0, 1.0, 0.0]);
+        let mut column = [lit(0.0), lit(4.0)];
+        soften(&mut column, 1, 2, 1);
+        assert_eq!(column.map(|s| s[0].x), [2.0, 2.0], "the chart's edge averages only what is there");
+        let mut same = [lit(1.0), lit(5.0)];
+        soften(&mut same, 2, 1, 0);
+        assert_eq!(same.map(|s| s[0].x), [1.0, 5.0]);
+    }
+
+    #[test]
+    fn bounce_color_scale_grays_the_albedo_at_the_same_brightness() {
+        let red = Surface { albedo: [0.8, 0.1, 0.1], emission: [0.0; 3] };
+        assert_eq!(tinted(red, 1.0), red);
+        let gray = tinted(red, 0.0).albedo;
+        assert!(gray[0] == gray[1] && gray[1] == gray[2], "{gray:?}");
+        assert!((gray[0] - (0.2126 * 0.8 + 0.7152 * 0.1 + 0.0722 * 0.1)).abs() < 1e-6, "{gray:?}");
     }
 
     #[test]

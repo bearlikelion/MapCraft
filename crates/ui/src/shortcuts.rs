@@ -24,6 +24,11 @@ pub fn parse(text: &str) -> Option<KeyboardShortcut> {
     Some(KeyboardShortcut::new(mods, key?))
 }
 
+/// Parses chord text holding one chord or several split by commas, any of which runs the action.
+pub fn parse_all(text: &str) -> Option<Vec<KeyboardShortcut>> {
+    text.split(',').map(parse).collect()
+}
+
 /// Starting shortcut sets for people coming from other editors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Preset {
@@ -101,6 +106,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("run.auto_bake", "Automatic Light Bake", ""),
     ("edit.search", "Search Commands", "F3"),
     ("edit.preferences", "Preferences", "Ctrl+Comma"),
+    ("edit.open_data_folder", "Open Data Folder", ""),
     ("tools.transform", "Transform", "Ctrl+M"),
     ("tools.array", "Array", "Ctrl+Shift+D"),
     ("tools.randomize", "Randomize Transform", ""),
@@ -125,6 +131,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("prefab.make_local", "Make Prefab Local", "Ctrl+Shift+U"),
     ("prefab.reload", "Reload Prefabs", "Ctrl+Alt+R"),
     ("layer.new", "New Layer", "Ctrl+Shift+N"),
+    ("layer.rename", "Rename Layer or Group", "F2"),
     ("view.maximize", "Maximize View", "Space"),
     ("view.link_zoom", "Link 2D Zoom", "Shift+Z"),
     ("view.render_cycle", "Next Render Mode", "Z"),
@@ -151,6 +158,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("panel.entities", "Entities Panel", "Ctrl+4"),
     ("panel.models", "Models Panel", "Ctrl+6"),
     ("panel.shaders", "Shaders Panel", "Ctrl+7"),
+    ("panel.history", "History Panel", "Ctrl+8"),
     ("panel.output", "Output Panel", "Ctrl+5"),
     ("inspector.smart_edit", "Smart Edit", "Ctrl+Alt+E"),
     ("shape.next", "Next Block Shape", "Alt+B"),
@@ -231,7 +239,8 @@ pub fn actions() -> impl Iterator<Item = (&'static str, &'static str)> {
 /// Parsed bindings, chords with more modifiers first so Ctrl+Shift+S is not taken by Ctrl+S, and
 /// UV view, Vertex tool and Clip tool actions before others on the same chord.
 pub fn bindings(preset: Preset, custom: &BTreeMap<String, String>) -> Vec<(KeyboardShortcut, &'static str)> {
-    let mut out: Vec<_> = actions().filter_map(|(id, _)| Some((parse(&chord(id, preset, custom)?)?, id))).collect();
+    let chords = actions().filter_map(|(id, _)| Some((parse_all(&chord(id, preset, custom)?)?, id)));
+    let mut out: Vec<_> = chords.flat_map(|(all, id)| all.into_iter().map(move |sc| (sc, id))).collect();
     out.sort_by_key(|(sc, id)| {
         (std::cmp::Reverse(sc.modifiers.shift as u8 + sc.modifiers.command as u8 + sc.modifiers.alt as u8), !(uv_only(id) || vertex_only(id) || clip_only(id)))
     });
@@ -248,11 +257,15 @@ mod tests {
         assert_eq!(parse("Delete"), Some(KeyboardShortcut::new(Modifiers::NONE, Key::Delete)));
         assert_eq!(parse("]"), Some(KeyboardShortcut::new(Modifiers::NONE, Key::CloseBracket)));
         assert_eq!(parse("Ctrl+"), None);
+        assert_eq!(parse_all("Ctrl+Shift+Z, Ctrl+Y").map(|c| c.len()), Some(2));
+        assert_eq!(parse_all("Ctrl+Z,"), None);
+        let redo = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
+        assert!(bindings(Preset::MapCraft, &BTreeMap::new()).contains(&(redo, "edit.redo")));
         let none = BTreeMap::new();
         for preset in Preset::ALL {
             for (id, _) in actions() {
                 if let Some(c) = chord(id, preset, &none) {
-                    assert!(parse(&c).is_some(), "{id} has an unparsable chord {c} in {preset:?}");
+                    assert!(parse_all(&c).is_some(), "{id} has an unparsable chord {c} in {preset:?}");
                 }
             }
         }

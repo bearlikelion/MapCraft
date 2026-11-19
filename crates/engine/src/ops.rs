@@ -229,6 +229,7 @@ pub(crate) fn insert_fragments(e: &mut Edit, parent: NodeId, frags: Vec<mapcraft
             None => frag.kind,
         };
         let id = e.insert(parent, kind)?;
+        crate::shader::put_shader(e, id, frag.shader)?;
         if frag.hidden {
             e.update(id, |h, _, _, _| *h = true)?;
         }
@@ -792,7 +793,7 @@ impl Session {
                     other => other,
                 };
                 let id = e.insert(dst_parent, kind)?;
-                e.set_shader(id, node.shader)?;
+                crate::shader::put_shader(&mut e, id, node.shader.map(|s| (s, node.shader_params)))?;
                 if std::mem::take(&mut first) {
                     copies.insert(id);
                 }
@@ -827,6 +828,7 @@ impl Session {
                         b.faces.iter_mut().for_each(|f| f.id = Default::default());
                     }
                     let id = e.insert(dst, kind)?;
+                    crate::shader::put_shader(&mut e, id, node.shader.map(|s| (s, node.shader_params)))?;
                     if top {
                         copies.insert(id);
                     }

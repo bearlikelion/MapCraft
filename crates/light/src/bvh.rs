@@ -28,8 +28,8 @@ impl Triangle {
         (self.a + self.b + self.c) / 3.0
     }
 
-    /// Distance along `dir` to the triangle, hit from either side.
-    fn hit(&self, origin: DVec3, dir: DVec3, t_max: f64) -> Option<f64> {
+    /// Distance along `dir` to the triangle, hit from either side, and whether the ray met its front, the side it winds counter-clockwise from.
+    fn hit(&self, origin: DVec3, dir: DVec3, t_max: f64) -> Option<(f64, bool)> {
         let (e1, e2) = (self.b - self.a, self.c - self.a);
         let p = dir.cross(e2);
         let det = e1.dot(p);
@@ -48,7 +48,7 @@ impl Triangle {
             return None;
         }
         let t = e2.dot(q) * inv;
-        (t > 1e-6 && t < t_max).then_some(t)
+        (t > 1e-6 && t < t_max).then_some((t, det > 0.0))
     }
 }
 
@@ -163,7 +163,7 @@ impl Bvh {
         Some(start + i)
     }
 
-    fn walk(&self, origin: DVec3, dir: DVec3, mut t_max: f64, any: bool) -> Option<(f64, u32)> {
+    fn walk(&self, origin: DVec3, dir: DVec3, mut t_max: f64, any: bool) -> Option<(f64, u32, bool)> {
         if self.nodes.is_empty() {
             return None;
         }
@@ -180,12 +180,12 @@ impl Bvh {
             if node.count > 0 {
                 let start = node.index as usize;
                 for t in self.tris.get(start..start + node.count as usize).unwrap_or_default() {
-                    if let Some(d) = t.hit(origin, dir, t_max) {
+                    if let Some((d, front)) = t.hit(origin, dir, t_max) {
+                        best = Some((d, t.owner, front));
                         if any {
-                            return Some((d, t.owner));
+                            return best;
                         }
                         t_max = d;
-                        best = Some((d, t.owner));
                     }
                 }
             } else if top + 2 <= STACK {
@@ -204,7 +204,12 @@ impl Bvh {
 
     /// The nearest triangle along the ray: its distance and owner.
     pub fn nearest(&self, origin: DVec3, dir: DVec3, t_max: f64) -> Option<(f64, u32)> {
-        self.walk(origin, dir, t_max, false)
+        self.walk(origin, dir, t_max, false).map(|(t, owner, _)| (t, owner))
+    }
+
+    /// Whether the nearest triangle along the ray shows its back, as it does from inside a solid.
+    pub fn inside(&self, origin: DVec3, dir: DVec3) -> bool {
+        self.walk(origin, dir, 1e9, false).is_some_and(|hit| !hit.2)
     }
 }
 
@@ -231,5 +236,15 @@ mod tests {
         assert!(bvh.occluded(DVec3::new(0.0, 0.0, 0.0), DVec3::Z, 1.5));
         assert!(!bvh.occluded(DVec3::new(0.0, 0.0, 0.0), DVec3::Z, 0.5));
         assert!(!bvh.occluded(DVec3::new(5.0, 0.0, 0.0), DVec3::Z, 1e9));
+    }
+
+    #[test]
+    fn a_ray_from_behind_a_triangle_starts_inside() {
+        let mut tris = Vec::new();
+        quad(1.0, 0, &mut tris);
+        let bvh = Bvh::new(tris);
+        assert!(bvh.inside(DVec3::ZERO, DVec3::Z), "the quad winds counter-clockwise about +z");
+        assert!(!bvh.inside(DVec3::new(0.0, 0.0, 2.0), -DVec3::Z));
+        assert!(!bvh.inside(DVec3::new(5.0, 0.0, 0.0), DVec3::Z));
     }
 }

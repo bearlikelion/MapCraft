@@ -200,6 +200,7 @@ impl MapCraftApp {
                 (LeftTab::Entities, "Entities", "panel.entities"),
                 (LeftTab::Models, "Models", "panel.models"),
                 (LeftTab::Shaders, "Shaders", "panel.shaders"),
+                (LeftTab::History, "History", "panel.history"),
             ] {
                 let chord = self.chord(id);
                 let tip = if chord.is_empty() { label.to_string() } else { format!("{label}  ({chord})") };
@@ -220,6 +221,47 @@ impl MapCraftApp {
                 let out = self.shader_editor.shader_list(ui, &mut self.session, &errors);
                 self.shader_outcome(out);
             }
+            LeftTab::History => self.history_panel(ui),
+        }
+    }
+
+    /// The latest edits, newest first, each with a button that undoes or redoes it alone.
+    fn history_panel(&mut self, ui: &mut egui::Ui) {
+        let steps = self.session.history(self.prefs.get().view.history_steps as usize);
+        if steps.is_empty() {
+            ui.label(RichText::new("No edits yet").color(TEXT_WEAK));
+        }
+        let mut run = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, 20.0, steps.len(), |ui, range| {
+            for step in steps.get(range).unwrap_or_default() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled_ui(step.can_undo, |ui| icon_button(ui, "arrow_uturn_up_left", "Undo", 20.0, false))
+                        .inner
+                        .on_hover_text("Undo this edit alone")
+                        .clicked()
+                    {
+                        run = Some((step.serial, false));
+                    }
+                    if ui
+                        .add_enabled_ui(step.can_redo, |ui| icon_button(ui, "arrow_uturn_up_right", "Redo", 20.0, false))
+                        .inner
+                        .on_hover_text("Redo this edit")
+                        .clicked()
+                    {
+                        run = Some((step.serial, true));
+                    }
+                    let text = RichText::new(&step.label);
+                    ui.add(egui::Label::new(if step.can_undo { text } else { text.color(TEXT_WEAK).strikethrough() }).truncate());
+                });
+            }
+        });
+        if let Some((serial, redo)) = run {
+            let done = if redo { self.session.redo_step(serial) } else { self.session.undo_step(serial) };
+            if let Err(e) = done {
+                self.status = e.to_string();
+            }
+            self.mark_changed();
         }
     }
 
@@ -462,6 +504,8 @@ impl MapCraftApp {
             }
         }
         let mut drop: Option<(NodeId, usize)> = None;
+        let mut renamed: Option<bool> = None;
+        let mut renaming = false;
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let mut scroll = egui::ScrollArea::vertical().auto_shrink(false);
         let (offset, height) = self.tree_view;
@@ -558,6 +602,29 @@ impl MapCraftApp {
                     crate::chrome::TEXT
                 };
                 let text_area = Rect::from_min_max(egui::pos2(icon.right() + 4.0, row.top()), egui::pos2(eye.left() - 2.0, row.bottom()));
+                if let Some((_, name, focus)) = self.tree_rename.as_mut().filter(|r| r.0 == id) {
+                    renaming = true;
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_area).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                    let r = child.add(egui::TextEdit::singleline(name).id(ui.id().with(("tree-rename", id.0))).desired_width(f32::INFINITY));
+                    if std::mem::take(focus) {
+                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), r.id).unwrap_or_default();
+                        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()));
+                        state.cursor.set_char_range(Some(all));
+                        state.store(ui.ctx(), r.id);
+                        r.request_focus();
+                    }
+                    // Escape stays with the field instead of reaching the editor's own Escape.
+                    ui.memory_mut(|m| {
+                        m.set_focus_lock_filter(r.id, egui::EventFilter { escape: true, horizontal_arrows: true, vertical_arrows: true, tab: false })
+                    });
+                    if (r.has_focus() || r.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        r.surrender_focus();
+                        renamed = Some(false);
+                    } else if r.lost_focus() {
+                        renamed = Some(true);
+                    }
+                    continue;
+                }
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 let job = highlight(&label, if hit.is_some() { &query } else { "" }, font, color);
                 let galley = ui.fonts_mut(|f| f.layout_job(job));
@@ -584,7 +651,8 @@ impl MapCraftApp {
                     drop = Some((target, index));
                 }
                 if resp.double_clicked() {
-                    action = Some((id, "frame"));
+                    let on_name = matches!(n.kind, NodeKind::Layer(_)) && resp.interact_pointer_pos().is_some_and(|p| text_area.contains(p));
+                    action = Some((id, if on_name { "rename" } else { "frame" }));
                 }
                 resp.context_menu(|ui| {
                     if matches!(n.kind, NodeKind::World(_) | NodeKind::Layer(_) | NodeKind::Group(_))
@@ -605,6 +673,11 @@ impl MapCraftApp {
             }
         });
         self.tree_view = (out.state.offset.y, out.inner_rect.height());
+        if let Some((id, name, _)) = self.tree_rename.take_if(|_| renamed.is_some() || !renaming)
+            && renamed != Some(false)
+        {
+            self.rename_node(id, name.trim());
+        }
         if !self.tree_drag.is_empty() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             if !ui.input(|i| i.pointer.primary_down()) {
@@ -660,6 +733,7 @@ impl MapCraftApp {
                 self.frame_selection();
             }
             "activate" => self.session.active_parent = id,
+            "rename" => self.rename_in_tree(Some(id)),
             "delete" => {
                 self.session.selection = BTreeSet::from([id]);
                 self.run_command("edit.delete");
@@ -667,6 +741,31 @@ impl MapCraftApp {
             _ => {}
         }
         self.mark_changed();
+    }
+
+    /// Puts a name field on the scene tree row of `id` when it is a layer or group.
+    pub(crate) fn rename_in_tree(&mut self, id: Option<NodeId>) {
+        let name = match id.and_then(|id| self.session.map.get(id)).map(|n| &n.kind) {
+            Some(NodeKind::Layer(l)) => l.name.clone(),
+            Some(NodeKind::Group(g)) => g.name.clone(),
+            _ => {
+                self.status = "Select one layer or group to rename".into();
+                return;
+            }
+        };
+        self.left_tab = LeftTab::Scene;
+        self.tree_revealed.clear();
+        self.tree_rename = id.map(|id| (id, name, true));
+    }
+
+    /// Gives a layer or group a new name; an empty or unchanged one keeps the old.
+    fn rename_node(&mut self, id: NodeId, name: &str) {
+        let (kind, label) = match self.session.map.get(id).map(|n| &n.kind) {
+            Some(NodeKind::Layer(l)) if !name.is_empty() && l.name != name => (NodeKind::Layer(Layer { name: name.to_string(), ..l.clone() }), "Rename layer"),
+            Some(NodeKind::Group(g)) if !name.is_empty() && g.name != name => (NodeKind::Group(Group { name: name.to_string(), ..g.clone() }), "Rename group"),
+            _ => return,
+        };
+        self.set_kind(id, kind, label);
     }
 
     /// The FGD's `@AutoVisGroup` sets, which follow entity classes and are not stored in the map.
@@ -848,8 +947,14 @@ impl MapCraftApp {
                 tip: "Embed a Godot shader in the map, drawn live in the 3D views",
                 enabled: shaded.len() < ids.len(),
             },
-            Action { icon: "pencil", label: "Edit shader", tip: "Open it in the Script tab", enabled: shaded.len() == 1 },
+            Action {
+                icon: "pencil",
+                label: "Edit shader",
+                tip: "Open it in the Script tab; edits reach the selected brushes that share it",
+                enabled: !shaded.is_empty(),
+            },
             Action { icon: "trash_can", label: "Remove shader", tip: "", enabled: !shaded.is_empty() },
+            Action { icon: "selection_square", label: "Select same shader", tip: "Select every brush with this shader", enabled: !sky && !shaded.is_empty() },
         ];
         match inspect::actions(ui, &items) {
             Some(0) => self.run_action("shader.add"),
@@ -860,6 +965,7 @@ impl MapCraftApp {
                 }
             }
             Some(2) => self.run_action("shader.remove"),
+            Some(3) => self.run_action("shader.select_same"),
             _ => {}
         }
     }
@@ -1375,13 +1481,14 @@ impl MapCraftApp {
             InspectorView::World => {
                 self.entities_body(ui, &[ROOT]);
                 self.shader_section(ui, &[ROOT]);
-                self.shader_params_section(ui, ROOT);
+                self.shader_params_section(ui, &[ROOT]);
             }
             InspectorView::Entities(ids) => self.entities_body(ui, ids),
             InspectorView::Brushes(ids) => {
                 self.brushes_section(ui, false);
-                if let [id] = ids.as_slice() {
-                    self.shader_params_section(ui, *id);
+                let source = |id: &NodeId| self.session.map.get(*id).and_then(|n| n.shader.as_deref());
+                if ids.first().is_some_and(|first| source(first).is_some() && ids.iter().all(|id| source(id) == source(first))) {
+                    self.shader_params_section(ui, ids);
                 }
             }
             InspectorView::Layer(id, _) => self.layer_body(ui, *id),

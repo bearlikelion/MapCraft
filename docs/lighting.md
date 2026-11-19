@@ -67,11 +67,36 @@ Worldspawn keys, as ericw-tools reads them:
 A `light_environment` without `_light` is read the way the MapCraft Godot addon builds its sky and sun (see the [Godot addon](../godot/README.md#sky-and-sun)), so tuning its keys in the inspector previews the look the game gets.
 
 - Lit draws Godot's procedural sky behind the map from `sky_top_color`, `sky_horizon_color` and `ground_color`, with a glow around the sun.
-- The sun shines along `angles`, pitch in degrees below the horizon, with `sun_color` and `sun_energy`.
+- The sun shines along `angles`: pitch is its height above the horizon in degrees and yaw the way its light travels, with `sun_color` and `sun_energy`.
 - Surfaces take light from the sky scaled by `ambient_energy`.
 - The picture goes through Godot's filmic tonemapper.
 
 Unset keys take the addon's defaults; fog and shadows are not previewed.
+
+## Baked lighting
+
+SDKs with a `[lightmaps]` section bake with MapCraft's own baker (**Run > Bake Lighting**), which reads `light`, `light_spot` and `light_environment` entities and these worldspawn keys.
+The Lit view follows edits with quick draft bakes; Bake Lighting makes the full one and saves it beside the map as a `.mclight` file.
+
+| Key | Default | Read as |
+|---|---|---|
+| `_lightmap_scale` | 64 | World units per luxel, not a texture size: smaller is sharper, 1 is the smallest; a face's own lightmap scale wins |
+| `_lightmap_extra` | 1 | 2 or 4 bakes 2 x 2 or 4 x 4 samples per luxel and averages them, for smoother shadow edges; draft bakes take one |
+| `_lightmap_soft` | 0 | Luxels on every side each luxel is averaged with, 0 to 8 |
+| `_lightmap_bias` | 0.5 | How far off a surface light is measured; raise it against dark specks, lower it against leaks through thin brushes |
+| `_bounce` | 1 | How many times light bounces, 0 to 16 |
+| `_bouncecolorscale` | 1 | How much of a surface's color tints the light it bounces, 0 to 1 |
+| `_dirt` | 0 | 1 darkens corners and crevices (ambient occlusion) |
+| `_dirtdepth` | 128 | How far a surface looks for what crowds it, in world units |
+| `_dirtscale` | 1 | Dirt's strength: 0.5 is fainter, 2 is much darker |
+| `_dirtgain` | 1 | Lower values darken dirt and stretch it further from corners |
+| `_dirtangle` | 88 | The cone dirt is measured over, 1 to 90 degrees; lower it to keep dirt off arches and the insides of pipes |
+| `_minlight` | 0 0 0 0 | Color and brightness no baked surface falls below |
+| `_minlight_exclude` | | Materials whose faces take no minimum light, separated by commas |
+
+Dirt is not applied to minimum light.
+A material's emission lights the room around it, and changing its emission strength marks the bake out of date.
+`mapcraft-cli bake` takes `--luxel`, `--bounces`, `--rays`, `--extra` and `--soft`, which win over the map's keys.
 
 ## Material maps
 

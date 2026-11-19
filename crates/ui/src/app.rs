@@ -54,6 +54,7 @@ pub(crate) enum LeftTab {
     Entities,
     Models,
     Shaders,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,8 @@ pub struct MapCraftApp {
     pub(crate) picked_mesh: Option<(mapcraft_map::NodeId, String)>,
     /// Scene tree rows being dragged, empty when none are.
     pub(crate) tree_drag: Vec<mapcraft_map::NodeId>,
+    /// The scene tree row being renamed: its node, the name typed so far and whether the field still wants the focus.
+    pub(crate) tree_rename: Option<(mapcraft_map::NodeId, String, bool)>,
     /// The selection the scene tree last unfolded and scrolled to.
     pub(crate) tree_revealed: BTreeSet<mapcraft_map::NodeId>,
     /// The scene tree's scroll offset and visible height last frame.
@@ -343,6 +346,7 @@ impl MapCraftApp {
             expanded: BTreeSet::from([mapcraft_map::ROOT]),
             picked_mesh: None,
             tree_drag: Vec::new(),
+            tree_rename: None,
             tree_revealed: BTreeSet::new(),
             tree_view: (0.0, 0.0),
             tree_search: crate::panels::TreeSearch::default(),
@@ -506,6 +510,7 @@ impl MapCraftApp {
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());
+        self.bake.material_changed(None);
         self.project.lit = sdk_id.as_ref().and_then(|id| self.prefs.get().material_lit.get(id).cloned()).unwrap_or_default();
         let skies = self.project.sdk.iter().flat_map(|s| &s.manifest.textures.sky).filter(|p| !p.is_empty());
         self.session.blend_roles = skies.map(|p| (format!("{p}*"), mapcraft_map::BlendRole::Unblendable)).collect();
@@ -1103,7 +1108,8 @@ impl MapCraftApp {
             }
             if ctx.input_mut(|i| i.consume_shortcut(&sc)) {
                 let label = crate::shortcuts::actions().find(|a| a.0 == id).map_or("", |a| a.1);
-                self.note_key(self.chord(id), label);
+                let pressed = self.chord(id).split(',').map(str::trim).find(|c| crate::shortcuts::parse(c) == Some(sc)).unwrap_or_default().to_string();
+                self.note_key(pressed, label);
                 self.run_action(id);
             }
         }
@@ -1223,6 +1229,11 @@ impl MapCraftApp {
                 self.save(true);
             }
             "edit.preferences" => self.dialogs.preferences = true,
+            "edit.open_data_folder" => match self.data_dir.as_deref().map(crate::sdk_manager::open_folder) {
+                Some(Err(e)) => self.status = e,
+                Some(Ok(())) => {}
+                None => self.status = "This system has no data folder.".into(),
+            },
             "file.revert" => match self.session.path.clone() {
                 Some(_) if self.session.is_dirty() => self.dialogs.revert = true,
                 Some(p) => self.open_now(&p),
@@ -1364,6 +1375,10 @@ impl MapCraftApp {
             "help.changelog" => self.open_url = Some(CHANGELOG_URL),
             "file.publish_workshop" => self.open_workshop(),
             "tools.check_problems" => self.check_problems(),
+            "layer.rename" => {
+                let one = self.session.selection.first().copied().filter(|_| self.session.selection.len() == 1);
+                self.rename_in_tree(one);
+            }
             "layer.new" => {
                 let n = self.session.map.nodes().filter(|(_, n)| matches!(n.kind, NodeKind::Layer(_))).count() + 1;
                 if let Err(e) = self.session.create_layer(&format!("Layer {n}")) {
@@ -1412,6 +1427,7 @@ impl MapCraftApp {
             "panel.entities" => self.left_tab = LeftTab::Entities,
             "panel.models" => self.left_tab = LeftTab::Models,
             "panel.shaders" => self.left_tab = LeftTab::Shaders,
+            "panel.history" => self.left_tab = LeftTab::History,
             "panel.output" => self.show_bottom = !self.show_bottom,
             "inspector.smart_edit" => self.smart_edit = !self.smart_edit,
             "shape.next" => {
@@ -1676,6 +1692,7 @@ impl MapCraftApp {
                                 ("panel.entities", "Entities"),
                                 ("panel.models", "Models"),
                                 ("panel.shaders", "Shaders"),
+                                ("panel.history", "History"),
                                 ("panel.output", "Output"),
                             ] {
                                 self.action_button(ui, id, label, true);
@@ -1710,6 +1727,7 @@ impl MapCraftApp {
                         ui.separator();
                         self.action_button(ui, "edit.search", "Search Commands…", true);
                         self.action_button(ui, "edit.preferences", "Preferences…", true);
+                        self.action_button(ui, "edit.open_data_folder", "Open Data Folder", true);
                     }
                 });
             }

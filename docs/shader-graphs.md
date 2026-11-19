@@ -10,6 +10,7 @@ Quitting checks the graph and material documents and offers Save documents, Disc
 Godot shaders live in the map itself, one per node: the World node can carry a sky shader and each brush can carry a spatial shader, so a pond and a sky shader draw at the same time.
 They are saved inside the `.mcmap` (see the `shader` field in [the format reference](mcmap-format.md)), so the map's own save and unsaved state cover them.
 **Tools > Shader > Add Shader**, or **Add shader** in the Brushes section of the inspector, gives the selected brushes a starter spatial shader.
+When brushes in the selection already share a shader, the others get that shader and its parameters instead, which is how one shader goes onto many brushes.
 With no brush selected, or in the World inspector's **Shader** section (**Add sky shader**), it gives the World a starter sky shader.
 **Remove Shader** and **Remove shader** take them off again; every add, remove and edit is an undo step.
 
@@ -20,9 +21,14 @@ Typing in the Script tab writes through to the map; a run of typing undoes as on
 **Import .gdshader** replaces the picked shader with a file's source and **Export .gdshader** writes it to a file.
 Save, Undo and Redo in the Script tab are the map's own.
 
+Brushes with the same source share one shader, in the editor and in the game.
+Edits in the Script tab, **Import .gdshader** and **Remove shader** reach the edited brush and every other selected brush carrying the same source, and the Script tab says how many.
+**Tools > Shader > Select Brushes With Same Shader**, or **Select same shader** in the inspector, selects them all first.
+
 ### Shader parameters
 
-Selecting the World or a single brush with a shader shows a **Shader Parameters** section in the inspector, beside whichever workspace tab is open.
+Selecting the World, a brush with a shader, or several brushes that share one shows a **Shader Parameters** section in the inspector, beside whichever workspace tab is open.
+With several brushes selected an edit sets the parameter on all of them, and a parameter they disagree on shows as mixed.
 It lists the shader's uniforms in source order under foldable `group_uniforms` and `subgroup_uniforms` headers, as Godot's inspector does.
 `hint_range` uniforms are sliders that keep the hint's step, `int` ones whole; other numbers are drag fields, `bool` a checkbox, vectors one drag field per component, and `source_color` a color picker, with alpha for `vec4`.
 A `sampler2D` is a material slot: its button opens the Materials panel, and the bucket button puts the current material in the slot; an empty slot shows the Godot default its hint gives.
@@ -72,7 +78,7 @@ The preview draws `ALBEDO` with simple shading plus `EMISSION`, and ignores `ver
 Up to 8 `sampler2D` uniforms draw: with a material parameter, its albedo; without, Godot's unassigned default for their hint (white, black, transparent or a flat normal).
 `hint_screen_texture` samples the frame drawn before any shaded brush, so refraction and distortion shaders work, though shaded brushes do not see each other through it; `hint_depth_texture` reads black.
 Other sampler types, `#include`, `canvas_item` and `particles` shaders cannot be drawn yet.
-Duplicating a brush keeps its shader; copy and paste does not carry shaders yet.
+Duplicate, Paste Special and copy and paste keep a brush's shader and its parameters.
 
 ## PBR material authoring
 

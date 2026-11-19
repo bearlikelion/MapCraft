@@ -205,6 +205,7 @@ impl crate::app::MapCraftApp {
             return;
         }
         self.project.set_descriptor_values(name, material);
+        self.bake.material_changed(Some(name));
         if let Some(gpu) = &mut self.gpu
             && !gpu.renderer.set_material_values(name, crate::project::surface_values(material))
         {

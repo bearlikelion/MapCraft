@@ -20,7 +20,7 @@ const USAGE: &str = "usage:
   mapcraft-cli info <map.mcmap>
   mapcraft-cli validate <map.mcmap> [--sdk <dir>] [--var name=value]...
   mapcraft-cli fgd <file.fgd>... [--class <name>]
-  mapcraft-cli bake <map.mcmap> [--luxel <units>] [--bounces <n>] [--rays <n>] [--threads <n>]
+  mapcraft-cli bake <map.mcmap> [--luxel <units>] [--bounces <n>] [--rays <n>] [--extra <1|2|4>] [--soft <n>] [--threads <n>]
   mapcraft-cli mcp
   mapcraft-cli sdk <list|check|install|remove|package|new|import-trenchbroom> ...";
 
@@ -165,7 +165,7 @@ fn bake(args: &[String]) -> Result<(), String> {
     let mut overrides: Vec<(&str, f64)> = Vec::new();
     while let Some(a) = it.next() {
         match a.as_str() {
-            flag @ ("--luxel" | "--bounces" | "--rays" | "--threads") => overrides.push((flag, number(it.next())?)),
+            flag @ ("--luxel" | "--bounces" | "--rays" | "--extra" | "--soft" | "--threads") => overrides.push((flag, number(it.next())?)),
             _ => path = Some(a),
         }
     }
@@ -177,6 +177,8 @@ fn bake(args: &[String]) -> Result<(), String> {
             "--luxel" => settings.luxel = v.max(1.0),
             "--bounces" => settings.bounces = v.min(16.0) as u32,
             "--rays" => settings.rays = v.clamp(1.0, 4096.0) as u32,
+            "--extra" => settings.extra = v.clamp(1.0, 4.0) as u32,
+            "--soft" => settings.soft = v.min(8.0) as u32,
             _ => settings.threads = v.min(1024.0) as usize,
         }
     }

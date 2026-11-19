@@ -29,7 +29,7 @@ pub use noise::{FractalType, HeightNoise, NoiseType};
 pub use ops::{ClipKeep, ExtrudeMode, Push, Randomize, Shape, dragged_model_scale, model_scale};
 pub use organize::{class_defaults, entities_of, fill_class_defaults, fill_trigger_materials, find_entities, is_trigger};
 pub use prefab::{expand_instance, flatten, flatten_for_game, prefab_transform};
-pub use session::{MeshFrame, SelectMode, Session, pick_target, whole_object};
+pub use session::{HistoryStep, MeshFrame, SelectMode, Session, pick_target, whole_object};
 pub use shader::{SKY_TEMPLATE, SPATIAL_TEMPLATE};
 pub use terrain::{BlendFill, Falloff, Sculpt, SculptMode};
 pub use uv::{FacePick, FaceTransfer, face_polygons, uv_islands};
@@ -54,6 +54,8 @@ pub enum EngineError {
     Disabled(&'static str),
     #[error("refused: {0}")]
     Refused(&'static str),
+    #[error("cannot undo {step} on its own: {later} changed the same objects after it, so undo that first")]
+    Conflict { step: String, later: String },
     #[error("prefab: {0}")]
     Prefab(String),
     #[error("internal error in `{0}`; the map was kept")]

@@ -62,6 +62,8 @@ pub struct ViewPrefs {
     pub autosave_minutes: u32,
     /// Earlier versions of a map kept in a `backups` folder beside it each time it is saved.
     pub backups: u32,
+    /// How many of the latest edits the History panel lists.
+    pub history_steps: u32,
     pub fly_speed: f64,
     /// Draw each brush in its own color in the 2D views, as Hammer does.
     pub colorize: bool,
@@ -106,6 +108,7 @@ impl Default for ViewPrefs {
             grid: 16.0,
             autosave_minutes: 5,
             backups: 3,
+            history_steps: 50,
             fly_speed: 512.0,
             colorize: true,
             snap_grid: true,

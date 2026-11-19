@@ -2098,3 +2098,52 @@ fn a_fresh_install_offers_sdks_and_opens_the_settings_of_the_one_installed() {
     assert!(h.query_by_label("Add an SDK").is_none(), "the window closes");
     assert!(h.query_by_label("Demo Game SDK Settings").is_some());
 }
+
+#[test]
+fn layers_rename_in_the_scene_tree_with_f2_and_a_double_click() {
+    use std::collections::BTreeSet;
+    let settings = tempfile::tempdir().unwrap();
+    let options = Options { settings_dir: Some(settings.path().to_path_buf()), ..Options::default() };
+    // Frames a 60th of a second apart, so two clicks land within the double-click time.
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).with_step_dt(1.0 / 60.0).wgpu().build_eframe(|cc| MapCraftApp::new(cc, options));
+    h.run_steps(3);
+    let layer = h.state_mut().session_for_test().create_layer("Layer 1").unwrap();
+    h.state_mut().session_for_test().selection = BTreeSet::from([layer]);
+    h.run_steps(3);
+    let name = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(layer).unwrap().kind.label();
+
+    h.key_press(egui::Key::F2);
+    h.run_steps(2);
+    h.event(Event::Text("Course".into()));
+    h.run_steps(2);
+    assert_eq!(name(&mut h), "Layer 1", "nothing is renamed while typing");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(name(&mut h), "Course", "F2 selects the old name, and Enter keeps the new one");
+
+    let row = h.get_all_by_label("Course").map(|n| n.rect()).find(|r| r.right() < 320.0 && r.width() > 200.0).unwrap();
+    h.hover_at(row.center());
+    h.run_steps(1);
+    for pressed in [true, false, true, false] {
+        h.event(Event::PointerButton { pos: row.center(), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    h.event(Event::Text("Hazards".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(name(&mut h), "Hazards", "a double click on the name renames too");
+
+    h.key_press(egui::Key::F2);
+    h.run_steps(2);
+    h.event(Event::Text("Reference".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(name(&mut h), "Hazards", "Escape keeps the old name");
+    assert_eq!(h.state_mut().session_for_test().selection, BTreeSet::from([layer]), "without the editor's Escape, which would deselect");
+    h.event(Event::Text("x".into()));
+    h.run_steps(2);
+    assert_eq!(name(&mut h), "Hazards", "and the field is gone");
+}

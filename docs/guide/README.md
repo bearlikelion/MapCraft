@@ -38,7 +38,7 @@ If you have mapped before, [install MapCraft](installing.md) and read [Getting a
 
 ## Organizing
 
-- [Organizing](organizing.md): selection modes, groups, layers, the scene tree, tags and cordons.
+- [Organizing](organizing.md): selection modes, groups, layers, the scene tree, tags, cordons, and undoing one edit from the History tab.
 - [Mirror groups](mirror-groups.md): build one half of a symmetric map and MapCraft draws the other half.
 - [Prefabs](prefabs.md): reuse a piece of a map across maps.
 

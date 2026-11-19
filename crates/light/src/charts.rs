@@ -104,9 +104,9 @@ impl Chart {
         (clamp(c.x, self.w), clamp(c.y, self.h))
     }
 
-    /// Where luxel (i, j) samples the light and the way the surface faces there: its center, pulled onto the face when the center lies off it.
-    pub fn sample(&self, i: u32, j: u32) -> (DVec3, DVec3) {
-        self.surface_at(inside(&self.polygon, DVec2::new(f64::from(i) + 0.5, f64::from(j) + 0.5)))
+    /// Where chart point `c` samples the light and the way the surface faces there: `c` itself, pulled onto the face when it lies off it.
+    pub fn sample_at(&self, c: DVec2) -> (DVec3, DVec3) {
+        self.surface_at(inside(&self.polygon, c))
     }
 
     /// The surface point and normal over chart point `c`: on the displacement when there is one, else on the face.

@@ -119,6 +119,8 @@ pub struct Lights {
     pub sky: Option<Sky>,
     /// Worldspawn `_minlight`: light no luxel falls below, linear.
     pub minlight: DVec3,
+    /// Worldspawn `_minlight_exclude`: materials whose faces take no minlight.
+    pub minlight_exclude: Vec<String>,
 }
 
 fn numbers(s: &str) -> Vec<f64> {
@@ -161,6 +163,9 @@ pub fn read(map: &Map) -> (Lights, Vec<String>) {
             [v] => DVec3::splat(v / 255.0),
             v => srgb(v).unwrap_or_default() * v.get(3).map_or(1.0, |b| b / 255.0),
         };
+    }
+    if let Some(names) = world.get("_minlight_exclude") {
+        out.minlight_exclude = names.split([',', ';']).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect();
     }
     (out, warnings)
 }

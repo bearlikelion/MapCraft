@@ -40,8 +40,24 @@ pub(crate) struct BakeState {
     queued: bool,
     /// What the last finished native bake did, until the `bake_lighting` tool reports it.
     last: Option<String>,
-    /// Each material's albedo and emission, read once per map.
-    surfaces: std::collections::HashMap<String, mapcraft_light::Surface>,
+    /// Each material's albedo, kept until the material changes.
+    albedo: std::collections::HashMap<String, [f32; 3]>,
+    /// The light each material of the map gave off when its fingerprint was last taken.
+    glow: Glow,
+}
+
+type Glow = std::collections::HashMap<String, [f32; 3]>;
+
+/// `material` as the bake's fingerprint reads it: by the light it gives off.
+fn glowing(glow: &Glow, material: &str) -> mapcraft_light::Surface {
+    mapcraft_light::Surface { emission: glow.get(material).copied().unwrap_or_default(), ..Default::default() }
+}
+
+/// A picture's average color, linear.
+fn average(p: &mapcraft_render::Picture) -> [f32; 3] {
+    let px: Vec<&[u8; 4]> = p.rgba.as_chunks::<4>().0.iter().step_by((p.rgba.len() / 4 / 4096).max(1)).collect();
+    let n = px.len().max(1) as f32;
+    [0, 1, 2].map(|k| px.iter().map(|c| (f32::from(c[k]) / 255.0).powf(2.2)).sum::<f32>() / n)
 }
 
 /// A bake by MapCraft's own baker, running on its own thread.
@@ -56,6 +72,22 @@ struct Native {
 impl BakeState {
     pub(crate) fn changed(&mut self) {
         self.changed = Some(Instant::now());
+    }
+
+    /// Forgets how `material` takes and gives light, or every material with `None`, so the next bake reads it again.
+    pub(crate) fn material_changed(&mut self, material: Option<&str>) {
+        match material {
+            Some(m) => {
+                self.albedo.remove(m);
+                self.glow.remove(m);
+            }
+            None => {
+                self.albedo.clear();
+                self.glow.clear();
+            }
+        }
+        self.print = None;
+        self.changed();
     }
 
     /// Notes the brushes on screen; true while they differ from those the shown bake was made from.
@@ -116,33 +148,50 @@ impl MapCraftApp {
         settings
     }
 
-    /// How a material takes and gives light: its picture's average color, and its emission.
-    fn surface(&mut self, material: &str) -> mapcraft_light::Surface {
-        if let Some(s) = self.bake.surfaces.get(material) {
-            return *s;
+    /// The share of light a material bounces: its picture's average color, kept until the material changes.
+    fn albedo(&mut self, material: &str) -> [f32; 3] {
+        if let Some(a) = self.bake.albedo.get(material) {
+            return *a;
         }
-        let linear = |v: u8| (f32::from(v) / 255.0).powf(2.2);
-        let average = |p: &mapcraft_render::Picture| {
-            let px: Vec<&[u8; 4]> = p.rgba.as_chunks::<4>().0.iter().step_by((p.rgba.len() / 4 / 4096).max(1)).collect();
-            let n = px.len().max(1) as f32;
-            [0, 1, 2].map(|k| px.iter().map(|c| linear(c[k])).sum::<f32>() / n)
-        };
-        let mut surface = mapcraft_light::Surface::default();
-        if let Some(p) = self.project.material_picture(material) {
-            surface.albedo = average(&p).map(|v| v.clamp(0.0, 0.95));
+        let albedo = self.project.material_picture(material).map_or(mapcraft_light::Surface::default().albedo, |p| average(&p).map(|v| v.clamp(0.0, 0.95)));
+        self.bake.albedo.insert(material.to_string(), albedo);
+        albedo
+    }
+
+    /// The light a material gives off: its emission color and picture, at its emission energy.
+    fn read_glow(&self, material: &str) -> [f32; 3] {
+        let Some(m) = self.project.find_material(material) else { return [0.0; 3] };
+        let Some(d) = &m.descriptor else { return [0.0; 3] };
+        let base = m.emission.as_ref().and_then(|path| image::open(path).ok()).map_or([0.0; 3], |i| {
+            let i = i.to_rgba8();
+            average(&mapcraft_render::Picture { width: i.width(), height: i.height(), rgba: i.into_raw() })
+        });
+        [0, 1, 2].map(|k| (base[k] + d.emission[k]) * d.emission_energy)
+    }
+
+    /// The light every material the shown map's faces use gives off, read where `bake.glow` lacks it.
+    fn glows(&self) -> Glow {
+        let mut out = Glow::new();
+        for f in self.view_map().nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces) {
+            if !out.contains_key(&f.material) {
+                let known = self.bake.glow.get(&f.material).copied();
+                out.insert(f.material.clone(), known.unwrap_or_else(|| self.read_glow(&f.material)));
+            }
         }
-        if let Some(m) = self.project.find_material(material)
-            && let Some(d) = &m.descriptor
-        {
-            let glow = m.emission.as_ref().and_then(|path| image::open(path).ok()).map(|i| {
-                let i = i.to_rgba8();
-                average(&mapcraft_render::Picture { width: i.width(), height: i.height(), rgba: i.into_raw() })
-            });
-            let base = glow.unwrap_or([0.0; 3]);
-            surface.emission = [0, 1, 2].map(|k| (base[k] + d.emission[k]) * d.emission_energy);
-        }
-        self.bake.surfaces.insert(material.to_string(), surface);
-        surface
+        out
+    }
+
+    /// [`mapcraft_light::fingerprint`] of the shown map with its materials as they are now.
+    fn light_print(&mut self) -> u64 {
+        self.bake.glow = self.glows();
+        let glow = &self.bake.glow;
+        mapcraft_light::fingerprint(self.view_map(), &|m| glowing(glow, m))
+    }
+
+    /// [`mapcraft_light::bake_fingerprint`] a full bake of the shown map would carry.
+    fn bake_print(&self) -> u64 {
+        let glow = self.glows();
+        mapcraft_light::bake_fingerprint(self.view_map(), &self.full_settings(self.view_map()), &|m| glowing(&glow, m))
     }
 
     /// Bakes the shown map with MapCraft's own baker on a background thread.
@@ -157,12 +206,12 @@ impl MapCraftApp {
         }
         let map = self.view_map().clone();
         let brushes = brush_print(&map);
-        let print = mapcraft_light::fingerprint(&map);
+        let print = self.light_print();
         self.bake.print = Some(print);
-        let names: std::collections::BTreeSet<String> =
-            map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
-        let sizes = self.texture_sizes(names.iter().cloned());
-        let surfaces: std::collections::HashMap<String, mapcraft_light::Surface> = names.into_iter().map(|n| (n.clone(), self.surface(&n))).collect();
+        let glow = self.bake.glow.clone();
+        let sizes = self.texture_sizes(glow.keys().cloned());
+        let surfaces: std::collections::HashMap<String, mapcraft_light::Surface> =
+            glow.into_iter().map(|(n, emission)| (n.clone(), mapcraft_light::Surface { albedo: self.albedo(&n), emission })).collect();
         let see_through = self.session.see_through.clone();
         let mut settings = self.full_settings(&map);
         if !manual {
@@ -171,6 +220,7 @@ impl MapCraftApp {
             settings.rays = settings.rays.min(8);
             settings.bounces = settings.bounces.min(1);
             settings.sun_samples = settings.sun_samples.min(2);
+            settings.extra = 1;
         }
 
         let progress = Arc::new(mapcraft_light::Progress::default());
@@ -217,7 +267,7 @@ impl MapCraftApp {
         };
         self.output.extend(warnings.into_iter().map(|w| format!("Lighting: {w}")));
         self.bake.shown_print = Some(native.print);
-        self.bake.lighting_stale = self.bake.shown_print != Some(mapcraft_light::fingerprint(self.view_map()));
+        self.bake.lighting_stale = Some(self.light_print()) != self.bake.shown_print;
         self.bake.shown = Some(native.brushes);
         self.show_bake(Some(&bake));
         if native.manual {
@@ -243,8 +293,7 @@ impl MapCraftApp {
     pub(crate) fn saved_bake_current(&self, path: &std::path::Path) -> bool {
         let mut header = [0u8; 16];
         let read = std::fs::File::open(path.with_extension("mclight")).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut header));
-        let full = self.full_settings(self.view_map());
-        read.is_ok() && mapcraft_light::fingerprint_of(&header) == Some(mapcraft_light::bake_fingerprint(self.view_map(), &full))
+        read.is_ok() && mapcraft_light::fingerprint_of(&header) == Some(self.bake_print())
     }
 
     /// Drops a compile that was waiting on a bake that did not finish.
@@ -331,16 +380,19 @@ impl MapCraftApp {
         if self.bake.map != self.session.path {
             self.bake.map = self.session.path.clone();
             self.bake.baked = None;
-            self.bake.surfaces.clear();
+            self.bake.albedo.clear();
+            self.bake.glow.clear();
             self.bake.print = None;
             self.bake.shown_print = None;
             self.show_bake(None);
             self.load_saved_bake();
         }
         // A draft of a map that has changed since is wasted work, and slows the editor while it runs.
+        let draft = self.bake.native.as_ref().is_some_and(|n| !n.manual && !n.progress.cancel.load(Ordering::Relaxed));
         if self.bake.changed.is_some()
-            && let Some(n) = self.bake.native.as_ref().filter(|n| !n.manual && !n.progress.cancel.load(Ordering::Relaxed))
-            && self.bake.print != Some(mapcraft_light::fingerprint(self.view_map()))
+            && draft
+            && Some(self.light_print()) != self.bake.print
+            && let Some(n) = &self.bake.native
         {
             n.progress.cancel.store(true, Ordering::Relaxed);
         }
@@ -351,7 +403,7 @@ impl MapCraftApp {
             if !self.prefs.get().view.auto_bake {
                 // Without automatic bakes, edits only mark the lighting out of date.
                 if self.bake.changed.take().is_some() || self.bake.shown_print.is_none() {
-                    self.bake.lighting_stale = self.bake.shown_print != Some(mapcraft_light::fingerprint(self.view_map()));
+                    self.bake.lighting_stale = Some(self.light_print()) != self.bake.shown_print;
                 }
                 return;
             }
@@ -367,7 +419,7 @@ impl MapCraftApp {
                 _ if wanted => {
                     self.bake.changed = None;
                     // Selecting and other edits that leave what the bake reads alone need no new bake.
-                    if self.bake.print != Some(mapcraft_light::fingerprint(self.view_map())) {
+                    if Some(self.light_print()) != self.bake.print {
                         self.start_native_bake(false);
                     }
                 }
@@ -432,8 +484,8 @@ impl MapCraftApp {
                 return;
             }
         };
-        let print = mapcraft_light::fingerprint(self.view_map());
-        if lightmap.fingerprint != mapcraft_light::bake_fingerprint(self.view_map(), &self.full_settings(self.view_map())) {
+        let print = self.light_print();
+        if lightmap.fingerprint != self.bake_print() {
             return;
         }
         let names: Vec<String> = self.view_map().nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| b.faces.iter().map(|f| f.material.clone())).collect();
@@ -586,4 +638,25 @@ fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collectio
         .map(|texels| Picture { width: lm.size, height: lm.size, rgba: texels.iter().flat_map(|t| t.to_le_bytes()).collect() })
         .collect();
     Bake { parts: parts.into_values().collect(), lightmaps, linear: true }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_material_is_read_again_by_the_next_bake() {
+        let mut bake = BakeState::default();
+        for name in ["lamp", "wall"] {
+            bake.albedo.insert(name.into(), [0.5; 3]);
+            bake.glow.insert(name.into(), [1.0; 3]);
+        }
+        bake.print = Some(7);
+        bake.material_changed(Some("lamp"));
+        assert!(!bake.glow.contains_key("lamp") && !bake.albedo.contains_key("lamp"));
+        assert!(bake.glow.contains_key("wall"), "other materials keep what was read");
+        assert!(bake.print.is_none() && bake.changed.is_some(), "and the Lit view bakes again");
+        bake.material_changed(None);
+        assert!(bake.glow.is_empty() && bake.albedo.is_empty());
+    }
 }

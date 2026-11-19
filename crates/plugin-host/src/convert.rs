@@ -366,7 +366,7 @@ fn tex_axis(a: &t::TexAxis) -> Option<TexAxis> {
 }
 
 fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, budget: &mut usize, flat: &mut usize) -> Vec<Fragment> {
-    let leaf = |kind| Fragment { kind, children: Vec::new(), hidden: false };
+    let leaf = |kind| Fragment { kind, children: Vec::new(), hidden: false, shader: None };
     let take = |n: &mut usize| {
         *n > 0 && {
             *n -= 1;
@@ -395,7 +395,7 @@ fn contents(brushes: Vec<t::Brush>, entities: Vec<t::Entity>, ctx: &Context, bud
         ent.properties = e.properties;
         ent.connections = e.connections.into_iter().take(MAX_NODES).map(connection).collect();
         let children = e.brushes.into_iter().take(MAX_NODES).filter_map(|b| brush(b, ctx, flat)).map(|b| leaf(NodeKind::Brush(b))).collect();
-        frags.push(Fragment { kind: NodeKind::Entity(ent), children, hidden: false });
+        frags.push(Fragment { kind: NodeKind::Entity(ent), children, hidden: false, shader: None });
     }
     frags
 }
@@ -407,7 +407,7 @@ pub(crate) fn output(out: t::Output, ctx: &Context) -> (Vec<Fragment>, usize) {
     for g in out.groups {
         let children = contents(g.brushes, g.entities, ctx, &mut budget, &mut flat);
         if !children.is_empty() {
-            frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children, hidden: g.hidden });
+            frags.push(Fragment { kind: NodeKind::Group(Group { name: g.name, ..Group::default() }), children, hidden: g.hidden, shader: None });
         }
     }
     (frags, flat)

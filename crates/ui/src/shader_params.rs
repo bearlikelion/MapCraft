@@ -62,13 +62,19 @@ fn number(scalar: &str, n: f64) -> Value {
 /// The edit a row asks for: a new value, or `None` to return to the default.
 type RowEdit = Option<Option<Value>>;
 
-fn uniform_row(ui: &mut Ui, app: &mut MapCraftApp, u: &Uniform, stored: Option<&Value>) -> RowEdit {
+fn uniform_row(ui: &mut Ui, app: &mut MapCraftApp, u: &Uniform, stored: Option<&Value>, mixed: bool) -> RowEdit {
     let label = title(&u.name);
     let prop = Prop {
         label: &label,
         key: &u.name,
         tip: &u.ty,
-        val: if stored.is_some() { Val::Set } else { Val::Default },
+        val: if mixed {
+            Val::Mixed
+        } else if stored.is_some() {
+            Val::Set
+        } else {
+            Val::Default
+        },
         slot: if stored.is_some() { Slot::Revert } else { Slot::None },
         ..Default::default()
     };
@@ -203,8 +209,9 @@ fn uniform_row(ui: &mut Ui, app: &mut MapCraftApp, u: &Uniform, stored: Option<&
 }
 
 impl MapCraftApp {
-    /// Godot-style rows for the uniforms of `id`'s embedded shader, grouped by `group_uniforms`.
-    pub(crate) fn shader_params_section(&mut self, ui: &mut Ui, id: NodeId) {
+    /// Godot-style rows for the uniforms of the embedded shader the nodes of `ids` share, grouped by `group_uniforms`; edits reach them all.
+    pub(crate) fn shader_params_section(&mut self, ui: &mut Ui, ids: &[NodeId]) {
+        let Some(&id) = ids.first() else { return };
         let Some(source) = self.session.map.get(id).and_then(|n| n.shader.clone()) else { return };
         let uniforms = mapcraft_render::uniforms(&source);
         let section = Section { key: "shader.params", title: "Shader Parameters", badge: uniforms.len().to_string(), ..Default::default() };
@@ -219,8 +226,10 @@ impl MapCraftApp {
         for (top, subs) in grouped(uniforms) {
             let mut rows = |ui: &mut Ui, app: &mut Self, list: &[Uniform]| {
                 for u in list {
-                    let stored = app.session.map.get(id).and_then(|n| n.shader_params.get(&u.name)).cloned();
-                    if let Some(edit) = ui.push_id(("shader-param", &u.name), |ui| uniform_row(ui, app, u, stored.as_ref())).inner {
+                    let value = |id: &NodeId| app.session.map.get(*id).and_then(|n| n.shader_params.get(&u.name));
+                    let stored = value(&id).cloned();
+                    let mixed = ids.iter().any(|other| value(other) != stored.as_ref());
+                    if let Some(edit) = ui.push_id(("shader-param", &u.name), |ui| uniform_row(ui, app, u, stored.as_ref(), mixed)).inner {
                         edits.push((u.name.clone(), edit));
                     }
                 }
@@ -244,7 +253,7 @@ impl MapCraftApp {
             }
         }
         for (name, value) in edits {
-            if let Err(e) = self.session.set_shader_param(id, &name, value) {
+            if let Err(e) = self.session.set_shader_param(ids, &name, value) {
                 self.status = e.to_string();
             }
             self.mark_changed();

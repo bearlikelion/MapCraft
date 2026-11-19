@@ -78,6 +78,8 @@ SDKs you install or create in the SDK Manager go into the `sdks` folder of MapCr
 | Windows | `%LOCALAPPDATA%\mapcraft\sdks` |
 | macOS | `~/Library/Application Support/mapcraft/sdks` |
 
+**Edit > Open Data Folder** shows the data folder in your file manager.
+
 To use SDKs kept somewhere else, open **Edit > Preferences** (`Ctrl+Comma`) and add the folder that holds them under **Extra SDK folders**.
 Clicking **Add folder…**, or the trash can button (**Remove this folder**) next to a folder, rescans right away.
 

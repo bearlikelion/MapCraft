@@ -3,9 +3,19 @@
 
 @SolidClass = worldspawn : "World"
 [
-	_lightmap_scale(float) : "Lightmap scale" : "64" : "World units per luxel of baked lighting; smaller is sharper but slower to bake and larger in the game, which takes at most 64 MB of it. A face's own lightmap scale wins."
+	_lightmap_scale(float) : "Lightmap scale" : "64" : "World units per luxel of baked lighting, not a texture size: 16 is sharp, 64 is soft and 1 is the smallest. Smaller is slower to bake and larger in the game, which takes at most 64 MB of it. A face's own lightmap scale wins."
+	_lightmap_extra(choices) : "Lightmap samples" : 1 : "Samples baked per luxel and averaged, for smoother shadow edges at the cost of bake time. Automatic bakes always take one." = [ 1 : "1" 2 : "2 x 2" 4 : "4 x 4" ]
+	_lightmap_soft(integer) : "Lightmap softening" : 0 : "Luxels on every side each baked luxel is averaged with, 0 to 8, which blurs shadow edges."
 	_bounce(integer) : "Light bounces" : 1 : "How many times baked light bounces off surfaces, 0 to 16."
+	_lightmap_bias(float) : "Lightmap bias" : "0.5" : "How far off a surface baked light is measured, in world units; raise it when baked surfaces show dark specks or stripes, lower it when light leaks through thin brushes."
+	_bouncecolorscale(float) : "Bounce color" : "1" : "How much of a surface's color tints the light it bounces, from 0 (none) to 1 (all of it)."
+	_dirt(boolean) : "Dirt" : 0 : "Darkens corners and crevices in baked lighting (ambient occlusion)."
+	_dirtdepth(float) : "Dirt depth" : "128" : "How far a surface looks for what crowds it, in world units."
+	_dirtscale(float) : "Dirt scale" : "1" : "Dirt's strength: 0.5 is fainter, 2 is much darker."
+	_dirtgain(float) : "Dirt gain" : "1" : "Lower values darken dirt and stretch it further from corners."
+	_dirtangle(float) : "Dirt angle" : "88" : "The cone dirt is measured over, 1 to 90 degrees; lower it to keep dirt off arches and the insides of pipes."
 	_minlight(color255) : "Minimum light" : "0 0 0 0" : "Color and brightness no baked surface falls below."
+	_minlight_exclude(string) : "Minimum light exclude" : "" : "Materials whose faces take no minimum light, separated by commas."
 ]
 
 @BaseClass = Targetname
@@ -24,7 +34,7 @@
 
 @PointClass size(-16 -16 -16, 16 16 16) color(255 255 128) = light_environment : "Sun, sky and fog for the whole map; a WorldEnvironment and a DirectionalLight3D in Godot."
 [
-	angles(angle) : "Sun direction (Pitch Yaw Roll)" : "50 135 0" : "The way the sunlight travels; pitch is degrees below the horizon."
+	angles(angle) : "Sun direction (Pitch Yaw Roll)" : "50 135 0" : "Pitch is the height of the sun above the horizon in degrees, 90 being straight overhead; yaw is the way its light travels across the map."
 	sun_color(color255) : "Sun color" : "255 245 230"
 	sun_energy(float) : "Sun brightness" : "1"
 	sun_spread(float) : "Sun size" : "0.5" : "Degrees across the sun's disk; bigger softens baked shadows."

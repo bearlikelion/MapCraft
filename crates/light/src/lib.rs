@@ -43,18 +43,45 @@ pub struct Settings {
     pub rays: u32,
     /// Shadow rays toward the sun per luxel, spread over its disk.
     pub sun_samples: u32,
+    /// Rays start this far off the face along its normal, in map units, so they never hit the face they leave.
+    pub bias: f64,
+    /// Samples along each side of a luxel, averaged: 1, 2 or 4.
+    pub extra: u32,
+    /// Luxels on every side each baked luxel is averaged with, at most 8.
+    pub soft: u32,
+    /// How much of a material's color tints the light it bounces, 0 to 1.
+    pub bounce_color: f64,
+    pub dirt: Option<Dirt>,
     /// Worker threads; 0 uses every core.
     pub threads: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { luxel: 32.0, slice: 2048, bounces: 1, rays: 32, sun_samples: 8, threads: 0 }
+        Self { luxel: 32.0, slice: 2048, bounces: 1, rays: 32, sun_samples: 8, bias: 0.5, extra: 1, soft: 0, bounce_color: 1.0, dirt: None, threads: 0 }
+    }
+}
+
+/// Dirt: ambient occlusion that darkens corners and crevices.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dirt {
+    /// How far a luxel looks for what crowds it, in map units.
+    pub depth: f64,
+    pub scale: f64,
+    /// The exponent on the occlusion; below 1 darkens and reaches further from corners.
+    pub gain: f64,
+    /// Degrees from the face's normal the occlusion rays spread over.
+    pub angle: f64,
+}
+
+impl Default for Dirt {
+    fn default() -> Self {
+        Self { depth: 128.0, scale: 1.0, gain: 1.0, angle: 88.0 }
     }
 }
 
 impl Settings {
-    /// These settings with worldspawn's `_lightmap_scale` and `_bounce` applied.
+    /// These settings with worldspawn's bake keys applied.
     pub fn for_map(mut self, map: &Map) -> Self {
         let world = map.world();
         let num = |k: &str| world.get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
@@ -63,6 +90,27 @@ impl Settings {
         }
         if let Some(v) = num("_bounce").filter(|v| *v >= 0.0) {
             self.bounces = v.min(16.0) as u32;
+        }
+        if let Some(v) = num("_lightmap_bias").filter(|v| *v > 0.0) {
+            self.bias = v.min(64.0);
+        }
+        if let Some(v) = num("_lightmap_extra") {
+            self.extra = v.clamp(1.0, 4.0) as u32;
+        }
+        if let Some(v) = num("_lightmap_soft").filter(|v| *v >= 0.0) {
+            self.soft = v.min(8.0) as u32;
+        }
+        if let Some(v) = num("_bouncecolorscale") {
+            self.bounce_color = v.clamp(0.0, 1.0);
+        }
+        if let Some(on) = num("_dirt") {
+            let d = Dirt::default();
+            self.dirt = (on > 0.0).then(|| Dirt {
+                depth: num("_dirtdepth").filter(|v| *v > 0.0).map_or(d.depth, |v| v.clamp(1.0, 4096.0)),
+                scale: num("_dirtscale").filter(|v| *v >= 0.0).map_or(d.scale, |v| v.min(16.0)),
+                gain: num("_dirtgain").filter(|v| *v > 0.0).map_or(d.gain, |v| v.clamp(0.01, 16.0)),
+                angle: num("_dirtangle").filter(|v| *v > 0.0).map_or(d.angle, |v| v.clamp(1.0, 90.0)),
+            });
         }
         self
     }
@@ -198,20 +246,29 @@ impl Fnv {
 
 /// What a bake's file records: [`fingerprint`] of the map with the settings it was baked at, so a change to either
 /// marks the saved bake out of date.
-pub fn bake_fingerprint(map: &Map, settings: &Settings) -> u64 {
-    let mut h = Fnv(fingerprint(map));
+pub fn bake_fingerprint(map: &Map, settings: &Settings, surface: &dyn Fn(&str) -> Surface) -> u64 {
+    let mut h = Fnv(fingerprint(map, surface));
     h.bytes(b"bands on Godot's axes");
     h.bytes(b"displacements lightmapped");
+    h.bytes(b"buried luxels mended");
+    h.f64(settings.bias);
     h.f64(settings.luxel);
     h.bytes(&settings.slice.to_le_bytes());
     h.bytes(&settings.bounces.to_le_bytes());
     h.bytes(&settings.rays.to_le_bytes());
     h.bytes(&settings.sun_samples.to_le_bytes());
+    h.bytes(&settings.extra.to_le_bytes());
+    h.bytes(&settings.soft.to_le_bytes());
+    h.f64(settings.bounce_color);
+    if let Some(d) = settings.dirt {
+        h.bytes(b"dirt");
+        [d.depth, d.scale, d.gain, d.angle].into_iter().for_each(|v| h.f64(v));
+    }
     h.0
 }
 
-/// A fingerprint of everything a bake reads: brush faces and their materials, light entities and worldspawn.
-pub fn fingerprint(map: &Map) -> u64 {
+/// A fingerprint of everything a bake reads: brush faces, their materials and the light `surface` says those give off, light entities and worldspawn.
+pub fn fingerprint(map: &Map, surface: &dyn Fn(&str) -> Surface) -> u64 {
     let mut h = Fnv(0xCBF2_9CE4_8422_2325);
     for (id, node) in map.nodes() {
         match &node.kind {
@@ -220,6 +277,8 @@ pub fn fingerprint(map: &Map) -> u64 {
                 for f in &b.faces {
                     f.points.iter().flat_map(|p| p.to_array()).for_each(|v| h.f64(v));
                     h.str(&f.material);
+                    // Albedo is left out: it follows pictures that can load late, so it differs between sessions.
+                    surface(&f.material).emission.iter().for_each(|v| h.bytes(&v.to_bits().to_le_bytes()));
                     h.str(f.attrs.get("lightmapscale").map_or("", String::as_str));
                 }
             }

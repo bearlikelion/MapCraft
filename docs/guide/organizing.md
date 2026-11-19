@@ -39,7 +39,7 @@ Groups keep pieces that belong together, such as the brushes of one ramp, so you
 2. Press `Ctrl+G` (**Tools > Group**, or **Group the selection**, the group frame icon above the scene tree).
 
 The new group is named Group, sits where the first selected object was, and ends up selected.
-Rename it by typing a new name into the inspector's header.
+Rename it by pressing `F2`, or by typing a new name into the inspector's header.
 
 `Ctrl+U` (**Tools > Ungroup**) breaks the selected groups apart; their contents stay selected.
 
@@ -93,7 +93,8 @@ They sit right under the world and hold groups, entities, brushes and prefabs.
 They cannot be nested.
 
 - **New Layer**, the **+** above the scene tree (`Ctrl+Shift+N`), adds a numbered layer and makes it where new objects go.
-- Rename a layer by typing into the inspector's header.
+- Rename a layer by double clicking its name in the scene tree, by selecting it and pressing `F2`, or by typing into the inspector's header.
+  `Enter` keeps the new name and `Escape` keeps the old one.
 - Turn on the **Leave out of exports** switch to keep a layer out of Godot and the compiles, for reference pieces or work in progress.
 - Each import lands in a layer of its own.
 
@@ -235,3 +236,34 @@ The cordon turns on and shows as a blue box; only what touches it stays visible.
 > [!WARNING]
 > Cordons are saved with the map, and the Godot addon leaves out everything outside an active cordon.
 > Turn cordons off before you build the map for the game.
+
+## Undo and the History tab
+
+`Ctrl+Z` undoes the last edit, and `Ctrl+Shift+Z` or `Ctrl+Y` brings it back.
+
+### Undo in the selection
+
+Spotted a mistake in something you built a while ago?
+Select it and press `Ctrl+Alt+Z` (**Edit > Undo in Selection**) to undo the last edit to the selected objects only.
+Everything you did to other objects since then stays.
+
+- Press it again to step further back through the selection's own edits.
+- `Ctrl+Alt+Shift+Z` or `Ctrl+Alt+Y` (**Edit > Redo in Selection**) brings them back, until you edit the selection again.
+- Selecting a group or an entity covers everything inside it.
+- When an edit changed several objects, only the selected ones go back.
+- An edit that made, deleted, grouped or reparented the selected objects is undone whole, for every object it touched.
+- If that removes the object itself, **Redo in Selection** still brings it back, selected.
+
+### The History tab
+
+The **History** tab (`Ctrl+8`, the clock) lists your latest edits, newest first.
+Each row has two arrows: the first undoes that edit on its own, and the second brings it back.
+An undone edit stays in the list, crossed out.
+
+- Edits you took back with `Ctrl+Z` are crossed out at the top; bringing one back also brings back the crossed out ones below it.
+- Undoing one edit this way is an edit itself, so `Ctrl+Z` takes it back.
+- **History steps** in **Edit > Preferences** sets how many edits the tab lists, 50 to start with.
+
+> [!NOTE]
+> MapCraft will not undo an edit on its own when a later edit changed the same thing, such as a brush that was made and then moved.
+> The status bar names the later edit: undo that one first.

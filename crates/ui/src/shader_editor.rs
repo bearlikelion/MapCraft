@@ -324,7 +324,7 @@ impl ShaderEditor {
             if step {
                 session.end_coalesce();
             }
-            match session.set_shader(id, source) {
+            match session.set_shader(&session.shader_peers(id), source) {
                 Ok(()) => status.clear(),
                 Err(e) => *status = e.to_string(),
             }
@@ -372,7 +372,8 @@ impl ShaderEditor {
                 write(session, None, false, &mut self.status);
                 out.changed = true;
             }
-            ui.colored_label(crate::chrome::TEXT_WEAK, shader_name(&session.map, id));
+            let (name, peers) = (shader_name(&session.map, id), session.shader_peers(id).len());
+            ui.colored_label(crate::chrome::TEXT_WEAK, if peers > 1 { format!("{name} and {} more selected", peers - 1) } else { name });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.colored_label(crate::chrome::TEXT_WEAK, format!("Ln {}, Col {}", self.cursor_position[0].max(1), self.cursor_position[1].max(1)));
             });

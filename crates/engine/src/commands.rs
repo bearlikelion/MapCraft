@@ -22,6 +22,10 @@ fn has_selection(s: &Session) -> bool {
     !s.selection.is_empty()
 }
 
+fn can_undo_selection(s: &Session) -> bool {
+    has_selection(s) && s.can_undo()
+}
+
 fn has_faces(s: &Session) -> bool {
     !s.face_selection.is_empty()
 }
@@ -58,12 +62,28 @@ const COMMANDS: &[CommandSpec] = &[
         id: "edit.redo",
         label: "Redo",
         menu: "Edit/Redo",
-        shortcut: Some("Ctrl+Shift+Z"),
+        shortcut: Some("Ctrl+Shift+Z, Ctrl+Y"),
         enabled: Session::can_redo,
         run: |s| {
             s.redo();
             Ok(())
         },
+    },
+    CommandSpec {
+        id: "edit.undo_selection",
+        label: "Undo in Selection",
+        menu: "Edit/Undo in Selection",
+        shortcut: Some("Ctrl+Alt+Z"),
+        enabled: can_undo_selection,
+        run: Session::undo_selection,
+    },
+    CommandSpec {
+        id: "edit.redo_selection",
+        label: "Redo in Selection",
+        menu: "Edit/Redo in Selection",
+        shortcut: Some("Ctrl+Alt+Shift+Z, Ctrl+Alt+Y"),
+        enabled: Session::can_undo,
+        run: Session::redo_selection,
     },
     CommandSpec { id: "edit.delete", label: "Delete", menu: "Edit/Delete", shortcut: Some("Delete"), enabled: has_selection, run: Session::delete_selection },
     CommandSpec {
@@ -210,6 +230,14 @@ const COMMANDS: &[CommandSpec] = &[
         shortcut: None,
         enabled: Session::can_remove_shader,
         run: Session::remove_shader,
+    },
+    CommandSpec {
+        id: "shader.select_same",
+        label: "Select Brushes With Same Shader",
+        menu: "Tools/Shader/Select Brushes With Same Shader",
+        shortcut: None,
+        enabled: Session::can_select_same_shader,
+        run: Session::select_same_shader,
     },
     CommandSpec { id: "tools.carve", label: "Carve", menu: "Tools/Carve", shortcut: Some("Ctrl+Shift+C"), enabled: has_selection, run: Session::carve },
     CommandSpec {

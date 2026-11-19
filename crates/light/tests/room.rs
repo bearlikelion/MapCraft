@@ -43,13 +43,32 @@ fn light(map: &mut Map, at: DVec3, keys: &[(&str, &str)]) {
 }
 
 fn run(map: &Map, settings: &Settings) -> Lightmap {
-    let (lm, warnings) = bake(map, &|_| Surface::default(), &BTreeSet::new(), settings, &Progress::default()).unwrap();
+    run_with(map, settings, &|_| Surface::default())
+}
+
+fn run_with(map: &Map, settings: &Settings, surface: &(dyn Fn(&str) -> Surface + Sync)) -> Lightmap {
+    let (lm, warnings) = bake(map, surface, &BTreeSet::new(), settings, &Progress::default()).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     lm
 }
 
+fn world(map: &mut Map, keys: &[(&str, &str)]) {
+    let mut world = Entity::new("worldspawn");
+    for (k, v) in keys {
+        world.set(*k, *v);
+    }
+    let mut e = map.edit();
+    e.set_kind(ROOT, NodeKind::World(world)).unwrap();
+    let changes = e.finish();
+    map.apply(changes);
+}
+
 /// What Godot shows at world point `p` on the face of `node` facing `normal`.
 fn seen(lm: &Lightmap, map: &Map, node: NodeId, normal: DVec3, p: DVec3) -> f64 {
+    color(lm, map, node, normal, p).x
+}
+
+fn color(lm: &Lightmap, map: &Map, node: NodeId, normal: DVec3, p: DVec3) -> DVec3 {
     let b = map.get(node).unwrap().kind.brush().unwrap();
     let face = b.faces.iter().position(|f| f.plane().unwrap().normal.abs_diff_eq(normal, 1e-6)).unwrap();
     let f = lm.face(node, face).unwrap_or_else(|| panic!("no lightmap for face {face} of {node:?}"));
@@ -59,11 +78,11 @@ fn seen(lm: &Lightmap, map: &Map, node: NodeId, normal: DVec3, p: DVec3) -> f64 
     let slice = &lm.slices[f.slice as usize];
     let at = y * lm.size as usize + x;
     let texels = std::array::from_fn(|k| rgbe::decode(slice.layers[k][at]));
-    shade(&texels, normal).x
+    shade(&texels, normal)
 }
 
 fn direct_only() -> Settings {
-    Settings { luxel: 8.0, slice: 512, bounces: 0, rays: 8, sun_samples: 1, threads: 2 }
+    Settings { luxel: 8.0, slice: 512, bounces: 0, rays: 8, sun_samples: 1, threads: 2, ..Settings::default() }
 }
 
 #[test]
@@ -157,4 +176,150 @@ fn a_displaced_ridge_is_lightmapped_and_casts_a_shadow() {
     let shaded = seen(&lm, &map, floor, DVec3::Z, DVec3::new(160.0, 0.0, 16.0));
     assert!(lit > 0.05, "the side facing the light {lit}");
     assert!(shaded < lit * 0.05, "behind the ridge {shaded} vs {lit}");
+}
+
+#[test]
+fn a_box_on_the_floor_leaves_no_dark_fringe() {
+    let mut map = Map::new();
+    let floor = add(&mut map, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0)), &tex())));
+    add(&mut map, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-30.0, -30.0, 0.0), DVec3::new(30.0, 30.0, 64.0)), &tex())));
+    let mut sun = Entity::new("light_environment");
+    sun.set("angles", "90 0 0");
+    add(&mut map, NodeKind::Entity(sun));
+    let lm = run(&map, &Settings { luxel: 16.0, ..direct_only() });
+    let open = seen(&lm, &map, floor, DVec3::Z, DVec3::new(-100.0, 0.0, 0.0));
+    // This luxel's center lies under the box, yet it also covers the open floor beside it.
+    let beside = seen(&lm, &map, floor, DVec3::Z, DVec3::new(-31.0, 0.0, 0.0));
+    assert!(open > 0.9, "open floor under a noon sun: {open}");
+    assert!((beside - open).abs() < 0.05, "beside the box {beside} vs {open}");
+}
+
+#[test]
+fn worldspawn_sets_the_ray_bias() {
+    let mut map = Map::new();
+    let mut world = Entity::new("worldspawn");
+    world.set("_lightmap_bias", "2");
+    let mut e = map.edit();
+    e.set_kind(ROOT, NodeKind::World(world)).unwrap();
+    let changes = e.finish();
+    map.apply(changes);
+    assert_eq!(Settings::default().for_map(&map).bias, 2.0);
+    assert_eq!(Settings::default().for_map(&Map::new()).bias, 0.5);
+}
+
+#[test]
+fn dirt_darkens_a_corner_and_leaves_the_open_floor() {
+    let mut map = Map::new();
+    let walls = room(&mut map, DVec3::new(-256.0, -256.0, 0.0), DVec3::new(256.0, 256.0, 256.0));
+    light(&mut map, DVec3::new(0.0, 0.0, 128.0), &[("_light", "255 255 255 255")]);
+    let settings = Settings { rays: 32, ..direct_only() };
+    let clean = run(&map, &settings);
+    world(&mut map, &[("_dirt", "1")]);
+    let dirty = run(&map, &settings.for_map(&map));
+    let (corner, middle) = (DVec3::new(-244.0, -244.0, 0.0), DVec3::new(4.0, 4.0, 0.0));
+    let at = |lm: &Lightmap, p: DVec3| seen(lm, &map, walls[0], DVec3::Z, p);
+    assert!(at(&clean, corner) > 0.01, "the corner is lit: {}", at(&clean, corner));
+    assert!(at(&dirty, corner) < at(&clean, corner) * 0.8, "dirt in the corner: {} vs {}", at(&dirty, corner), at(&clean, corner));
+    assert!((at(&dirty, middle) - at(&clean, middle)).abs() < 0.01, "none in the open: {} vs {}", at(&dirty, middle), at(&clean, middle));
+}
+
+/// A floor under a noon sun with a slab floating over it, whose shadow ends at x = 4.
+fn shadow_edge() -> (Map, NodeId) {
+    let mut map = Map::new();
+    let floor = add(&mut map, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-256.0, -256.0, -16.0), DVec3::new(256.0, 256.0, 0.0)), &tex())));
+    add(&mut map, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-64.0, -128.0, 64.0), DVec3::new(4.0, 128.0, 80.0)), &tex())));
+    let mut sun = Entity::new("light_environment");
+    sun.set("angles", "90 0 0");
+    sun.set("ambient_energy", "0");
+    add(&mut map, NodeKind::Entity(sun));
+    (map, floor)
+}
+
+#[test]
+fn extra_samples_shade_a_luxel_the_shadow_edge_crosses() {
+    let (map, floor) = shadow_edge();
+    let edge = |extra: u32| {
+        let lm = run(&map, &Settings { luxel: 16.0, extra, ..direct_only() });
+        let at = |x: f64| seen(&lm, &map, floor, DVec3::Z, DVec3::new(x, 8.0, 0.0));
+        (at(100.0), at(8.0))
+    };
+    let (open, one) = edge(1);
+    assert!((one - open).abs() < 0.05, "one sample at the luxel's center is in the sun: {one} vs {open}");
+    let (open, sixteen) = edge(4);
+    assert!(sixteen > open * 0.6 && sixteen < open * 0.9, "a quarter of the luxel is in shadow: {sixteen} vs {open}");
+}
+
+#[test]
+fn soft_blends_a_shadow_edge_into_its_neighbors() {
+    let (map, floor) = shadow_edge();
+    let edge = |soft: u32| {
+        let lm = run(&map, &Settings { luxel: 16.0, soft, ..direct_only() });
+        let at = |x: f64| seen(&lm, &map, floor, DVec3::Z, DVec3::new(x, 8.0, 0.0));
+        (at(100.0), at(-8.0))
+    };
+    let (open, hard) = edge(0);
+    assert!(hard < open * 0.05, "the luxel inside the shadow: {hard} vs {open}");
+    let (open, soft) = edge(1);
+    assert!(soft > open * 0.2 && soft < open * 0.45, "a third of its neighbors are lit: {soft} vs {open}");
+}
+
+#[test]
+fn bounce_color_scale_takes_the_floor_s_color_out_of_the_bounce() {
+    let mut map = Map::new();
+    let walls = room(&mut map, DVec3::new(-256.0, -256.0, 0.0), DVec3::new(256.0, 256.0, 256.0));
+    let mut e = Entity::new("light_spot");
+    e.set("origin", "0 0 200");
+    e.set("_light", "255 255 255 2000");
+    e.set("angles", "-90 0 0");
+    add(&mut map, NodeKind::Entity(e));
+    let ceiling = |bounce_color: f64| {
+        let settings = Settings { bounces: 1, rays: 64, bounce_color, ..direct_only() };
+        let lm = run_with(&map, &settings, &|_| Surface { albedo: [0.8, 0.1, 0.1], emission: [0.0; 3] });
+        color(&lm, &map, walls[1], -DVec3::Z, DVec3::new(100.0, 100.0, 256.0))
+    };
+    let red = ceiling(1.0);
+    assert!(red.x > red.y * 4.0, "a red floor bounces red: {red}");
+    let gray = ceiling(0.0);
+    assert!(gray.x > 0.005 && (gray.x - gray.y).abs() < gray.x * 0.1, "and gray with no color kept: {gray}");
+}
+
+#[test]
+fn minlight_skips_excluded_materials() {
+    let mut map = Map::new();
+    let walls = room(&mut map, DVec3::new(-128.0, -128.0, 0.0), DVec3::new(128.0, 128.0, 128.0));
+    let dark = TexDefaults { material: "dev/Dark".into(), scale: 1.0 };
+    let block = add(&mut map, NodeKind::Brush(Brush::cuboid(Aabb::new(DVec3::new(-16.0, -16.0, 32.0), DVec3::new(16.0, 16.0, 64.0)), &dark)));
+    world(&mut map, &[("_minlight", "128"), ("_minlight_exclude", "sky, dev/dark")]);
+    let lm = run(&map, &direct_only());
+    let floor = seen(&lm, &map, walls[0], DVec3::Z, DVec3::new(100.0, 100.0, 0.0));
+    assert!((floor - 128.0 / 255.0).abs() < 0.02, "minlight on the floor: {floor}");
+    let top = seen(&lm, &map, block, DVec3::Z, DVec3::new(0.0, 0.0, 64.0));
+    assert!(top < 1e-3, "none on the excluded material: {top}");
+}
+
+#[test]
+fn a_glowing_material_lights_the_room_and_is_part_of_the_bake() {
+    let mut map = Map::new();
+    let walls = room(&mut map, DVec3::new(-128.0, -128.0, 0.0), DVec3::new(128.0, 128.0, 128.0));
+    let glow = |energy: f32| move |_: &str| Surface { emission: [energy; 3], ..Surface::default() };
+    let floor = |energy: f32| seen(&run_with(&map, &direct_only(), &glow(energy)), &map, walls[0], DVec3::Z, DVec3::new(4.0, 4.0, 0.0));
+    assert!(floor(1.0) > 0.1, "glowing walls light the floor: {}", floor(1.0));
+    assert!(floor(0.0) < 1e-3, "and not at no energy: {}", floor(0.0));
+    let print = |energy: f32| mapcraft_light::bake_fingerprint(&map, &direct_only(), &glow(energy));
+    assert_eq!(print(1.0), print(1.0));
+    assert_ne!(print(1.0), print(0.0), "a bake at another energy is out of date");
+}
+
+#[test]
+fn worldspawn_sets_the_bake_options() {
+    let mut map = Map::new();
+    world(
+        &mut map,
+        &[("_lightmap_extra", "4"), ("_lightmap_soft", "2"), ("_bouncecolorscale", "0.25"), ("_dirt", "1"), ("_dirtdepth", "64"), ("_dirtangle", "200")],
+    );
+    let s = Settings::default().for_map(&map);
+    assert_eq!((s.extra, s.soft, s.bounce_color), (4, 2, 0.25));
+    assert_eq!(s.dirt, Some(mapcraft_light::Dirt { depth: 64.0, scale: 1.0, gain: 1.0, angle: 90.0 }));
+    let plain = Settings::default().for_map(&Map::new());
+    assert_eq!((plain.extra, plain.soft, plain.bounce_color, plain.dirt), (1, 0, 1.0, None));
 }

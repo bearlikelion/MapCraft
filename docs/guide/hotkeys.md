@@ -50,7 +50,8 @@ Most tool keys sit on the left hand side of the keyboard, so you can switch tool
 
 | Keys | Does |
 |---|---|
-| `Ctrl+Z`, `Ctrl+Shift+Z` | Undo, redo |
+| `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y` | Undo, redo |
+| `Ctrl+Alt+Z`, `Ctrl+Alt+Shift+Z` | Undo or redo the last edit to the selection only |
 | `Ctrl+D` | Duplicates the selection |
 | `Delete` | Deletes the selection; in the Clip tool it takes back the last clip point, and in the Vertex tool it deletes the picked corners |
 | `Ctrl+A`, `Ctrl+Shift+A` | Selects everything, or nothing |
