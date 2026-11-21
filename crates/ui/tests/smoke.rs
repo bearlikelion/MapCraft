@@ -573,6 +573,38 @@ fn shift_click_on_a_tree_arrow_opens_and_closes_everything_below() {
 }
 
 #[test]
+fn shift_click_selects_a_range_of_tree_rows() {
+    use mapcraft_geom::{Aabb, DVec3};
+    let (mut h, _settings) = editor();
+    let ids: Vec<_> = (0..5)
+        .map(|i| h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::splat(f64::from(i) * 64.0), DVec3::splat(f64::from(i) * 64.0 + 32.0))).unwrap())
+        .collect();
+    h.state_mut().session_for_test().selection.clear();
+    h.run_steps(3);
+    let rows: Vec<Pos2> = h.get_all_by_label("Brush").map(|n| n.rect()).filter(|r| r.right() < 320.0).map(|r| r.center()).collect();
+    assert_eq!(rows.len(), 5);
+    let click_with = |h: &mut Harness<MapCraftApp>, at: Pos2, modifiers: Modifiers| {
+        h.event(Event::ModifiersChanged(modifiers));
+        h.hover_at(at);
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers });
+        h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(2);
+        h.event(Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(1);
+    };
+    let selected = |h: &mut Harness<MapCraftApp>| -> Vec<_> { h.state_mut().session_for_test().selection.iter().copied().collect() };
+    click_with(&mut h, rows[1], Modifiers::NONE);
+    click_with(&mut h, rows[3], Modifiers::SHIFT);
+    assert_eq!(selected(&mut h), ids[1..=3], "Shift selects from the last clicked row to this one");
+    click_with(&mut h, rows[0], Modifiers::SHIFT);
+    assert_eq!(selected(&mut h), ids[0..=1], "the range keeps its first row and works upward");
+    click_with(&mut h, rows[4], Modifiers::COMMAND);
+    click_with(&mut h, rows[3], Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(selected(&mut h), [ids[0], ids[1], ids[3], ids[4]], "Ctrl+Shift adds the range to the selection");
+}
+
+#[test]
 fn scene_tree_scrolls_to_the_selection() {
     use mapcraft_geom::{Aabb, DVec3};
     let (mut h, _settings) = editor();

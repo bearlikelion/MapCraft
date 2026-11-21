@@ -147,6 +147,8 @@ pub struct MapCraftApp {
     pub(crate) picked_mesh: Option<(mapcraft_map::NodeId, String)>,
     /// Scene tree rows being dragged, empty when none are.
     pub(crate) tree_drag: Vec<mapcraft_map::NodeId>,
+    /// The row a Shift+click in the scene tree selects from.
+    pub(crate) tree_anchor: Option<mapcraft_map::NodeId>,
     /// The scene tree row being renamed: its node, the name typed so far and whether the field still wants the focus.
     pub(crate) tree_rename: Option<(mapcraft_map::NodeId, String, bool)>,
     /// The selection the scene tree last unfolded and scrolled to.
@@ -346,6 +348,7 @@ impl MapCraftApp {
             expanded: BTreeSet::from([mapcraft_map::ROOT]),
             picked_mesh: None,
             tree_drag: Vec::new(),
+            tree_anchor: None,
             tree_rename: None,
             tree_revealed: BTreeSet::new(),
             tree_view: (0.0, 0.0),

@@ -107,6 +107,7 @@ Each row has a fold arrow, an icon (entities in their class color), a name and a
 Entities with a `targetname` show as `name (class)`.
 
 - Click a row to select it; `Ctrl+Click` adds it or takes it out.
+- `Shift+Click` selects every row from the last one clicked to this one; `Ctrl+Shift+Click` adds them to the selection.
 - Double click a row to select it and focus the views on it.
 - Right click a row for **New objects go here** and **Delete**.
 - Click the eye to hide or show a node and everything in it.

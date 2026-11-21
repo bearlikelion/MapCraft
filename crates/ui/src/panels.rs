@@ -631,7 +631,17 @@ impl MapCraftApp {
                 ui.painter_at(text_area).galley(egui::pos2(text_area.left(), text_area.center().y - galley.size().y / 2.0), galley, color);
 
                 if resp.clicked() {
-                    action = Some((id, if ui.input(|i| i.modifiers.command) { "toggle-select" } else { "select" }));
+                    let m = ui.input(|i| i.modifiers);
+                    action = Some((
+                        id,
+                        if m.shift {
+                            "range-select"
+                        } else if m.command {
+                            "toggle-select"
+                        } else {
+                            "select"
+                        },
+                    ));
                 }
                 if resp.drag_started() && id != ROOT {
                     self.tree_drag = if selected { self.dragged_selection(&rows) } else { vec![id] };
@@ -722,11 +732,27 @@ impl MapCraftApp {
                     self.status = e.to_string();
                 }
             }
-            "select" => self.session.selection = BTreeSet::from([id]),
+            "select" => {
+                self.session.selection = BTreeSet::from([id]);
+                self.tree_anchor = Some(id);
+            }
             "toggle-select" => {
                 if !self.session.selection.remove(&id) {
                     self.session.selection.insert(id);
                 }
+                self.tree_anchor = Some(id);
+            }
+            "range-select" => {
+                let at = |n: NodeId| rows.iter().position(|r| r.0 == n && r.2.is_none());
+                let to = at(id).unwrap_or(0);
+                let from =
+                    self.tree_anchor.and_then(at).or_else(|| rows.iter().position(|r| r.2.is_none() && self.session.selection.contains(&r.0))).unwrap_or(to);
+                if !ui.input(|i| i.modifiers.command) {
+                    self.session.selection.clear();
+                }
+                let range = rows.get(from.min(to)..=from.max(to)).unwrap_or_default();
+                self.session.selection.extend(range.iter().filter(|r| r.2.is_none()).map(|r| r.0));
+                self.tree_revealed = self.session.selection.clone();
             }
             "frame" => {
                 self.session.selection = BTreeSet::from([id]);

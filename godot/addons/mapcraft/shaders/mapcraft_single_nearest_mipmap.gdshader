@@ -1,7 +1,7 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
 
-#define MAPCRAFT_FILTER filter_nearest_mipmap
+#define MAPCRAFT_FILTER filter_nearest_mipmap_anisotropic
 #include "res://addons/mapcraft/shaders/mapcraft_surface.gdshaderinc"
 
 
