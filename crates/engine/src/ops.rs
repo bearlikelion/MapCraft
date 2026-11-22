@@ -287,18 +287,20 @@ impl Session {
         Ok(id)
     }
 
-    /// Creates the brushes of `shape` filling `bounds` and selects them.
+    /// Creates the brushes of `shape` filling `bounds` and selects them; several brushes come in a group.
     pub fn create_shape(&mut self, shape: Shape, bounds: Aabb) -> Result<Vec<NodeId>, EngineError> {
         let brushes = shape.brushes(bounds, &self.tex)?;
         let mut e = self.map.edit();
+        let group =
+            if brushes.len() > 1 { Some(e.insert(self.active_parent, NodeKind::Group(Group { name: "Arch".into(), ..Group::default() }))?) } else { None };
         let mut ids = Vec::new();
         for b in brushes {
             b.solid()?;
-            ids.push(e.insert(self.active_parent, NodeKind::Brush(b))?);
+            ids.push(e.insert(group.unwrap_or(self.active_parent), NodeKind::Brush(b))?);
         }
         let c = e.finish();
         self.apply("Create brush", c);
-        self.selection = ids.iter().copied().collect();
+        self.selection = group.map_or_else(|| ids.iter().copied().collect(), |g| BTreeSet::from([g]));
         Ok(ids)
     }
 
@@ -1936,7 +1938,9 @@ mod tests {
         let arch = Shape::Arch { sides: 6, arc: 180.0, start: 0.0, thickness: 16.0 };
         let ids = s.create_shape(arch, Aabb::new(DVec3::ZERO, DVec3::new(256.0, 256.0, 32.0))).unwrap();
         assert_eq!(ids.len(), 6);
-        assert_eq!(s.selection.len(), 6);
+        let group = s.map.get(ids[0]).unwrap().parent.unwrap();
+        assert_eq!(s.selection, BTreeSet::from([group]), "an arch comes grouped");
+        assert_eq!(s.map.get(group).unwrap().children.len(), 6);
     }
 
     #[test]

@@ -138,7 +138,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "create_brush",
         description: "Creates a brush filling the box from `min` to `max` and selects it; `material` also becomes the default for later brushes. \
-An arch spans `arc` degrees starting `start` degrees off +X with walls `thickness` deep.",
+An arch spans `arc` degrees starting `start` degrees off +X with walls `thickness` deep, and its brushes come in one selected group.",
         schema: || {
             let shapes = json!({"type": "string", "enum": ["block", "wedge", "cylinder", "spike", "sphere", "arch"]});
             let n = json!({"type": "number"});

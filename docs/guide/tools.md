@@ -221,7 +221,7 @@ New brushes get the current [material](materials.md), go [where new objects go](
 | Cylinder | An upright prism inside the box you draw | sides, 3 to 64 |
 | Spike | A pyramid or cone with its tip at the top | sides, 3 to 64 |
 | Sphere | A sphere, or an egg shape when the box is uneven | sides, 4 to 32 |
-| Arch | Blocks in a curve around Z, running **arc** degrees counter-clockwise from **start** degrees off +X, each **wall** units thick | sides 1 to 64, arc, start, wall |
+| Arch | Blocks in a curve around Z, running **arc** degrees counter-clockwise from **start** degrees off +X, each **wall** units thick, made as one group | sides 1 to 64, arc, start, wall |
 
 The options show on the top bar next to the shapes.
 
