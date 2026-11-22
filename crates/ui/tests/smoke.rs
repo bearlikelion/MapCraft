@@ -1800,7 +1800,7 @@ fn agents_drive_the_editor_over_the_control_channel() {
         (made, ask("screenshot", json!({"width": 640, "height": 480})), ask("select", json!({"ids": [999]})))
     });
     assert!(made.get("error").is_none(), "{made}");
-    assert_eq!(h.state().node_count_for_test(), 8, "a hollowed room and a player start");
+    assert_eq!(h.state().node_count_for_test(), 9, "a hollowed room in its group and a player start");
     assert!(missing.get("error").is_some());
 
     let data = shot["content"][0]["data"].as_str().unwrap();

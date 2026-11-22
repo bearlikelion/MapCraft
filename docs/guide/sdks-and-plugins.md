@@ -193,6 +193,7 @@ To write your own, see the [Plugin API](../plugin-api.md).
 Plugin commands live in the **Plugins** menu.
 Each one opens a window with its settings.
 Click **Create** to put the result at the center of the selection, or where the pointer last was, snapped to the grid.
+A result of several brushes or entities comes as one group named after the command.
 The bottom of the menu lists the loaded plugins and their versions.
 
 ![The Plugins menu with Surf Ramp and Bhop Platforms, then the loaded plugins Godot, Source BSP and SurfsUp with their versions](img/sdks-plugins-menu.webp)

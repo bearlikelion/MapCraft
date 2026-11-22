@@ -275,7 +275,7 @@ and with `scale` that texture scale (units per texel). Both become the defaults 
     },
     Tool {
         name: "hollow",
-        description: "Turns the selected brushes into rooms whose walls are `thickness` deep (16 when omitted).",
+        description: "Turns the selected brushes into rooms whose walls are `thickness` deep (16 when omitted); each room's walls come in one selected group.",
         schema: || object(json!({"thickness": {"type": "number"}}), &[]),
         run: |s, a| {
             let t = num_or(a, "thickness", 16.0)?;
@@ -1123,7 +1123,7 @@ mod tests {
 
         let mut t = Session::default();
         let listed = call(&mut t, "open", &json!({"path": p})).and_then(|_| call(&mut t, "list_nodes", &json!({}))).unwrap();
-        assert_eq!(listed.as_array().unwrap().len(), 7);
+        assert_eq!(listed.as_array().unwrap().len(), 2, "the room's group and the player start");
         assert!(matches!(call(&mut t, "new", &json!({"path": p})), Err(EngineError::Refused(_))));
     }
 

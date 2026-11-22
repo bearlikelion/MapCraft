@@ -13,13 +13,18 @@ pub fn generator_transform(g: &Generator) -> DMat4 {
 }
 
 impl Session {
-    /// Inserts a plugin command's output at `origin` and selects it.
+    /// Inserts a plugin command's output at `origin` and selects it; several nodes come in a group named `label`.
     pub fn insert_output(&mut self, label: &str, frags: Vec<Fragment>, origin: DVec3) -> Result<Vec<NodeId>, EngineError> {
         let mut e = self.map.edit();
-        let roots = insert_fragments(&mut e, self.active_parent, frags, &DMat4::from_translation(origin), true)?;
+        let group = if frags.iter().filter(|f| !matches!(f.kind, NodeKind::World(_))).count() > 1 {
+            Some(e.insert(self.active_parent, NodeKind::Group(Group { name: label.into(), ..Group::default() }))?)
+        } else {
+            None
+        };
+        let roots = insert_fragments(&mut e, group.unwrap_or(self.active_parent), frags, &DMat4::from_translation(origin), true)?;
         let c = e.finish();
         self.apply(label, c);
-        self.selection = roots.iter().copied().collect();
+        self.selection = group.map_or_else(|| roots.iter().copied().collect(), |g| BTreeSet::from([g]));
         Ok(roots)
     }
 
@@ -215,5 +220,12 @@ mod tests {
 
         let ids = s.insert_output("Run", block(16.0), DVec3::splat(8.0)).unwrap();
         assert_eq!(s.map.get(ids[0]).unwrap().kind.brush().unwrap().bounds().unwrap().min, DVec3::splat(8.0));
+        assert_eq!(s.selection, BTreeSet::from([ids[0]]), "one node stays loose");
+
+        let ids = s.insert_output("Run", [block(16.0), block(16.0)].concat(), DVec3::ZERO).unwrap();
+        let made = s.map.get(ids[0]).unwrap().parent.unwrap();
+        assert_eq!(s.selection, BTreeSet::from([made]), "several nodes come grouped");
+        assert!(matches!(&s.map.get(made).unwrap().kind, NodeKind::Group(g) if g.name == "Run"));
+        assert_eq!(s.map.get(made).unwrap().children, ids);
     }
 }

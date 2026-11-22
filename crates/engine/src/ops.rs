@@ -890,6 +890,7 @@ impl Session {
         Ok(())
     }
 
+    /// Turns each selected brush into walls and selects them; walls come in a group, except inside a brush entity.
     pub fn hollow(&mut self, thickness: f64) -> Result<(), EngineError> {
         let brushes = self.selected_brushes();
         if brushes.is_empty() {
@@ -899,7 +900,19 @@ impl Session {
         let mut walls = BTreeSet::new();
         for id in brushes {
             let Some(b) = e.node(id).and_then(|n| n.kind.brush()).cloned() else { continue };
-            walls.extend(Self::replace_brush(&mut e, id, b.hollow(thickness)?)?);
+            let made = Self::replace_brush(&mut e, id, b.hollow(thickness)?)?;
+            let group = NodeKind::Group(Group { name: "Hollow".into(), ..Group::default() });
+            let parent = made.first().and_then(|w| e.node(*w)?.parent).filter(|p| made.len() > 1 && e.node(*p).is_some_and(|n| n.kind.can_contain(&group)));
+            let Some(parent) = parent else {
+                walls.extend(made);
+                continue;
+            };
+            let index = e.node(parent).and_then(|p| p.children.iter().position(|c| made.first() == Some(c))).unwrap_or(0);
+            let group = e.insert_at(parent, index, group)?;
+            for w in made {
+                e.reparent(w, group, None)?;
+            }
+            walls.insert(group);
         }
         let c = e.finish();
         self.apply("Hollow", c);
@@ -1837,7 +1850,8 @@ mod tests {
         assert!((volume(&s) - (64.0f64.powi(3) + 32.0f64.powi(3))).abs() < 1e-6);
 
         s.hollow(8.0).unwrap();
-        assert_eq!(s.selection.len(), 6);
+        assert_eq!(s.selection.len(), 1, "a hollowed brush is one group of walls");
+        assert!(s.selection.iter().all(|g| s.map.get(*g).unwrap().children.len() == 6));
 
         let mut s = session();
         s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();

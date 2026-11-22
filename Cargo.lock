@@ -2595,7 +2595,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "mapcraft"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "eframe",
  "egui",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-cli"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-engine"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "fastnoise-lite",
  "mapcraft-fgd",
@@ -2642,11 +2642,11 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-fgd"
-version = "0.6.5"
+version = "0.6.6"
 
 [[package]]
 name = "mapcraft-format"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "craft-atomic",
  "mapcraft-geom",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-geom"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "glam",
  "serde",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-light"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "mapcraft-geom",
  "mapcraft-map",
@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-map"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "mapcraft-geom",
  "serde",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-plugin-host"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "log",
  "mapcraft-format",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-render"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",
@@ -2723,7 +2723,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-sdk"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "mapcraft-fgd",
  "serde",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-sdk-manager"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "craft-settings",
  "mapcraft-engine",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-steam"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "steamworks",
  "tempfile",
@@ -2762,7 +2762,7 @@ dependencies = [
 
 [[package]]
 name = "mapcraft-ui"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "base64 0.22.1",
  "bcdec_rs",
@@ -6102,7 +6102,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "serde_json",
  "toml",

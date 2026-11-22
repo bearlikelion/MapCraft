@@ -450,7 +450,7 @@ They are in the **Tools** menu.
 |---|---|---|
 | **Carve** | `Ctrl+Shift+C` | Cuts the selected brushes out of every other brush they touch |
 | **Boolean > Subtract** | `Ctrl+Shift+B` | Cuts the selected brushes out of the brushes they touch and keeps the cut live; see [Boolean groups](boolean-groups.md) |
-| **Hollow** | `Ctrl+H` | Turns each selected brush into walls one grid step thick around an empty inside, and selects the walls |
+| **Hollow** | `Ctrl+H` | Turns each selected brush into walls one grid step thick around an empty inside, in a group named Hollow that it selects |
 | **Merge Brushes** | `Ctrl+J` | Joins two or more selected brushes into one when together they make one convex shape |
 | **Flip X**, **Flip Y**, **Flip Z** | `Ctrl+L`, `Ctrl+I`, `Ctrl+Alt+L` | Mirrors the selection through its center |
 | **Rotate 90° Clockwise** | `Ctrl+R` | Turns the selection a quarter turn about Z through its center |
