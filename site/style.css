@@ -663,7 +663,7 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 .pager .next { grid-column: 2; text-align: right; }
 .doc-source { margin-top: 28px; font-size: 0.88rem; }
 
-/* Changelog: one card per release, its groups in columns, the releases in the sidebar. */
+/* Changelog: one card per release, its groups stacked under full-width bands, the releases in the sidebar. */
 .side-section.changelog .side-title::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--orange); }
 .side-section.changelog small { margin-left: auto; color: var(--muted); font: 500 0.78rem/1 var(--mono); }
 .side-section.changelog span { font-family: var(--mono); font-size: 0.9rem; }
@@ -678,11 +678,13 @@ html:has(.doc-shell.single) { font-size: clamp(100%, 0.28vw + 58%, 125%); }
 .release-head h2 a:hover { color: var(--link); }
 .release-link { grid-row: 1 / span 2; grid-column: 2; align-self: center; padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-size: 0.92rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
 .release-link:hover { border-color: var(--orange); }
-.release-body { columns: 2 24rem; column-gap: clamp(28px, 4vw, 56px); padding: clamp(14px, 2.5vw, 24px) clamp(18px, 3vw, 32px) clamp(18px, 3vw, 28px); }
-.change-group { break-inside: avoid; padding: 10px 0 6px; }
-.change-group h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 0.5em; color: var(--ink); font: 800 0.95rem/1.2 var(--display); font-stretch: 112%; letter-spacing: 0.05em; text-transform: uppercase; }
+.release-body { padding-bottom: clamp(8px, 1.5vw, 14px); }
+.change-group > * { padding-inline: clamp(18px, 3vw, 32px); }
+.change-group > :not(h3) { max-width: calc(84ch + 2 * clamp(18px, 3vw, 32px)); }
+.change-group h3 { display: flex; align-items: center; gap: 10px; margin: 0; padding-block: 11px; border-block: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 5%, var(--panel)); color: var(--ink); font: 800 0.95rem/1.2 var(--display); font-stretch: 112%; letter-spacing: 0.05em; text-transform: uppercase; }
 .change-group h3::before { content: ""; flex: none; width: 4px; height: 1em; border-radius: 2px; background: var(--orange); }
-.change-group ul { margin: 0 0 0.6em; }
+.change-group ul { margin: 0.9em 0 1.1em; padding-left: calc(clamp(18px, 3vw, 32px) + 1.2em); }
+.change-group:first-child h3 { border-top: 0; }
 .doc .change-group li { margin: 0.35em 0; color: var(--muted); font-size: 0.98rem; line-height: 1.55; }
 .change-group li strong { color: var(--link); }
 .change-group li code { color: var(--ink); }
