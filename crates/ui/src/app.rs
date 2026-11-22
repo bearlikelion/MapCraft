@@ -200,8 +200,6 @@ pub struct MapCraftApp {
     pub(crate) plugin_dialog: Option<crate::plugins::PluginDialog>,
     /// A plugin generator picked as the block tool's shape.
     pub(crate) plugin_shape: Option<crate::plugins::PluginShape>,
-    /// Parameters last used for each generator shape, by `plugin/command`.
-    pub(crate) plugin_params: BTreeMap<String, serde_json::Value>,
     /// Where a click would place the plugin shape, and in which view.
     pub(crate) ghost_at: Option<(usize, DVec3)>,
     /// The sculpt brush: mode, radius, and height per second at full strength.
@@ -382,7 +380,6 @@ impl MapCraftApp {
             plugin_host,
             plugin_dialog: None,
             plugin_shape: None,
-            plugin_params: BTreeMap::new(),
             ghost_at: None,
             sculpt: (mapcraft_engine::SculptMode::Raise, 128.0, 256.0),
             sculpt_at: None,

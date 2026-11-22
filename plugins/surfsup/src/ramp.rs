@@ -100,8 +100,8 @@ impl Default for Ramp {
             smoothness: 16,
             style: Style::Wedge,
             surf: Surf::Left,
-            width: 384.0,
-            height: 480.0,
+            width: 416.0,
+            height: 512.0,
             tip: 64.0,
             thickness: 64.0,
             drop: 0.0,
@@ -622,7 +622,7 @@ mod tests {
         let n = pieces[0].faces.iter().find(|f| f.slot == Slot::Surf).unwrap().normal();
         assert!(n.z > 0.0 && n.y > 0.0, "a left surf faces up and to +Y: {n:?}");
         let angle = slope_angle(r.width, r.height);
-        assert!((angle - 51.34).abs() < 0.01, "the default face is the 5:4 slope: {angle}");
+        assert!((angle - 50.91).abs() < 0.01, "the default face is 416 wide and 512 tall: {angle}");
         assert!(corners(&pieces[0]).any(|p| (p.x + r.size).abs() < 1e-9));
     }
 
@@ -728,7 +728,7 @@ mod tests {
         assert!(want.iter().zip(&got).all(|(a, b)| a.distance(*b) < 1e-6), "{want:?} {got:?}");
 
         let curve = scaled(&Ramp { shape: Shape::Right, ..Ramp::default() }, DVec3::new(2.0, 1.2, 1.0));
-        assert_eq!((curve.size, curve.width, curve.height, curve.angle), (2048.0, 768.0, 480.0, 90.0), "a curve stays round");
+        assert_eq!((curve.size, curve.width, curve.height, curve.angle), (2048.0, 832.0, 512.0, 90.0), "a curve stays round");
 
         let t = Ramp { trim_top: 64.0, trim_depth: 2.0, ..Ramp::default() };
         let low = |r: &Ramp| zs(&trim(r).unwrap()).0;

@@ -2077,6 +2077,8 @@ fn resizing_a_ramp_updates_its_settings() {
     assert!(resized.size().x > b.size().x + 256.0, "the drag lengthens the ramp: {resized:?}");
     assert_eq!(after.params["size"].as_f64(), Some(resized.size().x), "Length follows the resize");
     assert_eq!((&after.params["width"], after.stretch), (&before.params["width"], None));
+    let next = h.state().start_params_for_test("surfsup", "surf_ramp").unwrap();
+    assert_eq!(next["size"], after.params["size"], "the next new ramp starts at the size this one was given");
 
     h.state_mut().run_command_for_test("edit.undo");
     h.run_steps(2);

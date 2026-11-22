@@ -24,7 +24,9 @@ It stays where the pointer left it while you change settings.
 A placed ramp is a group that remembers its settings.
 Select it with the Select tool (`Q`) and change its settings in the inspector.
 The ramp rebuilds as you type, all in one undo step.
-Each shape also remembers the settings you last used, until you quit.
+A new ramp starts with the settings of the ramp you last placed, changed or resized, so set one ramp to the size you want and the rest follow, also after a restart.
+**Set as default** under the settings keeps them as your own defaults, which placing and changing ramps never overwrites.
+The arrow beside a changed setting puts back its default, **Use default** puts them all back, and **Forget default** returns to the plugin's own.
 
 You can also resize it in a view, with the Select tool's handles or the Scale tool.
 When you let go, the settings take the new size, in the same undo step:
@@ -111,7 +113,7 @@ Keep **Trim depth** small: players surf on the ramp underneath, so their feet si
 
 A face is surfable when it is steeper than 45.573 degrees.
 Anything flatter is floor that players can walk on.
-The default ramp is 480 tall and 384 wide with a 64 tip under it, about 51 degrees.
+The default ramp is 512 tall and 416 wide with a 64 tip under it, about 51 degrees.
 
 If a ramp comes out too flat, the Output panel (`Ctrl+5`) says so.
 Make it taller or narrower to steepen it.

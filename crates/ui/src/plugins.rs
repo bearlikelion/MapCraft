@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::app::MapCraftApp;
 use crate::chrome::icon_button;
-use crate::inspect::{self, Note, Prop, Section, Title};
+use crate::inspect::{self, Action, Note, Prop, Section, Title};
 
 /// A plugin command waiting for its parameters before it runs.
 pub(crate) struct PluginDialog {
@@ -52,8 +52,7 @@ impl MapCraftApp {
     }
 
     pub(crate) fn plugins_menu(&mut self, ui: &mut egui::Ui) {
-        let commands: Vec<(String, CommandSpec)> =
-            self.project.plugins.iter().flat_map(|p| p.manifest.commands.iter().map(|c| (p.manifest.id.clone(), c.clone()))).collect();
+        let commands = self.commands();
         ui.menu_button("Plugins", |ui| {
             if commands.is_empty() {
                 ui.label("This SDK's plugins have no commands");
@@ -61,7 +60,7 @@ impl MapCraftApp {
             for (plugin, c) in commands {
                 let label = c.menu.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&c.label).to_string();
                 if ui.add(crate::icons::button(Some("jigsaw_piece"), format!("{label}…"))).clicked() {
-                    let params = c.defaults();
+                    let params = self.start_params(&plugin, &c);
                     self.plugin_dialog = Some(PluginDialog { plugin, command: c, params });
                 }
             }
@@ -94,6 +93,7 @@ impl MapCraftApp {
             let origin = self.placement_point();
             match self.run_plugin(&d.plugin, &d.command.id, &d.params) {
                 Ok(frags) if d.command.generator => {
+                    self.remember_params(&d.plugin, &d.command.id, &d.params);
                     let g = Generator {
                         plugin: d.plugin.clone(),
                         command: d.command.id.clone(),
@@ -357,17 +357,91 @@ impl MapCraftApp {
 
     /// Generator commands of the loaded plugins, offered as block tool shapes.
     pub(crate) fn generator_shapes(&self) -> Vec<(String, CommandSpec)> {
-        self.project.plugins.iter().flat_map(|p| p.manifest.commands.iter().filter(|c| c.generator).map(|c| (p.manifest.id.clone(), c.clone()))).collect()
+        self.commands().into_iter().filter(|(_, c)| c.generator).collect()
+    }
+
+    /// Commands of the loaded plugins, starting from the user's own defaults where they set some.
+    fn commands(&self) -> Vec<(String, CommandSpec)> {
+        let own = &self.prefs.get().generator_defaults;
+        let all = self.project.plugins.iter().flat_map(|p| p.manifest.commands.iter().map(|c| (p.manifest.id.clone(), c.clone())));
+        all.map(|(plugin, c)| {
+            let key = format!("{plugin}/{}", c.id);
+            (plugin, with_defaults(c, own.get(&key)))
+        })
+        .collect()
+    }
+
+    /// Buttons that keep `params` as the user's own defaults for `command`, put those back, or forget them; true when `params` changed.
+    fn default_actions(&mut self, ui: &mut egui::Ui, plugin: &str, command: &mut CommandSpec, params: &mut serde_json::Value) -> bool {
+        let key = format!("{plugin}/{}", command.id);
+        let differs = command.params.iter().any(|p| inspect::param_differs(p, params));
+        let own = self.prefs.get().generator_defaults.contains_key(&key);
+        let items = [
+            Action {
+                icon: "floppy_disk",
+                label: "Set as default",
+                tip: "Keep these settings as the defaults; placing and changing never overwrites them",
+                enabled: differs,
+            },
+            Action { icon: "arrow_counterclockwise", label: "Use default", tip: "Put every setting back to its default", enabled: differs },
+            Action { icon: "trash_can", label: "Forget default", tip: "Go back to the plugin's own defaults", enabled: own },
+        ];
+        let clicked = inspect::actions(ui, &items);
+        match clicked {
+            Some(0) => self.prefs.update(|p| {
+                p.generator_defaults.insert(key, params.clone());
+            }),
+            Some(1) => {
+                *params = command.defaults();
+                return true;
+            }
+            Some(2) => self.prefs.update(|p| {
+                p.generator_defaults.remove(&key);
+            }),
+            _ => return false,
+        };
+        let commands = self.commands();
+        let fresh = |plugin: &str, id: &str| commands.iter().find(|(p, c)| p == plugin && c.id == id).map(|(_, c)| c.clone());
+        if let Some(c) = fresh(plugin, &command.id) {
+            *command = c;
+        }
+        if let Some(shape) = &mut self.plugin_shape
+            && let Some(c) = fresh(&shape.plugin, &shape.command.id)
+        {
+            shape.command = c;
+        }
+        false
     }
 
     /// Picks a generator as the block shape, or a built-in shape with `None`, keeping each generator's parameters.
     pub(crate) fn pick_plugin_shape(&mut self, pick: Option<(String, CommandSpec)>) {
         if let Some(old) = self.plugin_shape.take() {
-            self.plugin_params.insert(format!("{}/{}", old.plugin, old.command.id), old.params);
+            self.remember_params(&old.plugin, &old.command.id, &old.params);
         }
         self.plugin_shape = pick.map(|(plugin, command)| {
-            let params = self.plugin_params.get(&format!("{plugin}/{}", command.id)).cloned().unwrap_or_else(|| command.defaults());
+            let params = self.start_params(&plugin, &command);
             PluginShape { plugin, command, params, yaw: 0.0, ghost: None }
+        });
+    }
+
+    /// The parameters a new generator starts with: the ones last used, else the plugin's own.
+    fn start_params(&self, plugin: &str, command: &CommandSpec) -> serde_json::Value {
+        self.prefs.get().generator_params.get(&format!("{plugin}/{}", command.id)).cloned().unwrap_or_else(|| command.defaults())
+    }
+
+    /// The parameters a new `command` of `plugin` starts with, for tests.
+    pub fn start_params_for_test(&self, plugin: &str, command: &str) -> Option<serde_json::Value> {
+        let (_, spec) = self.generator_shapes().into_iter().find(|(p, c)| p == plugin && c.id == command)?;
+        Some(self.start_params(plugin, &spec))
+    }
+
+    /// Makes `params` the ones the next new `command` starts with, here and after a restart.
+    pub(crate) fn remember_params(&mut self, plugin: &str, command: &str, params: &serde_json::Value) {
+        if let Some(shape) = self.plugin_shape.as_mut().filter(|s| s.plugin == plugin && s.command.id == command) {
+            shape.params = params.clone();
+        }
+        self.prefs.update(|p| {
+            p.generator_params.insert(format!("{plugin}/{command}"), params.clone());
         });
     }
 
@@ -399,6 +473,7 @@ impl MapCraftApp {
             let (project, thumbs) = (&self.project, &mut self.thumbs);
             let mut thumb = |name: &str| inspect::material_thumb(project, thumbs, &ctx, name);
             inspect::param_rows(ui, ("shape", &shape.command.id), &shape.command.params, &mut shape.params, &material, &mut thumb);
+            self.default_actions(ui, &shape.plugin, &mut shape.command, &mut shape.params);
         }
         self.plugin_shape = Some(shape);
         self.refresh_ghost();
@@ -450,6 +525,7 @@ impl MapCraftApp {
         let (g, label) = (Self::shape_generator(shape, at), shape.command.label.clone());
         match self.run_plugin(&g.plugin, &g.command, &g.params) {
             Ok(frags) => {
+                self.remember_params(&g.plugin, &g.command, &g.params);
                 if let Err(e) = self.session.create_generator(&label, g, frags) {
                     self.status = e.to_string();
                 }
@@ -461,8 +537,8 @@ impl MapCraftApp {
 
     /// Parameters of a generator group; editing one runs the plugin again.
     pub(crate) fn generator_section(&mut self, ui: &mut egui::Ui, id: NodeId, generator: Generator) {
-        let spec = self.project.plugin(&generator.plugin).and_then(|p| p.manifest.commands.iter().find(|c| c.id == generator.command).cloned());
-        let Some(spec) = spec else {
+        let spec = self.commands().into_iter().find(|(p, c)| *p == generator.plugin && c.id == generator.command).map(|(_, c)| c);
+        let Some(mut spec) = spec else {
             let text = format!("Made by {} / {}, which this SDK does not load. Its brushes stay editable by hand.", generator.plugin, generator.command);
             inspect::note(ui, Note::Warn, &text);
             return;
@@ -480,11 +556,14 @@ impl MapCraftApp {
         let ctx = ui.ctx().clone();
         let (project, thumbs) = (&self.project, &mut self.thumbs);
         let mut thumb = |name: &str| inspect::material_thumb(project, thumbs, &ctx, name);
-        if !inspect::param_rows(ui, ("gen", id.0), &spec.params, &mut params, &material, &mut thumb) {
+        let mut changed = inspect::param_rows(ui, ("gen", id.0), &spec.params, &mut params, &material, &mut thumb);
+        changed |= self.default_actions(ui, &generator.plugin, &mut spec, &mut params);
+        if !changed {
             return;
         }
         match self.run_plugin(&generator.plugin, &generator.command, &params) {
             Ok(frags) => {
+                self.remember_params(&generator.plugin, &generator.command, &params);
                 let g = Generator { params, ..generator };
                 if let Err(e) = self.session.regenerate(id, g, frags, Some(&format!("gen:{}", id.0))) {
                     self.status = e.to_string();
@@ -514,15 +593,27 @@ impl MapCraftApp {
                     continue;
                 }
             };
+            let (plugin, command, fitted) = (g.plugin.clone(), g.command.clone(), params.clone());
             let made = self
                 .run_plugin(&g.plugin, &g.command, &params)
                 .and_then(|frags| self.session.refit(id, Generator { params, stretch: None, ..g }, frags).map_err(|e| e.to_string()));
-            if let Err(e) = made {
-                self.status = e;
+            match made {
+                Ok(_) => self.remember_params(&plugin, &command, &fitted),
+                Err(e) => self.status = e,
             }
         }
         self.mark_changed();
     }
+}
+
+/// `command` with each parameter starting from its value in `own`, where it has one.
+fn with_defaults(mut command: CommandSpec, own: Option<&serde_json::Value>) -> CommandSpec {
+    for p in &mut command.params {
+        if let Some(v) = own.and_then(|o| o.get(&p.id)) {
+            p.initial = v.clone();
+        }
+    }
+    command
 }
 
 /// How far a stretch scales each of the output's own axes, when it does nothing else.
@@ -543,4 +634,33 @@ fn fragment_edges(frags: &[mapcraft_format::Fragment]) -> Vec<[DVec3; 2]> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mapcraft_plugin_host::{ParamKind, ParamSpec};
+    use serde_json::json;
+
+    #[test]
+    fn own_defaults_replace_the_plugins() {
+        let param = |id: &str, initial: f64| ParamSpec {
+            id: id.into(),
+            label: String::new(),
+            help: String::new(),
+            kind: ParamKind::Number { min: 0.0, max: 4096.0, step: 1.0 },
+            initial: json!(initial),
+        };
+        let spec = CommandSpec {
+            id: "surf_ramp".into(),
+            label: String::new(),
+            menu: String::new(),
+            params: vec![param("size", 1024.0), param("width", 384.0)],
+            generator: true,
+        };
+        assert_eq!(with_defaults(spec.clone(), None), spec);
+        let own = with_defaults(spec, Some(&json!({"size": 2048.0, "gone": 1})));
+        assert_eq!(own.defaults(), json!({"size": 2048.0, "width": 384.0}), "a default the plugin dropped is ignored");
+        assert!(inspect::param_differs(&own.params[0], &json!({"size": 1024})) && !inspect::param_differs(&own.params[0], &json!({"size": 2048})));
+    }
 }

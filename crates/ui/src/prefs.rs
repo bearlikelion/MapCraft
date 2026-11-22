@@ -31,6 +31,10 @@ pub struct Prefs {
     pub shortcuts: BTreeMap<String, String>,
     /// Inspector sections folded open or closed, by `{key}:{closed by default}`.
     pub inspector_folds: BTreeMap<String, bool>,
+    /// Per `plugin/command`, the parameters a generator was last made or changed with; new ones start from them.
+    pub generator_params: BTreeMap<String, serde_json::Value>,
+    /// Per `plugin/command`, the user's own starting parameters, over the plugin's.
+    pub generator_defaults: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Prefs {
@@ -51,6 +55,8 @@ impl Default for Prefs {
             keymap: crate::shortcuts::Preset::default(),
             shortcuts: BTreeMap::new(),
             inspector_folds: BTreeMap::new(),
+            generator_params: BTreeMap::new(),
+            generator_defaults: BTreeMap::new(),
         }
     }
 }

@@ -16,7 +16,8 @@ Placed generators stay editable: select the group and change any parameter, and 
 
 A surf face is surfable when it is steeper than 45.573 degrees; anything flatter is walkable floor.
 Its angle is `atan(height / width)`, and the generator warns when a ramp falls under the limit.
-The default ramp is a 5:4 slope: a rise of 480 over a run of 384, about 51.3 degrees.
+The default ramp rises 512 over a run of 416, about 50.9 degrees: a middle ground to start from that fits a grid of 32.
+A run of 480 (46.9 degrees) is the nicest flat ramp, and 384 (53.1 degrees) feels steep but suits sharp flicks.
 
 The tip is a slab under the wedge, below the surf face's low edge, so the face never thins to a knife edge players can slip through; it never changes the angle.
 

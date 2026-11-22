@@ -1072,12 +1072,18 @@ pub(crate) fn param_rows(
     changed
 }
 
+/// Whether `values` sets `p` to something other than its starting value.
+pub(crate) fn param_differs(p: &ParamSpec, values: &Value) -> bool {
+    let Some(v) = values.get(&p.id) else { return false };
+    match p.kind {
+        ParamKind::Number { .. } | ParamKind::Integer { .. } => v.as_f64() != p.initial.as_f64(),
+        _ => *v != p.initial,
+    }
+}
+
 fn param_row(ui: &mut Ui, base: Id, p: &ParamSpec, values: &mut Value, current_material: &str, thumb: &mut dyn FnMut(&str) -> Option<TextureId>) -> bool {
     let v = values.get(&p.id).cloned().unwrap_or_else(|| p.initial.clone());
-    let differs = match p.kind {
-        ParamKind::Number { .. } | ParamKind::Integer { .. } => v.as_f64() != p.initial.as_f64(),
-        _ => v != p.initial,
-    };
+    let differs = param_differs(p, values);
     let prop = Prop {
         label: &p.label,
         key: &p.id,

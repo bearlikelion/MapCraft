@@ -253,7 +253,7 @@ They show as named buttons with a puzzle piece, after the shape icons.
 The ghost stays where the pointer left it and updates as you edit its settings.
 
 - A placed generator is a group that stays editable: select it, change any setting in the inspector, and it rebuilds.
-- Each shape remembers the settings you last used until you quit.
+- A new shape starts with the settings you last placed, changed or resized one with, also after a restart.
 - `Alt+B` switches back to the built-in shapes.
 - The **Plugins** menu runs the same generators from a dialog.
 
