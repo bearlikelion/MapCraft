@@ -129,6 +129,12 @@ pub struct Textures {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub default: Option<String>,
+    /// Shape tools make brushes of this instead of the current material, so mappers paint only the faces players see.
+    #[serde(default)]
+    pub new_brush: Option<String>,
+    /// The material of faces nobody sees, which Fix Z-Fighting gives hidden faces; `tools/skip` when unset.
+    #[serde(default)]
+    pub nodraw: Option<String>,
     #[serde(default = "default_scale")]
     pub scale: f64,
     /// Textures are magnified without smoothing, as the game draws them.
@@ -144,7 +150,17 @@ pub struct Textures {
 
 impl Default for Textures {
     fn default() -> Self {
-        Self { roots: Vec::new(), extensions: default_extensions(), default: None, scale: default_scale(), pixelated: false, sky: Vec::new(), trigger: None }
+        Self {
+            roots: Vec::new(),
+            extensions: default_extensions(),
+            default: None,
+            new_brush: None,
+            nodraw: None,
+            scale: default_scale(),
+            pixelated: false,
+            sky: Vec::new(),
+            trigger: None,
+        }
     }
 }
 

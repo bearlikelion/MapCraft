@@ -176,6 +176,8 @@ The tables are generated from the editor's code, so they match the version this 
 | Flip Y | `Ctrl+I` |
 | Flip Z | `Ctrl+Alt+L` |
 | Merge Brushes | `Ctrl+J` |
+| Merge Faces | *none* |
+| Fix Z-Fighting | *none* |
 | Apply Current Material | `Shift+T` |
 | Clear Material | *none* |
 | Texture Lock | `Shift+L` |

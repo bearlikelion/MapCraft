@@ -109,6 +109,10 @@ pub struct Session {
     pub click_groups: bool,
     /// Material and scale given to new faces (Hammer's current texture).
     pub tex: TexDefaults,
+    /// The SDK's `textures.new_brush`.
+    pub new_brush_material: Option<String>,
+    /// The SDK's `textures.nodraw`.
+    pub nodraw: String,
     pub texture_lock: bool,
     pub extrude_top_level: bool,
     pub grid: f64,
@@ -157,6 +161,8 @@ impl Session {
             select_mode: SelectMode::default(),
             click_groups: false,
             tex: TexDefaults::default(),
+            new_brush_material: None,
+            nodraw: crate::NODRAW.into(),
             texture_lock: true,
             extrude_top_level: false,
             grid: 16.0,

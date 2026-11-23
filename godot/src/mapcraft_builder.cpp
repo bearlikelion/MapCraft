@@ -781,6 +781,30 @@ struct Lighting {
 	}
 };
 
+// Normals by quantized map point, shared by faces that meet within the angle.
+struct Phong {
+	double cos = 1.0;
+	HashMap<Vector3i, Vector<Vector3>> at;
+
+	static Vector3i key(const Vector3 &p_map) {
+		return Vector3i((p_map * 16.0).round());
+	}
+
+	Vector3 normal(const Vector3 &p_map, const Vector3 &p_flat) const {
+		const Vector<Vector3> *seen = at.getptr(key(p_map));
+		if (seen == nullptr) {
+			return p_flat;
+		}
+		Vector3 sum;
+		for (const Vector3 &n : *seen) {
+			if (n.dot(p_flat) >= cos) {
+				sum += n;
+			}
+		}
+		return sum.is_zero_approx() ? p_flat : sum.normalized();
+	}
+};
+
 class Builder {
 	Node3D *root;
 	const MapCraftBuildOptions &options;
@@ -810,6 +834,8 @@ class Builder {
 	HashMap<String, Ref<ShaderMaterial>> brush_shaders;
 	HashMap<String, Node3D *> models;
 	std::shared_ptr<int> prefab_budget;
+	Phong world_phong;
+	const Phong *phong = nullptr;
 
 	Vector3 to_godot(const Vector3 &p_map) const {
 		return TO_GODOT.xform(p_map) * scale;
@@ -838,6 +864,8 @@ class Builder {
 	Ref<ShaderMaterial> embedded_shader(const Dictionary &p_node, Shader::Mode p_mode);
 	void set_shader_params(const Ref<ShaderMaterial> &p_material, const Variant &p_params);
 	void walk(const Dictionary &p_node, int p_depth);
+	bool read_phong(const Dictionary &p_node, Phong &r_phong) const;
+	void gather_phong(const Dictionary &p_node, Phong &r_phong, int p_depth) const;
 	void add_entity(const Dictionary &p_entity);
 	void add_prefab(const Dictionary &p_prefab);
 	void add_environment(const Dictionary &p_properties);
@@ -1424,7 +1452,7 @@ bool Builder::add_brush(const Dictionary &p_brush, Surfaces *p_surfaces, Vector<
 		Vector3 normal = newell_normal(points);
 		auto vertex = [&](int k) {
 			const Vector3 &m = map_points[k];
-			st->set_normal(normal);
+			st->set_normal(phong != nullptr ? phong->normal(m, normal) : normal);
 			st->set_uv(Vector2((m.dot(u_axis) / u_scale + u_offset) / size.x, (m.dot(v_axis) / v_scale + v_offset) / size.y));
 			if (baked != nullptr) {
 				const float *r = baked->uv;
@@ -1628,6 +1656,65 @@ void Builder::walk(const Dictionary &p_node, int p_depth) {
 	}
 }
 
+bool Builder::read_phong(const Dictionary &p_node, Phong &r_phong) const {
+	Array pairs = p_node.get("properties", Array());
+	bool on = false;
+	double angle = 89.0;
+	for (int i = 0; i < pairs.size(); i++) {
+		Array pair = pairs[i];
+		if (pair.size() != 2) {
+			continue;
+		}
+		if (String(pair[0]) == "_phong") {
+			on = String(pair[1]).strip_edges() == "1";
+		} else if (String(pair[0]) == "_phong_angle" && String(pair[1]).strip_edges().is_valid_float()) {
+			angle = String(pair[1]).strip_edges().to_float();
+		}
+	}
+	if (!on) {
+		return false;
+	}
+	r_phong.cos = Math::cos(Math::deg_to_rad(CLAMP(angle, 0.0, 180.0))) - 1e-6;
+	Array children = p_node.get("children", Array());
+	for (int i = 0; i < children.size(); i++) {
+		gather_phong(children[i], r_phong, 1);
+	}
+	return true;
+}
+
+void Builder::gather_phong(const Dictionary &p_node, Phong &r_phong, int p_depth) const {
+	String type = p_node.get("type", "");
+	if (p_depth > MAX_DEPTH || type == "entity" || type == "prefab") {
+		return;
+	}
+	Array children = p_node.get("children", Array());
+	for (int i = 0; i < children.size(); i++) {
+		gather_phong(children[i], r_phong, p_depth + 1);
+	}
+	Array faces = p_node.get("faces", Array());
+	for (int i = 0; type == "brush" && i < faces.size(); i++) {
+		Array polygon = Dictionary(faces[i]).get("polygon", Array());
+		PackedVector3Array points;
+		for (int j = 0; j < polygon.size(); j++) {
+			points.push_back(to_godot(read_vec3(polygon[j])));
+		}
+		if (points.size() < 3) {
+			continue;
+		}
+		const Vector3 normal = newell_normal(points);
+		for (int j = 0; j < polygon.size(); j++) {
+			Vector<Vector3> &seen = r_phong.at[Phong::key(read_vec3(polygon[j]))];
+			bool known = false;
+			for (const Vector3 &n : seen) {
+				known = known || n.dot(normal) > 0.999999;
+			}
+			if (!known) {
+				seen.push_back(normal);
+			}
+		}
+	}
+}
+
 void Builder::add_container(const Dictionary &p_node, int p_depth) {
 	Node3D *node = memnew(Node3D);
 	String name = String(p_node.get("name", "")).validate_node_name();
@@ -1682,6 +1769,13 @@ void Builder::add_entity(const Dictionary &p_entity) {
 	}
 	Array brushes = p_entity.get("children", Array());
 	bool solid = !brushes.is_empty();
+	struct Restore {
+		const Phong *&slot;
+		const Phong *outer;
+		~Restore() { slot = outer; }
+	} restore{ phong, phong };
+	Phong own_phong;
+	phong = read_phong(p_entity, own_phong) ? &own_phong : nullptr;
 	Dictionary config;
 	if (options.entity_map.is_valid()) {
 		config = options.entity_map->entity_config(classname, solid);
@@ -2059,6 +2153,9 @@ Error Builder::build(const Dictionary &p_doc, String &r_error) {
 		sky_shader = embedded_shader(world_node, Shader::MODE_SKY);
 	}
 	parent = root;
+	if (read_phong(world_node, world_phong)) {
+		phong = &world_phong;
+	}
 	walk(world_node, 0);
 	if (!has_environment && options.prefabs_above.is_empty() && options.entity_map.is_valid() && options.entity_map->get_default_environment()) {
 		add_environment(Dictionary());

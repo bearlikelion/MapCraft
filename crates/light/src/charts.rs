@@ -16,6 +16,8 @@ pub struct Chart {
     pub face: usize,
     pub material: String,
     pub normal: DVec3,
+    /// The face's corners and their normals when it is phong shaded; empty on a flat face.
+    pub corners: Vec<(DVec3, DVec3)>,
     /// The world point at chart coordinate (0, 0); chart coordinates count luxels.
     pub origin: DVec3,
     /// Unit tangents along the chart's x and y.
@@ -113,7 +115,10 @@ impl Chart {
     pub fn surface_at(&self, c: DVec2) -> (DVec3, DVec3) {
         match self.bumps.as_ref().and_then(|b| b.at(c)) {
             Some((p, n)) => (p, n.normalize_or(self.normal)),
-            None => (self.to_world(c), self.normal),
+            None => {
+                let p = self.to_world(c);
+                (p, mapcraft_map::phong::fan_normal(&self.corners, p, self.normal))
+            }
         }
     }
 
@@ -157,6 +162,7 @@ fn inside(polygon: &[DVec2], c: DVec2) -> DVec2 {
 /// Luxel size comes from a face's `lightmapscale`, else `luxel`.
 pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Chart> {
     let mut charts = Vec::new();
+    let phong = mapcraft_map::Phong::of(map);
     for (id, node) in map.nodes() {
         let NodeKind::Brush(b) = &node.kind else { continue };
         if mapcraft_map::boolean::source_op(map, id).is_some() {
@@ -199,6 +205,7 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
                 face: index,
                 material: face.material.clone(),
                 normal: plane.normal,
+                corners: if phong.covers(id) { w.0.iter().map(|p| (*p, phong.normal(id, *p, plane.normal))).collect() } else { Vec::new() },
                 origin,
                 bu,
                 bv,
@@ -253,6 +260,7 @@ mod tests {
             face: 0,
             material: String::new(),
             normal: DVec3::Z,
+            corners: Vec::new(),
             origin: DVec3::ZERO,
             bu: DVec3::X,
             bv: DVec3::Y,

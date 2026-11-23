@@ -94,6 +94,12 @@ The Lit view follows edits with quick draft bakes; Bake Lighting makes the full 
 | `_minlight` | 0 0 0 0 | Color and brightness no baked surface falls below |
 | `_minlight_exclude` | | Materials whose faces take no minimum light, separated by commas |
 
+### Phong shading
+
+`_phong 1` on a brush entity smooths the shading where its brush faces meet, so a ramp or pipe built from segments looks round; on worldspawn it covers the brushes outside entities.
+Faces meeting at up to `_phong_angle` degrees (89 unless set) share their normals, and sharper edges stay hard.
+The Lit view, the baker and the Godot importer all follow it.
+
 Dirt is not applied to minimum light.
 A material's emission lights the room around it, and changing its emission strength marks the bake out of date.
 `mapcraft-cli bake` takes `--luxel`, `--bounces`, `--rays`, `--extra` and `--soft`, which win over the map's keys.

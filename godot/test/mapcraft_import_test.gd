@@ -34,6 +34,7 @@ func _initialize() -> void:
 	_check_blend_fallbacks()
 	_check_runtime_build()
 	_check_tool_brushes()
+	_check_phong()
 	_check_runtime_load()
 	_check_untrusted_prefabs()
 	_check_paths_stay_in_project()
@@ -379,6 +380,38 @@ func _check_tool_brushes() -> void:
 	var body: StaticBody3D = map.get_node_or_null("WorldCollision") as StaticBody3D
 	_expect(body != null and body.get_child_count() == 2, "skip and clip brushes still collide")
 	map.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func _check_phong() -> void:
+	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(MAP))
+	var kept: Array = []
+	for child: Dictionary in doc["map"]["root"]["children"]:
+		if child["id"] == 3:
+			for face: Dictionary in child["faces"]:
+				face["material"] = "checker"
+			kept.append(child)
+	doc["map"]["root"]["children"] = kept
+	var path: String = "user://phong.mcmap"
+	for angle: String in ["89", "95"]:
+		doc["map"]["root"]["properties"] = [["_phong", "1"], ["_phong_angle", angle]]
+		_write_text(path, JSON.stringify(doc))
+		var map: MapCraftMap = MapCraftMap.new()
+		map.map_file = path
+		map.entity_map = load(ENTITY_MAP) as MapCraftEntityMap
+		_expect(map.build() == OK, "a phong shaded map builds")
+		var world: MeshInstance3D = map.get_node_or_null("WorldMesh") as MeshInstance3D
+		var mesh: ArrayMesh = world.mesh as ArrayMesh if world != null else null
+		var normals: PackedVector3Array = PackedVector3Array()
+		if mesh != null and mesh.get_surface_count() > 0:
+			normals = mesh.surface_get_arrays(0)[Mesh.ARRAY_NORMAL]
+		var round: int = 0
+		for normal: Vector3 in normals:
+			if absf(normal[normal.abs().max_axis_index()]) < 0.9:
+				round += 1
+		var expected: int = normals.size() if angle == "95" else 0
+		_expect(not normals.is_empty() and round == expected, "a box's edges smooth only past 90 degrees (%s)" % angle)
+		map.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 

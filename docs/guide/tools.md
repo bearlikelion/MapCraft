@@ -452,6 +452,8 @@ They are in the **Tools** menu.
 | **Boolean > Subtract** | `Ctrl+Shift+B` | Cuts the selected brushes out of the brushes they touch and keeps the cut live; see [Boolean groups](boolean-groups.md) |
 | **Hollow** | `Ctrl+H` | Turns each selected brush into walls one grid step thick around an empty inside, in a group named Hollow that it selects |
 | **Merge Brushes** | `Ctrl+J` | Joins two or more selected brushes into one when together they make one convex shape |
+| **Merge Faces** | none | With two faces picked, makes a new brush spanning them, the convex shape around their corners |
+| **Fix Z-Fighting** | none | Sets every face that other brushes' faces on the same plane wholly cover to the SDK's no-draw material, so they stop flickering |
 | **Flip X**, **Flip Y**, **Flip Z** | `Ctrl+L`, `Ctrl+I`, `Ctrl+Alt+L` | Mirrors the selection through its center |
 | **Rotate 90° Clockwise** | `Ctrl+R` | Turns the selection a quarter turn about Z through its center |
 | **Rotate 90° Counter-Clockwise** | `Ctrl+Shift+R` | The same, the other way |
@@ -465,6 +467,7 @@ A few of these have limits worth knowing:
 
 - **Carve** leaves hidden, tagged off, locked and out of cordon brushes alone, and the selected brushes stay.
 - **Merge Brushes** refuses anything that is not one convex shape (no dents or hollows), such as a curve.
+- **Fix Z-Fighting** cannot hide faces that only partly overlap, since either one would leave a hole: it picks them and the status bar says how many, so their brushes can be resized or carved.
 - **Drop to Floor** passes through triggers, clips and other `tools/` brushes.
   An object sunk into its floor rises onto it.
   Objects with nothing below stay put, and the status bar says so.

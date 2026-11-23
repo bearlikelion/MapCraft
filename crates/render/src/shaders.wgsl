@@ -50,6 +50,18 @@ override ANTI_TILE: u32 = 0u;
 // See-through surfaces show only faces turned toward the camera, as Godot draws them, so a glass brush's far side stays hidden.
 override CULL_BACK: bool = false;
 
+// Faces seen from behind sit a hair deeper, so a face touching a brush wins over that brush's inside instead of flickering.
+const BACK_DEPTH: f32 = 0.99998;
+
+struct Deep {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+fn deep(color: vec4<f32>, depth: f32, front: bool) -> Deep {
+    return Deep(color, select(depth * BACK_DEPTH, depth, front));
+}
+
 fn culled(i: MeshOut) -> bool {
     return CULL_BACK && dot(i.normal, globals.eye.xyz - i.world) < 0.0;
 }
@@ -272,6 +284,9 @@ fn paint_overlay(c: vec3<f32>, i: MeshOut) -> vec3<f32> {
 fn vs_mesh(v: MeshIn) -> MeshOut {
     var o: MeshOut;
     o.clip = globals.view_proj * vec4<f32>(v.pos, 1.0);
+    if dot(v.normal, globals.eye.xyz - v.pos) < 0.0 {
+        o.clip.z *= BACK_DEPTH;
+    }
     o.normal = v.normal;
     o.uv = v.uv;
     o.tint = v.tint;
@@ -537,7 +552,7 @@ fn baked_surface(i: BakedOut, h: Hex) -> BakedSurface {
 }
 
 @fragment
-fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
+fn fs_baked(i: BakedOut, @builtin(front_facing) front: bool) -> Deep {
     let a = layer(tex, samp, i.uv);
     let c = varied(a.color * material.tint, i.world);
     let s = baked_surface(i, a.hex);
@@ -546,12 +561,12 @@ fn fs_baked(i: BakedOut) -> @location(0) vec4<f32> {
         discard;
     }
     let emitted = (layer(emission_map, samp, i.uv).color.rgb + material.emission.rgb) * material.emission.a;
-    return vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0);
+    return deep(vec4<f32>(environment_color(to_linear(min(to_srgb(c.rgb) * light, vec3<f32>(1.0))) + emitted, i.world), 1.0), i.clip.z, front);
 }
 
 // MapCraft's baker stores linear light the way Godot applies it: the albedo times the lightmap, occluded, plus the sky's reflection.
 @fragment
-fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
+fn fs_baked_linear(i: BakedOut, @builtin(front_facing) front: bool) -> Deep {
     let a = layer(tex, samp, i.uv);
     let c = varied(a.color * material.tint, i.world);
     let s = baked_surface(i, a.hex);
@@ -565,12 +580,12 @@ fn fs_baked_linear(i: BakedOut) -> @location(0) vec4<f32> {
     let r = normalize(mix(reflect(-v, s.n), s.n, rough * rough));
     let shine = env_brdf(f0, rough, max(dot(s.n, v), 1e-4)) * hemisphere(r);
     let emitted = (layer(emission_map, samp, i.uv).color.rgb + material.emission.rgb) * material.emission.a;
-    return vec4<f32>(environment_color((c.rgb * (1.0 - s.orm.b) * light + shine) * s.orm.r + emitted, i.world), 1.0);
+    return deep(vec4<f32>(environment_color((c.rgb * (1.0 - s.orm.b) * light + shine) * s.orm.r + emitted, i.world), 1.0), i.clip.z, front);
 }
 
 @fragment
-fn fs_baked_unlit(i: BakedOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(varied(layer(tex, samp, i.uv).color * material.tint, i.world).rgb, 1.0);
+fn fs_baked_unlit(i: BakedOut, @builtin(front_facing) front: bool) -> Deep {
+    return deep(vec4<f32>(varied(layer(tex, samp, i.uv).color * material.tint, i.world).rgb, 1.0), i.clip.z, front);
 }
 
 // Quake's sky on a face: the view direction flattened toward a dome picks the spot, and the near

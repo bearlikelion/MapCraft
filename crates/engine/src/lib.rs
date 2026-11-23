@@ -22,6 +22,10 @@ mod uv;
 mod vertex;
 
 pub use commands::{CommandSpec, commands, execute, find};
+
+/// The material of faces nobody sees, unless the SDK names its own.
+pub const NODRAW: &str = "tools/skip";
+
 pub use convert::Converted;
 pub use generate::generator_transform;
 pub use issues::{Fix, Issue, LINK_KEYS, Severity, is_broken_link, is_unresolved, target_names, validate};

@@ -13,6 +13,7 @@ mod map;
 pub mod mesh_edit;
 pub mod mirror;
 mod node;
+pub mod phong;
 
 use std::collections::BTreeMap;
 
@@ -22,7 +23,7 @@ pub use boolean::Operation;
 pub use brush::{
     ANTI_TILE, AntiTile, Bevel, Brush, BrushError, CONTENT_FLAGS, Face, Justify, TexAxis, TexDefaults, blend_layer, is_tool_material, share_edge, wrap_runs,
 };
-pub use cover::covered_faces;
+pub use cover::{ZFighting, covered_faces, z_fighting};
 pub use curve::{CurveOp, Path, PathPoint};
 pub use disp::{BlendRole, Displacement};
 pub use entity::{Connection, Entity, parse_vec3};
@@ -30,6 +31,7 @@ pub use link::Link;
 pub use map::{Changes, Edit, EditError, Map, ROOT};
 pub use mirror::{Axis, Mirror};
 pub use node::{Cordon, Generator, Group, Layer, Node, NodeKind, Prefab, PropertyOverride, Tag};
+pub use phong::Phong;
 
 /// The longest embedded shader source an edit accepts, in bytes.
 pub const MAX_SHADER_BYTES: usize = 256 * 1024;

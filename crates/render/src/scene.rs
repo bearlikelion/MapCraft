@@ -257,6 +257,7 @@ pub fn build_scene(
         .collect();
     let mut scene = SceneData { shaders, ..SceneData::default() };
     let visible = map.visible_nodes();
+    let phong = mapcraft_map::Phong::of(map);
     let mut stack = vec![(mapcraft_map::ROOT, false, None::<[f32; 4]>)];
     while let Some((id, parent_selected, entity_color)) = stack.pop() {
         let Some(node) = map.get(id).filter(|_| visible.contains(&id)) else { continue };
@@ -365,7 +366,7 @@ pub fn build_scene(
                     }
                     let v = |p: DVec3| MeshVertex {
                         pos: p.as_vec3().to_array(),
-                        normal,
+                        normal: if phong.covers(id) { phong.normal(id, p, plane_normal).as_vec3().to_array() } else { normal },
                         uv: face.uv(p, size).as_vec2().to_array(),
                         tint,
                         tangent,

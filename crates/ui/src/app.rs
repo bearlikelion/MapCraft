@@ -507,6 +507,8 @@ impl MapCraftApp {
             if let Some(d) = &s.manifest.textures.default {
                 self.session.tex.material = d.clone();
             }
+            self.session.new_brush_material.clone_from(&s.manifest.textures.new_brush);
+            self.session.nodraw = s.manifest.textures.nodraw.clone().unwrap_or_else(|| mapcraft_engine::NODRAW.into());
         }
         let user_plugins = self.data_dir.as_ref().map(|d| d.join("plugins"));
         self.project = Project::load(sdk, vars, self.plugin_host.as_ref(), user_plugins.as_deref());

@@ -16,6 +16,8 @@
 	_dirtangle(float) : "Dirt angle" : "88" : "The cone dirt is measured over, 1 to 90 degrees; lower it to keep dirt off arches and the insides of pipes."
 	_minlight(color255) : "Minimum light" : "0 0 0 0" : "Color and brightness no baked surface falls below."
 	_minlight_exclude(string) : "Minimum light exclude" : "" : "Materials whose faces take no minimum light, separated by commas."
+	_phong(boolean) : "Phong shading" : 0 : "Smooths the shading where the world's brush faces meet, so ramps and pipes built from segments look round."
+	_phong_angle(float) : "Phong angle" : "89" : "Faces meeting at up to this many degrees shade as one curve; sharper edges stay hard."
 ]
 
 @BaseClass = Targetname
@@ -23,9 +25,17 @@
 	targetname(target_source) : "Name" : : "The name other entities use to refer to this one."
 ]
 
-@SolidClass color(128 128 128) = func_detail : "Geometry that does not block visibility." []
+@SolidClass color(128 128 128) = func_detail : "Geometry that does not block visibility."
+[
+	_phong(boolean) : "Phong shading" : 0 : "Smooths the shading where this entity's brush faces meet, so ramps and pipes built from segments look round."
+	_phong_angle(float) : "Phong angle" : "89" : "Faces meeting at up to this many degrees shade as one curve; sharper edges stay hard."
+]
 
-@SolidClass color(128 128 200) = func_illusionary : "Geometry players see but pass through." []
+@SolidClass color(128 128 200) = func_illusionary : "Geometry players see but pass through."
+[
+	_phong(boolean) : "Phong shading" : 0 : "Smooths the shading where this entity's brush faces meet, so ramps and pipes built from segments look round."
+	_phong_angle(float) : "Phong angle" : "89" : "Faces meeting at up to this many degrees shade as one curve; sharper edges stay hard."
+]
 
 @PointClass size(-16 -16 0, 16 16 72) color(0 255 0) = info_player_start : "Where the player spawns; a Marker3D in Godot."
 [

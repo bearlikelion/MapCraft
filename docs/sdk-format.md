@@ -80,7 +80,9 @@ steps = [
 | `triggers` | Trigger classes, `["trigger*"]` by default, where a name ending in `*` covers every class starting with the rest; brushes tied to one lose their materials and the 3D views draw them see-through in the class color |
 | `textures.roots` | Folders searched for materials, first match wins; texture folders the user adds in SDK Settings are searched after these |
 | `textures.extensions` | File types that count as materials: `png`, `jpg`, `jpeg`, `tga` and `bmp` by default; `ktx2` can be listed too, read when its blocks are BC1, BC3, BC5 or BC7 and it is not supercompressed |
-| `textures.default` | Material for new brushes |
+| `textures.default` | The current material when the SDK loads |
+| `textures.new_brush` | Material the shape tools make brushes of, such as `tools/skip`, so mappers paint only the faces players see; unset, they use the current material |
+| `textures.nodraw` | Material of faces nobody sees, which Fix Z-Fighting gives hidden faces; `tools/skip` by default |
 | `textures.scale` | Texture scale for new faces |
 | `textures.pixelated` | `true` magnifies textures without smoothing, as Quake and other early 3D games do; off by default |
 | `textures.sky` | Name prefixes of sky materials, such as `["sky"]` for Quake; a sky picture holds the far layer in its right half and the near layer, with clear pixels, in its left half, and faces with it show the sky projected from the view direction, as Quake draws it |

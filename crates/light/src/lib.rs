@@ -174,6 +174,7 @@ pub fn irradiance(lm: &Lightmap, map: &Map) -> Vec<Vec<u32>> {
     let size = lm.size as usize;
     let mut out = vec![vec![0u32; size * size]; lm.slices.len()];
     let mut solid: Option<(NodeId, mapcraft_geom::Solid)> = None;
+    let phong = mapcraft_map::Phong::of(map);
     for f in &lm.faces {
         let Some(brush) = map.get(f.node).and_then(|n| n.kind.brush()) else { continue };
         if solid.as_ref().is_none_or(|(id, _)| *id != f.node) {
@@ -181,7 +182,23 @@ pub fn irradiance(lm: &Lightmap, map: &Map) -> Vec<Vec<u32>> {
         }
         let Some((_, s)) = &solid else { continue };
         let (Some(face), Some(Some(w))) = (brush.faces.get(f.face as usize), s.faces.get(f.face as usize)) else { continue };
-        let Some(normal) = face.plane().map(|p| p.normal) else { continue };
+        let Some(plane) = face.plane() else { continue };
+        let normal = plane.normal;
+        let corners: Vec<_> = if phong.covers(f.node) { w.0.iter().map(|p| (*p, phong.normal(f.node, *p, normal))).collect() } else { Vec::new() };
+        // The point of the face under a texel, from the face's mapping turned around.
+        let (bu, bv) = plane.basis();
+        let row = |k: usize, v: mapcraft_geom::DVec3| f.uv[k][..3].iter().zip(v.to_array()).map(|(m, c)| f64::from(*m) * c).sum::<f64>();
+        let (m, o) = ([[row(0, bu), row(0, bv)], [row(1, bu), row(1, bv)]], normal * plane.dist);
+        let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        let facing = |x: usize, y: usize| {
+            if corners.is_empty() || det.abs() < 1e-12 {
+                return normal;
+            }
+            let [u, v] = [(x as f64 + 0.5) / size as f64, (y as f64 + 0.5) / size as f64];
+            let (du, dv) = (u - row(0, o) - f64::from(f.uv[0][3]), v - row(1, o) - f64::from(f.uv[1][3]));
+            let p = o + bu * ((du * m[1][1] - dv * m[0][1]) / det) + bv * ((dv * m[0][0] - du * m[1][0]) / det);
+            mapcraft_map::phong::fan_normal(&corners, p, normal)
+        };
         let (Some(slice), Some(dest)) = (lm.slices.get(f.slice as usize), out.get_mut(f.slice as usize)) else { continue };
         let texel = |p: &mapcraft_geom::DVec3| f.uv_at(p.to_array()).map(|v| f64::from(v) * size as f64);
         let (lo, hi) =
@@ -199,7 +216,7 @@ pub fn irradiance(lm: &Lightmap, map: &Map) -> Vec<Vec<u32>> {
                 let at = y * size + x;
                 let texels = std::array::from_fn(|k| rgbe::decode(slice.layers[k].get(at).copied().unwrap_or_default()));
                 if let Some(d) = dest.get_mut(at) {
-                    *d = rgbe::encode(shade(&texels, normal));
+                    *d = rgbe::encode(shade(&texels, facing(x, y)));
                 }
             }
         }
@@ -282,7 +299,9 @@ pub fn fingerprint(map: &Map, surface: &dyn Fn(&str) -> Surface) -> u64 {
                     h.str(f.attrs.get("lightmapscale").map_or("", String::as_str));
                 }
             }
-            NodeKind::Entity(e) | NodeKind::World(e) if e.classname.starts_with("light") || matches!(node.kind, NodeKind::World(_)) => {
+            NodeKind::Entity(e) | NodeKind::World(e)
+                if e.classname.starts_with("light") || e.get("_phong").is_some() || matches!(node.kind, NodeKind::World(_)) =>
+            {
                 h.str(&e.classname);
                 for (k, v) in e.properties.iter() {
                     h.str(k);

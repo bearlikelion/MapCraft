@@ -622,7 +622,7 @@ impl MapCraftApp {
             return;
         }
         box_lines(out, b.min, b.max, [PREVIEW[0], PREVIEW[1], PREVIEW[2], 0.3]);
-        for brush in self.shape.brushes(b, &self.session.tex).unwrap_or_default() {
+        for brush in self.shape.brushes(b, &self.session.brush_tex()).unwrap_or_default() {
             let Ok(solid) = brush.solid() else { continue };
             for w in solid.faces.iter().flatten() {
                 for (i, p) in w.0.iter().enumerate() {

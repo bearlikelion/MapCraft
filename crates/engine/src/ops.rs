@@ -276,8 +276,58 @@ impl Session {
         self.selected_leaves().into_iter().filter(|id| self.map.get(*id).is_some_and(|n| n.kind.brush().is_some())).collect()
     }
 
+    /// What the shape tools make brushes of.
+    pub fn brush_tex(&self) -> TexDefaults {
+        TexDefaults { material: self.new_brush_material.clone().unwrap_or_else(|| self.tex.material.clone()), scale: self.tex.scale }
+    }
+
+    /// Makes a brush spanning the two picked faces, the convex hull of their corners.
+    pub fn merge_faces(&mut self) -> Result<NodeId, EngineError> {
+        if self.face_selection.len() != 2 {
+            return Err(EngineError::Refused("pick two faces to merge"));
+        }
+        let mut points = Vec::new();
+        for (id, face) in &self.face_selection {
+            let Some(b) = self.map.get(*id).and_then(|n| n.kind.brush()) else { continue };
+            let solid = b.solid()?;
+            let winding = b.faces.iter().position(|f| f.id == *face).and_then(|i| solid.faces.get(i)?.as_ref());
+            points.extend(winding.into_iter().flat_map(|w| w.0.iter().copied()));
+        }
+        let brush = Brush::from_vertices(&points, &[], &self.tex)?;
+        brush.solid()?;
+        let mut e = self.map.edit();
+        let id = e.insert(self.active_parent, NodeKind::Brush(brush))?;
+        let c = e.finish();
+        self.apply("Merge faces", c);
+        self.face_selection.clear();
+        self.selection = BTreeSet::from([id]);
+        Ok(id)
+    }
+
+    /// Stops faces that lie wholly inside another brush's face on the same plane from drawing, and picks the ones that only partly overlap.
+    pub fn fix_z_fighting(&mut self) -> Result<(), EngineError> {
+        let found = mapcraft_map::z_fighting(&self.map);
+        let nodraw = self.nodraw.clone();
+        if !found.hidden.is_empty() {
+            self.edit_face_set(&found.hidden, "Fix z-fighting", None, |f| f.material.clone_from(&nodraw))?;
+        }
+        let plural = |n: usize| if n == 1 { "face" } else { "faces" };
+        let (hidden, partial) = (found.hidden.len(), found.partial.len());
+        self.notice = Some(match (hidden, partial) {
+            (0, 0) => "No z-fighting faces found".into(),
+            (h, 0) => format!("{h} z-fighting {} set to {nodraw}", plural(h)),
+            (0, p) => format!("{p} {} only partly overlap and are picked: resize or carve their brushes", plural(p)),
+            (h, p) => format!("{h} z-fighting {} set to {nodraw}; {p} more only partly overlap and are picked: resize or carve their brushes", plural(h)),
+        });
+        if partial > 0 {
+            self.selection.clear();
+            self.face_selection = found.partial;
+        }
+        Ok(())
+    }
+
     pub fn create_brush(&mut self, bounds: Aabb) -> Result<NodeId, EngineError> {
-        let brush = Brush::cuboid(bounds, &self.tex);
+        let brush = Brush::cuboid(bounds, &self.brush_tex());
         brush.solid()?;
         let mut e = self.map.edit();
         let id = e.insert(self.active_parent, NodeKind::Brush(brush))?;
@@ -289,7 +339,7 @@ impl Session {
 
     /// Creates the brushes of `shape` filling `bounds` and selects them; several brushes come in a group.
     pub fn create_shape(&mut self, shape: Shape, bounds: Aabb) -> Result<Vec<NodeId>, EngineError> {
-        let brushes = shape.brushes(bounds, &self.tex)?;
+        let brushes = shape.brushes(bounds, &self.brush_tex())?;
         let mut e = self.map.edit();
         let group =
             if brushes.len() > 1 { Some(e.insert(self.active_parent, NodeKind::Group(Group { name: "Arch".into(), ..Group::default() }))?) } else { None };
@@ -306,7 +356,7 @@ impl Session {
 
     /// Draws `shape` as a new brush entity of `classname` with `properties`, in one undo step; a trigger's brushes are untextured.
     pub fn create_brush_entity(&mut self, shape: Shape, bounds: Aabb, classname: &str, properties: Vec<(String, String)>) -> Result<NodeId, EngineError> {
-        let brushes = shape.brushes(bounds, &self.tex)?;
+        let brushes = shape.brushes(bounds, &self.brush_tex())?;
         let mut entity = Entity::new(classname);
         entity.properties = properties;
         let trigger = is_trigger(&self.triggers, classname);
@@ -1464,6 +1514,39 @@ mod tests {
         s.extrude(&faces, Push::Offset(DVec3::X * 16.0), ExtrudeMode::Resize, &[], None).unwrap();
         assert_eq!(brush(&s, left).bounds().unwrap().max.x, 80.0);
         assert_eq!(brush(&s, right).bounds().unwrap().min.x, 80.0, "the seam slides");
+    }
+
+    #[test]
+    fn two_picked_faces_merge_into_a_brush_between_them() {
+        let mut s = session();
+        let face = |s: &Session, id: NodeId, n: DVec3| (id, brush(s, id).faces.iter().find(|f| f.plane().unwrap().normal.distance(n) < 1e-9).unwrap().id);
+        let a = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let b = s.create_brush(Aabb::new(DVec3::new(128.0, 16.0, 16.0), DVec3::new(192.0, 48.0, 48.0))).unwrap();
+        s.face_selection = BTreeSet::from([face(&s, a, DVec3::X)]);
+        assert!(matches!(s.merge_faces(), Err(EngineError::Refused(_))), "one face is not enough");
+        s.face_selection = BTreeSet::from([face(&s, a, DVec3::X), face(&s, b, -DVec3::X)]);
+        let bridge = s.merge_faces().unwrap();
+        let bounds = brush(&s, bridge).bounds().unwrap();
+        assert!(bounds.min.distance(DVec3::new(64.0, 0.0, 0.0)) < 1e-9 && bounds.max.distance(DVec3::new(128.0, 64.0, 64.0)) < 1e-9);
+        assert_eq!(brush(&s, bridge).faces.len(), 6, "a frustum between the big face and the small one");
+        assert!(s.face_selection.is_empty() && s.selection == BTreeSet::from([bridge]));
+    }
+
+    #[test]
+    fn fix_z_fighting_hides_the_inner_face_and_shape_tools_follow_the_sdk() {
+        let mut s = session();
+        s.tex.material = "wall".into();
+        let big = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        let small = s.create_brush(Aabb::new(DVec3::new(16.0, 16.0, 32.0), DVec3::new(48.0, 48.0, 64.0))).unwrap();
+        s.fix_z_fighting().unwrap();
+        let materials = |s: &Session, id: NodeId| brush(s, id).faces.iter().filter(|f| f.material == "tools/skip").count();
+        assert_eq!((materials(&s, big), materials(&s, small)), (0, 1), "only the top inside the bigger top stops drawing");
+        s.fix_z_fighting().unwrap();
+        assert_eq!(s.notice.as_deref(), Some("No z-fighting faces found"));
+        s.new_brush_material = Some("tools/skip".into());
+        let fresh = s.create_brush(Aabb::new(DVec3::splat(256.0), DVec3::splat(320.0))).unwrap();
+        assert_eq!(materials(&s, fresh), 6, "the current material stays for painting");
+        assert_eq!(s.tex.material, "wall");
     }
 
     #[test]

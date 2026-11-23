@@ -89,7 +89,7 @@ pub(crate) fn action_icon(id: &str) -> Option<&'static str> {
         "tool.sculpt" => "mountains",
         "tool.path" => "itinerary",
         "vertex.mode_edge" => "edge",
-        "vertex.merge" | "tools.merge" => "arrow_merge",
+        "vertex.merge" | "tools.merge" | "face.merge" => "arrow_merge",
         "edit.undo" | "edit.undo_selection" => "arrow_uturn_up_left",
         "edit.redo" | "edit.redo_selection" => "arrow_uturn_up_right",
         "edit.delete" => "trash_can",

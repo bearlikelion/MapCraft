@@ -461,6 +461,22 @@ const COMMANDS: &[CommandSpec] = &[
         run: |s| s.merge_selection().map(|_| ()),
     },
     CommandSpec {
+        id: "face.merge",
+        label: "Merge Faces",
+        menu: "Tools/Merge Faces",
+        shortcut: None,
+        enabled: |s| s.face_selection.len() == 2,
+        run: |s| s.merge_faces().map(|_| ()),
+    },
+    CommandSpec {
+        id: "tools.fix_z_fighting",
+        label: "Fix Z-Fighting",
+        menu: "Tools/Fix Z-Fighting",
+        shortcut: None,
+        enabled: |_| true,
+        run: Session::fix_z_fighting,
+    },
+    CommandSpec {
         id: "tools.apply_material",
         label: "Apply Current Material",
         menu: "Tools/Apply Current Material",

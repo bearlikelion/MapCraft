@@ -73,6 +73,63 @@ pub fn covered_faces(map: &Map, only: Option<&BTreeSet<NodeId>>, see_through: &d
     out
 }
 
+/// Overlaps smaller than this, in square units, are faces that merely share an edge.
+const MIN_OVERLAP: f64 = 0.1;
+
+/// Faces that flicker because another brush's face lies on the same plane facing the same way.
+#[derive(Debug, Default, PartialEq)]
+pub struct ZFighting {
+    /// Faces the others wholly cover, which can simply stop drawing.
+    pub hidden: BTreeSet<(NodeId, FaceId)>,
+    /// Faces that only partly overlap, which takes reshaping a brush.
+    pub partial: BTreeSet<(NodeId, FaceId)>,
+}
+
+pub fn z_fighting(map: &Map) -> ZFighting {
+    let mut faces: Vec<(NodeId, FaceId, Winding, Plane, Aabb)> = Vec::new();
+    for (id, node) in map.nodes() {
+        let NodeKind::Brush(b) = &node.kind else { continue };
+        if b.has_displacement() || b.is_clip() || crate::boolean::source_op(map, id).is_some() {
+            continue;
+        }
+        let Ok(solid) = b.solid() else { continue };
+        for (f, w) in b.faces.iter().zip(solid.faces) {
+            if let (Some(w), Some(p), true) = (w, f.plane(), b.draws(f))
+                && let Some(bounds) = w.bounds()
+            {
+                faces.push((id, f.id, w, p, bounds));
+            }
+        }
+    }
+    let mut by_plane: HashMap<[i64; 4], Vec<usize>> = HashMap::new();
+    for (i, f) in faces.iter().enumerate() {
+        by_plane.entry(key(f.3.normal, f.3.dist)).or_default().push(i);
+    }
+    let mut out = ZFighting::default();
+    // Smallest first, so of two faces the same size one keeps drawing.
+    let mut order: Vec<usize> = (0..faces.len()).collect();
+    order.sort_by(|a, b| faces.get(*a).map(|f| f.2.area()).partial_cmp(&faces.get(*b).map(|f| f.2.area())).unwrap_or(std::cmp::Ordering::Equal));
+    for i in order {
+        let Some((id, face, w, p, bounds)) = faces.get(i) else { continue };
+        let Some(group) = by_plane.get(&key(p.normal, p.dist)) else { continue };
+        let others: Vec<&(NodeId, FaceId, Winding, Plane, Aabb)> =
+            group.iter().filter_map(|j| faces.get(*j)).filter(|o| o.0 != *id && o.4.intersects(bounds) && !out.hidden.contains(&(o.0, o.1))).collect();
+        let shared: Vec<f64> = others.iter().map(|o| overlap(w, &o.2, -p.normal).map_or(0.0, |x| x.area())).collect();
+        if shared.iter().sum::<f64>() >= w.area() - TOUCH {
+            // Overlapping covers can add up to the area and still leave a gap, so spot check points too.
+            let (c, n) = (w.center(), w.0.len());
+            let samples = (0..n).flat_map(|k| [w.0[k], (w.0[k] + w.0[(k + 1) % n]) / 2.0]).map(|q| q + (c - q) * 0.01).chain([c]);
+            if samples.into_iter().all(|q| others.iter().any(|o| inside(q, &o.2, -p.normal))) {
+                out.hidden.insert((*id, *face));
+                continue;
+            }
+        }
+        out.partial.extend(others.iter().zip(&shared).filter(|(_, a)| **a >= MIN_OVERLAP).flat_map(|(o, _)| [(o.0, o.1), (*id, *face)]));
+    }
+    out.partial.retain(|f| !out.hidden.contains(f));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use mapcraft_geom::Aabb;
@@ -95,6 +152,30 @@ mod tests {
 
     fn facing(m: &Map, id: NodeId, normal: DVec3) -> FaceId {
         m.get(id).unwrap().kind.brush().unwrap().faces.iter().find(|f| f.plane().unwrap().normal.distance(normal) < 1e-9).unwrap().id
+    }
+
+    #[test]
+    fn faces_on_one_plane_facing_one_way_z_fight() {
+        let boxes = [
+            (DVec3::ZERO, DVec3::splat(64.0), "a"),
+            (DVec3::new(16.0, 16.0, 32.0), DVec3::new(48.0, 48.0, 64.0), "b"),
+            (DVec3::new(32.0, 0.0, 0.0), DVec3::new(96.0, 64.0, 16.0), "c"),
+            (DVec3::new(64.0, 0.0, 16.0), DVec3::new(128.0, 64.0, 64.0), "d"),
+        ];
+        let (m, ids) = map(&boxes);
+        let found = z_fighting(&m);
+        assert_eq!(found.hidden, BTreeSet::from([(ids[1], facing(&m, ids[1], DVec3::Z))]), "the small top inside the big one stops drawing");
+        let partial = [(0, -DVec3::Z), (2, -DVec3::Z), (0, -DVec3::Y), (2, -DVec3::Y), (0, DVec3::Y), (2, DVec3::Y)];
+        assert_eq!(found.partial, partial.into_iter().map(|(i, n)| (ids[i], facing(&m, ids[i], n))).collect(), "tops that touch along an edge do not fight");
+        let wall = [
+            (DVec3::ZERO, DVec3::new(64.0, 64.0, 16.0), "a"),
+            (DVec3::new(64.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 16.0), "b"),
+            (DVec3::new(32.0, 16.0, 8.0), DVec3::new(96.0, 48.0, 16.0), "c"),
+        ];
+        let (m, ids) = map(&wall);
+        let found = z_fighting(&m);
+        assert_eq!(found.hidden, BTreeSet::from([(ids[2], facing(&m, ids[2], DVec3::Z))]), "two faces together cover a third");
+        assert!(found.partial.is_empty());
     }
 
     #[test]

@@ -781,6 +781,9 @@ pub(crate) fn color(ui: &mut Ui, value: &mut String, unit: bool, mixed: bool) ->
         *value = out.join(" ");
     }
     let field = text(ui, value, "", mixed && !swatch.changed());
+    if field.changed() {
+        value.retain(|c| c.is_ascii_digit() || matches!(c, ' ' | '.' | '-'));
+    }
     swatch | field
 }
 
