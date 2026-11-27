@@ -3,11 +3,13 @@
 
 @SolidClass = worldspawn : "World"
 [
-	_lightmap_scale(float) : "Lightmap scale" : "64" : "World units per luxel of baked lighting, not a texture size: 16 is sharp, 64 is soft and 1 is the smallest. Smaller is slower to bake and larger in the game, which takes at most 64 MB of it. A face's own lightmap scale wins."
+	_lightmap_scale(float) : "Lightmap scale" : "64" : "World units per luxel of baked lighting, not a texture size: 16 is sharp, 64 is soft and 1 is the smallest. Smaller is slower to bake and larger in the game, which aims at 64 MB of it (_lightmap_budget) and keeps fewer bits of it (_lightmap_bits). A face's own lightmap scale wins."
 	_lightmap_extra(choices) : "Lightmap samples" : 1 : "Samples baked per luxel and averaged, for smoother shadow edges at the cost of bake time. Automatic bakes always take one." = [ 1 : "1" 2 : "2 x 2" 4 : "4 x 4" ]
 	_lightmap_soft(integer) : "Lightmap softening" : 0 : "Luxels on every side each baked luxel is averaged with, 0 to 8, which blurs shadow edges."
 	_bounce(integer) : "Light bounces" : 1 : "How many times baked light bounces off surfaces, 0 to 16."
 	_lightmap_bias(float) : "Lightmap bias" : "0.5" : "How far off a surface baked light is measured, in world units; raise it when baked surfaces show dark specks or stripes, lower it when light leaks through thin brushes."
+	_lightmap_bits(string) : "Lightmap precision" : "8 7" : "Significant mantissa bits kept for the baked brightness, then for the three directional bands: 9 9 keeps every bit a texel holds. Lower numbers cost a little shading detail, less than the noise a bake already has, and make baked lighting a good deal smaller."
+	_lightmap_budget(integer) : "Lightmap budget" : 64 : "MiB of baked lighting to aim at: a map whose faces would take more baked light than this is baked at a coarser scale instead, and the bake says what it settled on. One entry of a map's package carries at most 64 MB; 0 bakes as sharp as the map asks."
 	_bouncecolorscale(float) : "Bounce color" : "1" : "How much of a surface's color tints the light it bounces, from 0 (none) to 1 (all of it)."
 	_dirt(boolean) : "Dirt" : 0 : "Darkens corners and crevices in baked lighting (ambient occlusion)."
 	_dirtdepth(float) : "Dirt depth" : "128" : "How far a surface looks for what crowds it, in world units."

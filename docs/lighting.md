@@ -84,6 +84,8 @@ The Lit view follows edits with quick draft bakes; Bake Lighting makes the full 
 | `_lightmap_extra` | 1 | 2 or 4 bakes 2 x 2 or 4 x 4 samples per luxel and averages them, for smoother shadow edges; draft bakes take one |
 | `_lightmap_soft` | 0 | Luxels on every side each luxel is averaged with, 0 to 8 |
 | `_lightmap_bias` | 0.5 | How far off a surface light is measured; raise it against dark specks, lower it against leaks through thin brushes |
+| `_lightmap_bits` | 8 7 | Significant mantissa bits kept for L0, then for the three directional bands: 9 9 keeps every bit a texel holds, and lower numbers shrink the bake far more than they move the light (see [What a bake costs](#what-a-bake-costs)) |
+| `_lightmap_budget` | 64 | MiB of baked lighting to aim at: a map whose faces hold more luxels than that gets baked at a coarser scale instead, and the bake says so; 0 leaves a bake uncapped |
 | `_bounce` | 1 | How many times light bounces, 0 to 16 |
 | `_bouncecolorscale` | 1 | How much of a surface's color tints the light it bounces, 0 to 1 |
 | `_dirt` | 0 | 1 darkens corners and crevices (ambient occlusion) |
@@ -94,6 +96,17 @@ The Lit view follows edits with quick draft bakes; Bake Lighting makes the full 
 | `_minlight` | 0 0 0 0 | Color and brightness no baked surface falls below |
 | `_minlight_exclude` | | Materials whose faces take no minimum light, separated by commas |
 
+### What a bake costs
+
+A luxel takes four texels and a texel four bytes, so 16 bytes a luxel before anything compresses; a sunlit map compresses to a little under half that for every luxel it really lights, and one entry of a map's package carries at most 64 MB. That is around 8 million luxels, which a map at `_lightmap_scale 16` reaches quickly if it has a sun, since a sunlit face rarely turns out flat enough to collapse to a single luxel.
+
+Two knobs trade that size away:
+
+- `_lightmap_bits` keeps fewer mantissa bits. The three directional bands are three quarters of the texels and the least visible of them, only saying which way light comes from: 7 bits instead of 9 moves a surface's shading by a couple of percent, which is less than the noise a bake gathers with its rays, and shrinks the bake by half. L0 carries the brightness and the shadow edges, so it loses less going to 8 bits. Keeping all 9 gets the exact bake back, at `9 9`.
+- `_lightmap_budget` is the size to aim at. The baker counts the lightmap every drawn face would take at the asked-for scale, and takes a coarser scale when that count passes the budget, warning with both numbers. The count leans high, since faces that turn out to need a single luxel are still counted whole, so a bake usually lands under what it aimed at. A face with its own `lightmapscale` keeps it, so a bake can still pass its budget; it warns about that too, and packing refuses to carry it.
+
+`mapcraft-cli bake` reports the size it wrote against the budget, and takes `--bits 8 7` and `--budget 32` in the same shape as the keys.
+
 ### Phong shading
 
 `_phong 1` on a brush entity smooths the shading where its brush faces meet, so a ramp or pipe built from segments looks round; on worldspawn it covers the brushes outside entities.
@@ -102,7 +115,7 @@ The Lit view, the baker and the Godot importer all follow it.
 
 Dirt is not applied to minimum light.
 A material's emission lights the room around it, and changing its emission strength marks the bake out of date.
-`mapcraft-cli bake` takes `--luxel`, `--bounces`, `--rays`, `--extra` and `--soft`, which win over the map's keys.
+`mapcraft-cli bake` takes `--luxel`, `--bounces`, `--rays`, `--extra`, `--soft`, `--bits` and `--budget`, which win over the map's keys.
 
 ## Material maps
 

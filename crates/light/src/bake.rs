@@ -367,11 +367,25 @@ pub fn bake(
     progress: &Progress,
 ) -> Result<(Lightmap, Vec<String>), BakeError> {
     let mut charts = charts::build(map, skip, settings.luxel);
-    let (lights, warnings) = lights::read(map);
+    let (lights, mut warnings) = lights::read(map);
+    if let Some(asked) = settings.asked_luxel {
+        warnings.push(format!(
+            "the lightmap scale went from {asked} to {} world units per luxel to fit the {} MB budget",
+            settings.luxel,
+            settings.budget >> 20
+        ));
+    }
     let surfaces = charts.iter().map(|c| tinted(surface(&c.material), settings.bounce_color)).collect::<Vec<_>>();
     let emissive = surfaces.iter().any(|s| s.emission.iter().any(|v| *v > 0.0));
     let gathers = if settings.bounces > 0 { settings.bounces } else { u32::from(lights.sky.is_some() || emissive) };
     let luxels: u64 = charts.iter().map(|c| u64::from(c.w) * u64::from(c.h)).sum();
+    if settings.budget > 0 && luxels.saturating_mul(crate::BUDGET_BYTES_PER_LUXEL) > settings.budget {
+        warnings.push(format!(
+            "this bake fills charts worth about {} MB, past its {} MB budget: the scale was already raised to fit, so a face with its own lightmapscale is likely keeping it",
+            (luxels * crate::BUDGET_BYTES_PER_LUXEL) >> 20,
+            settings.budget >> 20
+        ));
+    }
     progress.total.store(luxels * (1 + u64::from(gathers)), Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
     let scene = Scene { charts: &charts, surfaces, bvh: Bvh::new(triangles(map, &charts)), lights, settings, progress };
@@ -482,13 +496,14 @@ pub fn bake(
     let texels = (size as usize) * (size as usize);
     let mut slices: Vec<Slice> = (0..count).map(|_| Slice { layers: std::array::from_fn(|_| vec![0u32; texels]) }).collect();
     let mut faces = Vec::with_capacity(charts.len());
+    let bits = [settings.l0_bits, settings.band_bits, settings.band_bits, settings.band_bits];
     for ((c, t), flat) in charts.iter().zip(&totals).zip(&collapsed) {
         let Some(slice) = slices.get_mut(c.slice as usize) else { continue };
         let mut put = |x: u32, y: u32, sh: &Sh| {
             let at = (y as usize) * (size as usize) + x as usize;
             for (k, v) in pack_sh(sh).iter().enumerate() {
                 if let Some(texel) = slice.layers[k].get_mut(at) {
-                    *texel = rgbe::encode(*v);
+                    *texel = rgbe::encode_rounded(*v, bits[k]);
                 }
             }
         };

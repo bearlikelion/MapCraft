@@ -210,7 +210,8 @@ impl MapCraftApp {
             let size = std::fs::metadata(&light).map(|m| m.len()).unwrap_or(0);
             if size > pack::MAX_ENTRY_SIZE {
                 return Err(format!(
-                    "the baked lighting is {} MB, more than the {} MB a pack can carry; raise the map's Lightmap scale (worldspawn) and bake again",
+                    "the baked lighting is {} MB, more than the {} MB a pack can carry; raise the map's Lightmap scale (worldspawn), \
+                     or keep fewer of its mantissa bits (_lightmap_bits), and bake again",
                     size >> 20,
                     pack::MAX_ENTRY_SIZE >> 20
                 ));

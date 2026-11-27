@@ -20,7 +20,7 @@ const USAGE: &str = "usage:
   mapcraft-cli info <map.mcmap>
   mapcraft-cli validate <map.mcmap> [--sdk <dir>] [--var name=value]...
   mapcraft-cli fgd <file.fgd>... [--class <name>]
-  mapcraft-cli bake <map.mcmap> [--luxel <units>] [--bounces <n>] [--rays <n>] [--extra <1|2|4>] [--soft <n>] [--threads <n>]
+  mapcraft-cli bake <map.mcmap> [--luxel <units>] [--bounces <n>] [--rays <n>] [--extra <1|2|4>] [--soft <n>] [--threads <n>] [--bits <l0> [bands]] [--budget <MiB, 0 for none>]
   mapcraft-cli mcp
   mapcraft-cli sdk <list|check|install|remove|package|new|import-trenchbroom> ...";
 
@@ -163,9 +163,19 @@ fn bake(args: &[String]) -> Result<(), String> {
     let mut it = args.iter();
     let number = |v: Option<&String>| v.and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0).ok_or_else(|| USAGE.to_string());
     let mut overrides: Vec<(&str, f64)> = Vec::new();
+    let mut bits = None;
     while let Some(a) = it.next() {
         match a.as_str() {
-            flag @ ("--luxel" | "--bounces" | "--rays" | "--extra" | "--soft" | "--threads") => overrides.push((flag, number(it.next())?)),
+            flag @ ("--luxel" | "--bounces" | "--rays" | "--extra" | "--soft" | "--threads" | "--budget") => overrides.push((flag, number(it.next())?)),
+            "--bits" => {
+                // One or two numbers, quoted or not: a lone number is followed by the bands' if that reads as a number too.
+                let mut kept = it.next().ok_or(USAGE)?.clone();
+                if kept.parse::<f64>().is_ok() && it.clone().next().is_some_and(|next| next.parse::<f64>().is_ok()) {
+                    kept.push(' ');
+                    kept.push_str(it.next().ok_or(USAGE)?);
+                }
+                bits = Some(kept);
+            }
             _ => path = Some(a),
         }
     }
@@ -179,9 +189,14 @@ fn bake(args: &[String]) -> Result<(), String> {
             "--rays" => settings.rays = v.clamp(1.0, 4096.0) as u32,
             "--extra" => settings.extra = v.clamp(1.0, 4.0) as u32,
             "--soft" => settings.soft = v.min(8.0) as u32,
+            "--budget" => settings.set_budget(v),
             _ => settings.threads = v.min(1024.0) as usize,
         }
     }
+    if let Some(b) = bits {
+        settings.keep_bits(&b);
+    }
+    settings.fit_budget(&file.map);
     let skip = mapcraft_map::covered_faces(&file.map, None, &|_| false);
     let progress = mapcraft_light::Progress::default();
     let started = std::time::Instant::now();
@@ -202,14 +217,18 @@ fn bake(args: &[String]) -> Result<(), String> {
     let out = path.with_extension("mclight");
     std::fs::write(&out, &bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     println!(
-        "wrote {} in {:.1}s: {} faces, {} slices of {} luxels, {:.1} MB",
+        "wrote {} in {:.1}s: {} faces, {} slices of {} luxels, {:.1} MB{}",
         out.display(),
         started.elapsed().as_secs_f64(),
         lightmap.faces.len(),
         lightmap.slices.len(),
         lightmap.size,
-        bytes.len() as f64 / 1e6
+        bytes.len() as f64 / 2f64.powi(20),
+        if settings.budget > 0 { format!(" against a {} MB budget", settings.budget >> 20) } else { String::new() }
     );
+    if let Some(w) = settings.over_budget(bytes.len() as u64) {
+        eprintln!("warning: {w}");
+    }
     Ok(())
 }
 

@@ -54,11 +54,44 @@ pub struct Settings {
     pub dirt: Option<Dirt>,
     /// Worker threads; 0 uses every core.
     pub threads: usize,
+    /// Significant mantissa bits kept for the L0 layer, 4 to 9; 9 keeps every bit a texel holds.
+    /// Fewer costs a little shading detail and makes the atlas deflate far smaller, since a bake's own noise is finer than that.
+    pub l0_bits: u32,
+    /// Significant mantissa bits kept for each of the three L1 bands, 4 to 9. The bands are a third of the atlas each and the least
+    /// visible of the four, so they take the coarser cut by default.
+    pub band_bits: u32,
+    /// Bytes of baked lighting to aim at: a map whose faces hold more luxels than this gets a coarser `luxel` scale.
+    /// The default is what one entry of a map's package can carry; 0 leaves a bake uncapped.
+    pub budget: u64,
+    /// Set when `budget` coarsened `luxel` past what the map asked for, which is what `asked_luxel` was.
+    pub asked_luxel: Option<f64>,
 }
+
+/// What one entry of a `.mcpck` can carry, the size a bake aims at: `mapcraft_format::pack::MAX_ENTRY_SIZE`.
+pub const DEFAULT_BUDGET: u64 = 64 << 20;
+
+/// A baked luxel's four texels deflate to around this many bytes on a sunlit map, and to a good deal less on a dark or flat one.
+const BUDGET_BYTES_PER_LUXEL: u64 = 8;
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { luxel: 32.0, slice: 2048, bounces: 1, rays: 32, sun_samples: 8, bias: 0.5, extra: 1, soft: 0, bounce_color: 1.0, dirt: None, threads: 0 }
+        Self {
+            luxel: 32.0,
+            slice: 2048,
+            bounces: 1,
+            rays: 32,
+            sun_samples: 8,
+            bias: 0.5,
+            extra: 1,
+            soft: 0,
+            bounce_color: 1.0,
+            dirt: None,
+            threads: 0,
+            l0_bits: 8,
+            band_bits: 7,
+            budget: DEFAULT_BUDGET,
+            asked_luxel: None,
+        }
     }
 }
 
@@ -112,7 +145,69 @@ impl Settings {
                 angle: num("_dirtangle").filter(|v| *v > 0.0).map_or(d.angle, |v| v.clamp(1.0, 90.0)),
             });
         }
+        if let Some(v) = world.get("_lightmap_bits") {
+            self.keep_bits(v);
+        }
+        if let Some(v) = num("_lightmap_budget") {
+            self.set_budget(v);
+        }
+        self.fit_budget(map);
         self
+    }
+
+    /// `_lightmap_bits` as a map writes it, or `--bits` as the command line takes it: one number keeps both layers at it,
+    /// two give the L0 layer's and the bands'. Pulled inside the 4 to 9 bits a texel holds.
+    pub fn keep_bits(&mut self, numbers: &str) {
+        let keep = |v: f64| v.round().clamp(4.0, f64::from(rgbe::BITS)) as u32;
+        let bits: Vec<f64> = numbers.split_whitespace().filter_map(|t| t.parse::<f64>().ok()).collect();
+        if let Some(first) = bits.first() {
+            let (l0, band) = (keep(*first), bits.get(1).map_or(keep(*first), |v| keep(*v)));
+            (self.l0_bits, self.band_bits) = (l0, band);
+        }
+    }
+
+    /// `_lightmap_budget` as a map writes it, or `--budget` as the command line takes it, in MiB: 0 leaves a bake uncapped.
+    pub fn set_budget(&mut self, mib: f64) {
+        self.budget = if mib <= 0.0 { 0 } else { (mib.clamp(1.0, 1024.0) as u64) << 20 };
+    }
+
+    /// Coarsens [`Settings::luxel`] until `map`'s faces hold no more luxels than [`Settings::budget`] carries, so a
+    /// bake comes in under what a map's package can carry rather than outrunning it and being left behind.
+    /// A face with its own `lightmapscale` keeps it, so a bake can still pass what it was aiming at; it says so.
+    /// [`Settings::for_map`] calls this after reading a map's keys; call it again after changing the scale or the budget.
+    pub fn fit_budget(&mut self, map: &Map) {
+        self.asked_luxel = None;
+        if self.budget == 0 {
+            return;
+        }
+        let (asked, room) = (self.luxel, (self.budget / BUDGET_BYTES_PER_LUXEL).max(1));
+        // The step coarsens by the square root of how far over it is, which is where the count lands in one go
+        // unless wide faces are already capped at MAX_CHART or a face sets its own scale; then it stops trying.
+        for _ in 0..6 {
+            let held = charts::luxels(map, self.luxel);
+            if held <= room || self.luxel >= 4096.0 {
+                break;
+            }
+            self.luxel = (self.luxel * (held as f64 / room as f64).sqrt()).ceil().max(self.luxel + 1.0).min(4096.0);
+        }
+        if self.luxel > asked {
+            self.asked_luxel = Some(asked);
+        }
+    }
+
+    /// What to do about a bake whose file came to `bytes` of lighting, as a warning; nothing when it fits [`Settings::budget`].
+    pub fn over_budget(&self, bytes: u64) -> Option<String> {
+        (self.budget > 0 && bytes > self.budget).then(|| {
+            format!(
+                "the baked lighting came to {} MB, past the {} MB one entry of a map's package carries: raise the lightmap \
+                 scale above {}, or keep fewer than {} and {} mantissa bits, and bake again",
+                bytes >> 20,
+                self.budget >> 20,
+                self.luxel,
+                self.l0_bits,
+                self.band_bits
+            )
+        })
     }
 }
 
@@ -276,6 +371,9 @@ pub fn bake_fingerprint(map: &Map, settings: &Settings, surface: &dyn Fn(&str) -
     h.bytes(&settings.sun_samples.to_le_bytes());
     h.bytes(&settings.extra.to_le_bytes());
     h.bytes(&settings.soft.to_le_bytes());
+    h.bytes(&settings.l0_bits.to_le_bytes());
+    h.bytes(&settings.band_bits.to_le_bytes());
+    h.bytes(&settings.budget.to_le_bytes());
     h.f64(settings.bounce_color);
     if let Some(d) = settings.dirt {
         h.bytes(b"dirt");

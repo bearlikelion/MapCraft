@@ -62,7 +62,7 @@ fn average(p: &mapcraft_render::Picture) -> [f32; 3] {
 
 /// A bake by MapCraft's own baker, running on its own thread.
 struct Native {
-    job: std::thread::JoinHandle<Result<(mapcraft_light::Lightmap, Vec<String>, Bake), mapcraft_light::BakeError>>,
+    job: std::thread::JoinHandle<Result<(Vec<u8>, Vec<String>, Bake), mapcraft_light::BakeError>>,
     progress: Arc<mapcraft_light::Progress>,
     manual: bool,
     brushes: u64,
@@ -221,6 +221,9 @@ impl MapCraftApp {
             settings.bounces = settings.bounces.min(1);
             settings.sun_samples = settings.sun_samples.min(2);
             settings.extra = 1;
+            // A draft is coarse on purpose and its file is never kept, so it has nothing to warn about.
+            settings.asked_luxel = None;
+            settings.budget = 0;
         }
 
         let progress = Arc::new(mapcraft_light::Progress::default());
@@ -230,9 +233,11 @@ impl MapCraftApp {
         let job = std::thread::spawn(move || {
             let skip = mapcraft_map::covered_faces(&map, None, &|m| see_through.contains(m));
             let surface = |m: &str| surfaces.get(m).copied().unwrap_or_default();
-            let (lightmap, warnings) = mapcraft_light::bake(&map, &surface, &skip, &settings, &watch)?;
+            let (lightmap, mut warnings) = mapcraft_light::bake(&map, &surface, &skip, &settings, &watch)?;
+            let bytes = mapcraft_light::write(&lightmap);
+            warnings.extend(settings.over_budget(bytes.len() as u64));
             let bake = native_parts(&map, &lightmap, &sizes);
-            Ok((lightmap, warnings, bake))
+            Ok((bytes, warnings, bake))
         });
         self.bake.native = Some(Native { job, progress, manual, brushes, print });
     }
@@ -249,7 +254,7 @@ impl MapCraftApp {
             self.start_native_bake(true);
             return true;
         }
-        let (lightmap, warnings, bake) = match native.job.join() {
+        let (bytes, warnings, bake) = match native.job.join() {
             Ok(Ok(r)) => r,
             // A draft stopped because the map changed again; the next one follows the edit.
             Ok(Err(mapcraft_light::BakeError::Cancelled)) if !native.manual => return false,
@@ -271,12 +276,13 @@ impl MapCraftApp {
         self.bake.shown = Some(native.brushes);
         self.show_bake(Some(&bake));
         if native.manual {
+            let mb = format!("{:.1} MB", bytes.len() as f64 / 2f64.powi(20));
             self.status = match self.session.path.as_ref().map(|p| p.with_extension("mclight")) {
-                Some(path) => match std::fs::write(&path, mapcraft_light::write(&lightmap)) {
-                    Ok(()) => format!("Baked lighting into {}", path.display()),
-                    Err(e) => format!("Baked lighting, but cannot write {}: {e}", path.display()),
+                Some(path) => match std::fs::write(&path, &bytes) {
+                    Ok(()) => format!("Baked {mb} of lighting into {}", path.display()),
+                    Err(e) => format!("Baked {mb} of lighting, but cannot write {}: {e}", path.display()),
                 },
-                None => "Baked lighting; save the map to keep it".into(),
+                None => format!("Baked {mb} of lighting; save the map to keep it"),
             };
             self.bake.last = Some(self.status.clone());
             if let Some(index) = self.bake.then_compile.take() {
@@ -643,6 +649,11 @@ fn native_parts(map: &Map, lm: &mapcraft_light::Lightmap, sizes: &std::collectio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_baker_aims_at_what_one_entry_of_a_pack_can_carry() {
+        assert_eq!(mapcraft_light::DEFAULT_BUDGET, mapcraft_format::pack::MAX_ENTRY_SIZE);
+    }
 
     #[test]
     fn a_changed_material_is_read_again_by_the_next_bake() {
