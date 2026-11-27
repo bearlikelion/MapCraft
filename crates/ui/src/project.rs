@@ -498,7 +498,10 @@ impl Project {
             }
         };
         if m.pbr.is_none() && m.descriptor.is_none() {
-            m.pbr = m.image.as_deref().and_then(|image| self.discovered_pbr(image));
+            m.pbr = m.image.as_deref().and_then(|image| {
+                let siblings: Vec<PathBuf> = std::fs::read_dir(image.parent()?).ok()?.flatten().map(|e| e.path()).collect();
+                Self::discovered_pbr(image, &siblings)
+            });
         }
         if let Some(lit) = self.lit.get(name) {
             m.pbr = lit.apply(m.pbr.take());
@@ -506,33 +509,30 @@ impl Project {
         Some(m)
     }
 
-    /// The maps that sit beside a picture under the names games give them, so a folder holding
+    /// The maps that sit in a picture's own folder under the names games give them, so a folder holding
     /// `wall_albedo.png`, `wall_normal.png` and `wall_orm.png` shades the way the game shades it:
     /// occlusion in the `orm` picture's red, roughness in its green and metallic in its blue.
-    fn discovered_pbr(&self, image: &Path) -> Option<Pbr> {
-        let rel = self.vfs.roots().iter().find_map(|root| image.strip_prefix(root).ok())?.to_string_lossy().replace("\\", "/");
-        let (folder, name) = rel.rsplit_once('/').map_or((String::new(), rel.as_str()), |(f, n)| (format!("{f}/"), n));
-        let (_, extension) = name.rsplit_once('.')?;
-        let stem = name.strip_suffix(&format!(".{extension}"))?;
+    fn discovered_pbr(image: &Path, siblings: &[PathBuf]) -> Option<Pbr> {
+        let stem = image.file_stem()?.to_str()?;
+        let extension = image.extension()?.to_str()?;
         // `wall_albedo.png` is the map for a material named `wall`, so drop the word that says which map it is.
         let base = crate::new_asset::SLOT_WORDS
             .iter()
-            .find(|(_, words)| words.iter().any(|w| stem.len() > w.len() + 1 && stem.ends_with(&format!("_{w}"))))
-            .and_then(|(_, words)| words.iter().find(|w| stem.ends_with(&format!("_{w}"))))
-            .map_or_else(|| stem.to_string(), |w| stem[..stem.len() - w.len() - 1].to_string());
+            .flat_map(|(_, words)| words.iter())
+            .find_map(|w| {
+                let n = stem.len().checked_sub(w.len() + 1).filter(|&n| n > 0)?;
+                stem.get(n..).filter(|end| end.eq_ignore_ascii_case(&format!("_{w}"))).and_then(|_| stem.get(..n))
+            })
+            .unwrap_or(stem);
         let look = |words: &[&str]| -> Option<String> {
             words.iter().find_map(|w| {
-                [extension, "png", "jpg", "jpeg"]
-                    .into_iter()
-                    .find_map(|ext| self.vfs.find(&format!("{folder}{base}_{w}.{ext}")).map(|p| p.display().to_string()))
+                [extension, "png", "jpg", "jpeg"].into_iter().find_map(|ext| {
+                    let want = format!("{base}_{w}.{ext}");
+                    siblings.iter().find(|p| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(want.as_str()))).map(|p| p.display().to_string())
+                })
             })
         };
-        let packed = crate::new_asset::PACKED_WORDS.iter().find_map(|w| {
-            self.vfs
-                .find(&format!("{folder}{base}_{w}.{extension}"))
-                .or_else(|| self.vfs.find(&format!("{folder}{base}_{w}.png")))
-                .map(|p| p.display().to_string())
-        });
+        let packed = look(&crate::new_asset::PACKED_WORDS);
         let mut pbr = plain_pbr();
         let mut found = false;
         for (slot, words) in crate::new_asset::SLOT_WORDS {
@@ -929,5 +929,14 @@ mod tests {
         let plain = plain_pbr();
         let (normal, orm) = pack(&plain, &load);
         assert_eq!((normal.get_pixel(0, 0).0, orm.get_pixel(0, 0).0, orm.dimensions()), ([128, 128, 255, 255], [255, 255, 0, 255], (1, 1)));
+    }
+
+    #[test]
+    fn discovered_maps_come_from_the_pictures_own_folder() {
+        let siblings = [PathBuf::from("/mine/wall_albedo.png"), PathBuf::from("/mine/WALL_Normal.PNG"), PathBuf::from("/stock/wall_orm.png")];
+        let pbr = Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings[..2]).unwrap();
+        assert_eq!((pbr.normal.as_deref(), pbr.roughness), (Some("/mine/WALL_Normal.PNG"), None));
+        assert!(Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings[..1]).is_none());
+        assert!(Project::discovered_pbr(Path::new("/mine/été_normal.png"), &[]).is_none());
     }
 }
