@@ -1094,6 +1094,10 @@ impl MapCraftApp {
         let hover = response.hover_pos();
         if let Some(h) = hover {
             self.cursor_world = cam.is_2d().then(|| cam.plane_point(dvec(h - rect.min), size));
+            // The paste event is read before this pass runs, so keep where the pointer was.
+            self.paste_spot = Some((index, rect, h));
+        } else if self.paste_spot.is_some_and(|(v, _, _)| v == index) {
+            self.paste_spot = None;
         }
         if matches!(self.drag, Drag::None) {
             let shift = ctx.input(|i| i.modifiers.shift);
@@ -2038,6 +2042,19 @@ impl MapCraftApp {
         } else if scroll != 0.0 && response.hovered() {
             cam.position += cam.forward() * f64::from(scroll) * 2.0;
         }
+    }
+
+    /// Where the pointer is in view `index`: on the view plane in 2D, on the face or ground under it in 3D.
+    pub(crate) fn paste_point(&self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
+        let cam = self.panes.get(index)?.camera;
+        let (at, size) = (dvec(pos - rect.min), dvec(rect.size()));
+        if cam.is_2d() {
+            return Some(cam.plane_point(at, size));
+        }
+        let (origin, dir) = cam.ray(at, size);
+        let ground = || Some(-origin.z / dir.z).filter(|t| *t > 0.0 && *t < 16384.0).unwrap_or(1024.0);
+        let t = self.pick(origin, dir, true).map_or_else(ground, |(_, t)| t);
+        Some(origin + dir * t)
     }
 
     /// What an orbit in view `index` turns about: the surface under the press, else a point ahead.

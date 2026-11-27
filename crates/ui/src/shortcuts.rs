@@ -172,6 +172,7 @@ pub const UI_ACTIONS: &[(&str, &str, &str)] = &[
     ("run.point_prev", "Previous Leak Point", "Comma"),
     ("view.snap_grid", "Snap to Grid", "Shift+W"),
     ("view.snap_vertices", "Snap to Corners", "Shift+Q"),
+    ("view.paste_at_pointer", "Paste at Pointer", ""),
     ("tool.select", "Select Tool", "Q"),
     ("tool.move", "Move Tool", "W"),
     ("tool.extrude", "Extrude Tool", "E"),
