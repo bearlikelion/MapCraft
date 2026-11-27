@@ -9,8 +9,17 @@ use mapcraft_render::{Camera, EntityStyle, LineVertex, box_lines};
 use crate::app::MapCraftApp;
 use crate::viewport::{AXES, Drag, Tool, box_transform, closest_on_axis, dvec, segment_distance, uniform_stretch};
 
-/// Rotation snaps to this many degrees while grid snapping is on.
-const ROTATE_STEP: f64 = 15.0;
+/// `degrees` pulled to the nearest multiple of `step`, or itself when `step` is 0 and turns are free.
+fn stepped(degrees: f64, step: f64) -> f64 {
+    if step > 0.0 { (degrees / step).round() * step } else { degrees }
+}
+
+/// The matrix scaling `b` by `f` about its center, and the resulting box.
+fn scale_about(b: &Aabb, f: DVec3) -> (DMat4, Aabb) {
+    let c = b.center();
+    let half = (b.max - b.min) / 2.0;
+    (DMat4::from_translation(c) * DMat4::from_scale(f) * DMat4::from_translation(-c), Aabb::new(c - half * f, c + half * f))
+}
 /// How close on screen, in points, the pointer must be to pick a face edge or a gizmo.
 const REACH: f32 = 6.0;
 /// How far past a brush, in points, Shift+drag in the select tools reaches for a silhouette edge in the 3D view.
@@ -456,10 +465,7 @@ impl MapCraftApp {
         let Some(cam) = self.panes.get(index).map(|p| p.camera) else { return };
         let Some(angle) = self.rotate_angle(&cam, dvec(rect.size()), pos - rect.min, axis, center) else { return };
         let turned = turned + wrap(angle - last);
-        let mut degrees = turned.to_degrees();
-        if self.prefs.get().view.snap_grid {
-            degrees = (degrees / ROTATE_STEP).round() * ROTATE_STEP;
-        }
+        let degrees = stepped(turned.to_degrees(), self.prefs.get().view.rotate_step);
         let mut applied_now = applied;
         if (degrees - applied).abs() > 1e-9 {
             let m = DMat4::from_translation(center)
@@ -553,6 +559,93 @@ impl MapCraftApp {
         let scales: Vec<(NodeId, f64)> = models.iter().map(|(id, base)| (*id, mapcraft_engine::dragged_model_scale(*base, factor, snap))).collect();
         if let Err(e) = self.session.scale_selection(&box_transform(applied, target), &scales, label, Some(coalesce)) {
             self.status = e.to_string();
+        }
+    }
+
+    /// The Rotate tool's turn step: how far the drag turns at a time, 0 to follow the pointer freely.
+    pub(crate) fn rotate_options(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        let steps = [
+            (0.0, "Free", "The drag follows the pointer, as it always has"),
+            (1.0, "1°", "Turn one degree at a time"),
+            (5.0, "5°", "Turn five degrees at a time"),
+            (15.0, "15°", "Turn fifteen degrees at a time, as MapCraft always did"),
+            (45.0, "45°", "Turn forty five degrees at a time"),
+            (90.0, "90°", "Turn a quarter turn at a time"),
+        ];
+        let asked = self.prefs.get().view.rotate_step;
+        let mut step = asked;
+        Self::segmented(ui, &mut step, &steps);
+        let r = crate::inspect::number(ui, egui::DragValue::new(&mut step).range(0.0..=180.0).speed(0.5).prefix("step ").suffix("°"));
+        r.on_hover_text("How far a drag turns at a time; 0 follows the pointer. Type any step you want here.");
+        if step != asked {
+            self.prefs.update(|p| p.view.rotate_step = step);
+            self.status =
+                if step > 0.0 { format!("Rotation steps by {} degrees", (step * 10.0).round() / 10.0) } else { "Rotation follows the pointer".into() };
+        }
+    }
+
+    /// The Scale tool's amounts: a factor per axis, each showing the size it would make, and Apply.
+    pub(crate) fn scale_options(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        let size = self.selection_bounds().map(|b| b.size());
+        let mut apply = false;
+        for (i, axis) in ['x', 'y', 'z'].into_iter().enumerate() {
+            let mut factor = self.scale_factors[i];
+            let label = format!("{axis} ");
+            let r = crate::inspect::number(ui, egui::DragValue::new(&mut factor).speed(0.02).range(0.001..=1024.0).prefix(label.as_str()).suffix("×"));
+            if r.changed() {
+                self.scale_factors[i] = factor;
+            }
+            if let Some(s) = size {
+                let tip = format!("{:.0} units becomes {:.0}; the selection's center stays put", s[i], s[i] * factor);
+                ui.label(egui::RichText::new(format!("→ {:.0}", s[i] * factor)).small()).on_hover_text(tip);
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                apply = true;
+            }
+        }
+        let can = size.is_some() && !self.scale_factors.abs_diff_eq(DVec3::ONE, 1e-9);
+        let r = ui.add_enabled_ui(can, |ui| crate::chrome::icon_button(ui, "checkmark_in_square", "Apply scale", 24.0, false)).inner;
+        if r.on_hover_text("Scale the selection by these factors about its center, in one undo step").clicked() {
+            apply = true;
+        }
+        if size.is_none() {
+            ui.label(egui::RichText::new("pick something first").weak().small());
+        }
+        if apply {
+            self.apply_scale_factors();
+        }
+    }
+
+    /// Scales the selection by the Scale tool's factors about its center, in one undo step, and puts the fields back to 1.
+    pub(crate) fn apply_scale_factors(&mut self) {
+        let Some(b) = self.selection_bounds() else { return };
+        let f = self.scale_factors;
+        if !f.to_array().iter().all(|v| v.is_finite() && *v > 0.0) {
+            self.status = "Scale factors must be numbers above zero".into();
+            return;
+        }
+        if f.abs_diff_eq(DVec3::ONE, 1e-9) {
+            return;
+        }
+        let (m, target) = scale_about(&b, f);
+        let (size, min) = (b.size(), self.session.grid.max(1.0));
+        if (0..3).any(|i| size[i] > 1e-9 && target.size()[i] < min - 1e-9) {
+            self.status = format!("That would make the selection thinner than {min} units");
+            return;
+        }
+        // Models only take one scale, so they change only when all three factors match.
+        let uniform = (f.x - f.y).abs() < 1e-9 && (f.y - f.z).abs() < 1e-9;
+        let scales: Vec<(NodeId, f64)> = self.selected_models().into_iter().map(|(id, base)| (id, if uniform { base * f.x } else { base })).collect();
+        match self.session.scale_selection(&m, &scales, "Scale", None) {
+            Ok(()) => {
+                self.mark_changed();
+                self.scale_factors = DVec3::ONE;
+                let s = target.size();
+                self.status = format!("Scaled to {:.0} x {:.0} x {:.0}", s.x, s.y, s.z);
+            }
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -655,6 +748,30 @@ mod tests {
         // From +X toward +Y is a positive turn about Z.
         let quarter = arc_points(axis, center, 1.0, from, from + 90f64.to_radians());
         assert!(quarter[quarter.len() - 1].abs_diff_eq(center + DVec3::Y, 1e-9));
+    }
+
+    #[test]
+    fn a_turn_step_snaps_and_zero_leaves_it_free() {
+        assert_eq!(stepped(47.3, 15.0), 45.0);
+        assert_eq!(stepped(-47.3, 15.0), -45.0);
+        assert_eq!(stepped(8.0, 5.0), 10.0, "halfway goes away from zero");
+        assert_eq!(stepped(2.4, 1.0), 2.0);
+        assert_eq!(stepped(37.7, 0.0), 37.7, "no step means the pointer's own angle");
+    }
+
+    #[test]
+    fn factors_scale_about_the_center_and_leave_a_flat_axis_alone() {
+        let b = Aabb::new(DVec3::new(0.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 0.0));
+        let (m, to) = scale_about(&b, DVec3::new(2.0, 0.5, 3.0));
+        assert_eq!(to.size(), DVec3::new(256.0, 32.0, 0.0));
+        assert_eq!(to.center(), b.center(), "the middle stays put");
+        assert!(m.transform_point3(b.center()).abs_diff_eq(b.center(), 1e-9));
+        assert!(m.transform_point3(b.max).abs_diff_eq(to.max, 1e-9));
+        let (same, _) = scale_about(&b, DVec3::ONE);
+        assert!(same.abs_diff_eq(DMat4::IDENTITY, 1e-9), "every factor 1 changes nothing");
+        let (flat_m, flat) = scale_about(&b, DVec3::new(1.0, 1.0, 4.0));
+        assert_eq!(flat.size(), DVec3::new(128.0, 64.0, 0.0), "an axis with no size has nothing to widen");
+        assert!(!flat_m.abs_diff_eq(DMat4::IDENTITY, 1e-9), "though the matrix still stretches that axis");
     }
 
     #[test]

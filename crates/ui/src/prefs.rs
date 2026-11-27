@@ -74,6 +74,8 @@ pub struct ViewPrefs {
     /// Draw each brush in its own color in the 2D views, as Hammer does.
     pub colorize: bool,
     pub snap_grid: bool,
+    /// How many degrees the Rotate tool turns in one step; 0 turns freely with the pointer.
+    pub rotate_step: f64,
     /// Dragged points snap to nearby brush corners and entity origins.
     pub snap_vertices: bool,
     /// Zooming one 2D view zooms them all.
@@ -118,6 +120,7 @@ impl Default for ViewPrefs {
             fly_speed: 512.0,
             colorize: true,
             snap_grid: true,
+            rotate_step: 15.0,
             snap_vertices: true,
             link_zoom: true,
             apply_on_click: true,

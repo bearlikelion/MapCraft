@@ -2181,3 +2181,61 @@ fn layers_rename_in_the_scene_tree_with_f2_and_a_double_click() {
     h.run_steps(2);
     assert_eq!(name(&mut h), "Hazards", "and the field is gone");
 }
+#[test]
+fn the_rotate_step_and_the_scale_amounts_work_from_the_tool_strip() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use std::collections::BTreeSet;
+    let (mut h, _settings) = editor();
+    let brush = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(0.0, 0.0, 0.0), DVec3::new(128.0, 64.0, 32.0))).unwrap();
+    h.state_mut().session_for_test().selection = BTreeSet::from([brush]);
+    h.run_steps(2);
+    assert_eq!(h.state().rotate_step_for_test(), 15.0, "the step starts at what MapCraft always snapped to");
+
+    let tap = |h: &mut Harness<MapCraftApp>, label: &str| {
+        let at = h.get_by_label(label).rect().center();
+        click(h, at);
+    };
+    h.get_by_label("Rotate").click();
+    h.run_steps(2);
+    tap(&mut h, "5°");
+    h.run_steps(2);
+    assert_eq!(h.state().rotate_step_for_test(), 5.0, "a step button picks how far a drag turns at a time");
+    assert!(h.state().hint_for_test().contains("5 degree steps"), "and the tool says so: {}", h.state().hint_for_test());
+    tap(&mut h, "Free");
+    h.run_steps(2);
+    assert_eq!(h.state().rotate_step_for_test(), 0.0, "and Free leaves the pointer setting the angle");
+
+    h.get_by_label("Scale").click();
+    h.run_steps(2);
+    h.state_mut().set_scale_factors_for_test(DVec3::new(2.0, 0.5, 1.0));
+    h.run_steps(2);
+    tap(&mut h, "Apply scale");
+    h.run_steps(2);
+    let b = h.state_mut().session_for_test().map.get(brush).unwrap().kind.brush().unwrap().bounds().unwrap();
+    assert_eq!(b.size(), DVec3::new(256.0, 32.0, 32.0), "the factors stretch each axis by that much");
+    assert_eq!(b.center(), DVec3::new(64.0, 32.0, 16.0), "and the middle stays where it was");
+    assert_eq!(h.state().status_for_test(), "Scaled to 256 x 32 x 32");
+    assert_eq!(h.state().scale_factors_for_test(), DVec3::ONE, "the fields go back to 1, so a second apply does not repeat the last one");
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    let back = h.state_mut().session_for_test().map.get(brush).unwrap().kind.brush().unwrap().bounds().unwrap();
+    assert_eq!(back.size(), DVec3::new(128.0, 64.0, 32.0), "one undo step takes the whole scale back");
+
+    let size = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(brush).unwrap().kind.brush().unwrap().bounds().unwrap().size();
+    for _ in 0..2 {
+        h.state_mut().set_scale_factors_for_test(DVec3::new(2.0, 1.0, 1.0));
+        h.run_steps(2);
+        tap(&mut h, "Apply scale");
+        h.run_steps(2);
+    }
+    assert_eq!(size(&mut h).x, 512.0);
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert_eq!(size(&mut h).x, 256.0, "each typed scale undoes on its own");
+
+    h.state_mut().set_scale_factors_for_test(DVec3::new(0.001, 1.0, 1.0));
+    h.run_steps(2);
+    tap(&mut h, "Apply scale");
+    h.run_steps(2);
+    assert_eq!(size(&mut h).x, 256.0, "a scale thinner than the grid is refused");
+}
