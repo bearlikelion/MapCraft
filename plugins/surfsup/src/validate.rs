@@ -71,6 +71,13 @@ fn issue(severity: Severity, message: String, node: Option<u32>) -> Issue {
 pub fn check(map: &MapData) -> Vec<Issue> {
     let ents = entities(map);
     let mut out = Vec::new();
+    let world = |key: &str| map.world.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.trim()).filter(|v| !v.is_empty());
+    if world("author").is_none() {
+        out.push(issue(Severity::Warning, "The world has no Created by, so SurfsUp cannot credit the map's maker.".into(), None));
+    }
+    if let (Some(from), None) = (world("ported_from"), world("ported_by")) {
+        out.push(issue(Severity::Warning, format!("This map was ported from {from}, but the world has no Ported by."), None));
+    }
     let of = |class: &'static str| ents.iter().filter(move |e| e.class == class);
 
     let spawns: Vec<&Ent> = of("info_player_start").collect();
@@ -173,7 +180,7 @@ mod tests {
         }
 
         fn map(self) -> MapData {
-            MapData { name: "surf_test".into(), world: Vec::new(), nodes: self.0 }
+            MapData { name: "surf_test".into(), world: vec![("author".into(), "Mark".into())], nodes: self.0 }
         }
     }
 
@@ -243,5 +250,16 @@ mod tests {
         assert!(issues.iter().any(|i| i.message.contains("more than one info_player_start") && i.node == Some(1)));
         assert!(issues.iter().any(|i| i.message.contains("outside the start zone") && i.node == Some(0)));
         assert_eq!(issues.iter().filter(|i| i.message.contains("named a")).count(), 2);
+    }
+
+    #[test]
+    fn credits_are_asked_for() {
+        let mut map = Builder::default().map();
+        map.world = vec![("ported_from".into(), "surf_utopia".into())];
+        let found = messages(&map);
+        assert!(found.iter().any(|f| f.contains("no Created by")), "{found:?}");
+        assert!(found.iter().any(|f| f.contains("ported from surf_utopia")), "{found:?}");
+        map.world.extend([("author".into(), "Arblarg".into()), ("ported_by".into(), "Mark".into())]);
+        assert!(!messages(&map).iter().any(|f| f.contains("Created by") || f.contains("ported from")));
     }
 }

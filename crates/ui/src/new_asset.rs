@@ -27,7 +27,7 @@ const SLOTS: [(TextureSlot, &str); 6] = [
 ];
 
 /// The words at the end of a picture's name that say which map it is.
-const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
+pub(crate) const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
     (TextureSlot::Albedo, &["albedo", "basecolor", "base_color", "diffuse", "color", "col"]),
     (TextureSlot::Normal, &["normal", "nrm", "nor"]),
     (TextureSlot::Roughness, &["roughness", "rough"]),
@@ -37,7 +37,7 @@ const SLOT_WORDS: [(TextureSlot, &[&str]); 6] = [
 ];
 
 /// Name endings of one picture holding occlusion, roughness and metallic in its red, green and blue.
-const PACKED_WORDS: [&str; 2] = ["orm", "arm"];
+pub(crate) const PACKED_WORDS: [&str; 2] = ["orm", "arm"];
 
 /// The open window and the files the snapshot tool picks in place of a file dialog.
 #[derive(Default)]

@@ -5,7 +5,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use egui::RichText;
+use image::{Rgba, RgbaImage};
 use mapcraft_format::pack;
+use mapcraft_format::pack_material::{Material as Descriptor, TextureSlot};
+use mapcraft_plugin_host::Channel;
 use serde_json::Value;
 
 use crate::app::MapCraftApp;
@@ -154,10 +157,11 @@ impl MapCraftApp {
         let Some(sdk) = &self.project.sdk else { return Ok(Vec::new()) };
         let own = |p: &Path| sdk.user_textures.iter().any(|u| p.starts_with(u));
         let mut remaining = pack::MAX_PACK_SIZE;
-        let mut read = |p: &Path| {
-            let bytes = read_limited(p, remaining.min(pack::MAX_ENTRY_SIZE))?;
-            remaining = remaining.saturating_sub(bytes.len() as u64);
-            Ok::<_, String>(bytes)
+        let mut pixels = 0u64;
+        let read = |p: &Path, left: &mut u64| -> Result<Vec<u8>, String> {
+            let bytes = read_limited(p, (*left).min(pack::MAX_ENTRY_SIZE))?;
+            *left = left.saturating_sub(bytes.len() as u64);
+            Ok(bytes)
         };
         let map = self.view_map();
         let faces = map.nodes().filter_map(|(_, n)| n.kind.brush()).flat_map(|b| &b.faces);
@@ -174,15 +178,37 @@ impl MapCraftApp {
                 for texture in material.textures.values() {
                     let path = custom.find(texture).ok_or_else(|| format!("{name}: missing texture {texture}"))?;
                     if !entries.iter().any(|(entry, _)| entry == texture) {
-                        entries.push((texture.clone(), read(&path)?));
+                        let bytes = read(&path, &mut remaining)?;
+                        pixels = pixels.saturating_add(pack::picture_pixels(&bytes).unwrap_or(0));
+                        entries.push((texture.clone(), bytes));
                     }
                 }
                 entries.push((format!("materials/{name}.json"), bytes));
                 continue;
             }
-            let Some(path) = self.project.find_material(name).and_then(|m| m.image).filter(|p| own(p)) else { continue };
-            let bytes = read(&path)?;
+            let Some(material) = self.project.find_material(name).filter(|m| m.image.as_ref().is_some_and(|p| own(p))) else { continue };
+            let Some(image) = material.image.clone() else { continue };
+            let maps = self.shading_maps(&material);
+            if !maps.is_empty() {
+                // The views shade this material with more than its picture, so pack a descriptor and the maps:
+                // a lone picture would leave the game drawing it flat.
+                let pbr = material.pbr.clone().unwrap_or_else(crate::project::plain_pbr);
+                let mut descriptor = Descriptor { roughness: pbr.roughness_value, metallic: pbr.metallic_value, ..Descriptor::default() };
+                let (mut packed, mut left, mut px) = (Vec::new(), remaining, pixels);
+                let all = std::iter::once((TextureSlot::Albedo, image.clone(), Copy::Keep)).chain(maps);
+                let fits =
+                    all.into_iter().try_for_each(|(slot, path, copy)| put(&mut packed, &mut descriptor, slot, &path, copy, name, &mut left, &mut px, &read));
+                // Maps that do not fit leave the material packed as its picture alone, as before maps traveled.
+                if let (Ok(()), Ok(json)) = (fits, descriptor.to_json()) {
+                    entries.extend(packed);
+                    entries.push((format!("materials/{name}.json"), json));
+                    (remaining, pixels) = (left, px);
+                    continue;
+                }
+            }
+            let bytes = read(&image, &mut remaining)?;
             let entry = pack::material_entry(name, &bytes).ok_or_else(|| format!("{name}: SurfsUp maps carry only PNG and JPEG pictures"))?;
+            pixels = pixels.saturating_add(pack::picture_pixels(&bytes).unwrap_or(0));
             entries.push((entry, bytes));
         }
         let models: BTreeSet<String> = map.nodes().filter_map(|(_, n)| self.project.model_path(n.kind.entity()?)).collect();
@@ -193,11 +219,36 @@ impl MapCraftApp {
                 continue;
             }
             let vfs = &self.project.models.vfs;
-            let glb = mapcraft_render::to_glb(read(&path)?, &|uri| crate::models::read_capped(vfs, &crate::models::beside(&model, uri)?))
+            let glb = mapcraft_render::to_glb(read(&path, &mut remaining)?, &|uri| crate::models::read_capped(vfs, &crate::models::beside(&model, uri)?))
                 .map_err(|e| format!("{model}: {e}"))?;
             entries.push((entry, pack::without_morphs(glb)));
         }
         Ok(entries)
+    }
+
+    /// The maps this material is shaded with beyond its picture, and how each one travels: the views
+    /// already draw with these, so a pack that left them out would show the game shading it flat.
+    fn shading_maps(&self, material: &crate::project::Material) -> Vec<(TextureSlot, PathBuf, Copy)> {
+        let file = |path: &str| match Path::new(path) {
+            p if p.is_absolute() => Some(p.to_path_buf()),
+            p => self.project.vfs.find(&p.to_string_lossy()),
+        };
+        let mut out = Vec::new();
+        if let Some(pbr) = &material.pbr {
+            if let Some(normal) = pbr.normal.as_deref().and_then(file) {
+                out.push((TextureSlot::Normal, normal, if pbr.normal_dx { Copy::FlipGreen } else { Copy::Keep }));
+            }
+            for (slot, map) in [(TextureSlot::Roughness, pbr.roughness.as_ref()), (TextureSlot::Metallic, pbr.metallic.as_ref())] {
+                let Some(map) = map else { continue };
+                let Some(path) = file(&map.path) else { continue };
+                // The game reads those two slots from the red channel, so a combined map has to be split.
+                out.push((slot, path, if map.channel == Channel::Red { Copy::Keep } else { Copy::Take(map.channel) }));
+            }
+        }
+        if let Some(emission) = &material.emission {
+            out.push((TextureSlot::Emission, emission.clone(), Copy::Keep));
+        }
+        out
     }
 
     /// Writes `to` as one `.mcpck` holding `map` and its custom assets, or copies `map` there as a `.mcmap` when it has
@@ -268,6 +319,99 @@ fn pack_or_copy(map: &Path, to: &Path, mut entries: Vec<(String, Vec<u8>)>) -> R
     Ok(written)
 }
 
+/// How one of a material's pictures travels: unchanged, with its green channel turned over for a DirectX
+/// normal map, or pulled out as a single channel of a combined map.
+#[derive(Clone, Copy, PartialEq)]
+enum Copy {
+    Keep,
+    FlipGreen,
+    Take(Channel),
+}
+
+/// Adds one of a material's maps to the pack and points the descriptor at it. The game reads roughness and
+/// metallic from the red channel alone, so a map kept in another channel is written out as a red one.
+fn put(
+    entries: &mut Vec<(String, Vec<u8>)>,
+    descriptor: &mut Descriptor,
+    slot: TextureSlot,
+    path: &Path,
+    copy: Copy,
+    material: &str,
+    remaining: &mut u64,
+    pixels: &mut u64,
+    read: &dyn Fn(&Path, &mut u64) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    let (entry, bytes) = match copy {
+        Copy::Keep => {
+            let bytes = read(path, remaining)?;
+            let ext = pack::picture_extension(&bytes).ok_or_else(|| format!("{material}: SurfsUp maps carry only PNG and JPEG pictures"))?;
+            (format!("textures/{material}_{}.{ext}", slot_word(slot)), bytes)
+        }
+        copy => {
+            let mut image = crate::project::bounded_picture(path)?;
+            for pixel in image.pixels_mut() {
+                match copy {
+                    Copy::FlipGreen => pixel[1] = 255 - pixel[1],
+                    Copy::Take(channel) => {
+                        let v = picked(pixel, channel);
+                        *pixel = Rgba([v, v, v, 255]);
+                    }
+                    Copy::Keep => {}
+                }
+            }
+            (format!("textures/{material}_{}.png", slot_word(slot)), png_bytes(&image)?)
+        }
+    };
+    if copy != Copy::Keep {
+        if bytes.len() as u64 > (*remaining).min(pack::MAX_ENTRY_SIZE) {
+            return Err(format!("{entry} does not fit in the pack"));
+        }
+        *remaining -= bytes.len() as u64;
+    }
+    *pixels = pixels.saturating_add(pack::picture_pixels(&bytes).unwrap_or(0));
+    if *pixels > pack::MAX_TOTAL_PIXELS {
+        return Err(format!("{entry} takes the pack past {} million pixels", pack::MAX_TOTAL_PIXELS >> 20));
+    }
+    if slot == TextureSlot::Emission {
+        // The texture is multiplied by the emission color, so it has to be lit rather than black.
+        descriptor.emission = [1.0, 1.0, 1.0];
+    }
+    if !entries.iter().any(|(e, _)| *e == entry) {
+        entries.push((entry.clone(), bytes));
+    }
+    descriptor.textures.insert(slot, entry);
+    Ok(())
+}
+
+/// The name a slot travels under, in the descriptor's own words for it.
+fn slot_word(slot: TextureSlot) -> &'static str {
+    match slot {
+        TextureSlot::Albedo => "albedo",
+        TextureSlot::Normal => "normal",
+        TextureSlot::Roughness => "roughness",
+        TextureSlot::Metallic => "metallic",
+        TextureSlot::Emission => "emission",
+        TextureSlot::Height => "height",
+    }
+}
+
+/// The one byte a channel stands for, copied into every channel so the game reads it back from red.
+fn picked(pixel: &Rgba<u8>, channel: Channel) -> u8 {
+    match channel {
+        Channel::Red => pixel[0],
+        Channel::Green => pixel[1],
+        Channel::Blue => pixel[2],
+        Channel::Alpha => pixel[3],
+        Channel::Gray => ((u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2])) / 3) as u8,
+    }
+}
+
+fn png_bytes(image: &RgbaImage) -> Result<Vec<u8>, String> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +471,24 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("surf_x_d/Materials")).unwrap();
         assert!(holds_assets(&dir.path().join("surf_x_d")));
         assert!(!holds_assets(dir.path()));
+    }
+
+    #[test]
+    fn converted_maps_stay_inside_the_packs_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let normal = dir.path().join("wall_normal.png");
+        image::RgbaImage::from_pixel(4, 4, Rgba([128, 128, 255, 255])).save(&normal).unwrap();
+        let read = |p: &Path, left: &mut u64| -> Result<Vec<u8>, String> {
+            let bytes = read_limited(p, *left)?;
+            *left -= bytes.len() as u64;
+            Ok(bytes)
+        };
+        let put_with = |remaining: u64, pixels: u64| {
+            let (mut entries, mut descriptor, mut remaining, mut pixels) = (Vec::new(), Descriptor::default(), remaining, pixels);
+            put(&mut entries, &mut descriptor, TextureSlot::Normal, &normal, Copy::FlipGreen, "wall", &mut remaining, &mut pixels, &read).map(|()| pixels)
+        };
+        assert_eq!(put_with(pack::MAX_PACK_SIZE, 0), Ok(16));
+        assert!(put_with(8, 0).is_err(), "bytes past the budget");
+        assert!(put_with(pack::MAX_PACK_SIZE, pack::MAX_TOTAL_PIXELS - 8).is_err(), "pixels past the cap");
     }
 }
