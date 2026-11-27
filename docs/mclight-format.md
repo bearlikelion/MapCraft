@@ -41,7 +41,7 @@ Faces that are hidden between brushes, tool faces and displacements have no entr
 An 8-byte u64 gives the length of the zlib stream that follows (what Godot's `PackedByteArray.decompress` with `COMPRESSION_DEFLATE` reads).
 It inflates to `slice count x 4 x size x size` u32 texels: for each slice, four layers, each row by row from the top.
 
-Each texel is RGBE9995: red in bits 0 to 8, green 9 to 17, blue 18 to 26, and a shared exponent in bits 27 to 31, worth `mantissa x 2^(exponent - 24)` (Godot's `Image.FORMAT_RGBE9995`).
+Each texel is RGBE9995: red in bits 0 to 8, green 9 to 17, blue 18 to 26, and a shared exponent in bits 27 to 31, worth `mantissa x 2^(exponent - 24)` (Godot's `Image.FORMAT_RGBE9995`). A bake usually keeps only 8 or 7 significant bits of a mantissa, since a full 9 costs far more compressed than it is worth, so the low bits of a mantissa are often zero; nothing about the layout changes and a reader that ignores them reads the same lighting.
 
 The four layers of a slice are Godot's L1 spherical harmonics, in Godot's order:
 

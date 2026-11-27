@@ -310,6 +310,48 @@ fn a_glowing_material_lights_the_room_and_is_part_of_the_bake() {
     assert_ne!(print(1.0), print(0.0), "a bake at another energy is out of date");
 }
 
+/// Not part of `cargo test`: bakes a sunlit yard under a `light_environment` and prints what the same bake costs with
+/// every mantissa bit kept, with the default kept bits, and inside a small budget. Read it with
+/// `cargo test -p mapcraft-light -- --ignored --nocapture what_a_sunlit_bake_costs`.
+#[test]
+#[ignore]
+fn what_a_sunlit_bake_costs() {
+    let mut map = Map::new();
+    let box_at = |map: &mut Map, min: DVec3, max: DVec3| add(map, NodeKind::Brush(Brush::cuboid(Aabb::new(min, max), &tex())));
+    box_at(&mut map, DVec3::new(-2048.0, -2048.0, -16.0), DVec3::new(2048.0, 2048.0, 0.0));
+    for i in 0..6 {
+        let (x, y) = (-1600.0 + f64::from(i) * 560.0, -1200.0 + f64::from(i % 3) * 900.0);
+        box_at(&mut map, DVec3::new(x, y, 0.0), DVec3::new(x + 200.0 + f64::from(i) * 90.0, y + 300.0, 256.0 + f64::from(i) * 120.0));
+    }
+    box_at(&mut map, DVec3::new(-2064.0, 1900.0, 0.0), DVec3::new(2064.0, 2064.0, 512.0));
+    let mut sun = Entity::new("light_environment");
+    sun.set("angles", "50 135 0");
+    add(&mut map, NodeKind::Entity(sun));
+    world(&mut map, &[("_lightmap_scale", "8")]);
+
+    let asked = Settings { threads: 4, ..Settings::default() }.for_map(&map);
+    let mut fitted = Settings { budget: 4 << 20, ..asked.clone() };
+    fitted.fit_budget(&map);
+    for (name, s) in [
+        ("9 9 bits, uncapped", Settings { l0_bits: 9, band_bits: 9, budget: 0, asked_luxel: None, ..asked.clone() }),
+        ("8 7 bits, uncapped", Settings { budget: 0, asked_luxel: None, ..asked.clone() }),
+        ("8 7 bits, 4 MB budget", fitted),
+    ] {
+        let started = std::time::Instant::now();
+        let (lm, warnings) = mapcraft_light::bake(&map, &|_| Surface::default(), &BTreeSet::new(), &s, &Progress::default()).unwrap();
+        let bytes = mapcraft_light::write(&lm);
+        println!(
+            "{name}: {:.2} MB in {:.0}s, {} slices of {}, at {} units a luxel {}",
+            bytes.len() as f64 / 2f64.powi(20),
+            started.elapsed().as_secs_f64(),
+            lm.slices.len(),
+            lm.size,
+            s.luxel,
+            if warnings.is_empty() { String::new() } else { format!("({})", warnings.join("; ")) }
+        );
+    }
+}
+
 #[test]
 fn worldspawn_sets_the_bake_options() {
     let mut map = Map::new();
@@ -322,4 +364,71 @@ fn worldspawn_sets_the_bake_options() {
     assert_eq!(s.dirt, Some(mapcraft_light::Dirt { depth: 64.0, scale: 1.0, gain: 1.0, angle: 90.0 }));
     let plain = Settings::default().for_map(&Map::new());
     assert_eq!((plain.extra, plain.soft, plain.bounce_color, plain.dirt), (1, 0, 1.0, None));
+}
+
+#[test]
+fn worldspawn_keeps_the_mantissa_bits_it_likes() {
+    let bits = |keys: &[(&str, &str)]| {
+        let mut map = Map::new();
+        world(&mut map, keys);
+        let s = Settings::default().for_map(&map);
+        (s.l0_bits, s.band_bits)
+    };
+    assert_eq!(bits(&[("_lightmap_bits", "9 9")]), (9, 9), "every bit the texel holds");
+    assert_eq!(bits(&[("_lightmap_bits", "6")]), (6, 6), "one number keeps them even");
+    assert_eq!(bits(&[("_lightmap_bits", "9 4")]), (9, 4), "and out of range is pulled inside it");
+    assert_eq!(bits(&[("_lightmap_bits", "12 40")]), (9, 9));
+    assert_eq!(bits(&[]), (8, 7), "and the default is the coarse bands that make a sunlit map pack");
+}
+
+/// A sealed room with a bright spot that bounces once, so every luxel gets its own Monte-Carlo light and the atlas holds real
+/// content. Returns it with the floor.
+fn lit_room() -> (Map, NodeId) {
+    let mut map = Map::new();
+    let walls = room(&mut map, DVec3::new(-256.0, -256.0, 0.0), DVec3::new(256.0, 256.0, 256.0));
+    let mut e = Entity::new("light_spot");
+    e.set("origin", "0 0 200");
+    e.set("_light", "255 255 255 2000");
+    e.set("angles", "-90 0 0");
+    add(&mut map, NodeKind::Entity(e));
+    (map, walls[0])
+}
+
+#[test]
+fn fewer_kept_bits_cost_less_light_than_file() {
+    let (map, floor) = lit_room();
+    let baked = |(l0, bands): (u32, u32)| {
+        let lm = run(&map, &Settings { l0_bits: l0, band_bits: bands, budget: 0, bounces: 1, rays: 64, ..direct_only() });
+        (mapcraft_light::write(&lm), lm)
+    };
+    let (exact, full) = baked((9, 9));
+    let (kept, kept_lm) = baked((8, 7));
+    assert!(kept.len() * 4 < exact.len() * 3, "{} KB of kept bits against {} KB of all of them", kept.len() / 1024, exact.len() / 1024);
+    for p in [DVec3::new(4.0, 4.0, 0.0), DVec3::new(120.0, 0.0, 0.0), DVec3::new(-200.0, 200.0, 0.0), DVec3::new(240.0, -240.0, 0.0)] {
+        let (a, b) = (seen(&full, &map, floor, DVec3::Z, p), seen(&kept_lm, &map, floor, DVec3::Z, p));
+        assert!((a - b).abs() <= a.max(1e-3) * 0.03, "{p}: {b} against {a}");
+    }
+}
+
+#[test]
+fn a_small_budget_coarsens_the_scale_and_says_so() {
+    let (mut map, _) = lit_room();
+    world(&mut map, &[("_lightmap_scale", "2"), ("_lightmap_budget", "1")]);
+    let fitted = Settings::default().for_map(&map);
+    assert_eq!(fitted.asked_luxel, Some(2.0), "the map asked for 2 units a luxel");
+    assert!(fitted.luxel > 2.0, "and a megabyte of it is more than the room holds at that scale: {}", fitted.luxel);
+    let room = 1 << 20 >> 3;
+    let held = mapcraft_light::charts::luxels(&map, fitted.luxel);
+    assert!(held <= room, "{held} luxels against a room of {room}");
+
+    let free = Settings { luxel: 2.0, budget: 0, asked_luxel: None, ..fitted.clone() };
+    let (tight, warnings) = mapcraft_light::bake(&map, &|_| Surface::default(), &BTreeSet::new(), &fitted, &Progress::default()).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("lightmap scale went from 2")), "{warnings:?}");
+    let loose = mapcraft_light::bake(&map, &|_| Surface::default(), &BTreeSet::new(), &free, &Progress::default()).unwrap().0;
+    let (small, whole) = (mapcraft_light::write(&tight).len(), mapcraft_light::write(&loose).len());
+    assert!(small * 2 < whole, "the fitted bake holds {small} bytes against {whole} for every luxel it asked for");
+    let mut ask = lit_room().0;
+    world(&mut ask, &[("_lightmap_scale", "2"), ("_lightmap_budget", "0")]);
+    let uncapped = Settings::default().for_map(&ask);
+    assert_eq!((uncapped.luxel, uncapped.asked_luxel, uncapped.budget), (2.0, None, 0), "and a budget of 0 leaves the asked-for scale alone");
 }

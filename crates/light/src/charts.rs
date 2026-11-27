@@ -158,6 +158,15 @@ fn inside(polygon: &[DVec2], c: DVec2) -> DVec2 {
     nearest + toward.normalize_or_zero() * toward.length().min(0.05)
 }
 
+/// The luxel scale and chart size a face `extent` wide gets at `wanted` world units per luxel, coarsened when a
+/// chart side would pass [`MAX_CHART`].
+fn sized(extent: DVec2, wanted: f64) -> (f64, u32, u32) {
+    let longest = extent.max_element();
+    let scale = wanted.max(longest / f64::from(MAX_CHART - 2));
+    let side = |e: f64| ((e / scale).ceil() as u32).saturating_add(2).clamp(3, MAX_CHART);
+    (scale, side(extent.x), side(extent.y))
+}
+
 /// Charts for every drawn face of every brush, skipping faces in `skip`, boolean group brushes and a displaced brush's flat faces.
 /// Luxel size comes from a face's `lightmapscale`, else `luxel`.
 pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Chart> {
@@ -188,9 +197,7 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
                 continue;
             }
             // One luxel of border on every side, so filtering at the edge reads lit luxels.
-            let longest = extent.max_element();
-            let scale = wanted.max(longest / f64::from(MAX_CHART - 2));
-            let size = |e: f64| ((e / scale).ceil() as u32).saturating_add(2).clamp(3, MAX_CHART);
+            let (scale, cw, ch) = sized(extent, wanted);
             let corner = min - DVec2::splat(scale);
             let origin = bu * corner.x + bv * corner.y + plane.normal * plane.dist;
             let polygon = flat.iter().map(|p| (*p - corner) / scale).collect();
@@ -210,8 +217,8 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
                 bu,
                 bv,
                 scale,
-                w: size(extent.x),
-                h: size(extent.y),
+                w: cw,
+                h: ch,
                 polygon,
                 bumps,
                 slice: 0,
@@ -221,6 +228,41 @@ pub fn build(map: &Map, skip: &BTreeSet<(NodeId, FaceId)>, luxel: f64) -> Vec<Ch
         }
     }
     charts
+}
+
+/// How many luxels a bake of `map` at `luxel` world units per luxel fills: every drawn face's chart, counted whole.
+/// Faces hidden between brushes are missed and faces that would collapse to one luxel are counted in full, so the
+/// count leans high; faces with their own `lightmapscale` keep it, and can still pass what was asked for.
+pub fn luxels(map: &Map, luxel: f64) -> u64 {
+    let mut total = 0u64;
+    for (id, node) in map.nodes() {
+        let NodeKind::Brush(b) = &node.kind else { continue };
+        if mapcraft_map::boolean::source_op(map, id).is_some() {
+            continue;
+        }
+        let Ok(solid) = b.solid() else { continue };
+        for (face, winding) in b.faces.iter().zip(&solid.faces) {
+            let (Some(w), Some(plane)) = (winding, face.plane()) else { continue };
+            if !b.draws(face) || face.material.is_empty() || w.0.len() < 3 {
+                continue;
+            }
+            let (bu, bv) = plane.basis();
+            let point = |p: &DVec3| DVec2::new(p.dot(bu), p.dot(bv));
+            let (min, max) = w.0.iter().fold((DVec2::splat(f64::INFINITY), DVec2::splat(f64::NEG_INFINITY)), |(lo, hi), p| {
+                let q = point(p);
+                (lo.min(q), hi.max(q))
+            });
+            let extent = (max - min).max(DVec2::ZERO);
+            if !extent.is_finite() {
+                continue;
+            }
+            let wanted =
+                face.attrs.get("lightmapscale").and_then(|s| s.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 1.0).unwrap_or(luxel).max(1.0);
+            let (_, cw, ch) = sized(extent, wanted);
+            total += u64::from(cw) * u64::from(ch);
+        }
+    }
+    total
 }
 
 /// Places every chart in square slices of `size` luxels with shelf packing; returns the slice count.
@@ -273,6 +315,15 @@ mod tests {
             x: 0,
             y: 0,
         }
+    }
+
+    #[test]
+    fn sized_charts_stay_inside_one_side_of_luxels() {
+        // A small face takes the asked-for scale; a wide one is coarsened to fit a chart side.
+        assert_eq!(sized(DVec2::new(100.0, 50.0), 10.0), (10.0, 12, 7));
+        let (scale, w, h) = sized(DVec2::new(10_000.0, 50.0), 4.0);
+        assert!((scale - 10_000.0 / 510.0).abs() < 1e-9, "{scale}");
+        assert_eq!((w, h), (512, 5));
     }
 
     #[test]

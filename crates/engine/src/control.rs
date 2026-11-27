@@ -776,11 +776,20 @@ In the editor it bakes in the background and shows the result in the Lit view: c
             let settings = mapcraft_light::Settings::default().for_map(&s.map);
             let skip = mapcraft_map::covered_faces(&s.map, None, &|m| s.see_through.contains(m));
             let progress = mapcraft_light::Progress::default();
-            let (lightmap, warnings) = mapcraft_light::bake(&s.map, &|_| mapcraft_light::Surface::default(), &skip, &settings, &progress)
+            let (lightmap, mut warnings) = mapcraft_light::bake(&s.map, &|_| mapcraft_light::Surface::default(), &skip, &settings, &progress)
                 .map_err(|e| EngineError::Argument(e.to_string()))?;
+            let bytes = mapcraft_light::write(&lightmap);
             let out = path.with_extension("mclight");
-            std::fs::write(&out, mapcraft_light::write(&lightmap)).map_err(|e| EngineError::Argument(format!("cannot write {}: {e}", out.display())))?;
-            Ok(json!({"file": out, "faces": lightmap.faces.len(), "slices": lightmap.slices.len(), "warnings": warnings}))
+            std::fs::write(&out, &bytes).map_err(|e| EngineError::Argument(format!("cannot write {}: {e}", out.display())))?;
+            warnings.extend(settings.over_budget(bytes.len() as u64));
+            Ok(json!({
+                "file": out,
+                "faces": lightmap.faces.len(),
+                "slices": lightmap.slices.len(),
+                "bytes": bytes.len(),
+                "scale": settings.luxel,
+                "warnings": warnings
+            }))
         },
     },
     Tool {

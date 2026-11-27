@@ -2579,7 +2579,7 @@ impl MapCraftApp {
             let lm_prop = Prop {
                 label: "Lightmap scale",
                 key: "lightmapscale",
-                tip: "Lightmap texels per world unit on this face; the game's default applies when unset",
+                tip: "World units per luxel of baked light on this face: smaller is sharper and costs more; the game's default applies when unset",
                 val: if lm_mixed {
                     Val::Mixed
                 } else if any {
