@@ -209,6 +209,8 @@ pub struct MapCraftApp {
     /// The displaced surface under the sculpt brush: view, point and normal.
     pub(crate) sculpt_at: Option<(usize, DVec3, DVec3)>,
     pub(crate) sculpt_falloff: mapcraft_engine::Falloff,
+    /// The Scale tool's fields: a factor per axis, applied to the selection about its center.
+    pub(crate) scale_factors: DVec3,
     pub(crate) paint: PaintBrush,
     /// The blend under the pointer while painting, such as `rock031 + grass: 62%`.
     pub(crate) blend_readout: Option<String>,
@@ -387,6 +389,7 @@ impl MapCraftApp {
             sculpt: (mapcraft_engine::SculptMode::Raise, 128.0, 256.0),
             sculpt_at: None,
             sculpt_falloff: mapcraft_engine::Falloff::Smooth,
+            scale_factors: DVec3::ONE,
             paint: PaintBrush::default(),
             blend_readout: None,
             disp_power: 3,
@@ -950,6 +953,21 @@ impl MapCraftApp {
     pub fn session_for_test(&mut self) -> &mut Session {
         self.mark_changed();
         &mut self.session
+    }
+
+    /// The Rotate tool's turn step, for tests.
+    pub fn rotate_step_for_test(&self) -> f64 {
+        self.prefs.get().view.rotate_step
+    }
+
+    /// The factors the Scale tool's fields hold, for tests.
+    pub fn scale_factors_for_test(&self) -> DVec3 {
+        self.scale_factors
+    }
+
+    /// The factors the Scale tool's fields hold, set without typing them for tests.
+    pub fn set_scale_factors_for_test(&mut self, f: DVec3) {
+        self.scale_factors = f;
     }
 
     /// Each view's 2D zoom, for tests.

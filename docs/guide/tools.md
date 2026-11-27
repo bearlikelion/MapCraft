@@ -177,7 +177,9 @@ Press `R`.
 - In the 3D view, drag a ring: red turns about X, green about Y, blue about Z.
 
 While you drag, a faint yellow outline keeps the selection where it started, a shaded slice sweeps from the starting angle to the current one, and a label shows the signed angle turned (positive is counterclockwise looking down the axis).
-With **Snap** on, rotation goes in 15 degree steps, and the label adds the unsnapped angle in brackets.
+Beside the tool buttons, **Free**, **1°**, **5°**, **15°**, **45°** and **90°** pick how far a drag turns at a time, and the **step** field takes any step you type.
+**Free** follows the pointer exactly, as Rotate always could; **15°** is the step it used while **Snap** was on, which is the default.
+The label adds the unsnapped angle in brackets while a step is set.
 For exact quarter turns about Z, use **Tools > Rotate 90° Clockwise** (`Ctrl+R`) or **Tools > Rotate 90° Counter-Clockwise** (`Ctrl+Shift+R`).
 The TrenchBroom shortcut preset adds TrenchBroom's quarter turns about the view under the pointer: roll (`Alt+Up` and `Alt+Down`) about the way the view looks, pitch (`Alt+Page Up` and `Alt+Page Down`) about its right side, and yaw (`Alt+Left` and `Alt+Right`) about Z in the 3D view or the view's up axis in a 2D view.
 
@@ -197,6 +199,10 @@ The moving side turns red and labels show the size.
 A selection cannot shrink below one grid step, and with **Snap** on its edge lands on the grid.
 Selected entities that show a model grow or shrink evenly by the drag's largest change, which sets their **Scale**.
 With **Snap** on the scale lands on a whole number, never below 1.
+
+To scale by amounts instead of by dragging, type a factor on each of **x**, **y** and **z** beside the tool buttons: every field shows the size that factor would make, and Enter or the tick applies them together.
+That grows the selection both ways from its center, where a handle drag holds the opposite side still, and the fields go back to 1 afterwards so a second click does not apply the same factor twice.
+Either way it is one undo step.
 
 ![The Scale tool's handles on a selected ramp in the 3D view](img/tools-scale.webp)
 
