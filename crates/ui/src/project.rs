@@ -223,6 +223,21 @@ impl Project {
         self.materials.retain(|m| !self.descriptors.contains_key(&m.name) && !m.image.as_ref().is_some_and(|i| textures.contains(i)));
         self.materials.extend(self.descriptors.values().cloned());
         self.materials.sort_by(|a, b| a.name.cmp(&b.name));
+        self.discover_maps();
+    }
+
+    /// Gives listed pictures with no maps of their own the ones beside them, reading each folder once.
+    fn discover_maps(&mut self) {
+        let mut folders: BTreeMap<PathBuf, BTreeMap<String, PathBuf>> = BTreeMap::new();
+        for m in self.materials.iter_mut().filter(|m| m.pbr.is_none() && m.descriptor.is_none()) {
+            let Some(image) = m.image.as_deref() else { continue };
+            let Some(folder) = image.parent() else { continue };
+            let siblings = folders.entry(folder.to_path_buf()).or_insert_with(|| {
+                let files = std::fs::read_dir(folder).into_iter().flatten().flatten().map(|e| e.path());
+                files.filter_map(|p| Some((p.file_name()?.to_str()?.to_ascii_lowercase(), p.clone()))).collect()
+            });
+            m.pbr = Self::discovered_pbr(image, siblings);
+        }
     }
 
     fn load_descriptors(&mut self) {
@@ -416,6 +431,7 @@ impl Project {
             Material { name, image: Some(path), size, ..Material::default() }
         }));
         self.materials.sort_by(|a, b| a.name.cmp(&b.name));
+        self.discover_maps();
     }
 
     /// Saves imported pictures into `dir` as PNGs named after their materials, then lists them.
@@ -497,12 +513,6 @@ impl Project {
                 Material { name: name.to_string(), image: Some(path), ..Material::default() }
             }
         };
-        if m.pbr.is_none() && m.descriptor.is_none() {
-            m.pbr = m.image.as_deref().and_then(|image| {
-                let siblings: Vec<PathBuf> = std::fs::read_dir(image.parent()?).ok()?.flatten().map(|e| e.path()).collect();
-                Self::discovered_pbr(image, &siblings)
-            });
-        }
         if let Some(lit) = self.lit.get(name) {
             m.pbr = lit.apply(m.pbr.take());
         }
@@ -512,7 +522,7 @@ impl Project {
     /// The maps that sit in a picture's own folder under the names games give them, so a folder holding
     /// `wall_albedo.png`, `wall_normal.png` and `wall_orm.png` shades the way the game shades it:
     /// occlusion in the `orm` picture's red, roughness in its green and metallic in its blue.
-    fn discovered_pbr(image: &Path, siblings: &[PathBuf]) -> Option<Pbr> {
+    fn discovered_pbr(image: &Path, siblings: &BTreeMap<String, PathBuf>) -> Option<Pbr> {
         let stem = image.file_stem()?.to_str()?;
         let extension = image.extension()?.to_str()?;
         // `wall_albedo.png` is the map for a material named `wall`, so drop the word that says which map it is.
@@ -526,10 +536,9 @@ impl Project {
             .unwrap_or(stem);
         let look = |words: &[&str]| -> Option<String> {
             words.iter().find_map(|w| {
-                [extension, "png", "jpg", "jpeg"].into_iter().find_map(|ext| {
-                    let want = format!("{base}_{w}.{ext}");
-                    siblings.iter().find(|p| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(want.as_str()))).map(|p| p.display().to_string())
-                })
+                [extension, "png", "jpg", "jpeg"]
+                    .into_iter()
+                    .find_map(|ext| siblings.get(&format!("{base}_{w}.{ext}").to_ascii_lowercase()).map(|p| p.display().to_string()))
             })
         };
         let packed = look(&crate::new_asset::PACKED_WORDS);
@@ -933,10 +942,10 @@ mod tests {
 
     #[test]
     fn discovered_maps_come_from_the_pictures_own_folder() {
-        let siblings = [PathBuf::from("/mine/wall_albedo.png"), PathBuf::from("/mine/WALL_Normal.PNG"), PathBuf::from("/stock/wall_orm.png")];
-        let pbr = Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings[..2]).unwrap();
+        let siblings = |names: &[&str]| names.iter().map(|n| (n.to_ascii_lowercase(), PathBuf::from(format!("/mine/{n}")))).collect();
+        let pbr = Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings(&["wall_albedo.png", "WALL_Normal.PNG"])).unwrap();
         assert_eq!((pbr.normal.as_deref(), pbr.roughness), (Some("/mine/WALL_Normal.PNG"), None));
-        assert!(Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings[..1]).is_none());
-        assert!(Project::discovered_pbr(Path::new("/mine/été_normal.png"), &[]).is_none());
+        assert!(Project::discovered_pbr(Path::new("/mine/wall_albedo.png"), &siblings(&["wall_albedo.png"])).is_none());
+        assert!(Project::discovered_pbr(Path::new("/mine/été_normal.png"), &BTreeMap::new()).is_none());
     }
 }
