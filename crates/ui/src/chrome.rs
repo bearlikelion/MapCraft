@@ -450,12 +450,6 @@ impl MapCraftApp {
         if self.tool == Tool::Scale {
             self.scale_options(ui);
         }
-        if self.tool == Tool::Rotate {
-            self.rotate_options(ui);
-        }
-        if self.tool == Tool::Scale {
-            self.scale_options(ui);
-        }
         if self.tool == Tool::Sculpt {
             ui.separator();
             use mapcraft_engine::SculptMode as M;

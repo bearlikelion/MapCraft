@@ -2192,8 +2192,7 @@ fn the_rotate_step_and_the_scale_amounts_work_from_the_tool_strip() {
     assert_eq!(h.state().rotate_step_for_test(), 15.0, "the step starts at what MapCraft always snapped to");
 
     let tap = |h: &mut Harness<MapCraftApp>, label: &str| {
-        let hits = h.get_all_by_label(label).map(|n| n.rect().center()).collect::<Vec<_>>();
-        let Some(at) = hits.first().copied() else { panic!("no {label} in the tool strip") };
+        let at = h.get_by_label(label).rect().center();
         click(h, at);
     };
     h.get_by_label("Rotate").click();
