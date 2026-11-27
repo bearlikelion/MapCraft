@@ -79,6 +79,11 @@ pub fn material_entry(material: &str, picture: &[u8]) -> Option<String> {
     Some(format!("materials/{material}.{}", picture_extension(picture)?))
 }
 
+/// How many pixels a PNG or JPEG holds, as they count toward [`MAX_TOTAL_PIXELS`].
+pub fn picture_pixels(picture: &[u8]) -> Option<u64> {
+    image_header(picture).ok().map(|(_, width, height)| u64::from(width) * u64::from(height))
+}
+
 /// The extension a picture's entry takes, `png` or `jpg` by its content, or `None` when it is neither.
 pub fn picture_extension(picture: &[u8]) -> Option<&'static str> {
     match image_header(picture).ok()?.0 {
