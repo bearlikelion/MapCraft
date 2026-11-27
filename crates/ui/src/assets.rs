@@ -333,8 +333,8 @@ fn put(
 ) -> Result<(), String> {
     let (entry, bytes) = match copy {
         Copy::Keep => {
-            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| format!("{material}: {} has no file name", path.display()))?;
-            (format!("textures/{file}"), read(path, remaining)?)
+            let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).ok_or_else(|| format!("{material}: {} has no extension", path.display()))?;
+            (format!("textures/{material}_{}.{ext}", slot_word(slot)), read(path, remaining)?)
         }
         copy => {
             let mut image = crate::project::bounded_picture(path)?;
