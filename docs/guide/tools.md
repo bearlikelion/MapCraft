@@ -177,7 +177,7 @@ Press `R`.
 - In the 3D view, drag a ring: red turns about X, green about Y, blue about Z.
 
 While you drag, a faint yellow outline keeps the selection where it started, a shaded slice sweeps from the starting angle to the current one, and a label shows the signed angle turned (positive is counterclockwise looking down the axis).
-Beside the tool buttons, **Free**, **1°**, **5°**, **15°**, **45°** and **90°** pick how far a drag turns at a time, and **other** takes any step you type.
+Beside the tool buttons, **Free**, **1°**, **5°**, **15°**, **45°** and **90°** pick how far a drag turns at a time, and the **step** field takes any step you type.
 **Free** follows the pointer exactly, as Rotate always could; **15°** is the step it used while **Snap** was on, which is the default.
 The label adds the unsnapped angle in brackets while a step is set.
 For exact quarter turns about Z, use **Tools > Rotate 90° Clockwise** (`Ctrl+R`) or **Tools > Rotate 90° Counter-Clockwise** (`Ctrl+Shift+R`).

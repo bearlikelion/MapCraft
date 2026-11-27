@@ -31,7 +31,7 @@ pub const AXIS: [Color32; 3] = [Color32::from_rgb(232, 76, 76), Color32::from_rg
 
 /// What the Rotate tool does between turns, as a clause for its hint; 0 means the pointer sets the angle.
 pub(crate) fn turn_words(step: f64) -> String {
-    if step > 0.0 { format!("it turns in {step} degree steps") } else { "it turns freely with the pointer".into() }
+    if step > 0.0 { format!("it turns in {} degree steps", (step * 10.0).round() / 10.0) } else { "it turns freely with the pointer".into() }
 }
 
 /// How long a status message stays before the bar shows hints again.
@@ -153,7 +153,7 @@ impl MapCraftApp {
                 };
                 return format!("{what} {} units; release to finish, Esc cancels", crate::measure::units(amount));
             }
-            Drag::Rotate { applied, .. } => return format!("Turned {applied} degrees; release to finish"),
+            Drag::Rotate { applied, .. } => return format!("Turned {applied:.1} degrees; release to finish"),
             Drag::Move { applied, .. } | Drag::Move3d { applied, .. } => return moved(*applied),
             Drag::Axis { axis, applied, .. } => return moved(*axis * *applied),
             Drag::Transfer { mode, done, .. } => return format!("{} onto {} faces; release to finish, Ctrl+Z undoes the whole drag", mode.label(), done.len()),

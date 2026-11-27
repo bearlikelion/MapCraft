@@ -14,8 +14,7 @@ fn stepped(degrees: f64, step: f64) -> f64 {
     if step > 0.0 { (degrees / step).round() * step } else { degrees }
 }
 
-/// The matrix taking `b` to its own size times `f` about its center, and the box that makes. An
-/// axis with no size there has nothing to widen, so a selection flat on one stays flat.
+/// The matrix scaling `b` by `f` about its center, and the resulting box.
 fn scale_about(b: &Aabb, f: DVec3) -> (DMat4, Aabb) {
     let c = b.center();
     let half = (b.max - b.min) / 2.0;
@@ -581,7 +580,8 @@ impl MapCraftApp {
         r.on_hover_text("How far a drag turns at a time; 0 follows the pointer. Type any step you want here.");
         if step != asked {
             self.prefs.update(|p| p.view.rotate_step = step);
-            self.status = if step > 0.0 { format!("Rotation steps by {step} degrees") } else { "Rotation follows the pointer".into() };
+            self.status =
+                if step > 0.0 { format!("Rotation steps by {} degrees", (step * 10.0).round() / 10.0) } else { "Rotation follows the pointer".into() };
         }
     }
 
@@ -630,11 +630,15 @@ impl MapCraftApp {
             return;
         }
         let (m, target) = scale_about(&b, f);
-        let models = self.selected_models();
-        let factor = uniform_stretch(&b, &target);
-        let snap = self.prefs.get().view.snap_grid;
-        let scales: Vec<(NodeId, f64)> = models.iter().map(|(id, base)| (*id, mapcraft_engine::dragged_model_scale(*base, factor, snap))).collect();
-        match self.session.scale_selection(&m, &scales, "Scale", Some("scale-amount")) {
+        let (size, min) = (b.size(), self.session.grid.max(1.0));
+        if (0..3).any(|i| size[i] > 1e-9 && target.size()[i] < min - 1e-9) {
+            self.status = format!("That would make the selection thinner than {min} units");
+            return;
+        }
+        // Models only take one scale, so they change only when all three factors match.
+        let uniform = (f.x - f.y).abs() < 1e-9 && (f.y - f.z).abs() < 1e-9;
+        let scales: Vec<(NodeId, f64)> = self.selected_models().into_iter().map(|(id, base)| (id, if uniform { base * f.x } else { base })).collect();
+        match self.session.scale_selection(&m, &scales, "Scale", None) {
             Ok(()) => {
                 self.mark_changed();
                 self.scale_factors = DVec3::ONE;

@@ -2220,4 +2220,22 @@ fn the_rotate_step_and_the_scale_amounts_work_from_the_tool_strip() {
     h.run_steps(2);
     let back = h.state_mut().session_for_test().map.get(brush).unwrap().kind.brush().unwrap().bounds().unwrap();
     assert_eq!(back.size(), DVec3::new(128.0, 64.0, 32.0), "one undo step takes the whole scale back");
+
+    let size = |h: &mut Harness<MapCraftApp>| h.state_mut().session_for_test().map.get(brush).unwrap().kind.brush().unwrap().bounds().unwrap().size();
+    for _ in 0..2 {
+        h.state_mut().set_scale_factors_for_test(DVec3::new(2.0, 1.0, 1.0));
+        h.run_steps(2);
+        tap(&mut h, "Apply scale");
+        h.run_steps(2);
+    }
+    assert_eq!(size(&mut h).x, 512.0);
+    h.state_mut().run_command_for_test("edit.undo");
+    h.run_steps(2);
+    assert_eq!(size(&mut h).x, 256.0, "each typed scale undoes on its own");
+
+    h.state_mut().set_scale_factors_for_test(DVec3::new(0.001, 1.0, 1.0));
+    h.run_steps(2);
+    tap(&mut h, "Apply scale");
+    h.run_steps(2);
+    assert_eq!(size(&mut h).x, 256.0, "a scale thinner than the grid is refused");
 }
