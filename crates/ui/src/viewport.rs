@@ -1094,10 +1094,9 @@ impl MapCraftApp {
         let hover = response.hover_pos();
         if let Some(h) = hover {
             self.cursor_world = cam.is_2d().then(|| cam.plane_point(dvec(h - rect.min), size));
-            // A paste lands under the pointer, and the paste event is read before this pass runs, so keep the point.
-            let spot = if self.prefs.get().view.paste_at_pointer { self.paste_point(index, rect, h) } else { None };
-            self.paste_spot = spot.map(|p| (index, p));
-        } else if self.paste_spot.is_some_and(|(v, _)| v == index) {
+            // The paste event is read before this pass runs, so keep where the pointer was.
+            self.paste_spot = Some((index, rect, h));
+        } else if self.paste_spot.is_some_and(|(v, _, _)| v == index) {
             self.paste_spot = None;
         }
         if matches!(self.drag, Drag::None) {
@@ -2045,16 +2044,16 @@ impl MapCraftApp {
         }
     }
 
-    /// Where the pointer is in view `index`: on the view plane in a 2D view, on the face or the ground under
-    /// it in a 3D view. Nothing is snapped here: a paste shifts by whole grid steps, which keeps the copy aligned.
-    fn paste_point(&self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
+    /// Where the pointer is in view `index`: on the view plane in 2D, on the face or ground under it in 3D.
+    pub(crate) fn paste_point(&self, index: usize, rect: Rect, pos: Pos2) -> Option<DVec3> {
         let cam = self.panes.get(index)?.camera;
         let (at, size) = (dvec(pos - rect.min), dvec(rect.size()));
         if cam.is_2d() {
             return Some(cam.plane_point(at, size));
         }
         let (origin, dir) = cam.ray(at, size);
-        let t = self.pick(origin, dir, true).map_or_else(|| if dir.z.abs() > 1e-9 { -origin.z / dir.z } else { 1024.0 }, |(_, t)| t);
+        let ground = || Some(-origin.z / dir.z).filter(|t| *t > 0.0 && *t < 16384.0).unwrap_or(1024.0);
+        let t = self.pick(origin, dir, true).map_or_else(ground, |(_, t)| t);
         Some(origin + dir * t)
     }
 
