@@ -29,7 +29,10 @@ pub const WARN: Color32 = Color32::from_rgb(240, 190, 80);
 pub const ERROR: Color32 = Color32::from_rgb(240, 100, 100);
 pub const AXIS: [Color32; 3] = [Color32::from_rgb(232, 76, 76), Color32::from_rgb(110, 200, 80), Color32::from_rgb(80, 140, 240)];
 
-const ROTATE_HINT: &str = "it snaps to 15 degree steps while Snap is on";
+/// What the Rotate tool does between turns, as a clause for its hint; 0 means the pointer sets the angle.
+pub(crate) fn turn_words(step: f64) -> String {
+    if step > 0.0 { format!("it turns in {step} degree steps") } else { "it turns freely with the pointer".into() }
+}
 
 /// How long a status message stays before the bar shows hints again.
 const STATUS_TIME: Duration = Duration::from_secs(8);
@@ -164,8 +167,8 @@ impl MapCraftApp {
             Tool::Extrude => {
                 "Drag a highlighted face of a selected brush; Ctrl splits off a new brush, Ctrl+Alt extrudes a new brush along the face's normal, Alt slides the face keeping its shape".into()
             }
-            Tool::Rotate => format!("Drag in a 2D view to turn the selection about its center, or drag a ring in the 3D view; {ROTATE_HINT}"),
-            Tool::Scale => "Drag the white handles in a 2D view or the square handles in the 3D view to stretch the selection".into(),
+            Tool::Rotate => format!("Drag in a 2D view to turn the selection about its center, or drag a ring in the 3D view; {}", turn_words(self.prefs.get().view.rotate_step)),
+            Tool::Scale => "Drag the white handles in a 2D view or the square handles in the 3D view to stretch the selection, or type a factor per axis here".into(),
             Tool::Block if self.plugin_shape.is_some() => "Click in a view to place it; its parameters are in the inspector".into(),
             Tool::Block => match &self.block_class {
                 Some(class) => format!("Drag in a view to draw a {class} {}; its depth matches the last brush", shape_name(self.shape)),
@@ -440,6 +443,18 @@ impl MapCraftApp {
                 }
                 S::Block | S::Wedge => {}
             }
+        }
+        if self.tool == Tool::Rotate {
+            self.rotate_options(ui);
+        }
+        if self.tool == Tool::Scale {
+            self.scale_options(ui);
+        }
+        if self.tool == Tool::Rotate {
+            self.rotate_options(ui);
+        }
+        if self.tool == Tool::Scale {
+            self.scale_options(ui);
         }
         if self.tool == Tool::Sculpt {
             ui.separator();
