@@ -497,10 +497,62 @@ impl Project {
                 Material { name: name.to_string(), image: Some(path), ..Material::default() }
             }
         };
+        if m.pbr.is_none() && m.descriptor.is_none() {
+            m.pbr = m.image.as_deref().and_then(|image| self.discovered_pbr(image));
+        }
         if let Some(lit) = self.lit.get(name) {
             m.pbr = lit.apply(m.pbr.take());
         }
         Some(m)
+    }
+
+    /// The maps that sit beside a picture under the names games give them, so a folder holding
+    /// `wall_albedo.png`, `wall_normal.png` and `wall_orm.png` shades the way the game shades it:
+    /// occlusion in the `orm` picture's red, roughness in its green and metallic in its blue.
+    fn discovered_pbr(&self, image: &Path) -> Option<Pbr> {
+        let rel = self.vfs.roots().iter().find_map(|root| image.strip_prefix(root).ok())?.to_string_lossy().replace("\\", "/");
+        let (folder, name) = rel.rsplit_once('/').map_or((String::new(), rel.as_str()), |(f, n)| (format!("{f}/"), n));
+        let (_, extension) = name.rsplit_once('.')?;
+        let stem = name.strip_suffix(&format!(".{extension}"))?;
+        // `wall_albedo.png` is the map for a material named `wall`, so drop the word that says which map it is.
+        let base = crate::new_asset::SLOT_WORDS
+            .iter()
+            .find(|(_, words)| words.iter().any(|w| stem.len() > w.len() + 1 && stem.ends_with(&format!("_{w}"))))
+            .and_then(|(_, words)| words.iter().find(|w| stem.ends_with(&format!("_{w}"))))
+            .map_or_else(|| stem.to_string(), |w| stem[..stem.len() - w.len() - 1].to_string());
+        let look = |words: &[&str]| -> Option<String> {
+            words.iter().find_map(|w| {
+                [extension, "png", "jpg", "jpeg"]
+                    .into_iter()
+                    .find_map(|ext| self.vfs.find(&format!("{folder}{base}_{w}.{ext}")).map(|p| p.display().to_string()))
+            })
+        };
+        let packed = crate::new_asset::PACKED_WORDS.iter().find_map(|w| {
+            self.vfs
+                .find(&format!("{folder}{base}_{w}.{extension}"))
+                .or_else(|| self.vfs.find(&format!("{folder}{base}_{w}.png")))
+                .map(|p| p.display().to_string())
+        });
+        let mut pbr = plain_pbr();
+        let mut found = false;
+        for (slot, words) in crate::new_asset::SLOT_WORDS {
+            let Some(path) = look(words) else { continue };
+            match slot {
+                mapcraft_format::pack_material::TextureSlot::Normal => (pbr.normal, found) = (Some(path), true),
+                mapcraft_format::pack_material::TextureSlot::Roughness => (pbr.roughness, found) = (Some(ChannelMap { path, channel: Channel::Red }), true),
+                mapcraft_format::pack_material::TextureSlot::Metallic => {
+                    (pbr.metallic, pbr.metallic_value, found) = (Some(ChannelMap { path, channel: Channel::Red }), 1.0, true)
+                }
+                _ => {}
+            }
+        }
+        if let Some(path) = packed {
+            let map = |channel| Some(ChannelMap { path: path.clone(), channel });
+            (pbr.ao, pbr.roughness, pbr.metallic) = (map(Channel::Red), map(Channel::Green), map(Channel::Blue));
+            pbr.metallic_value = 1.0;
+            found = true;
+        }
+        found.then_some(pbr)
     }
 
     /// The picture a material is drawn with, decoded.

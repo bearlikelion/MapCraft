@@ -938,6 +938,11 @@ impl MapCraftApp {
         self.export_bytes(id, &mut Vec::new())
     }
 
+    /// The pack entries the map's own assets would produce, for tests.
+    pub fn asset_entries_for_test(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.custom_asset_entries()
+    }
+
     /// Number of nodes in the map, for tests.
     pub fn node_count_for_test(&self) -> usize {
         self.session.map.len()

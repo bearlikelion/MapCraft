@@ -52,6 +52,8 @@ Faces already using a hidden material still draw.
 PBR materials, the ones **File > Add Material…** makes from a set of pictures, keep their settings in a small `materials/<name>.json` file in the SDK's custom folder.
 That folder is `custom/<sdk id>` in MapCraft's data folder (`%LOCALAPPDATA%\mapcraft\custom\surfsup` on Windows, `~/.local/share/mapcraft/custom/surfsup` on Linux), so every map made with the SDK can use what you added once, and each map's `.mcpck` packs only the ones it uses.
 Each picture goes into the slot its name ends with, such as `_albedo`, `_normal` or `_heightmap`, and a packed `_orm` or `_arm` picture is split into roughness (its green) and metallic (its blue).
+The same names work without a material file: when a material's own picture has `wall_normal.png`, `wall_roughness.png` or `wall_orm.png` beside it, the Lit view shades with them, and so does the game - a compile writes the material as a PBR descriptor and packs those pictures with it, rather than packing only the picture and leaving the game drawing it flat.
+You can point a material at different maps, or none, under **Lit maps** in its inspector; that choice travels too.
 The Material inspector edits those settings after the import, and the views show each change as you drag.
 
 1. Right click the material in the Materials panel and choose **Inspect Material**.

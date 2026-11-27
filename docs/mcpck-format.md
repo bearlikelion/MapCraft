@@ -87,6 +87,7 @@ Descriptor version 1 has these required fields and no others:
 
 Albedo components, roughness and metallic are finite values from 0 to 1; emission components are finite values from 0 to 64.
 Texture slots are `albedo`, `normal`, `roughness`, `metallic` and `emission`; all are optional.
+MapCraft writes a descriptor for any of the map's own materials that the views shade with more than a picture, not only for the ones **File > Add Material…** made: its normal, roughness and metallic maps go under `textures/`, and a roughness or metallic kept in a combined picture's green, blue or averaged channels is written out as its own red-channel picture, which is the only channel these readers take those two slots from.
 
 Descriptor version 2 adds these optional fields and the optional `height` texture slot:
 
