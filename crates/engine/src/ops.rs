@@ -210,6 +210,25 @@ pub(crate) fn transform_kind(kind: NodeKind, m: &DMat4, lock: bool, point: bool)
     }))
 }
 
+/// The box the copied fragments fill. Containers count through their children, and a point entity or
+/// prefab counts as its own origin, which is where its geometry hangs from.
+fn fragments_box(frags: &[mapcraft_format::Fragment]) -> Option<Aabb> {
+    let mut out: Option<Aabb> = None;
+    for f in frags {
+        let own = match &f.kind {
+            NodeKind::Brush(b) => b.bounds().ok(),
+            NodeKind::Entity(e) => e.origin().map(|p| Aabb::new(p, p)),
+            NodeKind::Prefab(p) => Some(Aabb::new(p.origin, p.origin)),
+            NodeKind::Path(p) => p.bounds(),
+            _ => None,
+        };
+        for b in [own, fragments_box(&f.children)].into_iter().flatten() {
+            out = Some(out.map_or(b, |o| o.union(&b)));
+        }
+    }
+    out
+}
+
 /// Inserts copied or generated nodes under `parent`, moved by `m`, with fresh face ids; returns
 /// the new top-level nodes.
 pub(crate) fn insert_fragments(e: &mut Edit, parent: NodeId, frags: Vec<mapcraft_format::Fragment>, m: &DMat4, lock: bool) -> Result<Vec<NodeId>, EngineError> {
@@ -598,6 +617,11 @@ impl Session {
         let sel = self.require_selection()?;
         let roots: Vec<NodeId> = sel.iter().copied().filter(|id| !self.map.ancestors(*id).iter().any(|a| self.selection.contains(a))).collect();
         Ok(mapcraft_format::fragment_to_string(&self.map, &roots)?)
+    }
+
+    /// The box what this clipboard text carries fills, so a paste can be aimed at the pointer.
+    pub fn clipboard_bounds(text: &str) -> Result<Option<Aabb>, EngineError> {
+        Ok(fragments_box(&mapcraft_format::fragment_from_str(text)?))
     }
 
     /// Pastes clipboard text under the active parent, offset by `delta`, and selects the copies.
@@ -1638,6 +1662,21 @@ mod tests {
         s.snap_vertices_to_integers().unwrap();
         let verts = s.map.get(b).unwrap().kind.brush().unwrap().vertices().unwrap();
         assert!(verts.iter().all(|v| *v == v.round()));
+    }
+
+    #[test]
+    fn clipboard_text_knows_its_middle_so_a_paste_can_aim_at_the_pointer() {
+        let mut s = Session::default();
+        let b = s.create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+        s.selection = BTreeSet::from([b]);
+        let text = s.copy_selection().unwrap();
+        assert_eq!(Session::clipboard_bounds(&text).unwrap().map(|b| b.center()), Some(DVec3::splat(32.0)), "the middle of the copied brush");
+        let aim = DVec3::new(200.0, 100.0, 0.0);
+        s.paste(&text, aim - Session::clipboard_bounds(&text).unwrap().unwrap().center()).unwrap();
+        let pasted = *s.selection.iter().next().unwrap();
+        assert_ne!(pasted, b);
+        assert_eq!(s.map.get(pasted).unwrap().kind.brush().unwrap().bounds().unwrap().center(), aim, "and the paste lands there");
+        assert!(Session::clipboard_bounds("not mapcraft at all").is_err(), "text that is not MapCraft's asks for nothing");
     }
 
     #[test]

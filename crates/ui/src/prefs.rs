@@ -76,6 +76,8 @@ pub struct ViewPrefs {
     pub snap_grid: bool,
     /// Dragged points snap to nearby brush corners and entity origins.
     pub snap_vertices: bool,
+    /// Pasting drops the clipboard's objects under the pointer instead of a grid step from the copy.
+    pub paste_at_pointer: bool,
     /// Zooming one 2D view zooms them all.
     pub link_zoom: bool,
     /// Clicking a material in the browser applies it to the selected brushes or picked faces.
@@ -119,6 +121,7 @@ impl Default for ViewPrefs {
             colorize: true,
             snap_grid: true,
             snap_vertices: true,
+            paste_at_pointer: true,
             link_zoom: true,
             apply_on_click: true,
             click_selects_group: false,
