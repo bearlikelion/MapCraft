@@ -92,10 +92,7 @@ const COMMANDS: &[CommandSpec] = &[
         menu: "Edit/Duplicate",
         shortcut: Some("Ctrl+D"),
         enabled: has_selection,
-        run: |s| {
-            let g = s.grid;
-            s.duplicate_selection(mapcraft_geom::DVec3::new(g, g, 0.0), None)
-        },
+        run: |s| s.duplicate_selection(mapcraft_geom::DVec3::ZERO, None),
     },
     CommandSpec {
         id: "edit.duplicate_linked",
@@ -103,10 +100,7 @@ const COMMANDS: &[CommandSpec] = &[
         menu: "Edit/Duplicate Linked",
         shortcut: Some("Alt+D"),
         enabled: has_selection,
-        run: |s| {
-            let g = s.grid;
-            s.duplicate_linked(mapcraft_geom::DVec3::new(g, g, 0.0)).map(|_| ())
-        },
+        run: |s| s.duplicate_linked(mapcraft_geom::DVec3::ZERO).map(|_| ()),
     },
     CommandSpec {
         id: "tools.edit_link_here",
@@ -675,6 +669,18 @@ mod tests {
         s.selection = BTreeSet::from([b]);
         execute(&mut s, "tools.tie_to_entity").unwrap();
         assert_eq!(s.map.get(s.map.get(b).unwrap().parent.unwrap()).unwrap().kind.entity().unwrap().classname, "func_detail");
+    }
+
+    #[test]
+    fn duplicating_leaves_the_copy_exactly_where_the_original_is() {
+        let mut s = Session::default();
+        let b = s.create_brush(Aabb::new(DVec3::new(8.0, 16.0, 24.0), DVec3::new(72.0, 96.0, 64.0))).unwrap();
+        s.selection = BTreeSet::from([b]);
+        execute(&mut s, "edit.duplicate").unwrap();
+        let copy = *s.selection.iter().next().unwrap();
+        assert_ne!(copy, b, "the copies are what stays selected");
+        let box_of = |id| s.map.get(id).unwrap().kind.brush().unwrap().bounds().unwrap();
+        assert_eq!(box_of(copy), box_of(b), "and they sit on the same grid position, not a step off it");
     }
 
     #[test]

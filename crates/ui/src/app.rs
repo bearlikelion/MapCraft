@@ -168,6 +168,8 @@ pub struct MapCraftApp {
     /// The view the first clip point was placed in.
     pub(crate) clip_view: Option<usize>,
     pub(crate) cursor_world: Option<DVec3>,
+    /// Which view the pointer was last over and what world point that is, so a paste can land there.
+    pub(crate) paste_spot: Option<(usize, Rect, Pos2)>,
     /// The map with prefab instances and mirror halves expanded, and the real node each added node belongs to.
     pub(crate) display: Option<(Map, BTreeMap<NodeId, NodeId>)>,
     pub(crate) prefab_cache: HashMap<String, Option<Map>>,
@@ -361,6 +363,7 @@ impl MapCraftApp {
             clip_view_axis: None,
             clip_view: None,
             cursor_world: None,
+            paste_spot: None,
             display: None,
             prefab_cache: HashMap::new(),
             dialogs: Dialogs { recovery, running, ..Dialogs::default() },
@@ -972,6 +975,11 @@ impl MapCraftApp {
         self.panes.iter().map(|p| p.camera.zoom).collect()
     }
 
+    /// The view the pointer was last over and the world point under it, for tests.
+    pub fn paste_spot_for_test(&self) -> Option<(usize, DVec3)> {
+        self.paste_spot.and_then(|(i, rect, pos)| Some((i, self.paste_point(i, rect, pos)?)))
+    }
+
     /// Where the inspector's UV view was drawn, its zoom and its center, for tests.
     pub fn uv_panel_for_test(&self) -> (Rect, f64, mapcraft_geom::DVec2) {
         (self.uv_panel.rect, self.uv_panel.zoom, self.uv_panel.center)
@@ -1340,6 +1348,9 @@ impl MapCraftApp {
             "view.snap_vertices" => {
                 self.prefs.update(|p| p.view.snap_vertices = !p.view.snap_vertices);
             }
+            "view.paste_at_pointer" => {
+                self.prefs.update(|p| p.view.paste_at_pointer = !p.view.paste_at_pointer);
+            }
             "view.link_zoom" => {
                 self.prefs.update(|p| p.view.link_zoom = !p.view.link_zoom);
             }
@@ -1574,7 +1585,8 @@ impl MapCraftApp {
                 },
                 egui::Event::Paste(text) => {
                     let g = self.session.grid;
-                    if let Err(e) = self.session.paste(&text, DVec3::new(g, g, 0.0)) {
+                    let shift = self.paste_shift(&text).unwrap_or(DVec3::new(g, g, 0.0));
+                    if let Err(e) = self.session.paste(&text, shift) {
                         self.status = format!("Cannot paste: {e}");
                     }
                     self.mark_changed();
@@ -1582,6 +1594,33 @@ impl MapCraftApp {
                 _ => {}
             }
         }
+    }
+
+    /// The shift that puts the clipboard's middle under the pointer in 2D, or its bottom on the face under it in 3D.
+    fn paste_shift(&self, text: &str) -> Option<DVec3> {
+        if !self.prefs.get().view.paste_at_pointer {
+            return None;
+        }
+        let (index, rect, pos) = self.paste_spot?;
+        let at = self.paste_point(index, rect, pos)?;
+        let Ok(Some(boxed)) = mapcraft_engine::Session::clipboard_bounds(text) else { return None };
+        let cam = self.panes.get(index)?.camera;
+        let mut d = at - boxed.center();
+        if cam.is_2d() {
+            let depth = cam.view.axes().2.abs();
+            d -= depth * d.dot(depth);
+        } else {
+            d.z += boxed.center().z - boxed.min.z;
+        }
+        if self.prefs.get().view.snap_grid {
+            let z = d.z;
+            d = mapcraft_geom::snap(d, self.session.grid);
+            // In 3D the height comes from the face, so snapping it would float or sink the copy.
+            if !cam.is_2d() {
+                d.z = z;
+            }
+        }
+        Some(d)
     }
 
     pub(crate) fn open_dialog_path(&mut self, path: PathBuf) {
@@ -1695,6 +1734,7 @@ impl MapCraftApp {
                         self.action_toggle(ui, "view.show_fps", "Show FPS", view.show_fps);
                         self.action_toggle(ui, "view.snap_grid", "Snap to Grid", view.snap_grid);
                         self.action_toggle(ui, "view.snap_vertices", "Snap to Corners", view.snap_vertices);
+                        self.action_toggle(ui, "view.paste_at_pointer", "Paste at Pointer", view.paste_at_pointer);
                         ui.separator();
                         self.action_button(ui, "view.frame_all", "Frame All", true);
                         self.action_button(ui, "view.frame_selection", "Focus Selection", true);

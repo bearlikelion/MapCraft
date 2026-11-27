@@ -216,6 +216,7 @@ The tables are generated from the editor's code, so they match the version this 
 | Find Entities | `Ctrl+F` |
 | Snap to Grid | `Shift+W` |
 | Snap to Corners | `Shift+Q` |
+| Paste at Pointer | *none* |
 | Lock Selected | `Ctrl+Alt+K` |
 | Unlock All | `Ctrl+Alt+Shift+K` |
 | Hide Selected | `H` |

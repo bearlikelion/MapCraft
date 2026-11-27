@@ -52,7 +52,8 @@ Most tool keys sit on the left hand side of the keyboard, so you can switch tool
 |---|---|
 | `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y` | Undo, redo |
 | `Ctrl+Alt+Z`, `Ctrl+Alt+Shift+Z` | Undo or redo the last edit to the selection only |
-| `Ctrl+D` | Duplicates the selection |
+| `Ctrl+D` | Duplicates the selection, in place at the same grid position |
+| `Ctrl+C`, `Ctrl+X`, `Ctrl+V` | Copies, cuts and pastes the selection; **View > Paste at Pointer** drops the paste under the pointer instead of a grid step away, and is on by default |
 | `Delete` | Deletes the selection; in the Clip tool it takes back the last clip point, and in the Vertex tool it deletes the picked corners |
 | `Ctrl+A`, `Ctrl+Shift+A` | Selects everything, or nothing |
 | `Alt+1`, `Alt+2`, `Alt+3` | Makes clicks pick whole groups, objects, or single brushes |

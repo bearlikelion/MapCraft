@@ -2181,6 +2181,46 @@ fn layers_rename_in_the_scene_tree_with_f2_and_a_double_click() {
     h.run_steps(2);
     assert_eq!(name(&mut h), "Hazards", "and the field is gone");
 }
+
+#[test]
+fn paste_lands_under_the_pointer_when_that_option_is_on() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use std::collections::BTreeSet;
+    let (mut h, _settings) = editor();
+    let brush = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::ZERO, DVec3::splat(64.0))).unwrap();
+    h.state_mut().session_for_test().selection = BTreeSet::from([brush]);
+    h.run_steps(2);
+    let text = h.state_mut().session_for_test().copy_selection().unwrap();
+
+    // Pane 1 is the Top view; pane 0 is the 3D view, which aims at the surface under the pointer.
+    let spot = h.state().screen_for_test(1, DVec3::new(192.0, 192.0, 0.0));
+    h.hover_at(spot);
+    h.run_steps(2);
+    assert_eq!(h.state().paste_spot_for_test(), Some((1, DVec3::new(192.0, 192.0, 0.0))), "the pointer's point in the Top view is the aim");
+    h.event(Event::Paste(text));
+    h.run_steps(3);
+    let pasted: Vec<_> = h.state_mut().session_for_test().selection.iter().copied().collect();
+    assert_eq!(pasted.len(), 1, "the paste is what stays selected");
+    let b = h.state_mut().session_for_test().map.get(pasted[0]).unwrap().kind.brush().unwrap().bounds().unwrap();
+    assert_eq!(b.center(), DVec3::new(192.0, 192.0, 32.0), "the copy lands where the pointer is, keeping its own depth");
+    assert_eq!(b.size(), DVec3::splat(64.0), "and it lands on the grid rather than a fraction off it");
+}
+
+#[test]
+fn duplicating_in_place_keeps_the_grid_position() {
+    use mapcraft_geom::{Aabb, DVec3};
+    use std::collections::BTreeSet;
+    let (mut h, _settings) = editor();
+    let brush = h.state_mut().session_for_test().create_brush(Aabb::new(DVec3::new(8.0, 16.0, 24.0), DVec3::new(72.0, 96.0, 64.0))).unwrap();
+    h.state_mut().session_for_test().selection = BTreeSet::from([brush]);
+    h.run_steps(2);
+    h.state_mut().run_command_for_test("edit.duplicate");
+    h.run_steps(2);
+    let copy = *h.state_mut().session_for_test().selection.iter().next().unwrap();
+    let mut box_of = |id| h.state_mut().session_for_test().map.get(id).unwrap().kind.brush().unwrap().bounds().unwrap();
+    assert_eq!(box_of(copy), box_of(brush), "Duplicate leaves the copy exactly where the original is");
+}
+
 #[test]
 fn the_rotate_step_and_the_scale_amounts_work_from_the_tool_strip() {
     use mapcraft_geom::{Aabb, DVec3};
