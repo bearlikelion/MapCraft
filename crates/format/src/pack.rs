@@ -76,11 +76,16 @@ pub fn path_for(map: &Path) -> PathBuf {
 
 /// The entry name for a material's picture, `.png` or `.jpg` by its content, or `None` when it is neither.
 pub fn material_entry(material: &str, picture: &[u8]) -> Option<String> {
-    let ext = match image_header(picture).ok()?.0 {
-        Kind::Png => "png",
-        _ => "jpg",
-    };
-    Some(format!("materials/{material}.{ext}"))
+    Some(format!("materials/{material}.{}", picture_extension(picture)?))
+}
+
+/// The extension a picture's entry takes, `png` or `jpg` by its content, or `None` when it is neither.
+pub fn picture_extension(picture: &[u8]) -> Option<&'static str> {
+    match image_header(picture).ok()?.0 {
+        Kind::Png => Some("png"),
+        Kind::Jpeg => Some("jpg"),
+        _ => None,
+    }
 }
 
 /// The entry name the Godot addon looks up for a point entity's `model` value, or `None` when it is not a `.glb` or `.gltf`.

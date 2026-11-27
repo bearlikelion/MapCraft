@@ -76,6 +76,8 @@ fn a_materials_maps_travel_with_the_map() {
     // Same file names in two folders still pack as two materials.
     picture("metal/plate.png", image::Rgba([90, 90, 90, 255]));
     picture("metal/plate_normal.png", image::Rgba([128, 128, 250, 255]));
+    // The entry takes its extension from what the file holds, not from its name.
+    std::fs::rename(custom.join("metal/plate_normal.png"), custom.join("metal/plate_normal.PNG")).unwrap();
     picture("wood/plate.png", image::Rgba([140, 90, 40, 255]));
     picture("wood/plate_normal.png", image::Rgba([128, 128, 240, 255]));
 

@@ -277,3 +277,11 @@ fn times_the_largest_map() {
     eprintln!("{LARGEST}: {} MB in {:?}, {} world brushes, {} entities", data.len() / 1_000_000, start.elapsed(), map.world_brushes, map.entities);
     world(&map).into_iter().for_each(assert_closed);
 }
+
+#[test]
+fn a_port_keeps_its_credits_and_its_source() {
+    let world = vec![("skyname".to_string(), "sky_day01".to_string()), ("Author".to_string(), " Arblarg ".to_string()), ("message".to_string(), String::new())];
+    let e = crate::import::world_entity(&world, "surf_utopia.v3.bsp");
+    assert_eq!(e.classname, "worldspawn");
+    assert_eq!(e.properties, vec![("author".to_string(), "Arblarg".to_string()), ("ported_from".to_string(), "surf_utopia.v3".to_string())]);
+}

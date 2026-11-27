@@ -55,7 +55,8 @@ impl Guest for SourceBsp {
         if importer != "bsp" {
             return Err(format!("unknown importer {importer}"));
         }
-        let map = import::import(&data, &HostFiles).map_err(|e| format!("{name}: {e}"))?;
+        let mut map = import::import(&data, &HostFiles).map_err(|e| format!("{name}: {e}"))?;
+        map.output.entities.push(import::world_entity(&map.world, &name));
         for warning in &map.warnings {
             host::log(&format!("{name}: {warning}"));
         }

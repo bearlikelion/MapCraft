@@ -40,6 +40,20 @@ pub struct Import {
     pub textures: (usize, usize, usize),
     pub game_files: bool,
     pub warnings: Vec<String>,
+    /// Worldspawn's key values, as the map's compiler left them.
+    pub world: Vec<(String, String)>,
+}
+
+/// World keys a port keeps: who made the map and what it was called.
+const CREDIT_KEYS: [&str; 2] = ["author", "message"];
+
+/// A `worldspawn` point entity the editor merges into the open map's world: the credits `world` carries and the file the map was ported from.
+pub(crate) fn world_entity(world: &[(String, String)], file: &str) -> Entity {
+    let mut properties: Vec<(String, String)> =
+        CREDIT_KEYS.iter().filter_map(|&k| key(world, k).map(str::trim).filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.to_string()))).collect();
+    let stem = file.rsplit_once('.').map_or(file, |s| s.0);
+    properties.push(("ported_from".into(), stem.into()));
+    Entity { classname: "worldspawn".into(), properties, connections: Vec::new(), brushes: Vec::new() }
 }
 
 fn is_tool(brush: &Brush) -> bool {
@@ -86,9 +100,11 @@ pub(crate) fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
 
     let mut entities: Vec<(Entity, Option<Bounds>)> = Vec::new();
     let mut brush_entities = 0;
+    let mut world_keys = Vec::new();
     for mut keys in parsed {
         let Some(classname) = key(&keys, "classname").map(str::to_string) else { continue };
         if classname.eq_ignore_ascii_case("worldspawn") {
+            world_keys = keys;
             continue;
         }
         let origin = vector(key(&keys, "origin"));
@@ -174,5 +190,6 @@ pub(crate) fn import(file: &[u8], files: &dyn Files) -> Result<Import, String> {
         textures,
         game_files: library.has_game_files(),
         warnings,
+        world: world_keys,
     })
 }

@@ -333,8 +333,9 @@ fn put(
 ) -> Result<(), String> {
     let (entry, bytes) = match copy {
         Copy::Keep => {
-            let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).ok_or_else(|| format!("{material}: {} has no extension", path.display()))?;
-            (format!("textures/{material}_{}.{ext}", slot_word(slot)), read(path, remaining)?)
+            let bytes = read(path, remaining)?;
+            let ext = pack::picture_extension(&bytes).ok_or_else(|| format!("{material}: SurfsUp maps carry only PNG and JPEG pictures"))?;
+            (format!("textures/{material}_{}.{ext}", slot_word(slot)), bytes)
         }
         copy => {
             let mut image = crate::project::bounded_picture(path)?;
